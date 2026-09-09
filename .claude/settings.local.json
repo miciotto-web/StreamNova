@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd //c start \"\" \"D:\\\\VSCODE\\\\index.html\")",
+      "Bash(npm --version)",
+      "Bash(dotnet --version)",
+      "Read(//c/Windows/Microsoft.NET/Framework64/v4.0.30319/**)",
+      "Read(//c/Windows/System32/**)",
+      "Bash(go version *)"
+    ]
+  }
+}
