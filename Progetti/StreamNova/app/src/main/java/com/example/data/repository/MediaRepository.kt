@@ -646,65 +646,147 @@ object MediaRepository {
         val trendingMovies = TmdbApiClient.service.getTrendingMovies(apiKey)
         val trendingTv = TmdbApiClient.service.getTrendingTv(apiKey)
 
+        val movieLogos = trendingMovies.results.take(6)
+          .associate { it.id to fetchLogoUrl(movieId = it.id, apiKey = apiKey) }
+        val tvLogos = trendingTv.results.take(6)
+          .associate { it.id to fetchLogoUrl(tvId = it.id, apiKey = apiKey) }
+
         val updatedItems = _mediaList.value.toMutableList()
+        var updatedExisting = 0
+        var addedNew = 0
+        var skippedDuplicates = 0
 
-        // Fetch logos for top items
-        for (movie in trendingMovies.results.take(6)) {
-          val images = try {
-            TmdbApiClient.service.getMovieImages(movie.id, apiKey)
-          } catch (e: Exception) {
-            null
-          }
-          val logo = images?.logos?.firstOrNull { it.language == "it" }
-            ?: images?.logos?.firstOrNull { it.language == "en" }
-            ?: images?.logos?.firstOrNull()
-
+        // 1) Aggiorna i preloaded esistenti (dedup su tmdbId): solo campi TMDB,
+        //    preservando isFavorite, currentProgressMs, episodi e altri dati locali utente.
+        for (movie in trendingMovies.results) {
           val existingIndex = updatedItems.indexOfFirst { it.tmdbId == movie.id }
-          val backdrop = TmdbApiClient.backdropUrl(movie.backdropPath)
-          val poster = TmdbApiClient.posterUrl(movie.posterPath)
-          val logoUrl = TmdbApiClient.logoUrl(logo?.filePath)
-
           if (existingIndex >= 0) {
             val existing = updatedItems[existingIndex]
             updatedItems[existingIndex] = existing.copy(
-              backdropUrl = backdrop ?: existing.backdropUrl,
-              posterUrl = poster ?: existing.posterUrl,
-              logoUrl = logoUrl ?: existing.logoUrl,
+              title = movie.title?.takeIf { it.isNotBlank() } ?: existing.title,
               synopsis = if (!movie.overview.isNullOrBlank()) movie.overview else existing.synopsis,
+              rating = movie.voteAverage?.takeIf { it > 0f } ?: existing.rating,
+              year = parseTmdbYear(movie.releaseDate) ?: existing.year,
+              backdropUrl = TmdbApiClient.backdropUrl(movie.backdropPath) ?: existing.backdropUrl,
+              posterUrl = TmdbApiClient.posterUrl(movie.posterPath) ?: existing.posterUrl,
+              logoUrl = movieLogos[movie.id] ?: existing.logoUrl,
             )
+            updatedExisting++
+          }
+        }
+        for (tv in trendingTv.results) {
+          val existingIndex = updatedItems.indexOfFirst { it.tmdbId == tv.id }
+          if (existingIndex >= 0) {
+            val existing = updatedItems[existingIndex]
+            updatedItems[existingIndex] = existing.copy(
+              title = tv.name?.takeIf { it.isNotBlank() } ?: existing.title,
+              synopsis = if (!tv.overview.isNullOrBlank()) tv.overview else existing.synopsis,
+              rating = tv.voteAverage?.takeIf { it > 0f } ?: existing.rating,
+              year = parseTmdbYear(tv.firstAirDate) ?: existing.year,
+              backdropUrl = TmdbApiClient.backdropUrl(tv.backdropPath) ?: existing.backdropUrl,
+              posterUrl = TmdbApiClient.posterUrl(tv.posterPath) ?: existing.posterUrl,
+              logoUrl = tvLogos[tv.id] ?: existing.logoUrl,
+            )
+            updatedExisting++
           }
         }
 
-        for (tv in trendingTv.results.take(6)) {
-          val images = try {
-            TmdbApiClient.service.getTvImages(tv.id, apiKey)
-          } catch (e: Exception) {
-            null
-          }
-          val logo = images?.logos?.firstOrNull { it.language == "it" }
-            ?: images?.logos?.firstOrNull { it.language == "en" }
-            ?: images?.logos?.firstOrNull()
-
-          val existingIndex = updatedItems.indexOfFirst { it.tmdbId == tv.id }
-          val backdrop = TmdbApiClient.backdropUrl(tv.backdropPath)
-          val poster = TmdbApiClient.posterUrl(tv.posterPath)
-          val logoUrl = TmdbApiClient.logoUrl(logo?.filePath)
-
-          if (existingIndex >= 0) {
-            val existing = updatedItems[existingIndex]
-            updatedItems[existingIndex] = existing.copy(
-              backdropUrl = backdrop ?: existing.backdropUrl,
-              posterUrl = poster ?: existing.posterUrl,
-              logoUrl = logoUrl ?: existing.logoUrl,
-              synopsis = if (!tv.overview.isNullOrBlank()) tv.overview else existing.synopsis,
+        // 2) Aggiunge come NUOVI item i risultati TMDB non ancora in catalogo (dedup rigoroso su tmdbId).
+        //    I nuovi titoli usano il video fallback già presente (nessuna modifica al player).
+        for (movie in trendingMovies.results) {
+          if (updatedItems.none { it.tmdbId == movie.id }) {
+            updatedItems.add(
+              MediaItem(
+                id = "tmdb_movie_${movie.id}",
+                tmdbId = movie.id,
+                title = movie.title ?: movie.originalTitle ?: "Senza titolo",
+                originalTitle = movie.originalTitle ?: movie.title ?: "",
+                synopsis = movie.overview ?: "",
+                videoUrl = FALLBACK_VIDEO_URL,
+                backdropUrl = TmdbApiClient.backdropUrl(movie.backdropPath),
+                posterUrl = TmdbApiClient.posterUrl(movie.posterPath),
+                logoUrl = movieLogos[movie.id],
+                type = MediaType.FILM,
+                year = parseTmdbYear(movie.releaseDate) ?: 0,
+                rating = movie.voteAverage ?: 0f,
+                genres = tmdbGenreNames(movie.genreIds),
+              )
             )
+            addedNew++
+          } else {
+            skippedDuplicates++
+          }
+        }
+        for (tv in trendingTv.results) {
+          if (updatedItems.none { it.tmdbId == tv.id }) {
+            updatedItems.add(
+              MediaItem(
+                id = "tmdb_tv_${tv.id}",
+                tmdbId = tv.id,
+                title = tv.name ?: tv.originalName ?: "Senza titolo",
+                originalTitle = tv.originalName ?: tv.name ?: "",
+                synopsis = tv.overview ?: "",
+                videoUrl = FALLBACK_VIDEO_URL,
+                backdropUrl = TmdbApiClient.backdropUrl(tv.backdropPath),
+                posterUrl = TmdbApiClient.posterUrl(tv.posterPath),
+                logoUrl = tvLogos[tv.id],
+                type = MediaType.SERIE_TV,
+                year = parseTmdbYear(tv.firstAirDate) ?: 0,
+                rating = tv.voteAverage ?: 0f,
+                genres = tmdbGenreNames(tv.genreIds),
+              )
+            )
+            addedNew++
+          } else {
+            skippedDuplicates++
           }
         }
 
         _mediaList.value = updatedItems
+        Log.d(
+          "MediaRepository",
+          "TMDB merge completato: nuovi=$addedNew, aggiornati=$updatedExisting, duplicati_evitati=$skippedDuplicates"
+        )
       } catch (e: Exception) {
         Log.e("MediaRepository", "Errore durante sincronizzazione TMDB: ${e.message}", e)
       }
+    }
+  }
+
+  // --- Helpers mapping DTO TMDB → MediaItem (riusano i modelli esistenti, nessuna nuova architettura) ---
+
+  private fun parseTmdbYear(date: String?): Int? =
+    date?.take(4)?.toIntOrNull()?.takeIf { it in 1800..2100 }
+
+  // Mappa minimale genre_id TMDB → nome in italiano, compatibile con MediaItem.genres: List<String>
+  private val tmdbGenreById = mapOf(
+    28 to "Azione", 12 to "Avventura", 16 to "Animazione", 35 to "Commedia",
+    80 to "Crime", 99 to "Documentario", 18 to "Dramma", 10751 to "Famiglia",
+    14 to "Fantasy", 36 to "Storia", 27 to "Horror", 10402 to "Musica",
+    9648 to "Mistero", 10749 to "Romance", 878 to "Fantascienza",
+    10770 to "Film TV", 53 to "Thriller", 10752 to "Guerra", 37 to "Western",
+    10759 to "Azione & Avventura", 10762 to "Bambini", 10763 to "News",
+    10764 to "Reality", 10765 to "Fantascienza & Fantasy", 10766 to "Soap",
+    10767 to "Talk Show", 10768 to "Guerra & Politica",
+  )
+
+  private fun tmdbGenreNames(genreIds: List<Int>?): List<String> =
+    genreIds?.mapNotNull { tmdbGenreById[it] } ?: emptyList()
+
+  // Logo tramite il meccanismo /images già in uso (it → en → primo disponibile)
+  private suspend fun fetchLogoUrl(movieId: Int? = null, tvId: Int? = null, apiKey: String): String? {
+    return try {
+      val images = when {
+        movieId != null -> TmdbApiClient.service.getMovieImages(movieId, apiKey)
+        tvId != null -> TmdbApiClient.service.getTvImages(tvId, apiKey)
+        else -> return null
+      }
+      val logo = images.logos?.firstOrNull { it.language == "it" }
+        ?: images.logos?.firstOrNull { it.language == "en" }
+        ?: images.logos?.firstOrNull()
+      TmdbApiClient.logoUrl(logo?.filePath)
+    } catch (e: Exception) {
+      null
     }
   }
 
