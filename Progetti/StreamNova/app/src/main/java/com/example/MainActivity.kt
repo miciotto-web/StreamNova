@@ -17,6 +17,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import com.example.data.repository.MediaRepository
 import com.example.ui.components.SidebarNavigation
 import com.example.ui.screens.DetailScreen
 import com.example.ui.screens.HomeScreen
@@ -32,6 +33,9 @@ class MainActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    // Carica il catalogo persistito PRIMA di setContent, cosi' la prima composizione
+    // della Home usa gia' lo stato salvato (evita il flicker sui preloaded).
+    MediaRepository.initPersistence(applicationContext)
     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
     enableEdgeToEdge()
     setContent {

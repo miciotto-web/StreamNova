@@ -1,5 +1,6 @@
 package com.example.data.repository
 
+import android.content.Context
 import android.util.Log
 import com.example.BuildConfig
 import com.example.R
@@ -585,8 +586,30 @@ object MediaRepository {
     ),
   )
 
+  private var storage: CatalogStorage? = null
+
   private val _mediaList = MutableStateFlow<List<MediaItem>>(getInitialMedia())
   val mediaList: StateFlow<List<MediaItem>> = _mediaList.asStateFlow()
+
+  /**
+   * Carica il catalogo persistito (se valido) PRIMA della prima composizione della Home,
+   * cosi' il valore iniziale di mediaList non e' mai solo il fallback preloaded quando
+   * esiste uno stato salvato (niente flicker "11 -> attesa -> catalogo reale").
+   * Idempotente. Chiamata da MainActivity.onCreate prima di setContent.
+   * Se assente o corrotto, loadCatalog() restituisce null e vale getInitialMedia().
+   */
+  fun initPersistence(context: Context) {
+    if (storage != null) return
+    val storageImpl = CatalogStorage(context.applicationContext)
+    storage = storageImpl
+    val persisted = storageImpl.loadCatalog()
+    if (persisted != null) {
+      _mediaList.value = persisted
+      Log.d("MediaRepository", "Catalogo persistito caricato: ${persisted.size} item")
+    } else {
+      Log.d("MediaRepository", "Nessun catalogo persistito: uso fallback preloaded")
+    }
+  }
 
   val featuredHero: MediaItem
     get() = _mediaList.value.firstOrNull { it.id == "dune_2" } ?: getInitialMedia().first()
@@ -601,6 +624,7 @@ object MediaRepository {
         if (item.id == id) item.copy(isFavorite = !item.isFavorite) else item
       }
     }
+    storage?.saveCatalog(_mediaList.value)
   }
 
   fun updateProgress(id: String, progressMs: Long) {
@@ -613,6 +637,7 @@ object MediaRepository {
         }
       }
     }
+    storage?.saveCatalog(_mediaList.value)
   }
 
   fun getContinueWatching(): List<MediaItem> {
@@ -743,9 +768,10 @@ object MediaRepository {
         }
 
         _mediaList.value = updatedItems
+        storage?.saveCatalog(updatedItems)
         Log.d(
           "MediaRepository",
-          "TMDB merge completato: nuovi=$addedNew, aggiornati=$updatedExisting, duplicati_evitati=$skippedDuplicates"
+          "TMDB merge completato: nuovi=$addedNew, aggiornati=$updatedExisting, duplicati_evitati=$skippedDuplicates, totale=${updatedItems.size}"
         )
       } catch (e: Exception) {
         Log.e("MediaRepository", "Errore durante sincronizzazione TMDB: ${e.message}", e)
