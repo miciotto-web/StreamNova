@@ -120,80 +120,92 @@ fun HomeMainBrowsingContent(
   onPlayClick: (MediaItem) -> Unit,
   modifier: Modifier = Modifier
 ) {
-  val continueWatching = allMedia.filter { it.currentProgressMs > 0 }
-  val featuredHero = allMedia.firstOrNull { it.id == "dune_2" } ?: allMedia.first()
+  // Separate TMDB items (tmdbId != null) from preloaded fallback (tmdbId == null)
+  val tmdbItems = allMedia.filter { it.tmdbId != null }
+  val preloadedItems = allMedia.filter { it.tmdbId == null }
 
-  val popularItems = allMedia.sortedByDescending { it.rating }
-  val popularMovies = allMedia.filter { it.type == MediaType.FILM }
-  val popularSeries = allMedia.filter { it.type == MediaType.SERIE_TV }
+  // TMDB-first: use TMDB items when available, otherwise fall back to preloaded
+  val displayItems = if (tmdbItems.isNotEmpty()) tmdbItems else preloadedItems
+
+  val featuredHero = displayItems.firstOrNull { it.backdropUrl != null && it.rating > 0 } ?: displayItems.firstOrNull()
+
+  val trendingMovies = displayItems.filter { it.type == MediaType.FILM && it.tmdbId != null }.sortedByDescending { it.rating }
+  val trendingSeries = displayItems.filter { it.type == MediaType.SERIE_TV && it.tmdbId != null }.sortedByDescending { it.rating }
+  val popularMovies = displayItems.filter { it.type == MediaType.FILM && it.tmdbId != null }.sortedByDescending { it.rating }
+  val popularSeries = displayItems.filter { it.type == MediaType.SERIE_TV && it.tmdbId != null }.sortedByDescending { it.rating }
 
   LazyColumn(
     modifier = modifier
       .fillMaxSize()
       .background(NovaBackground),
-    contentPadding = PaddingValues(bottom = 48.dp)
+    contentPadding = PaddingValues(
+      top = 16.dp,
+      bottom = 48.dp,
+      start = 48.dp,
+      end = 32.dp
+    )
   ) {
     // 1. Hero / Banner Principale
     item(key = "hero_banner") {
-      HeroBanner(
-        media = featuredHero,
-        onPlayClick = { onPlayClick(featuredHero) },
-        onInfoClick = { onMediaClick(featuredHero) }
-      )
-      Spacer(modifier = Modifier.height(16.dp))
-    }
-
-    // 2. Carosello: "Continua a guardare"
-    if (continueWatching.isNotEmpty()) {
-      item(key = "section_continue_watching") {
-        CarouselSection(
-          title = "Continua a guardare",
-          badge = "${continueWatching.size} titoli in corso",
-          items = continueWatching,
-          onMediaClick = { onMediaClick(it) }
+      if (featuredHero != null) {
+        HeroBanner(
+          media = featuredHero,
+          onPlayClick = { onPlayClick(featuredHero) },
+          onInfoClick = { onMediaClick(featuredHero) }
         )
+        Spacer(modifier = Modifier.height(24.dp))
       }
     }
 
-    // 3. Carosello: "Locandine Cinema & Serie TV"
-    item(key = "section_tmdb_posters") {
-      CarouselSection(
-        title = "Locandine Ufficiali Cinema & Serie",
-        badge = "Poster TMDB",
-        items = popularItems,
-        onMediaClick = { onMediaClick(it) },
-        cardType = CardType.POSTER
-      )
+    // 2. Carosello: "Trending Film"
+    if (trendingMovies.isNotEmpty()) {
+      item(key = "section_trending_movies") {
+        CarouselSection(
+          title = "Trending Film",
+          items = trendingMovies,
+          onMediaClick = { onMediaClick(it) },
+          cardType = CardType.POSTER
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+      }
     }
 
-    // 4. Carosello: "I più popolari"
-    item(key = "section_popular") {
-      CarouselSection(
-        title = "I più popolari su StreamNova",
-        badge = "Top Votati",
-        items = popularItems,
-        onMediaClick = { onMediaClick(it) }
-      )
+    // 3. Carosello: "Trending Serie"
+    if (trendingSeries.isNotEmpty()) {
+      item(key = "section_trending_series") {
+        CarouselSection(
+          title = "Trending Serie",
+          items = trendingSeries,
+          onMediaClick = { onMediaClick(it) },
+          cardType = CardType.POSTER
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+      }
     }
 
-    // 5. Carosello: "Film popolari"
-    item(key = "section_movies") {
-      CarouselSection(
-        title = "Film popolari in 4K HDR",
-        badge = "Cinema a casa",
-        items = popularMovies,
-        onMediaClick = { onMediaClick(it) }
-      )
+    // 4. Carosello: "Film più popolari"
+    if (popularMovies.isNotEmpty()) {
+      item(key = "section_popular_movies") {
+        CarouselSection(
+          title = "Film più popolari",
+          items = popularMovies,
+          onMediaClick = { onMediaClick(it) },
+          cardType = CardType.POSTER
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+      }
     }
 
-    // 6. Carosello: "Serie TV popolari"
-    item(key = "section_series") {
-      CarouselSection(
-        title = "Serie TV più amate",
-        badge = "Nuovi episodi",
-        items = popularSeries,
-        onMediaClick = { onMediaClick(it) }
-      )
+    // 5. Carosello: "Serie più popolari"
+    if (popularSeries.isNotEmpty()) {
+      item(key = "section_popular_series") {
+        CarouselSection(
+          title = "Serie più popolari",
+          items = popularSeries,
+          onMediaClick = { onMediaClick(it) },
+          cardType = CardType.POSTER
+        )
+      }
     }
   }
 }
@@ -203,7 +215,6 @@ enum class CardType { STANDARD, POSTER }
 @Composable
 fun CarouselSection(
   title: String,
-  badge: String?,
   items: List<MediaItem>,
   onMediaClick: (MediaItem) -> Unit,
   cardType: CardType = CardType.STANDARD
@@ -235,21 +246,13 @@ fun CarouselSection(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
       ) {
-        Text(
+         Text(
           text = title,
           color = NovaTextPrimary,
           fontSize = 18.sp,
           fontWeight = FontWeight.Bold,
           letterSpacing = 0.3.sp
         )
-        if (badge != null) {
-          Text(
-            text = "• $badge",
-            color = NovaCyanBright,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold
-          )
-        }
       }
 
       // Sorting chips
@@ -281,7 +284,7 @@ fun CarouselSection(
     ) {
       LazyRow(
         state = listState,
-        contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp)
       ) {
         items(sortedItems, key = { it.id }) { item ->

@@ -16,32 +16,32 @@ import java.util.concurrent.TimeUnit
 data class TmdbMovieDto(
   val id: Int,
   val title: String?,
-  @field:Json(name = "original_title") val originalTitle: String?,
+  @Json(name = "original_title") val originalTitle: String?,
   val overview: String?,
-  @field:Json(name = "backdrop_path") val backdropPath: String?,
-  @field:Json(name = "poster_path") val posterPath: String?,
-  @field:Json(name = "release_date") val releaseDate: String?,
-  @field:Json(name = "vote_average") val voteAverage: Float?,
-  @field:Json(name = "genre_ids") val genreIds: List<Int>? = emptyList(),
+  @Json(name = "backdrop_path") val backdropPath: String?,
+  @Json(name = "poster_path") val posterPath: String?,
+  @Json(name = "release_date") val releaseDate: String?,
+  @Json(name = "vote_average") val voteAverage: Float?,
+  @Json(name = "genre_ids") val genreIds: List<Int>? = emptyList(),
 )
 
 data class TmdbTvDto(
   val id: Int,
   val name: String?,
-  @field:Json(name = "original_name") val originalName: String?,
+  @Json(name = "original_name") val originalName: String?,
   val overview: String?,
-  @field:Json(name = "backdrop_path") val backdropPath: String?,
-  @field:Json(name = "poster_path") val posterPath: String?,
-  @field:Json(name = "first_air_date") val firstAirDate: String?,
-  @field:Json(name = "vote_average") val voteAverage: Float?,
-  @field:Json(name = "genre_ids") val genreIds: List<Int>? = emptyList(),
+  @Json(name = "backdrop_path") val backdropPath: String?,
+  @Json(name = "poster_path") val posterPath: String?,
+  @Json(name = "first_air_date") val firstAirDate: String?,
+  @Json(name = "vote_average") val voteAverage: Float?,
+  @Json(name = "genre_ids") val genreIds: List<Int>? = emptyList(),
 )
 
 data class TmdbPaginatedResponse<T>(
   val page: Int,
   val results: List<T>,
-  @field:Json(name = "total_pages") val totalPages: Int?,
-  @field:Json(name = "total_results") val totalResults: Int?,
+  @Json(name = "total_pages") val totalPages: Int?,
+  @Json(name = "total_results") val totalResults: Int?,
 )
 
 data class TmdbImagesDto(
@@ -52,16 +52,16 @@ data class TmdbImagesDto(
 )
 
 data class TmdbImageItemDto(
-  @field:Json(name = "file_path") val filePath: String,
+  @Json(name = "file_path") val filePath: String,
   val width: Int?,
   val height: Int?,
-  @field:Json(name = "aspect_ratio") val aspectRatio: Float?,
+  @Json(name = "aspect_ratio") val aspectRatio: Float?,
 )
 
 data class TmdbLogoItemDto(
-  @field:Json(name = "file_path") val filePath: String,
-  @field:Json(name = "iso_639_1") val language: String?,
-  @field:Json(name = "aspect_ratio") val aspectRatio: Float?,
+  @Json(name = "file_path") val filePath: String,
+  @Json(name = "iso_639_1") val language: String?,
+  @Json(name = "aspect_ratio") val aspectRatio: Float?,
   val width: Int?,
   val height: Int?,
 )

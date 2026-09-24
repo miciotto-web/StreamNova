@@ -5,6 +5,8 @@ import android.util.Log
 import com.example.BuildConfig
 import com.example.R
 import com.example.data.api.TmdbApiClient
+import com.example.data.api.TmdbMovieDto
+import com.example.data.api.TmdbTvDto
 import com.example.data.model.AudioTrack
 import com.example.data.model.Episode
 import com.example.data.model.MediaItem
@@ -681,87 +683,46 @@ object MediaRepository {
         var addedNew = 0
         var skippedDuplicates = 0
 
-        // 1) Aggiorna i preloaded esistenti (dedup su tmdbId): solo campi TMDB,
-        //    preservando isFavorite, currentProgressMs, episodi e altri dati locali utente.
+        // 1) Aggiorna gli item già presenti (dedup su tmdbId) tramite il mapper unico:
+        //    aggiorna SOLO i campi TMDB preservando isFavorite, currentProgressMs, episodes,
+        //    videoUrl e ogni altro dato locale.
         for (movie in trendingMovies.results) {
           val existingIndex = updatedItems.indexOfFirst { it.tmdbId == movie.id }
           if (existingIndex >= 0) {
-            val existing = updatedItems[existingIndex]
-            updatedItems[existingIndex] = existing.copy(
-              title = movie.title?.takeIf { it.isNotBlank() } ?: existing.title,
-              synopsis = if (!movie.overview.isNullOrBlank()) movie.overview else existing.synopsis,
-              rating = movie.voteAverage?.takeIf { it > 0f } ?: existing.rating,
-              year = parseTmdbYear(movie.releaseDate) ?: existing.year,
-              backdropUrl = TmdbApiClient.backdropUrl(movie.backdropPath) ?: existing.backdropUrl,
-              posterUrl = TmdbApiClient.posterUrl(movie.posterPath) ?: existing.posterUrl,
-              logoUrl = movieLogos[movie.id] ?: existing.logoUrl,
-            )
+            val updated = movie.applyTmdbTo(updatedItems[existingIndex], movieLogos[movie.id])
+            updatedItems[existingIndex] = updated
             updatedExisting++
+            logTmdbItem("AGGIORNATO", updated)
           }
         }
         for (tv in trendingTv.results) {
           val existingIndex = updatedItems.indexOfFirst { it.tmdbId == tv.id }
           if (existingIndex >= 0) {
-            val existing = updatedItems[existingIndex]
-            updatedItems[existingIndex] = existing.copy(
-              title = tv.name?.takeIf { it.isNotBlank() } ?: existing.title,
-              synopsis = if (!tv.overview.isNullOrBlank()) tv.overview else existing.synopsis,
-              rating = tv.voteAverage?.takeIf { it > 0f } ?: existing.rating,
-              year = parseTmdbYear(tv.firstAirDate) ?: existing.year,
-              backdropUrl = TmdbApiClient.backdropUrl(tv.backdropPath) ?: existing.backdropUrl,
-              posterUrl = TmdbApiClient.posterUrl(tv.posterPath) ?: existing.posterUrl,
-              logoUrl = tvLogos[tv.id] ?: existing.logoUrl,
-            )
+            val updated = tv.applyTmdbTo(updatedItems[existingIndex], tvLogos[tv.id])
+            updatedItems[existingIndex] = updated
             updatedExisting++
+            logTmdbItem("AGGIORNATO", updated)
           }
         }
 
-        // 2) Aggiunge come NUOVI item i risultati TMDB non ancora in catalogo (dedup rigoroso su tmdbId).
-        //    I nuovi titoli usano il video fallback già presente (nessuna modifica al player).
+        // 2) Aggiunge come NUOVI item i risultati TMDB non ancora in catalogo (mapper unico +
+        //    dedup rigoroso su tmdbId). I nuovi titoli usano il video fallback (player invariato).
         for (movie in trendingMovies.results) {
           if (updatedItems.none { it.tmdbId == movie.id }) {
-            updatedItems.add(
-              MediaItem(
-                id = "tmdb_movie_${movie.id}",
-                tmdbId = movie.id,
-                title = movie.title ?: movie.originalTitle ?: "Senza titolo",
-                originalTitle = movie.originalTitle ?: movie.title ?: "",
-                synopsis = movie.overview ?: "",
-                videoUrl = FALLBACK_VIDEO_URL,
-                backdropUrl = TmdbApiClient.backdropUrl(movie.backdropPath),
-                posterUrl = TmdbApiClient.posterUrl(movie.posterPath),
-                logoUrl = movieLogos[movie.id],
-                type = MediaType.FILM,
-                year = parseTmdbYear(movie.releaseDate) ?: 0,
-                rating = movie.voteAverage ?: 0f,
-                genres = tmdbGenreNames(movie.genreIds),
-              )
-            )
+            val item = movie.toMediaItem(movieLogos[movie.id])
+            updatedItems.add(item)
             addedNew++
+            logTmdbItem("NUOVO", item)
           } else {
             skippedDuplicates++
           }
         }
         for (tv in trendingTv.results) {
           if (updatedItems.none { it.tmdbId == tv.id }) {
-            updatedItems.add(
-              MediaItem(
-                id = "tmdb_tv_${tv.id}",
-                tmdbId = tv.id,
-                title = tv.name ?: tv.originalName ?: "Senza titolo",
-                originalTitle = tv.originalName ?: tv.name ?: "",
-                synopsis = tv.overview ?: "",
-                videoUrl = FALLBACK_VIDEO_URL,
-                backdropUrl = TmdbApiClient.backdropUrl(tv.backdropPath),
-                posterUrl = TmdbApiClient.posterUrl(tv.posterPath),
-                logoUrl = tvLogos[tv.id],
-                type = MediaType.SERIE_TV,
-                year = parseTmdbYear(tv.firstAirDate) ?: 0,
-                rating = tv.voteAverage ?: 0f,
-                genres = tmdbGenreNames(tv.genreIds),
-              )
-            )
+            val item = tv.toMediaItem(tvLogos[tv.id])
+            updatedItems.add(item)
             addedNew++
+            logTmdbItem("NUOVO", item)
           } else {
             skippedDuplicates++
           }
@@ -798,6 +759,77 @@ object MediaRepository {
 
   private fun tmdbGenreNames(genreIds: List<Int>?): List<String> =
     genreIds?.mapNotNull { tmdbGenreById[it] } ?: emptyList()
+
+  // --- Mapper UNICO TMDB → MediaItem (unico punto di conversione: usato sia per i nuovi sia per gli aggiornati) ---
+
+  private fun logTmdbItem(tag: String, item: MediaItem) {
+    Log.d(
+      "MediaRepository",
+      "TMDB[$tag] mediaType=${item.type} tmdbId=${item.tmdbId} title=\"${item.title}\" " +
+        "year=${item.year} rating=${item.rating} " +
+        "posterUrl=${item.posterUrl ?: "NULL"} " +
+        "backdropUrl=${item.backdropUrl ?: "NULL"} " +
+        "genres=${if (item.genres.isEmpty()) "VUOTO" else item.genres.joinToString(",")}"
+    )
+  }
+
+  /** Costruisce un NUOVO MediaItem FILM da un risultato TMDB. */
+  private fun TmdbMovieDto.toMediaItem(logoUrl: String?): MediaItem = MediaItem(
+    id = "tmdb_movie_$id",
+    tmdbId = id,
+    title = title?.takeIf { it.isNotBlank() } ?: originalTitle?.takeIf { it.isNotBlank() } ?: "Senza titolo",
+    originalTitle = originalTitle ?: title ?: "",
+    synopsis = overview ?: "",
+    videoUrl = FALLBACK_VIDEO_URL,
+    backdropUrl = TmdbApiClient.backdropUrl(backdropPath),
+    posterUrl = TmdbApiClient.posterUrl(posterPath),
+    logoUrl = logoUrl,
+    type = MediaType.FILM,
+    year = parseTmdbYear(releaseDate) ?: 0,
+    rating = voteAverage ?: 0f,
+    genres = tmdbGenreNames(genreIds),
+  )
+
+  /** Costruisce un NUOVO MediaItem SERIE TV da un risultato TMDB. */
+  private fun TmdbTvDto.toMediaItem(logoUrl: String?): MediaItem = MediaItem(
+    id = "tmdb_tv_$id",
+    tmdbId = id,
+    title = name?.takeIf { it.isNotBlank() } ?: originalName?.takeIf { it.isNotBlank() } ?: "Senza titolo",
+    originalTitle = originalName ?: name ?: "",
+    synopsis = overview ?: "",
+    videoUrl = FALLBACK_VIDEO_URL,
+    backdropUrl = TmdbApiClient.backdropUrl(backdropPath),
+    posterUrl = TmdbApiClient.posterUrl(posterPath),
+    logoUrl = logoUrl,
+    type = MediaType.SERIE_TV,
+    year = parseTmdbYear(firstAirDate) ?: 0,
+    rating = voteAverage ?: 0f,
+    genres = tmdbGenreNames(genreIds),
+  )
+
+  /** Applica SOLO i campi TMDB a un FILM già in catalogo, preservando i dati locali. */
+  private fun TmdbMovieDto.applyTmdbTo(existing: MediaItem, logoUrl: String?): MediaItem = existing.copy(
+    title = title?.takeIf { it.isNotBlank() } ?: existing.title,
+    synopsis = if (!overview.isNullOrBlank()) overview else existing.synopsis,
+    rating = voteAverage?.takeIf { it > 0f } ?: existing.rating,
+    year = parseTmdbYear(releaseDate) ?: existing.year,
+    backdropUrl = TmdbApiClient.backdropUrl(backdropPath) ?: existing.backdropUrl,
+    posterUrl = TmdbApiClient.posterUrl(posterPath) ?: existing.posterUrl,
+    logoUrl = logoUrl ?: existing.logoUrl,
+    genres = tmdbGenreNames(genreIds).takeIf { it.isNotEmpty() } ?: existing.genres,
+  )
+
+  /** Applica SOLO i campi TMDB a una SERIE già in catalogo, preservando i dati locali. */
+  private fun TmdbTvDto.applyTmdbTo(existing: MediaItem, logoUrl: String?): MediaItem = existing.copy(
+    title = name?.takeIf { it.isNotBlank() } ?: existing.title,
+    synopsis = if (!overview.isNullOrBlank()) overview else existing.synopsis,
+    rating = voteAverage?.takeIf { it > 0f } ?: existing.rating,
+    year = parseTmdbYear(firstAirDate) ?: existing.year,
+    backdropUrl = TmdbApiClient.backdropUrl(backdropPath) ?: existing.backdropUrl,
+    posterUrl = TmdbApiClient.posterUrl(posterPath) ?: existing.posterUrl,
+    logoUrl = logoUrl ?: existing.logoUrl,
+    genres = tmdbGenreNames(genreIds).takeIf { it.isNotEmpty() } ?: existing.genres,
+  )
 
   // Logo tramite il meccanismo /images già in uso (it → en → primo disponibile)
   private suspend fun fetchLogoUrl(movieId: Int? = null, tvId: Int? = null, apiKey: String): String? {
