@@ -1,0 +1,486 @@
+--------- beginning of main
+09-23 04:53:13.564 W/HWUI    (18554): Image decoding logging dropped!
+09-23 04:53:13.574 D/SurfaceUtils(18554): connecting to surface 0xe6766e38, reason connectToSurface
+09-23 04:53:13.574 I/MediaCodec(18554): [c2.goldfish.h264.decoder] setting surface generation to 18999298
+09-23 04:53:13.574 D/SurfaceUtils(18554): disconnecting from surface 0xe6766e38, reason connectToSurface(reconnect)
+09-23 04:53:13.574 D/SurfaceUtils(18554): connecting to surface 0xe6766e30, reason connectToSurface(reconnect-with-listener)
+09-23 04:53:13.574 D/Codec2-OutputBufferQueue(18554): remote graphic buffer migration 0/0
+09-23 04:53:13.574 D/Codec2Client(18554): setOutputSurface -- failed to set consumer usage (6/BAD_INDEX)
+09-23 04:53:13.574 D/Codec2Client(18554): setOutputSurface -- generation=18999298 consumer usage=0x900
+09-23 04:53:13.582 D/C2BqBuffer(  482): local generation change 18999298 , bqId: 79688823209986 migrated buffers # 1
+09-23 04:53:13.582 D/Codec2Client(18554): Surface configure completed
+09-23 04:53:13.582 D/SurfaceUtils(18554): disconnecting from surface 0xee18c798, reason disconnectFromSurface
+09-23 04:53:13.591 I/ExoPlayerImpl(18554): Release 53d4209 [AndroidXMedia3/1.5.1] [emulator_x86_arm, AOSP TV on x86, Google, 36] [media3.common, media3.exoplayer, media3.decoder, media3.exoplayer.hls, media3.datasource, media3.ui, media3.extractor]
+09-23 04:53:13.592 D/MediaCodec(18554): keep callback message for reclaim
+09-23 04:53:13.593 I/CCodecConfig(18554): query failed after returning 12 values (BAD_INDEX)
+09-23 04:53:13.593 D/CCodecConfig(18554): c2 config diff is   c2::u32 coded.vui.color.matrix = 1
+09-23 04:53:13.593 D/CCodecConfig(18554):   c2::u32 coded.vui.color.primaries = 1
+09-23 04:53:13.593 D/CCodecConfig(18554):   c2::u32 coded.vui.color.transfer = 3
+09-23 04:53:13.593 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf5955978 : 1(6291456 size) total buffers - 1(6291456 size) used buffers - 580/588 (recycle/alloc) - 10/578 (fetch/transfer)
+09-23 04:53:13.657 W/Codec2Client(18554): query -- param skipped: index = 1342179345.
+09-23 04:53:13.657 W/Codec2Client(18554): query -- param skipped: index = 2415921170.
+09-23 04:53:13.657 W/Codec2Client(18554): query -- param skipped: index = 1610614798.
+09-23 04:53:13.660 D/MediaCodec(18554): keep callback message for reclaim
+09-23 04:53:13.661 I/CCodecConfig(18554): query failed after returning 21 values (BAD_INDEX)
+09-23 04:53:13.661 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf594f598 : 3(24576 size) total buffers - 1(8192 size) used buffers - 945/951 (recycle/alloc) - 6/936 (fetch/transfer)
+09-23 04:53:13.662 W/Codec2Client(18554): query -- param skipped: index = 1342179345.
+09-23 04:53:13.662 W/Codec2Client(18554): query -- param skipped: index = 2415921170.
+09-23 04:53:13.662 W/Codec2Client(18554): query -- param skipped: index = 1610614798.
+09-23 04:53:13.664 I/MediaCodec(18554): [c2.goldfish.h264.decoder] connecting to the same surface. Nothing to do.
+09-23 04:53:13.664 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#663] MediaCodec discarded an unknown buffer
+09-23 04:53:13.665 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#663] MediaCodec discarded an unknown buffer
+09-23 04:53:13.665 D/C2BqBuffer(  482): configuring null producer: igbp_information(0)
+09-23 04:53:13.665 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#663] MediaCodec discarded an unknown buffer
+09-23 04:53:13.711 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#663] MediaCodec discarded an unknown buffer
+09-23 04:53:13.719 I/hw-BpHwBinder(18554): onLastStrongRef automatically unlinking death recipients
+09-23 04:53:13.720 I/hw-BpHwBinder(  482): onLastStrongRef automatically unlinking death recipients
+09-23 04:53:13.720 I/GoldfishComponentStore(  482): in ~ComponentModule
+09-23 04:53:13.720 I/GoldfishComponentStore(  482): unloading dll
+09-23 04:53:13.720 D/SurfaceUtils(18554): disconnecting from surface 0xe6766e38, reason disconnectFromSurface
+09-23 04:53:13.722 D/CCodecBufferChannel(18554): [c2.android.aac.decoder#944] MediaCodec discarded an unknown buffer
+09-23 04:53:13.723 D/CCodecBufferChannel(18554): [c2.android.aac.decoder#944] MediaCodec discarded an unknown buffer
+09-23 04:53:13.723 D/CCodecBufferChannel(18554): [c2.android.aac.decoder#944] MediaCodec discarded an unknown buffer
+09-23 04:53:13.723 D/CCodecBufferChannel(18554): [c2.android.aac.decoder#944] MediaCodec discarded an unknown buffer
+09-23 04:53:13.727 D/BufferPoolAccessor2.0(  587): bufferpool2 0xed586738 : 0(0 size) total buffers - 0(0 size) used buffers - 930/934 (recycle/alloc) - 6/934 (fetch/transfer)
+09-23 04:53:13.727 I/hw-BpHwBinder(18554): onLastStrongRef automatically unlinking death recipients
+09-23 04:53:13.727 I/hw-BpHwBinder(  587): onLastStrongRef automatically unlinking death recipients
+09-23 04:53:13.727 I/hw-BpHwBinder(  587): onLastStrongRef automatically unlinking death recipients
+09-23 04:53:13.728 D/BufferPoolAccessor2.0(  587): bufferpool2 0xed5862f8 : 0(0 size) total buffers - 0(0 size) used buffers - 0/0 (recycle/alloc) - 0/0 (fetch/transfer)
+09-23 04:53:13.728 D/BufferPoolAccessor2.0(  587): Destruction - bufferpool2 0xed5862f8 cached: 0/0M, 0/0% in use; allocs: 0, 0% recycled; transfers: 0, 0% unfetched
+09-23 04:53:14.668 D/C2BqPoolInvalidator(  482): invalidated 1 bqpool items
+09-23 04:53:16.062 W/dumpsys (18849): Thread Pool max thread count is 0. Cannot cache binder as linkToDeath cannot be implemented. serviceName: window
+09-23 04:53:16.063 W/ModifierShortcutManager(  702): No launch intent for role android.app.role.BROWSER
+09-23 04:53:16.945 I/cast_shell(17917): [0923/045316.945204:INFO:service_base.h(78)] Size of the map for type AuthTokenResponse is 0
+09-23 04:53:17.166 I/cast_shell(17917): [0923/045317.165977:INFO:service_base.h(246)] Container sizes for type CloudSetting are (session_info_map: 0), (topic_info_map: 21), (pending_events: 0).
+09-23 04:53:17.575 I/cast_shell(17917): [0923/045317.575669:INFO:mdns_app_filter.cc(3358)] MdnsAppFilter: responses sent in 96 seconds: 4
+09-23 04:53:17.618 I/cast_shell(17917): [0923/045317.618109:INFO:metrics_stat_logger.cc(38)] Metrics stat for the past 60 secs : total=1
+09-23 04:53:17.618 I/cast_shell(17917): [metrics_stat_logger] Cast.Discovery.Mdns.Query.Cast.Count=1
+09-23 04:53:18.605 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf5955978 : 0(0 size) total buffers - 0(0 size) used buffers - 580/591 (recycle/alloc) - 10/578 (fetch/transfer)
+09-23 04:53:18.605 D/BufferPoolAccessor2.0(18554): evictor expired: 1, evicted: 1
+09-23 04:53:18.741 D/BufferPoolAccessor2.0(  587): bufferpool2 0xed586738 : 0(0 size) total buffers - 0(0 size) used buffers - 930/934 (recycle/alloc) - 6/934 (fetch/transfer)
+09-23 04:53:18.741 D/BufferPoolAccessor2.0(  587): evictor expired: 2, evicted: 1
+09-23 04:53:19.381 I/BpBinder(  702): onLastStrongRef automatically unlinking death recipients: 
+09-23 04:53:19.384 W/System  (  702): A resource failed to call release. 
+09-23 04:53:19.609 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf594f598 : 0(0 size) total buffers - 0(0 size) used buffers - 947/955 (recycle/alloc) - 6/936 (fetch/transfer)
+09-23 04:53:19.609 D/BufferPoolAccessor2.0(18554): evictor expired: 1, evicted: 1
+09-23 04:53:20.339 I/ExoPlayerImpl(18554): Init 474b83e [AndroidXMedia3/1.5.1] [emulator_x86_arm, AOSP TV on x86, Google, 36]
+09-23 04:53:20.341 W/libc    (18554): Access denied finding property "vendor.display-size"
+09-23 04:53:20.362 W/HWUI    (18554): Image decoding logging dropped!
+09-23 04:53:21.346 I/DMCodecAdapterFactory(18554): Creating an asynchronous MediaCodec adapter for track type video
+09-23 04:53:21.348 D/CCodec  (18554): allocate(c2.goldfish.h264.decoder)
+09-23 04:53:21.351 I/CCodec  (18554): setting up 'default' as default (vendor) store
+09-23 04:53:21.351 I/GoldfishComponentStore(  482): in init
+09-23 04:53:21.351 I/GoldfishComponentStore(  482): loading dll of path libcodec2_goldfish_avcdec.so
+09-23 04:53:21.351 I/GoldfishComponentStore(  482): Create()
+09-23 04:53:21.352 I/GoldfishComponentStore(  482): created interface
+09-23 04:53:21.352 I/GoldfishComponentStore(  482): created component
+09-23 04:53:21.354 I/CCodec  (18554): Created component [c2.goldfish.h264.decoder] for [c2.goldfish.h264.decoder]
+09-23 04:53:21.355 D/CCodecConfig(18554): read media type: video/avc
+09-23 04:53:21.360 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: algo.buffers.max-count.values
+09-23 04:53:21.361 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: output.subscribed-indices.values
+09-23 04:53:21.362 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: input.buffers.allocator-ids.values
+09-23 04:53:21.362 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: output.buffers.allocator-ids.values
+09-23 04:53:21.362 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: algo.buffers.allocator-ids.values
+09-23 04:53:21.363 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: output.buffers.pool-ids.values
+09-23 04:53:21.363 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: algo.buffers.pool-ids.values
+09-23 04:53:21.364 D/ReflectedParamUpdater(18554): ignored struct field coded.color-format.locations
+09-23 04:53:21.366 D/CCodecConfig(18554): ignoring local param raw.size (0xd2001800) as it is already supported
+09-23 04:53:21.366 D/CCodecConfig(18554): ignoring local param default.color (0x5200180b) as it is already supported
+09-23 04:53:21.366 D/ReflectedParamUpdater(18554): ignored struct field raw.hdr-static-info.mastering
+09-23 04:53:21.367 I/CCodecConfig(18554): query failed after returning 12 values (BAD_INDEX)
+09-23 04:53:21.367 D/CCodecConfig(18554): c2 config diff is Dict {
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 coded.pl.level = 20496
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 coded.pl.profile = 20481
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 coded.vui.color.matrix = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 coded.vui.color.primaries = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 coded.vui.color.range = 2
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 coded.vui.color.transfer = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 default.color.matrix = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 default.color.primaries = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 default.color.range = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 default.color.transfer = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 input.buffers.max-size.value = 6291456
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 input.delay.value = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   string input.media-type.value = "video/avc"
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 output.delay.value = 8
+09-23 04:53:21.367 D/CCodecConfig(18554):   string output.media-type.value = "video/raw"
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.color.matrix = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.color.primaries = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.color.range = 2
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.color.transfer = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.max-size.height = 240
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.max-size.width = 320
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.pixel-format.value = 35
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::i32 raw.rotation.flip = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::i32 raw.rotation.value = 0
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.sar.height = 1
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.sar.width = 1
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.size.height = 240
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2::u32 raw.size.width = 320
+09-23 04:53:21.367 D/CCodecConfig(18554):   c2:
+09-23 04:53:21.367 W/ColorUtils(18554): expected specified color aspects (2:0:0:0)
+09-23 04:53:21.370 I/MediaCodec(18554): MediaCodec will operate in async mode
+09-23 04:53:21.371 E/MediaCodec(18554): Media Quality Service not found.
+09-23 04:53:21.371 D/SurfaceUtils(18554): connecting to surface 0xe6760298, reason connectToSurface
+09-23 04:53:21.371 I/MediaCodec(18554): [c2.goldfish.h264.decoder] setting surface generation to 18999299
+09-23 04:53:21.371 D/SurfaceUtils(18554): disconnecting from surface 0xe6760298, reason connectToSurface(reconnect)
+09-23 04:53:21.371 D/SurfaceUtils(18554): connecting to surface 0xe6760290, reason connectToSurface(reconnect-with-listener)
+09-23 04:53:21.372 I/CCodecBufferChannel(18554): Using latch times for frame rendered signals - present fences not supported
+09-23 04:53:21.372 D/CCodec  (18554): [c2.goldfish.h264.decoder] buffers are bound to CCodec for this session
+09-23 04:53:21.373 D/CCodecConfig(18554): no c2 equivalents for log-session-id
+09-23 04:53:21.373 D/CCodecConfig(18554): no c2 equivalents for importance
+09-23 04:53:21.373 D/CCodecConfig(18554): no c2 equivalents for color-standard
+09-23 04:53:21.373 D/CCodecConfig(18554): no c2 equivalents for csd-1
+09-23 04:53:21.373 D/CCodecConfig(18554): no c2 equivalents for native-window
+09-23 04:53:21.373 D/CCodecConfig(18554): no c2 equivalents for native-window-generation
+09-23 04:53:21.373 D/CCodecConfig(18554): no c2 equivalents for flags
+09-23 04:53:21.374 D/CCodecConfig(18554): config failed => CORRUPTED
+09-23 04:53:21.374 D/CCodecConfig(18554): c2 config diff is   c2::u32 default.color.matrix = 1
+09-23 04:53:21.374 D/CCodecConfig(18554):   c2::u32 default.color.primaries = 1
+09-23 04:53:21.374 D/CCodecConfig(18554):   c2::u32 default.color.range = 2
+09-23 04:53:21.374 D/CCodecConfig(18554):   c2::u32 default.color.transfer = 3
+09-23 04:53:21.374 D/CCodecConfig(18554):   c2::u32 raw.max-size.height = 750
+09-23 04:53:21.374 D/CCodecConfig(18554):   c2::u32 raw.max-size.width = 1680
+09-23 04:53:21.374 D/CCodecConfig(18554):   c2::u32 raw.size.height = 750
+09-23 04:53:21.374 D/CCodecConfig(18554):   c2::u32 raw.size.width = 1680
+09-23 04:53:21.375 W/Codec2Client(18554): query -- param skipped: index = 1107298332.
+09-23 04:53:21.375 D/CCodec  (18554): client requested max input size 947520, which is smaller than what component recommended (6291456); overriding with component recommendation.
+09-23 04:53:21.375 W/CCodec  (18554): This behavior is subject to change. It is recommended that app developers double check whether the requested max input size is in reasonable range.
+09-23 04:53:21.375 D/CCodec  (18554): encoding statistics level = 0
+09-23 04:53:21.375 D/CCodec  (18554): setup formats input: AMessage(what = 0x00000000) = {
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t height = 750
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t level = 65536
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t max-input-size = 6291456
+09-23 04:53:21.375 D/CCodec  (18554):   string mime = "video/avc"
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t profile = 65536
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t width = 1680
+09-23 04:53:21.375 D/CCodec  (18554):   Rect crop(0, 0, 1679, 749)
+09-23 04:53:21.375 D/CCodec  (18554): }
+09-23 04:53:21.375 D/CCodec  (18554): setup formats output: AMessage(what = 0x00000000) = {
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t android._color-format = 2135033992
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t android._video-scaling = 1
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t rotation-degrees = 0
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t color-standard = 1
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t color-range = 2
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t color-transfer = 3
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t sar-height = 1
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t sar-width = 1
+09-23 04:53:21.375 D/CCodec  (18554):   Rect crop(0, 0, 1679, 749)
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t width = 1680
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t height = 750
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t max-height = 750
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t max-width = 1680
+09-23 04:53:21.375 D/CCodec  (18554):   string mime = "video/raw"
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t android._dataspace = 260
+09-23 04:53:21.375 D/CCodec  (18554):   int32_t color-format = 2130708361
+09-23 04:53:21.375 D/CCodec  (18554): }
+09-23 04:53:21.376 I/CCodecConfig(18554): query failed after returning 12 values (BAD_INDEX)
+09-23 04:53:21.376 D/CCodecConfig(18554): c2 config diff is   c2::u32 raw.color.matrix = 1
+09-23 04:53:21.376 D/CCodecConfig(18554):   c2::u32 raw.color.primaries = 1
+09-23 04:53:21.376 D/CCodecConfig(18554):   c2::u32 raw.color.transfer = 3
+09-23 04:53:21.377 E/treamnova.tvapp(18554): Failed to query component interface for required system resources: 6
+09-23 04:53:21.381 D/MediaCodec(18554): keep callback message for reclaim
+09-23 04:53:21.382 D/C2GoldfishAvcDec(  482): calling onInit
+09-23 04:53:21.383 W/Codec2Client(18554): query -- param skipped: index = 1342179345.
+09-23 04:53:21.383 W/Codec2Client(18554): query -- param skipped: index = 2415921170.
+09-23 04:53:21.383 W/Codec2Client(18554): query -- param skipped: index = 1610614798.
+09-23 04:53:21.383 W/Codec2Client(18554): query -- param skipped: index = 2684356609.
+09-23 04:53:21.384 D/BufferPoolAccessor2.0(  587): Destruction - bufferpool2 0xed586738 cached: 0/0M, 0/0% in use; allocs: 934, 100% recycled; transfers: 934, 99% unfetched
+09-23 04:53:21.384 I/hw-BpHwBinder(18554): onLastStrongRef automatically unlinking death recipients
+09-23 04:53:21.384 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#595] Created input block pool with allocatorID 16 => poolID 19 - OK (0)
+09-23 04:53:21.386 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#595] Query output surface allocator returned 0 params => BAD_INDEX (6)
+09-23 04:53:21.386 I/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#595] Created output block pool with allocatorID 18 => poolID 41 - OK
+09-23 04:53:21.387 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#595] Configured output block pool ids 41 => OK
+09-23 04:53:21.387 D/Codec2-OutputBufferQueue(18554): remote graphic buffer migration 0/0
+09-23 04:53:21.387 D/Codec2Client(18554): setOutputSurface -- failed to set consumer usage (6/BAD_INDEX)
+09-23 04:53:21.387 D/Codec2Client(18554): setOutputSurface -- generation=18999299 consumer usage=0x900
+09-23 04:53:21.397 I/cast_ClientAuthCredsProvisioning(17917): Loading factory credentials for 1P device.
+--------- beginning of system
+09-23 04:53:21.398 E/ActivityThread(17917): Failed to find provider info for com.google.android.tvsetup.app.machine.services.castsetup.castsetupinfo.CastInfoProvider
+09-23 04:53:21.398 E/cast_ClientAuthCredsFactoryProvisioned(17917): Cannot get device credentials
+09-23 04:53:21.398 I/cast_ClientAuthCredsProvisioning(17917): Retry loading factory credentials
+09-23 04:53:21.412 D/C2BqBuffer(  482): local generation change 18999299 , bqId: 79688823209987 migrated buffers # 0
+09-23 04:53:21.412 D/Codec2Client(18554): Surface configure completed
+09-23 04:53:21.414 W/ResourceManagerServiceUtils(  566): Ignoring request to add new resource entry with value <= 0
+09-23 04:53:21.415 I/hw-BpHwBinder(  482): onLastStrongRef automatically unlinking death recipients
+09-23 04:53:21.415 D/BufferPoolAccessor2.0(18554): Destruction - bufferpool2 0xf5955978 cached: 0/0M, 0/0% in use; allocs: 591, 98% recycled; transfers: 578, 98% unfetched
+09-23 04:53:21.415 I/DMCodecAdapterFactory(18554): Creating an asynchronous MediaCodec adapter for track type audio
+09-23 04:53:21.418 D/SimpleC2Component(  482): Using output block pool with poolID 41 => got 41 - 0
+09-23 04:53:21.419 D/CCodec  (18554): allocate(c2.android.aac.decoder)
+09-23 04:53:21.422 I/CCodec  (18554): setting up 'default' as default (vendor) store
+09-23 04:53:21.494 I/hw-BpHwBinder(  587): onLastStrongRef automatically unlinking death recipients
+09-23 04:53:21.496 I/CCodec  (18554): Created component [c2.android.aac.decoder] for [c2.android.aac.decoder]
+09-23 04:53:21.497 D/BufferPoolAccessor2.0(18554): Destruction - bufferpool2 0xf594f598 cached: 0/0M, 0/0% in use; allocs: 955, 99% recycled; transfers: 936, 99% unfetched
+09-23 04:53:21.498 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#595] Ignoring stale input buffer done callback: last flush index = 0, frameIndex = 0
+09-23 04:53:21.499 D/CCodecConfig(18554): read media type: audio/mp4a-latm
+09-23 04:53:21.506 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: algo.buffers.max-count.values
+09-23 04:53:21.508 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: output.subscribed-indices.values
+09-23 04:53:21.508 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: input.buffers.allocator-ids.values
+09-23 04:53:21.508 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: output.buffers.allocator-ids.values
+09-23 04:53:21.509 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: algo.buffers.allocator-ids.values
+09-23 04:53:21.509 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: output.buffers.pool-ids.values
+09-23 04:53:21.510 D/ReflectedParamUpdater(18554): extent() != 1 for single value type: algo.buffers.pool-ids.values
+09-23 04:53:21.516 I/CCodecConfig(18554): query failed after returning 21 values (BAD_INDEX)
+09-23 04:53:21.516 D/CCodecConfig(18554): c2 config diff is Dict {
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 coded.aac-packaging.value = 0
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 coded.bitrate.value = 64000
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 coded.pl.level = 0
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 coded.pl.profile = 8192
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::i32 coding.drc.album-mode.value = 0
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::float coding.drc.attenuation-factor.value = 1
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::float coding.drc.boost-factor.value = 1
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::i32 coding.drc.compression-mode.value = 3
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::i32 coding.drc.effect-type.value = 3
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::float coding.drc.encoded-level.value = 0.25
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::float coding.drc.reference-level.value = -16
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 input.buffers.max-size.value = 8192
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 input.delay.value = 0
+09-23 04:53:21.516 D/CCodecConfig(18554):   string input.media-type.value = "audio/mp4a-latm"
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 output.delay.value = 2
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::float output.drc.output-loudness.value = 0.25
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 output.large-frame.max-size = 0
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 output.large-frame.threshold-size = 0
+09-23 04:53:21.516 D/CCodecConfig(18554):   string output.media-type.value = "audio/raw"
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 raw.channel-count.value = 1
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 raw.channel-mask.value = 0
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 raw.max-channel-count.value = 8
+09-23 04:53:21.516 D/CCodecConfig(18554):   c2::u32 raw.sample-rate.value = 44100
+09-23 04:53:21.516 D/CCodecConfig(18554): }
+09-23 04:53:21.519 I/MediaCodec(18554): MediaCodec will operate in async mode
+09-23 04:53:21.521 E/MediaCodec(18554): Media Quality Service not found.
+09-23 04:53:21.521 D/CCodec  (18554): [c2.android.aac.decoder] buffers are bound to CCodec for this session
+09-23 04:53:21.522 D/CCodecConfig(18554): no c2 equivalents for log-session-id
+09-23 04:53:21.522 D/CCodecConfig(18554): no c2 equivalents for importance
+09-23 04:53:21.522 D/CCodecConfig(18554): no c2 equivalents for flags
+09-23 04:53:21.523 D/CCodecConfig(18554): c2 config diff is   c2::u32 raw.channel-count.value = 2
+09-23 04:53:21.523 D/CCodecConfig(18554):   c2::u32 raw.sample-rate.value = 48000
+09-23 04:53:21.524 W/Codec2Client(18554): query -- param skipped: index = 1107298332.
+09-23 04:53:21.524 D/CCodec  (18554): encoding statistics level = 0
+09-23 04:53:21.524 D/CCodec  (18554): setup formats input: AMessage(what = 0x00000000) = {
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-drc-album-mode = 0
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-drc-boost-level = 127
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-drc-cut-level = 127
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-drc-effect-type = 3
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-encoded-target-level = -1
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-max-output-channel_count = 8
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-target-ref-level = 64
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t bitrate = 64000
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t channel-count = 2
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t channel-mask = 0
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t level = 0
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t max-input-size = 8192
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t max-output-channel-count = 8
+09-23 04:53:21.524 D/CCodec  (18554):   string mime = "audio/mp4a-latm"
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t profile = 2
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t sample-rate = 48000
+09-23 04:53:21.524 D/CCodec  (18554): }
+09-23 04:53:21.524 D/CCodec  (18554): setup formats output: AMessage(what = 0x00000000) = {
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-drc-album-mode = 0
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-drc-boost-level = 127
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-drc-cut-level = 127
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-drc-effect-type = 3
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-drc-output-loudness = -1
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-encoded-target-level = -1
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-max-output-channel_count = 8
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t aac-target-ref-level = 64
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t buffer-batch-max-output-size = 0
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t buffer-batch-threshold-output-size = 0
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t channel-count = 2
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t channel-mask = 0
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t max-output-channel-count = 8
+09-23 04:53:21.524 D/CCodec  (18554):   string mime = "audio/raw"
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t sample-rate = 48000
+09-23 04:53:21.524 D/CCodec  (18554):   int32_t android._config-pcm-encoding = 2
+09-23 04:53:21.524 D/CCodec  (18554): }
+09-23 04:53:21.524 I/CCodecConfig(18554): query failed after returning 21 values (BAD_INDEX)
+09-23 04:53:21.525 E/treamnova.tvapp(18554): Failed to query component interface for required system resources: 6
+09-23 04:53:21.525 D/MediaCodec(18554): keep callback message for reclaim
+09-23 04:53:21.528 W/Codec2Client(18554): query -- param skipped: index = 1342179345.
+09-23 04:53:21.528 W/Codec2Client(18554): query -- param skipped: index = 2415921170.
+09-23 04:53:21.528 W/Codec2Client(18554): query -- param skipped: index = 1610614798.
+09-23 04:53:21.529 D/CCodecBufferChannel(18554): [c2.android.aac.decoder#122] Created input block pool with allocatorID 16 => poolID 20 - OK (0)
+09-23 04:53:21.531 I/CCodecBufferChannel(18554): [c2.android.aac.decoder#122] Created output block pool with allocatorID 16 => poolID 76 - OK
+09-23 04:53:21.531 D/CCodecBufferChannel(18554): [c2.android.aac.decoder#122] Configured output block pool ids 76 => OK
+09-23 04:53:21.531 E/Codec2-ComponentInterface(  587): We have a failed config
+09-23 04:53:21.533 D/SimpleC2Component(  587): Using output block pool with poolID 76 => got 76 - 0
+09-23 04:53:21.542 D/SimpleC2Component(  587): applied 2 configUpdates => OK (0)
+09-23 04:53:21.542 I/C2SoftAacDec(  587): Reconfiguring decoder: 0->48000 Hz, 0->2 channels
+09-23 04:53:21.585 D/CCodecConfig(18554): c2 config diff is   c2::u32 raw.crop.height = 750
+09-23 04:53:21.585 D/CCodecConfig(18554):   c2::u32 raw.crop.left = 0
+09-23 04:53:21.585 D/CCodecConfig(18554):   c2::u32 raw.crop.top = 0
+09-23 04:53:21.585 D/CCodecConfig(18554):   c2::u32 raw.crop.width = 1680
+09-23 04:53:21.586 D/CCodecConfig(18554): c2 config diff is   c2::float coding.drc.reference-level.value = -24
+09-23 04:53:21.586 D/CCodecConfig(18554):   c2::u32 raw.channel-mask.value = 12
+09-23 04:53:21.586 D/CCodecBuffers(18554): [c2.android.aac.decoder#122:Output[N]] popFromStashAndRegister: at 1000733759999us, output format changed to AMessage(what = 0x00000000) = {
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t aac-drc-album-mode = 0
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t aac-drc-boost-level = 127
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t aac-drc-cut-level = 127
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t aac-drc-effect-type = 3
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t aac-drc-output-loudness = -1
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t aac-encoded-target-level = -1
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t aac-max-output-channel_count = 8
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t aac-target-ref-level = 96
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t buffer-batch-max-output-size = 0
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t buffer-batch-threshold-output-size = 0
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t channel-count = 2
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t channel-mask = 12
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t max-output-channel-count = 8
+09-23 04:53:21.586 D/CCodecBuffers(18554):   string mime = "audio/raw"
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t sample-rate = 48000
+09-23 04:53:21.586 D/CCodecBuffers(18554):   int32_t android._config-pcm-encoding = 2
+09-23 04:53:21.586 D/CCodecBuffers(18554): }
+09-23 04:53:21.611 D/NativePermissionController(  516): checkPermission: missing 1 for 10094
+09-23 04:53:21.611 D/NativePermissionController(  516): checkPermission: missing 3 for 10094
+09-23 04:53:21.611 D/NativePermissionController(  516): checkPermission: missing 5 for 10094
+09-23 04:53:21.612 W/AudioFlinger(  516): createTrack_l(): mismatch between requested flags (00000008) and output flags (00000002)
+09-23 04:53:21.612 D/AudioFlinger(  516): Client defaulted notificationFrames to 8720 for frameCount 17440
+09-23 04:53:21.612 I/AF::PthrPatchRecord(  516): creating track with enforcement level 0
+09-23 04:53:21.656 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.657 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.657 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.657 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.669 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.687 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.694 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.704 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.715 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.729 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.739 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.752 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.761 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.775 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.782 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.796 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.806 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.817 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.828 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.841 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.856 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.862 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.878 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.885 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.898 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.909 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.923 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.929 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.941 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:21.942 E/AppOps  (  702): attributionTag  not declared in manifest of com.aistudio.streamnova.tvapp
+09-23 04:53:21.943 E/AppOps  (  702): attributionTag  not declared in manifest of com.aistudio.streamnova.tvapp
+09-23 04:53:21.946 D/NativePermissionController(  516): checkPermission: missing 13 for 10094
+09-23 04:53:21.946 D/AudioTrack(18554): getTimestamp_l(58): device stall time corrected using current time 59060331846000
+09-23 04:53:21.946 D/NativePermissionController(  516): checkPermission: missing 13 for 10094
+09-23 04:53:21.947 D/NativePermissionController(  516): checkPermission: missing 13 for 10094
+09-23 04:53:21.948 D/NativePermissionController(  516): checkPermission: missing 13 for 10094
+09-23 04:53:22.449 I/AudioFlinger(  516): prepareTracks_l BUFFER TIMEOUT: remove track(98) from active list due to underrun on thread 13
+09-23 04:53:23.963 I/AidlLazyServiceRegistrar(18409): Process has 0 (of 1 available) client(s) in use after notification artd has clients: 0
+09-23 04:53:23.963 I/AidlLazyServiceRegistrar(18409): Trying to shut down the service. No clients in use for any service in process.
+09-23 04:53:23.966 I/AidlLazyServiceRegistrar(18409): Unregistered all clients and exiting
+09-23 04:53:24.636 D/android.hardware.audio@7.1-impl.ranchu(  464): threadLoop: entering standby, frames: 129072704
+09-23 04:53:24.637 D/android.hardware.audio@7.1-impl.ranchu(  464): ~TinyalsaSink: joining consumeThread
+09-23 04:53:24.637 D/android.hardware.audio@7.1-impl.ranchu(  464): consumeThread: exiting
+09-23 04:53:24.637 D/android.hardware.audio@7.1-impl.ranchu(  464): ~TinyalsaSink: stopping PCM stream
+09-23 04:53:26.393 D/BufferPoolAccessor2.0(  587): evictor expired: 1, evicted: 0
+09-23 04:53:26.393 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf596fe38 : 5(31457280 size) total buffers - 3(18874368 size) used buffers - 49/54 (recycle/alloc) - 5/50 (fetch/transfer)
+09-23 04:53:26.393 D/BufferPoolAccessor2.0(18554): evictor expired: 1, evicted: 1
+09-23 04:53:27.398 D/BufferPoolAccessor2.0(  587): bufferpool2 0xed586738 : 0(0 size) total buffers - 0(0 size) used buffers - 0/0 (recycle/alloc) - 0/0 (fetch/transfer)
+09-23 04:53:27.398 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf596e3a8 : 5(40960 size) total buffers - 1(8192 size) used buffers - 8/13 (recycle/alloc) - 5/11 (fetch/transfer)
+09-23 04:53:27.398 D/BufferPoolAccessor2.0(18554): evictor expired: 3, evicted: 1
+09-23 04:53:27.398 D/BufferPoolAccessor2.0(  587): bufferpool2 0xed585858 : 3(12288 size) total buffers - 0(0 size) used buffers - 6/9 (recycle/alloc) - 3/9 (fetch/transfer)
+09-23 04:53:27.398 D/BufferPoolAccessor2.0(  587): evictor expired: 2, evicted: 2
+09-23 04:53:32.764 D/MediaCodec(18554): keep callback message for reclaim
+09-23 04:53:32.765 I/CCodecConfig(18554): query failed after returning 12 values (BAD_INDEX)
+09-23 04:53:32.765 D/CCodecConfig(18554): c2 config diff is   c2::u32 coded.vui.color.matrix = 1
+09-23 04:53:32.765 D/CCodecConfig(18554):   c2::u32 coded.vui.color.primaries = 1
+09-23 04:53:32.765 D/CCodecConfig(18554):   c2::u32 coded.vui.color.transfer = 3
+09-23 04:53:32.765 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf596fe38 : 3(18874368 size) total buffers - 1(6291456 size) used buffers - 50/55 (recycle/alloc) - 5/50 (fetch/transfer)
+09-23 04:53:32.767 W/Codec2Client(18554): query -- param skipped: index = 1342179345.
+09-23 04:53:32.767 W/Codec2Client(18554): query -- param skipped: index = 2415921170.
+09-23 04:53:32.767 W/Codec2Client(18554): query -- param skipped: index = 1610614798.
+09-23 04:53:32.770 D/MediaCodec(18554): keep callback message for reclaim
+09-23 04:53:32.770 I/CCodecConfig(18554): query failed after returning 21 values (BAD_INDEX)
+09-23 04:53:32.771 D/CCodecConfig(18554): c2 config diff is   c2::i32 coding.drc.compression-mode.value = 2
+09-23 04:53:32.771 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf596e3a8 : 1(8192 size) total buffers - 1(8192 size) used buffers - 9/14 (recycle/alloc) - 5/11 (fetch/transfer)
+09-23 04:53:32.772 W/Codec2Client(18554): query -- param skipped: index = 1342179345.
+09-23 04:53:32.772 W/Codec2Client(18554): query -- param skipped: index = 2415921170.
+09-23 04:53:32.772 W/Codec2Client(18554): query -- param skipped: index = 1610614798.
+09-23 04:53:32.773 D/SimpleC2Component(  587): applied 2 configUpdates => OK (0)
+09-23 04:53:32.774 E/AppOps  (  702): attributionTag  not declared in manifest of com.aistudio.streamnova.tvapp
+09-23 04:53:32.775 E/AppOps  (  702): attributionTag  not declared in manifest of com.aistudio.streamnova.tvapp
+09-23 04:53:32.778 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#595] MediaCodec discarded an unknown buffer
+09-23 04:53:32.779 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#595] MediaCodec discarded an unknown buffer
+09-23 04:53:32.779 D/MediaCodec(18554): keep callback message for reclaim
+09-23 04:53:32.780 I/CCodecConfig(18554): query failed after returning 12 values (BAD_INDEX)
+09-23 04:53:32.782 W/Codec2Client(18554): query -- param skipped: index = 1342179345.
+09-23 04:53:32.783 W/Codec2Client(18554): query -- param skipped: index = 2415921170.
+09-23 04:53:32.783 W/Codec2Client(18554): query -- param skipped: index = 1610614798.
+09-23 04:53:32.784 D/MediaCodec(18554): keep callback message for reclaim
+09-23 04:53:32.785 I/CCodecConfig(18554): query failed after returning 21 values (BAD_INDEX)
+09-23 04:53:32.785 W/Codec2Client(18554): query -- param skipped: index = 1342179345.
+09-23 04:53:32.785 W/Codec2Client(18554): query -- param skipped: index = 2415921170.
+09-23 04:53:32.785 W/Codec2Client(18554): query -- param skipped: index = 1610614798.
+09-23 04:53:33.335 W/C2BqBuffer(  482): last successful dequeue was 11364826 us ago, 0 consecutive failures
+09-23 04:53:33.435 D/CCodecBufferChannel(18554): [c2.goldfish.h264.decoder#595] Ignoring stale input buffer done callback: last flush index = 51, frameIndex = 51
+09-23 04:53:33.534 D/BufferPoolAccessor2.0(  587): bufferpool2 0xed586738 : 0(0 size) total buffers - 0(0 size) used buffers - 0/0 (recycle/alloc) - 0/0 (fetch/transfer)
+09-23 04:53:33.538 D/BufferPoolAccessor2.0(  587): bufferpool2 0xed585858 : 0(0 size) total buffers - 0(0 size) used buffers - 6/9 (recycle/alloc) - 3/9 (fetch/transfer)
+09-23 04:53:33.595 D/NativePermissionController(  516): checkPermission: missing 1 for 10094
+09-23 04:53:33.595 D/NativePermissionController(  516): checkPermission: missing 3 for 10094
+09-23 04:53:33.595 D/NativePermissionController(  516): checkPermission: missing 5 for 10094
+09-23 04:53:33.596 W/AudioFlinger(  516): createTrack_l(): mismatch between requested flags (00000008) and output flags (00000002)
+09-23 04:53:33.602 D/AudioFlinger(  516): Client defaulted notificationFrames to 8720 for frameCount 17440
+09-23 04:53:33.602 I/AF::PthrPatchRecord(  516): creating track with enforcement level 0
+09-23 04:53:33.640 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.640 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.640 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.640 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.657 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.665 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.678 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.687 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.700 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.709 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.723 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.731 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.747 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.755 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.766 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.777 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.789 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.800 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.812 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.823 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.834 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.847 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.859 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.871 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.882 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.891 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.902 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.914 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.925 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.937 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.947 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.958 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.970 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.982 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:33.994 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.005 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.014 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.026 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.037 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.049 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.060 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.071 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.082 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.094 D/android.hardware.audio@7.1-impl.ranchu(  464): 544 frames of silence written
+09-23 04:53:34.104 E/AppOps  (  702): attributionTag  not declared in manifest of com.aistudio.streamnova.tvapp
+09-23 04:53:34.104 E/AppOps  (  702): attributionTag  not declared in manifest of com.aistudio.streamnova.tvapp
+09-23 04:53:34.107 D/NativePermissionController(  516): checkPermission: missing 13 for 10094
+09-23 04:53:34.108 D/NativePermissionController(  516): checkPermission: missing 13 for 10094
+09-23 04:53:34.110 D/NativePermissionController(  516): checkPermission: missing 13 for 10094
+09-23 04:53:34.112 D/NativePermissionController(  516): checkPermission: missing 13 for 10094
+09-23 04:53:34.162 D/SimpleC2Component(  587): applied 2 configUpdates => OK (0)
+09-23 04:53:34.172 D/AudioFlinger(  516): mixer(0xeaae1ce0) throttle end: throttle time(36)
+09-23 04:53:37.689 D/AF::Track(  516): interceptBuffer: took 679us to intercept 0 tracks
+09-23 04:53:37.914 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf596e3a8 : 5(40960 size) total buffers - 1(8192 size) used buffers - 217/226 (recycle/alloc) - 10/217 (fetch/transfer)
+09-23 04:53:37.914 D/BufferPoolAccessor2.0(18554): bufferpool2 0xf596fe38 : 5(31457280 size) total buffers - 4(25165824 size) used buffers - 212/219 (recycle/alloc) - 10/211 (fetch/transfer)
+09-23 04:53:38.995 D/BufferPoolAccessor2.0(  587): bufferpool2 0xed585858 : 4(16384 size) total buffers - 1(4096 size) used buffers - 257/264 (recycle/alloc) - 8/263 (fetch/transfer)
