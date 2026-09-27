@@ -32,6 +32,13 @@ object ExtractorHttp {
   fun get(url: String, referer: String? = null, extraHeaders: Map<String, String> = emptyMap()): String =
     getWithFinalUrl(url, referer, extraHeaders).second
 
+  /** Costruisce la richiesta validando l'URL (messaggio d'errore con contesto). */
+  private fun buildRequest(url: String): Request.Builder = try {
+    Request.Builder().url(url)
+  } catch (e: IllegalArgumentException) {
+    throw IOException("URL non valido ($url): ${e.message}")
+  }
+
   /**
    * GET che ritorna anche l'**URL finale** dopo i redirect.
    *
@@ -44,8 +51,7 @@ object ExtractorHttp {
     referer: String? = null,
     extraHeaders: Map<String, String> = emptyMap()
   ): Pair<String, String> {
-    val builder = Request.Builder()
-      .url(url)
+    val builder = buildRequest(url)
       .header("User-Agent", USER_AGENT)
       .header("Accept", "*/*")
       .header("Accept-Language", "it-IT,it;q=0.9,en;q=0.8")
@@ -64,8 +70,7 @@ object ExtractorHttp {
   /** POST form-urlencoded (usato dagli shortener tipo stayonline). */
   fun postForm(url: String, referer: String?, form: Map<String, String>, extraHeaders: Map<String, String> = emptyMap()): String {
     val body = form.entries.joinToString("&") { "${it.key}=${java.net.URLEncoder.encode(it.value, "UTF-8")}" }
-    val builder = Request.Builder()
-      .url(url)
+    val builder = buildRequest(url)
       .header("User-Agent", USER_AGENT)
       .header("Accept", "*/*")
       .header("X-Requested-With", "XMLHttpRequest")

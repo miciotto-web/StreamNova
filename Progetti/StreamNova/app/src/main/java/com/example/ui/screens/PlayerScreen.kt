@@ -195,8 +195,8 @@ fun PlayerScreen(
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
   var hasFallbackAttempted by remember { mutableStateOf(false) }
 
-  // Risoluzione video rilevata in tempo reale da ExoPlayer (default 1080p Full HD prioritario)
-  var detectedResolution by remember { mutableStateOf("1080p") }
+  // Risoluzione video rilevata in tempo reale da ExoPlayer o dichiarata dalla sorgente (default 1080p Full HD prioritario)
+  var detectedResolution by remember { mutableStateOf(playbackState.streamQuality ?: "1080p") }
   var selectedQualityLabel by remember { mutableStateOf("Auto") }
 
   // Aspect ratio / ResizeMode
@@ -302,6 +302,8 @@ fun PlayerScreen(
         h >= 720  -> "720p"
         else      -> "SD"
       }
+    } else if (playbackState.streamQuality != null) {
+      detectedResolution = playbackState.streamQuality!!
     }
   }
 

@@ -163,12 +163,19 @@ class VixSrcProvider(
         throw IOException("Playlist non HLS su $serverName: ${playlistBody.take(120)}")
       }
       val renditions = parseRenditions(playlistBody)
-      val isFhd = chosenUrl.contains("h=1") || renditions.any { it.contains("1080", ignoreCase = true) }
-      Log.i(TAG, "OK $serverName (FHD=$isFhd) renditions=$renditions url=$chosenUrl")
+      val has1080 = renditions.any { it.contains("1080", ignoreCase = true) }
+      val detectedQuality = when {
+        has1080 -> "1080p"
+        renditions.any { it.contains("720", ignoreCase = true) } -> "720p"
+        renditions.any { it.contains("480", ignoreCase = true) } -> "480p"
+        chosenUrl.contains("h=1") && renditions.isEmpty() -> "1080p"
+        else -> "Auto"
+      }
+      Log.i(TAG, "OK $serverName (detectedQuality=$detectedQuality) renditions=$renditions url=$chosenUrl")
 
       sources += StreamSource(
         url = chosenUrl,
-        quality = if (isFhd) "1080p" else "Auto",
+        quality = detectedQuality,
         serverName = serverName,
         headers = headers
       )

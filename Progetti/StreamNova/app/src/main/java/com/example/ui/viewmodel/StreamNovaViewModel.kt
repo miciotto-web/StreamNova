@@ -62,10 +62,14 @@ data class PlayerPlaybackState(
   val selectedSubtitle: SubtitleTrack = MediaRepository.subtitleTracks[0],
   val selectedResolution: VideoResolution = VideoResolution.UHD_4K,
   val areControlsVisible: Boolean = true,
-  /** URL del provider streaming (VixSrc): se null si usa quello del catalogo. */
+  /** URL del provider streaming: se null si usa quello del catalogo. */
   val streamUrl: String? = null,
   /** Header obbligatori del flusso (Referer/User-Agent): senza essi = 403. */
   val streamHeaders: Map<String, String> = emptyMap(),
+  /** Qualità dichiarata del flusso (es. "1080p", "720p"). */
+  val streamQuality: String? = null,
+  /** Nome del server/provider del flusso. */
+  val streamServer: String? = null,
 )
 
 class StreamNovaViewModel : ViewModel() {
@@ -332,7 +336,9 @@ class StreamNovaViewModel : ViewModel() {
       selectedResolution = media.resolution,
       areControlsVisible = true,
       streamUrl = source?.url,
-      streamHeaders = source?.headers ?: emptyMap()
+      streamHeaders = source?.headers ?: emptyMap(),
+      streamQuality = source?.quality,
+      streamServer = source?.serverName
     )
     _screenState.value = ScreenState.PLAYER
   }

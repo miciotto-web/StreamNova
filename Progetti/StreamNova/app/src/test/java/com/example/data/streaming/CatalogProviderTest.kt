@@ -4,6 +4,7 @@ import com.example.data.streaming.extractors.ExtractorHttp
 import com.example.data.streaming.providers.Cb01Provider
 import com.example.data.streaming.providers.EurostreamingProvider
 import com.example.data.streaming.providers.HosterResolver
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,8 +47,21 @@ class CatalogProviderTest {
   @Test
   fun eurostreamingTrovaBloccoEpisodioSerieReale(): Unit = runBlocking {
     val provider = EurostreamingProvider()
-    val page = ExtractorHttp.get("https://eurostream.mom/breaking-bad-36/", referer = "https://eurostream.mom/")
-    assertTrue("pagina serie vuota", page.length > 10_000)
+    // Il mirror può rispondere 500 in modo transient: si riprova una volta
+    var page: String? = null
+    repeat(2) { attempt ->
+      if (page == null) {
+        page = runCatching {
+          ExtractorHttp.get("https://eurostream.mom/breaking-bad-36/", referer = "https://eurostream.mom/")
+        }.getOrNull()
+        if (page == null && attempt == 0) {
+          println("Eurostreaming: primo tentativo fallito, riprovo...")
+          delay(1_500)
+        }
+      }
+    }
+    assertTrue("pagina serie non raggiungibile (ripetuti errori HTTP)", page != null)
+    assertTrue("pagina serie vuota", page!!.length > 10_000)
 
     val segment = provider.episodeSegment(page, 1, 1)
     assertTrue("blocco episodio S1:E1 non trovato", segment != null)
