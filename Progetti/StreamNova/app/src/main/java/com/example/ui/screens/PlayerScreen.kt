@@ -60,17 +60,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.nativeKeyCode
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -104,6 +110,28 @@ import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import com.example.ui.viewmodel.StreamNovaViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/** Auto-hide dei controlli del player dopo N ms di inattività con il telecomando. */
+private const val CONTROLS_HIDE_DELAY_MS = 5_000L
+
+/**
+ * Richiede il focus sul frame successivo (dopo compose + layout) e riprova qualche
+ * volta: al momento della chiamata l'elemento può non essere ancora agganciato al
+ * sistema di focus (HUD che sta entrando, modale che sta chiudendo, ...).
+ */
+private suspend fun FocusRequester.requestFocusAfterFrame(attempts: Int = 5) {
+  repeat(attempts) {
+    withFrameNanos { }
+    try {
+      requestFocus()
+      return
+    } catch (e: IllegalStateException) {
+      Log.w("PlayerScreen", "FocusRequester non ancora pronto: ${e.message}")
+      delay(50)
+    }
+  }
+}
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -128,6 +156,31 @@ fun PlayerScreen(
   var showAudioModal by remember { mutableStateOf(false) }
   var showSubtitleModal by remember { mutableStateOf(false) }
   var showQualityModal by remember { mutableStateOf(false) }
+
+  // ---------------------------------------------------------------------------
+  // FOCUS D-PAD / TELECOMANDO TV
+  // ---------------------------------------------------------------------------
+  // Controllo primario (Play/Pause): il focus viene richiesto esplicitamente
+  // all'avvio del player, così il D-Pad interagisce SEMPRE con l'HUD e mai con
+  // Detail/Home rimaste composte sotto la schermata del player.
+  val playPauseFocusRequester = remember { FocusRequester() }
+  // Seek bar: su di essa atterra il focus quando una freccia ◀▶ sposta la
+  // posizione di riproduzione (poi ◀▶ continuano a fare seek senza perdere focus).
+  val seekBarFocusRequester = remember { FocusRequester() }
+  // Nodo di "riposo" sempre composto: mantiene un owner di focus valido anche
+  // quando l'HUD è nascosto, così ogni tasto del telecomando continua ad
+  // arrivare agli handler di PlayerScreen invece di perdersi nel vuoto.
+  val idleFocusRequester = remember { FocusRequester() }
+  val focusScope = rememberCoroutineScope()
+
+  // true quando il focus vive all'interno dell'HUD: in quel caso le frecce
+  // navigano tra i controlli, altrimenti (nodo di riposo) gestiscono seek e
+  // risveglio dei controlli.
+  var hudHasFocus by remember { mutableStateOf(false) }
+
+  // Contatore: ogni interazione col telecomando lo incrementa e riavvia
+  // il countdown di auto-hide dei controlli.
+  var hideTimerTick by remember { mutableLongStateOf(0L) }
 
   // BACK gerarchico (livello 1): finché è aperto un pannello modale (audio, sottotitoli,
   // qualità) il tasto Back chiude SOLO il modale. Il player viene chiuso dal gestore
@@ -230,11 +283,109 @@ fun PlayerScreen(
     }
   }
 
-  // Auto-hide controls after 6 seconds of inactivity when playing
-  LaunchedEffect(areControlsVisible, isPlaying) {
+  // L'HUD è a schermo se i controlli sono esplicitamente visibili oppure se la
+  // riproduzione è in pausa (in pausa i controlli restano sempre mostrati).
+  val hudShown = areControlsVisible || !isPlaying
+
+  // --- Helpers focus / telecomando -----------------------------------------
+
+  fun kickAutoHide() {
+    hideTimerTick++
+  }
+
+  fun requestFocusOn(target: FocusRequester) {
+    focusScope.launch { target.requestFocusAfterFrame() }
+  }
+
+  fun togglePlayPause() {
+    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+    hideTimerTick++
+  }
+
+  fun seekBy(deltaMs: Long) {
+    val durationMs = exoPlayer.duration
+    val target = if (durationMs > 0) {
+      (exoPlayer.currentPosition + deltaMs).coerceIn(0L, durationMs)
+    } else {
+      (exoPlayer.currentPosition + deltaMs).coerceAtLeast(0L)
+    }
+    exoPlayer.seekTo(target)
+    currentPosition = target
+    hideTimerTick++
+  }
+
+  /**
+   * Mostra i controlli (risveglio HUD) e, se [focusPrimary], riaggancia il
+   * telecomando al Play/Pause: usato da ogni pressione D-Pad quando l'HUD è nascosto.
+   */
+  fun showControls(focusPrimary: Boolean = true) {
+    hideTimerTick++
+    areControlsVisible = true
+    if (focusPrimary) requestFocusOn(playPauseFocusRequester)
+  }
+
+  /** Nasconde i controlli spostando PRIMA il focus sul nodo di riposo. */
+  fun hideControls() {
+    if (hudHasFocus) {
+      try {
+        idleFocusRequester.requestFocus()
+      } catch (e: IllegalStateException) {
+        Log.w("PlayerScreen", "Nodo di riposo non pronto: ${e.message}")
+      }
+    }
+    areControlsVisible = false
+  }
+
+  // (1) RICHIESTA FOCUS INIZIALE: appena l'HUD è composto e misurato, il D-Pad
+  // viene agganciato saldamente al controllo primario (Play/Pause).
+  LaunchedEffect(Unit) {
+    if (hudShown) {
+      playPauseFocusRequester.requestFocusAfterFrame()
+    } else {
+      idleFocusRequester.requestFocusAfterFrame()
+    }
+  }
+
+  // (2) AUTO-HIDE dei controlli dopo 5 secondi di inattività. Ogni pressione di
+  // un tasto incrementa hideTimerTick e riavvia il countdown. Il focus viene
+  // trasferito sul nodo di riposo PRIMA di smontare l'HUD, così nessun tasto va
+  // perso quando i controlli spariscono.
+  LaunchedEffect(hideTimerTick, areControlsVisible, isPlaying, showAudioModal, showSubtitleModal, showQualityModal) {
     if (areControlsVisible && isPlaying && !showAudioModal && !showSubtitleModal && !showQualityModal) {
-      delay(6000)
+      delay(CONTROLS_HIDE_DELAY_MS)
+      if (hudHasFocus) {
+        try {
+          idleFocusRequester.requestFocus()
+        } catch (e: IllegalStateException) {
+          Log.w("PlayerScreen", "Nodo di riposo non pronto: ${e.message}")
+        }
+      }
       areControlsVisible = false
+    }
+  }
+
+  // (3) RIPRISTINO DOPO I MODALI: le tracce Audio/Sottotitoli/Qualità vivono in
+  // una finestra Dialog separata; alla chiusura, se il focus è andato perso,
+  // viene riagganciato al Play/Pause per non bloccare il telecomando.
+  val anyTrackModalOpen = showAudioModal || showSubtitleModal || showQualityModal
+  LaunchedEffect(anyTrackModalOpen, areControlsVisible) {
+    if (anyTrackModalOpen || !areControlsVisible) return@LaunchedEffect
+    delay(250)
+    if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
+  }
+
+  // BACK SUI CONTROLLI (livello 1 di questo schermo, sotto il livello modali):
+  // con l'HUD nascosto il tasto riapre i controlli e aggancia il focus al
+  // Play/Pause; con l'HUD visibile chiude il player. È la STESSA logica del
+  // onKeyEvent del Box radice, così il comportamento non dipende dal percorso di
+  // dispatch del tasto (KeyEvent in Compose oppure OnBackPressedDispatcher).
+  // Compuesto DOPO il BackHandler di MainActivity: mentre il player è aperto ha
+  // priorità su di esso, come il livello modali qui sopra.
+  BackHandler(enabled = !showAudioModal && !showSubtitleModal && !showQualityModal) {
+    if (hudShown) {
+      viewModel.closePlayer()
+    } else {
+      showControls()
     }
   }
 
@@ -248,47 +399,113 @@ fun PlayerScreen(
     modifier = modifier
       .fillMaxSize()
       .background(Color.Black)
+      // --- INTERCETTAZIONE TASTI TELECOMANDO ---------------------------------
+      // Bubbling: arriva qui solo ciò che il controllo focalizzato NON ha
+      // consumato (OK sui pulsanti è già gestito dal TvFocusableBox).
       .onKeyEvent { keyEvent ->
-        when (keyEvent.nativeKeyEvent.keyCode) {
-          KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-            if (!areControlsVisible) {
-              areControlsVisible = true
-            } else {
-              if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-            }
-            true
-          }
-          KeyEvent.KEYCODE_DPAD_LEFT -> {
-            areControlsVisible = true
-            val newPos = (exoPlayer.currentPosition - 10000L).coerceAtLeast(0L)
-            exoPlayer.seekTo(newPos)
-            currentPosition = newPos
-            true
-          }
-          KeyEvent.KEYCODE_DPAD_RIGHT -> {
-            areControlsVisible = true
-            val newPos = (exoPlayer.currentPosition + 10000L).coerceAtMost(exoPlayer.duration)
-            exoPlayer.seekTo(newPos)
-            currentPosition = newPos
-            true
-          }
-          KeyEvent.KEYCODE_BACK -> {
+        val native = keyEvent.nativeKeyEvent
+        val keyCode = native.keyCode
+
+        // BACK viene intercettato su ENTRA le azioni: se il rilascio non venisse
+        // consumato, il framework chiamerebbe onBackPressed() e la BackHandler di
+        // MainActivity chiuderebbe il player saltando la logica gerarchica.
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+          if (native.action == KeyEvent.ACTION_DOWN && native.repeatCount == 0) {
             if (showAudioModal || showSubtitleModal || showQualityModal) {
               showAudioModal = false
               showSubtitleModal = false
               showQualityModal = false
-            } else if (areControlsVisible) {
+            } else if (hudShown) {
               viewModel.closePlayer()
             } else {
-              areControlsVisible = true
+              showControls()
             }
-            true
           }
+          return@onKeyEvent true
+        }
+
+        // Le altre azioni scatenano SOLO sulla pressione iniziale (come in
+        // TvFocusableBox): altrimenti il rilascio del tasto rifarebbe seek o
+        // toggle una seconda volta.
+        if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
+        if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) &&
+          native.repeatCount > 0
+        ) {
+          return@onKeyEvent false
+        }
+
+        // Qualsiasi pressione riavvia il timer di auto-hide (5 s di inattività).
+        when (keyCode) {
+          KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+          KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+          KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
+          KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+          KeyEvent.KEYCODE_MEDIA_REWIND -> kickAutoHide()
+        }
+
+        when (keyCode) {
           KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-            areControlsVisible = true
+            togglePlayPause()
+            showControls()
             true
           }
+
+          KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+            seekBy(10_000L)
+            showControls(focusPrimary = false)
+            true
+          }
+
+          KeyEvent.KEYCODE_MEDIA_REWIND -> {
+            seekBy(-10_000L)
+            showControls(focusPrimary = false)
+            true
+          }
+
+          // OK / CENTRO
+          KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when {
+            // HUD nascosto: risveglia i controlli e aggancia il focus al Play/Pause
+            !hudShown -> {
+              showControls()
+              true
+            }
+            // Nessun controllo focalizzato: OK funziona come play/pause globale
+            !hudHasFocus -> {
+              togglePlayPause()
+              true
+            }
+            // Il controllo focalizzato (TvFocusableBox) gestisce già OK
+            else -> false
+          }
+
+          // Frecce: con il focus dentro l'HUD navigano tra i controlli (non
+          // vengono consumate qui, lasciate al sistema di focus); con il focus
+          // fuori fanno seek rapido e spostano il focus sulla seek bar.
+          KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> when {
+            !hudShown -> {
+              showControls()
+              true
+            }
+            hudHasFocus -> false
+            else -> {
+              seekBy(if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -10_000L else 10_000L)
+              requestFocusOn(seekBarFocusRequester)
+              true
+            }
+          }
+
+          KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> when {
+            !hudShown -> {
+              showControls()
+              true
+            }
+            hudHasFocus -> false
+            else -> {
+              showControls()
+              true
+            }
+          }
+
           else -> false
         }
       }
@@ -296,15 +513,33 @@ fun PlayerScreen(
         interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
         indication = null
       ) {
-        areControlsVisible = !areControlsVisible
+        // Tap sullo schermo: alterna i controlli (quando ricompaiono, il focus
+        // viene riagganciato al Play/Pause)
+        if (areControlsVisible) hideControls() else showControls()
       }
   ) {
+    // NODO DI RIPOSO: 1dp invisibile e sempre composto. Diventa l'owner di focus
+    // quando l'HUD si nasconde, così ogni tasto D-Pad continua ad arrivare ai
+    // gestori di questo Box (bubbling) invece di perdersi nel vuoto.
+    Box(
+      modifier = Modifier
+        .size(1.dp)
+        .focusRequester(idleFocusRequester)
+        .focusable()
+    )
+
     // 1. AndroidView holding PlayerView
     AndroidView(
       factory = { ctx ->
         PlayerView(ctx).apply {
           player = exoPlayer
           useController = false
+          // La vista video pura NON deve sottrarre il focus ai controlli Compose:
+          // né la superficie né i figli devono intercettare i tasti del D-Pad.
+          isFocusable = false
+          isFocusableInTouchMode = false
+          descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+          isClickable = false
           layoutParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
@@ -415,7 +650,17 @@ fun PlayerScreen(
     ) {
       Box(
         modifier = Modifier
+          // Traccia se il focus vive all'interno dell'HUD (anche sui discendenti):
+          // da qui dipende la mappa delle frecce (navigazione vs. seek/risveglio).
+          .onFocusChanged { state -> hudHasFocus = state.hasFocus }
           .fillMaxSize()
+          // Ogni tasto premuto mentre l'HUD è aperto riavvia l'auto-hide.
+          // L'evento NON viene consumato, per non interferire con il controllo
+          // focalizzato che lo gestirà dopo (bubbling verso il Box radice).
+          .onPreviewKeyEvent {
+            kickAutoHide()
+            false
+          }
           .background(
             Brush.verticalGradient(
               colors = listOf(
@@ -496,11 +741,7 @@ fun PlayerScreen(
           // -10s
           TvFocusableBox(
             shape = CircleShape,
-            onClick = {
-              val newPos = (exoPlayer.currentPosition - 10000L).coerceAtLeast(0L)
-              exoPlayer.seekTo(newPos)
-              currentPosition = newPos
-            }
+            onClick = { seekBy(-10_000L) }
           ) { isFocused ->
             Box(
               modifier = Modifier
@@ -520,13 +761,14 @@ fun PlayerScreen(
             }
           }
 
-          // PLAY / PAUSE (Centrale Grande)
+          // PLAY / PAUSE (Centrale Grande) — controllo primario del player:
+          // su questo elemento viene agganciato il focus D-Pad all'avvio e a ogni
+          // risveglio dell'HUD.
           TvFocusableBox(
+            modifier = Modifier.focusRequester(playPauseFocusRequester),
             shape = CircleShape,
             focusedScale = 1.15f,
-            onClick = {
-              if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-            }
+            onClick = { togglePlayPause() }
           ) { isFocused ->
             Box(
               modifier = Modifier
@@ -563,11 +805,7 @@ fun PlayerScreen(
           // +10s
           TvFocusableBox(
             shape = CircleShape,
-            onClick = {
-              val newPos = (exoPlayer.currentPosition + 10000L).coerceAtMost(exoPlayer.duration)
-              exoPlayer.seekTo(newPos)
-              currentPosition = newPos
-            }
+            onClick = { seekBy(10_000L) }
           ) { isFocused ->
             Box(
               modifier = Modifier
@@ -621,35 +859,74 @@ fun PlayerScreen(
 
           Spacer(modifier = Modifier.height(6.dp))
 
-          // Barra azzurra personalizzata
+          // SEEK BAR — componente focusabile dell'HUD: quando il focus è qui le
+          // frecce ◀▶ spostano la posizione di 10 secondi; quando il focus è
+          // altrove (nodo di riposo) le stesse frecce fanno seek rapido e
+          // portano il focus proprio su questa barra.
           Box(
             modifier = Modifier
               .fillMaxWidth()
-              .height(8.dp)
-              .clip(RoundedCornerShape(4.dp))
-              .background(Color(0x551E293B))
+              .onKeyEvent { keyEvent ->
+                val native = keyEvent.nativeKeyEvent
+                // Solo sulla pressione: altrimenti il rilascio rifarebbe il seek
+                if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
+                when (native.keyCode) {
+                  KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    seekBy(-10_000L)
+                    true
+                  }
+                  KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    seekBy(10_000L)
+                    true
+                  }
+                  else -> false
+                }
+              }
           ) {
-            // Buffer indicator
-            val bufferFraction = if (totalDuration > 0) {
-              (exoPlayer.bufferedPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
-            } else 0f
-            Box(
+            TvFocusableBox(
               modifier = Modifier
-                .fillMaxWidth(bufferFraction)
-                .height(8.dp)
-                .background(Color(0x3300A3FF))
-            )
-            // Playback progress indicator (Azzurro / Ciano neon)
-            Box(
-              modifier = Modifier
-                .fillMaxWidth(progressFraction)
-                .height(8.dp)
-                .background(
-                  Brush.horizontalGradient(
-                    listOf(NovaCyan, NovaCyanBright)
+                .fillMaxWidth()
+                .focusRequester(seekBarFocusRequester),
+              shape = RoundedCornerShape(6.dp),
+              focusedScale = 1.0f
+            ) { _ ->
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(vertical = 4.dp)
+              ) {
+                // Barra azzurra personalizzata
+                Box(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0x551E293B))
+                ) {
+                  // Buffer indicator
+                  val bufferFraction = if (totalDuration > 0) {
+                    (exoPlayer.bufferedPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
+                  } else 0f
+                  Box(
+                    modifier = Modifier
+                      .fillMaxWidth(bufferFraction)
+                      .height(8.dp)
+                      .background(Color(0x3300A3FF))
                   )
-                )
-            )
+                  // Playback progress indicator (Azzurro / Ciano neon)
+                  Box(
+                    modifier = Modifier
+                      .fillMaxWidth(progressFraction)
+                      .height(8.dp)
+                      .background(
+                        Brush.horizontalGradient(
+                          listOf(NovaCyan, NovaCyanBright)
+                        )
+                      )
+                  )
+                }
+              }
+            }
           }
 
           Spacer(modifier = Modifier.height(16.dp))
@@ -664,22 +941,31 @@ fun PlayerScreen(
               PlayerBottomAction(
                 label = "Audio: ${playbackState.selectedAudio.language}",
                 icon = Icons.Default.Audiotrack,
-                onClick = { showAudioModal = true }
+                onClick = {
+                  kickAutoHide()
+                  showAudioModal = true
+                }
               )
               PlayerBottomAction(
                 label = "Sottotitoli: ${playbackState.selectedSubtitle.language}",
                 icon = Icons.Default.Subtitles,
-                onClick = { showSubtitleModal = true }
+                onClick = {
+                  kickAutoHide()
+                  showSubtitleModal = true
+                }
               )
               PlayerBottomAction(
                 label = "Qualità: ${playbackState.selectedResolution.badge}",
                 icon = Icons.Default.HighQuality,
-                onClick = { showQualityModal = true }
+                onClick = {
+                  kickAutoHide()
+                  showQualityModal = true
+                }
               )
             }
 
             Text(
-              text = "Usa le frecce del telecomando per avanzare di 10s • Premi OK per Pausa",
+              text = "Frecce ◀ ▶ per spostarti tra i controlli • OK per Pausa",
               color = NovaTextMuted,
               fontSize = 11.sp
             )
@@ -704,6 +990,7 @@ fun PlayerScreen(
         shape = RoundedCornerShape(50),
         onClick = {
           // Salta direttamente alla fine della sigla
+          kickAutoHide()
           exoPlayer.seekTo(introEndMs)
           currentPosition = introEndMs
         }
