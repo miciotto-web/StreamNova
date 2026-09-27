@@ -26,6 +26,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -534,19 +536,32 @@ fun DetailScreen(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically
           ) {
-            val resumeEpisode = displayMedia.episodes.find {
-              it.seasonNumber == activeSeason && it.episodeNumber == (displayMedia.lastWatchedEpisode ?: 1)
-            } ?: episodesForSeason.firstOrNull() ?: displayMedia.episodes.firstOrNull()
+            val hasTvProgress = displayMedia.type == MediaType.SERIE_TV && (
+              displayMedia.currentProgressMs > 0 ||
+              displayMedia.lastWatchedEpisode != null ||
+              displayMedia.episodes.any { it.currentProgressMs > 0 }
+            )
+
+            val resumeEpisode = if (displayMedia.type == MediaType.SERIE_TV) {
+              if (hasTvProgress) {
+                displayMedia.episodes.find {
+                  it.seasonNumber == (displayMedia.lastWatchedSeason ?: 1) &&
+                  it.episodeNumber == (displayMedia.lastWatchedEpisode ?: 1)
+                } ?: displayMedia.episodes.firstOrNull { it.currentProgressMs > 0 }
+                  ?: episodesForSeason.firstOrNull()
+                  ?: displayMedia.episodes.firstOrNull()
+              } else {
+                episodesForSeason.firstOrNull { it.seasonNumber == 1 && it.episodeNumber == 1 }
+                  ?: episodesForSeason.firstOrNull()
+                  ?: displayMedia.episodes.firstOrNull()
+              }
+            } else null
 
             val playButtonLabel = if (displayMedia.type == MediaType.SERIE_TV) {
-              if (resumeEpisode != null) {
-                if (resumeEpisode.currentProgressMs > 0 && !resumeEpisode.isCompleted) {
-                  "Riprendi S${resumeEpisode.seasonNumber}:E${resumeEpisode.episodeNumber}"
-                } else {
-                  "Guarda S${resumeEpisode.seasonNumber}:E${resumeEpisode.episodeNumber}"
-                }
+              if (hasTvProgress && resumeEpisode != null) {
+                "Riprendi S${resumeEpisode.seasonNumber}:E${resumeEpisode.episodeNumber}"
               } else {
-                "Guarda ora"
+                "Riproduci"
               }
             } else if (displayMedia.currentProgressMs > 0) {
               "Riprendi la visione"
@@ -562,8 +577,8 @@ fun DetailScreen(
             )
 
             TvActionButton(
-              text = if (displayMedia.isFavorite) "✓ Nella mia lista" else "+ La mia lista",
-              icon = if (displayMedia.isFavorite) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+              text = if (displayMedia.isFavorite) "Rimuovi dai preferiti" else "Aggiungi a preferiti",
+              icon = if (displayMedia.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
               isPrimary = false,
               onClick = { onToggleFavorite(displayMedia.id) }
             )

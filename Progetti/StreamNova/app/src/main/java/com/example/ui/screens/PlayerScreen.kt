@@ -281,13 +281,14 @@ fun PlayerScreen(
     }
   }
 
-  // TrackSelector con vincoli prioritari per Full HD 1080p (e 4K se disponibile)
+  // TrackSelector con vincoli prioritari rigidi per Full HD 1080p (e 4K se disponibile)
   val trackSelector = remember {
     DefaultTrackSelector(context).apply {
       setParameters(
         buildUponParameters()
           .setMaxVideoSize(3840, 2160)
           .setMinVideoSize(1920, 1080)
+          .setForceHighestSupportedBitrate(true)
           .setExceedVideoConstraintsIfNecessary(true)
       )
     }
@@ -396,6 +397,28 @@ fun PlayerScreen(
       }
 
       override fun onTracksChanged(tracks: Tracks) {
+        var has1080pOrHigher = false
+        for (group in tracks.groups) {
+          if (group.type == C.TRACK_TYPE_VIDEO) {
+            for (i in 0 until group.length) {
+              val f = group.getTrackFormat(i)
+              if (f.height >= 1080) {
+                has1080pOrHigher = true
+                break
+              }
+            }
+          }
+        }
+        if (has1080pOrHigher && selectedQualityLabel == "Auto") {
+          // Vincolo rigido che forza la traccia video 1080p ed impedisce l'aggancio a 720p
+          trackSelector.setParameters(
+            trackSelector.buildUponParameters()
+              .setMaxVideoSize(3840, 2160)
+              .setMinVideoSize(1920, 1080)
+              .setForceHighestSupportedBitrate(true)
+              .setExceedVideoConstraintsIfNecessary(false)
+          )
+        }
         val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
         updateResolutionFromHeight(h)
       }

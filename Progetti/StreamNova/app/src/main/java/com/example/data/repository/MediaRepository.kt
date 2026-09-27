@@ -27,6 +27,7 @@ import com.example.data.model.ExtendedMediaDetails
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
 import com.example.data.model.VideoResolution
@@ -1417,22 +1418,33 @@ object MediaRepository {
    * Se la query ha almeno 2 caratteri, interroga l'endpoint /3/search/multi,
    * salva i nuovi titoli in Room e ri-emette la lista aggiornata.
    */
-  fun searchTmdb(query: String): Flow<List<MediaItem>> = flow {
+  fun searchTmdb(
+    query: String,
+    filter: SearchTypeFilter = SearchTypeFilter.ALL
+  ): Flow<List<MediaItem>> = flow {
     val cleanQuery = query.trim()
     val currentList = _mediaList.value
 
     if (cleanQuery.isBlank()) {
-      emit(currentList)
+      val baseList = when (filter) {
+        SearchTypeFilter.FILM -> currentList.filter { it.type == MediaType.FILM }
+        SearchTypeFilter.SERIE_TV -> currentList.filter { it.type == MediaType.SERIE_TV }
+        SearchTypeFilter.ALL -> currentList
+      }
+      emit(baseList)
       return@flow
     }
 
     val q = cleanQuery.lowercase()
     val localMatches = currentList.filter {
-      it.title.lowercase().contains(q) ||
+      (filter == SearchTypeFilter.ALL ||
+        (filter == SearchTypeFilter.FILM && it.type == MediaType.FILM) ||
+        (filter == SearchTypeFilter.SERIE_TV && it.type == MediaType.SERIE_TV)) &&
+      (it.title.lowercase().contains(q) ||
         it.originalTitle.lowercase().contains(q) ||
         it.synopsis.lowercase().contains(q) ||
         it.genres.any { g -> g.lowercase().contains(q) } ||
-        it.cast.any { c -> c.lowercase().contains(q) }
+        it.cast.any { c -> c.lowercase().contains(q) })
     }
     // Emette subito i risultati locali
     emit(localMatches)
@@ -1440,18 +1452,42 @@ object MediaRepository {
     if (cleanQuery.length >= 2) {
       try {
         val apiKey = getEffectiveApiKey()
-        val response = TmdbApiClient.service.searchMulti(
-          apiKey = apiKey,
-          query = cleanQuery,
-          language = "it-IT",
-          page = 1,
-          includeAdult = false
-        )
-        val remoteItems = response.results.mapNotNull { dto ->
-          when (dto.mediaType) {
-            "movie" -> multiSearchMovieToMediaItem(dto, currentList)
-            "tv" -> multiSearchTvToMediaItem(dto, currentList)
-            else -> null
+        val remoteItems = when (filter) {
+          SearchTypeFilter.FILM -> {
+            val response = TmdbApiClient.service.searchMovie(
+              apiKey = apiKey,
+              query = cleanQuery,
+              language = "it-IT",
+              page = 1,
+              includeAdult = false
+            )
+            response.results.map { movieToMediaItem(it, currentList) }
+          }
+          SearchTypeFilter.SERIE_TV -> {
+            val response = TmdbApiClient.service.searchTv(
+              apiKey = apiKey,
+              query = cleanQuery,
+              language = "it-IT",
+              page = 1,
+              includeAdult = false
+            )
+            response.results.map { tvToMediaItem(it, currentList) }
+          }
+          SearchTypeFilter.ALL -> {
+            val response = TmdbApiClient.service.searchMulti(
+              apiKey = apiKey,
+              query = cleanQuery,
+              language = "it-IT",
+              page = 1,
+              includeAdult = false
+            )
+            response.results.mapNotNull { dto ->
+              when (dto.mediaType) {
+                "movie" -> multiSearchMovieToMediaItem(dto, currentList)
+                "tv" -> multiSearchTvToMediaItem(dto, currentList)
+                else -> null
+              }
+            }
           }
         }
 
@@ -1493,9 +1529,83 @@ object MediaRepository {
           emit(resultMap.values.toList())
         }
       } catch (e: Exception) {
-        Log.w("MediaRepository", "Ricerca remota TMDB fallita per \"$cleanQuery\": ${e.message}")
+        Log.w("MediaRepository", "Ricerca remota TMDB fallita per \"$cleanQuery\" (filtro=$filter): ${e.message}")
       }
     }
+  }
+
+  /**
+   * Paginazione remota generi/categorie con TMDB Discover:
+   * /3/discover/movie?api_key={key}&with_genres={genreId}&language=it-IT&sort_by=popularity.desc&page={page}
+   * /3/discover/tv?api_key={key}&with_genres={genreId}&language=it-IT&sort_by=popularity.desc&page={page}
+   */
+  suspend fun loadCategoryPage(
+    movieGenreId: Int?,
+    tvGenreId: Int?,
+    page: Int
+  ): List<MediaItem> = withContext(Dispatchers.IO) {
+    val cleanKey = getEffectiveApiKey()
+    val currentList = _mediaList.value
+    val results = mutableListOf<MediaItem>()
+
+    // Film per genere
+    if (movieGenreId != null) {
+      try {
+        val movieResponse = TmdbApiClient.service.discoverMoviesByGenre(
+          apiKey = cleanKey,
+          genreId = movieGenreId.toString(),
+          sortBy = "popularity.desc",
+          language = "it-IT",
+          page = page
+        )
+        val movies = movieResponse.results.map { movieToMediaItem(it, currentList) }
+        results.addAll(movies)
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Errore discoverMoviesByGenre (genere=$movieGenreId, pag=$page): ${e.message}")
+      }
+    }
+
+    // Serie TV per genere
+    if (tvGenreId != null) {
+      try {
+        val tvResponse = TmdbApiClient.service.discoverTvByGenre(
+          apiKey = cleanKey,
+          genreId = tvGenreId.toString(),
+          sortBy = "popularity.desc",
+          language = "it-IT",
+          page = page
+        )
+        val tvs = tvResponse.results.map { tvToMediaItem(it, currentList) }
+        results.addAll(tvs)
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Errore discoverTvByGenre (genere=$tvGenreId, pag=$page): ${e.message}")
+      }
+    }
+
+    // Salva in Room DB per cache-first resiliente
+    if (results.isNotEmpty()) {
+      val db = database
+      if (db != null) {
+        try {
+          db.cachedMediaDao().insertOrUpdate(results.map { it.toEntity() })
+        } catch (e: Exception) {
+          Log.w("MediaRepository", "Errore salvataggio Room loadCategoryPage: ${e.message}")
+        }
+      }
+      val updated = _mediaList.value.toMutableList()
+      var added = false
+      results.forEach { item ->
+        if (updated.none { it.id == item.id }) {
+          updated.add(item)
+          added = true
+        }
+      }
+      if (added) {
+        _mediaList.value = updated
+      }
+    }
+
+    results
   }
 
   private fun multiSearchMovieToMediaItem(

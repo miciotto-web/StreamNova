@@ -8,6 +8,7 @@ import com.example.data.model.Episode
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
@@ -137,16 +138,100 @@ class StreamNovaViewModel : ViewModel() {
   private val _searchQuery = MutableStateFlow("")
   val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+  private val _searchFilter = MutableStateFlow(SearchTypeFilter.ALL)
+  val searchFilter: StateFlow<SearchTypeFilter> = _searchFilter.asStateFlow()
+
+  fun setSearchFilter(filter: SearchTypeFilter) {
+    _searchFilter.value = filter
+  }
+
   val allMedia: StateFlow<List<MediaItem>> = MediaRepository.mediaList
 
   @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
-  val filteredSearchResults: StateFlow<List<MediaItem>> = _searchQuery
-    .debounce { query -> if (query.isBlank()) 0L else 400L }
+  val filteredSearchResults: StateFlow<List<MediaItem>> = combine(_searchQuery, _searchFilter) { query, filter ->
+    query to filter
+  }
+    .debounce { (query, _) -> if (query.isBlank()) 0L else 400L }
     .distinctUntilChanged()
-    .flatMapLatest { query ->
-      MediaRepository.searchTmdb(query)
+    .flatMapLatest { (query, filter) ->
+      MediaRepository.searchTmdb(query, filter)
     }
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+  // Paginazione remota generi / categorie
+  private val _categoryItems = MutableStateFlow<List<MediaItem>>(emptyList())
+  val categoryItems: StateFlow<List<MediaItem>> = _categoryItems.asStateFlow()
+
+  private val _isCategoryLoading = MutableStateFlow(false)
+  val isCategoryLoading: StateFlow<Boolean> = _isCategoryLoading.asStateFlow()
+
+  private var activeCategoryMovieGenreId: Int? = null
+  private var activeCategoryTvGenreId: Int? = null
+  private var currentCategoryPage = 1
+  private var isCategoryLoadingMore = false
+
+  fun initCategory(movieGenreId: Int?, tvGenreId: Int?, initialLocalItems: List<MediaItem>) {
+    activeCategoryMovieGenreId = movieGenreId
+    activeCategoryTvGenreId = tvGenreId
+    currentCategoryPage = 1
+    _categoryItems.value = initialLocalItems
+    loadCategoryPage(page = 1, isInitial = true)
+  }
+
+  fun loadNextCategoryPage() {
+    if (isCategoryLoadingMore || _isCategoryLoading.value) return
+    isCategoryLoadingMore = true
+    viewModelScope.launch {
+      val nextPage = currentCategoryPage + 1
+      try {
+        val newItems = MediaRepository.loadCategoryPage(
+          activeCategoryMovieGenreId,
+          activeCategoryTvGenreId,
+          nextPage
+        )
+        if (newItems.isNotEmpty()) {
+          currentCategoryPage = nextPage
+          val current = _categoryItems.value.toMutableList()
+          newItems.forEach { item ->
+            if (current.none { it.id == item.id }) {
+              current.add(item)
+            }
+          }
+          _categoryItems.value = current
+        }
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore paginazione categoria pagina $nextPage: ${e.message}")
+      } finally {
+        isCategoryLoadingMore = false
+      }
+    }
+  }
+
+  private fun loadCategoryPage(page: Int, isInitial: Boolean) {
+    viewModelScope.launch {
+      if (isInitial) _isCategoryLoading.value = true
+      try {
+        val newItems = MediaRepository.loadCategoryPage(
+          activeCategoryMovieGenreId,
+          activeCategoryTvGenreId,
+          page
+        )
+        if (newItems.isNotEmpty()) {
+          val current = _categoryItems.value.toMutableList()
+          newItems.forEach { item ->
+            if (current.none { it.id == item.id }) {
+              current.add(item)
+            }
+          }
+          _categoryItems.value = current
+        }
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore caricamento iniziale categoria: ${e.message}")
+      } finally {
+        if (isInitial) _isCategoryLoading.value = false
+      }
+    }
+  }
 
   private var currentMoviePage = 1
   private var currentTvPage = 1

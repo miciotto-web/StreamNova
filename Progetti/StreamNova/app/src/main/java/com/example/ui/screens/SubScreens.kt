@@ -73,7 +73,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.snapshotFlow
 import com.example.data.model.MediaItem
+import com.example.data.model.SearchTypeFilter
 import com.example.ui.components.ContinueWatchingCard
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.StandardMediaCard
@@ -366,34 +370,36 @@ data class GlobalSearchCategory(
   val gradientStart: Color,
   val gradientEnd: Color,
   val accentColor: Color,
-  val keywords: List<String>
+  val keywords: List<String>,
+  val movieGenreId: Int? = null,
+  val tvGenreId: Int? = null
 )
 
 val GLOBAL_SEARCH_CATEGORIES = listOf(
-  GlobalSearchCategory("action_adventure", "Action & Adventure", Color(0xFFEF4444), Color(0xFF991B1B), Color(0xFFFCA5A5), listOf("Action & Adventure", "Azione & Avventura", "Action", "Azione", "Avventura")),
-  GlobalSearchCategory("animazione", "Animazione", Color(0xFFF59E0B), Color(0xFFB45309), Color(0xFFFDE68A), listOf("Animazione", "Animation", "Anime")),
-  GlobalSearchCategory("avventura", "Avventura", Color(0xFF10B981), Color(0xFF047857), Color(0xFFA7F3D0), listOf("Avventura", "Adventure")),
-  GlobalSearchCategory("azione", "Azione", Color(0xFFDC2626), Color(0xFF7F1D1D), Color(0xFFFECACA), listOf("Azione", "Action")),
-  GlobalSearchCategory("commedia", "Commedia", Color(0xFFEAB308), Color(0xFFA16207), Color(0xFFFEF08A), listOf("Commedia", "Comedy")),
-  GlobalSearchCategory("crime", "Crime", Color(0xFF64748B), Color(0xFF334155), Color(0xFFCBD5E1), listOf("Crime", "Crimine", "Poliziesco")),
-  GlobalSearchCategory("documentario", "Documentario", Color(0xFF06B6D4), Color(0xFF0E7490), Color(0xFFA5F3FC), listOf("Documentario", "Documnetario", "Documentary")),
-  GlobalSearchCategory("dramma", "Dramma", Color(0xFF8B5CF6), Color(0xFF5B21B6), Color(0xFFDDD6FE), listOf("Dramma", "Drama")),
-  GlobalSearchCategory("famiglia", "Famiglia", Color(0xFFEC4899), Color(0xFF9D174D), Color(0xFFFBCFE8), listOf("Famiglia", "Family", "Kids")),
-  GlobalSearchCategory("fantascienza", "Fantascienza", Color(0xFF00E5FF), Color(0xFF007799), Color(0xFFE0F7FA), listOf("Fantascienza", "Sci-Fi", "Science Fiction")),
-  GlobalSearchCategory("fantasy", "Fantasy", Color(0xFFA855F7), Color(0xFF6B21A8), Color(0xFFF3E8FF), listOf("Fantasy", "Fantastico")),
-  GlobalSearchCategory("guerra", "Guerra", Color(0xFF78716C), Color(0xFF44403C), Color(0xFFE7E5E4), listOf("Guerra", "War", "Guerra & Politica")),
-  GlobalSearchCategory("horror", "Horror", Color(0xFFE11D48), Color(0xFF881337), Color(0xFFFECDD3), listOf("Horror")),
-  GlobalSearchCategory("kids", "Kids", Color(0xFFF43F5E), Color(0xFF9F1239), Color(0xFFFFE4E6), listOf("Kids", "Bambini", "Famiglia")),
-  GlobalSearchCategory("mistero", "Mistero", Color(0xFF6366F1), Color(0xFF3730A3), Color(0xFFE0E7FF), listOf("Mistero", "Mystery")),
-  GlobalSearchCategory("musica", "Musica", Color(0xFF14B8A6), Color(0xFF0F766E), Color(0xFFCCFBF1), listOf("Musica", "Music", "Musicale")),
-  GlobalSearchCategory("news", "News", Color(0xFF3B82F6), Color(0xFF1E40AF), Color(0xFFBFDBFE), listOf("News", "Notizie", "Attualità")),
-  GlobalSearchCategory("reality", "Reality", Color(0xFFFB923C), Color(0xFFC2410C), Color(0xFFFFEDD5), listOf("Reality", "Reality-TV")),
-  GlobalSearchCategory("romance", "Romance", Color(0xFFF472B6), Color(0xFFBE185D), Color(0xFFFCE7F3), listOf("Romance", "Romantico", "Sentimentale")),
-  GlobalSearchCategory("sci_fi_fantasy", "Sci-Fi & Fantasy", Color(0xFF0284C7), Color(0xFF4338CA), Color(0xFFBAE6FD), listOf("Sci-Fi & Fantasy", "Fantascienza", "Fantasy")),
-  GlobalSearchCategory("storia", "Storia", Color(0xFFD97706), Color(0xFF78350F), Color(0xFFFDE68A), listOf("Storia", "History", "Storico", "Biografia")),
-  GlobalSearchCategory("thriller", "Thriller", Color(0xFFEA580C), Color(0xFF9A3412), Color(0xFFFFEDD5), listOf("Thriller", "Suspense")),
-  GlobalSearchCategory("western", "Western", Color(0xFFB45309), Color(0xFF713F12), Color(0xFFFEF3C7), listOf("Western")),
-  GlobalSearchCategory("televisione_film", "Televisione film", Color(0xFF38BDF8), Color(0xFF0369A1), Color(0xFFE0F2FE), listOf("Televisione Film", "Film TV", "TV Movie", "Cinema", "Film"))
+  GlobalSearchCategory("action_adventure", "Action & Adventure", Color(0xFFEF4444), Color(0xFF991B1B), Color(0xFFFCA5A5), listOf("Action & Adventure", "Azione & Avventura", "Action", "Azione", "Avventura"), movieGenreId = 28, tvGenreId = 10759),
+  GlobalSearchCategory("animazione", "Animazione", Color(0xFFF59E0B), Color(0xFFB45309), Color(0xFFFDE68A), listOf("Animazione", "Animation", "Anime"), movieGenreId = 16, tvGenreId = 16),
+  GlobalSearchCategory("avventura", "Avventura", Color(0xFF10B981), Color(0xFF047857), Color(0xFFA7F3D0), listOf("Avventura", "Adventure"), movieGenreId = 12, tvGenreId = 10759),
+  GlobalSearchCategory("azione", "Azione", Color(0xFFDC2626), Color(0xFF7F1D1D), Color(0xFFFECACA), listOf("Azione", "Action"), movieGenreId = 28, tvGenreId = 10759),
+  GlobalSearchCategory("commedia", "Commedia", Color(0xFFEAB308), Color(0xFFA16207), Color(0xFFFEF08A), listOf("Commedia", "Comedy"), movieGenreId = 35, tvGenreId = 35),
+  GlobalSearchCategory("crime", "Crime", Color(0xFF64748B), Color(0xFF334155), Color(0xFFCBD5E1), listOf("Crime", "Crimine", "Poliziesco"), movieGenreId = 80, tvGenreId = 80),
+  GlobalSearchCategory("documentario", "Documentario", Color(0xFF06B6D4), Color(0xFF0E7490), Color(0xFFA5F3FC), listOf("Documentario", "Documnetario", "Documentary"), movieGenreId = 99, tvGenreId = 99),
+  GlobalSearchCategory("dramma", "Dramma", Color(0xFF8B5CF6), Color(0xFF5B21B6), Color(0xFFDDD6FE), listOf("Dramma", "Drama"), movieGenreId = 18, tvGenreId = 18),
+  GlobalSearchCategory("famiglia", "Famiglia", Color(0xFFEC4899), Color(0xFF9D174D), Color(0xFFFBCFE8), listOf("Famiglia", "Family", "Kids"), movieGenreId = 10751, tvGenreId = 10762),
+  GlobalSearchCategory("fantascienza", "Fantascienza", Color(0xFF00E5FF), Color(0xFF007799), Color(0xFFE0F7FA), listOf("Fantascienza", "Sci-Fi", "Science Fiction"), movieGenreId = 878, tvGenreId = 10765),
+  GlobalSearchCategory("fantasy", "Fantasy", Color(0xFFA855F7), Color(0xFF6B21A8), Color(0xFFF3E8FF), listOf("Fantasy", "Fantastico"), movieGenreId = 14, tvGenreId = 10765),
+  GlobalSearchCategory("guerra", "Guerra", Color(0xFF78716C), Color(0xFF44403C), Color(0xFFE7E5E4), listOf("Guerra", "War", "Guerra & Politica"), movieGenreId = 10752, tvGenreId = 10768),
+  GlobalSearchCategory("horror", "Horror", Color(0xFFE11D48), Color(0xFF881337), Color(0xFFFECDD3), listOf("Horror"), movieGenreId = 27, tvGenreId = 27),
+  GlobalSearchCategory("kids", "Kids", Color(0xFFF43F5E), Color(0xFF9F1239), Color(0xFFFFE4E6), listOf("Kids", "Bambini", "Famiglia"), movieGenreId = 10751, tvGenreId = 10762),
+  GlobalSearchCategory("mistero", "Mistero", Color(0xFF6366F1), Color(0xFF3730A3), Color(0xFFE0E7FF), listOf("Mistero", "Mystery"), movieGenreId = 9648, tvGenreId = 9648),
+  GlobalSearchCategory("musica", "Musica", Color(0xFF14B8A6), Color(0xFF0F766E), Color(0xFFCCFBF1), listOf("Musica", "Music", "Musicale"), movieGenreId = 10402, tvGenreId = null),
+  GlobalSearchCategory("news", "News", Color(0xFF3B82F6), Color(0xFF1E40AF), Color(0xFFBFDBFE), listOf("News", "Notizie", "Attualità"), movieGenreId = null, tvGenreId = 10763),
+  GlobalSearchCategory("reality", "Reality", Color(0xFFFB923C), Color(0xFFC2410C), Color(0xFFFFEDD5), listOf("Reality", "Reality-TV"), movieGenreId = null, tvGenreId = 10764),
+  GlobalSearchCategory("romance", "Romance", Color(0xFFF472B6), Color(0xFFBE185D), Color(0xFFFCE7F3), listOf("Romance", "Romantico", "Sentimentale"), movieGenreId = 10749, tvGenreId = 18),
+  GlobalSearchCategory("sci_fi_fantasy", "Sci-Fi & Fantasy", Color(0xFF0284C7), Color(0xFF4338CA), Color(0xFFBAE6FD), listOf("Sci-Fi & Fantasy", "Fantascienza", "Fantasy"), movieGenreId = 878, tvGenreId = 10765),
+  GlobalSearchCategory("storia", "Storia", Color(0xFFD97706), Color(0xFF78350F), Color(0xFFFDE68A), listOf("Storia", "History", "Storico", "Biografia"), movieGenreId = 36, tvGenreId = 18),
+  GlobalSearchCategory("thriller", "Thriller", Color(0xFFEA580C), Color(0xFF9A3412), Color(0xFFFFEDD5), listOf("Thriller", "Suspense"), movieGenreId = 53, tvGenreId = 9648),
+  GlobalSearchCategory("western", "Western", Color(0xFFB45309), Color(0xFF713F12), Color(0xFFFEF3C7), listOf("Western"), movieGenreId = 37, tvGenreId = 37),
+  GlobalSearchCategory("televisione_film", "Televisione film", Color(0xFF38BDF8), Color(0xFF0369A1), Color(0xFFE0F2FE), listOf("Televisione Film", "Film TV", "TV Movie", "Cinema", "Film"), movieGenreId = 10770, tvGenreId = null)
 )
 
 /**
@@ -574,6 +580,9 @@ fun SearchScreen(
   val query by viewModel.searchQuery.collectAsState()
   val results by viewModel.filteredSearchResults.collectAsState()
   val allMedia by viewModel.allMedia.collectAsState()
+  val searchFilter by viewModel.searchFilter.collectAsState()
+  val categoryItems by viewModel.categoryItems.collectAsState()
+  val isCategoryLoading by viewModel.isCategoryLoading.collectAsState()
 
   var selectedCategory by remember { mutableStateOf<GlobalSearchCategory?>(null) }
   var isSearchSubmitted by remember { mutableStateOf(false) }
@@ -676,12 +685,69 @@ fun SearchScreen(
       }
     )
 
-    Spacer(modifier = Modifier.height(18.dp))
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // Selettore Filtro Ricerca D-Pad: ["Tutti", "Film", "Serie TV"]
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(bottom = 12.dp),
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      SearchTypeFilter.values().forEach { filter ->
+        val isSelected = searchFilter == filter
+        TvFocusableBox(
+          shape = RoundedCornerShape(50),
+          focusedScale = 1.05f,
+          onClick = { viewModel.setSearchFilter(filter) }
+        ) { isFocused ->
+          Row(
+            modifier = Modifier
+              .background(
+                if (isSelected) NovaCyan else if (isFocused) NovaSurfaceVariant else Color(0x331E293B),
+                RoundedCornerShape(50)
+              )
+              .border(
+                width = if (isFocused) 1.5.dp else 1.dp,
+                color = if (isFocused) NovaCyanBright else if (isSelected) NovaCyan else Color(0x33475569),
+                shape = RoundedCornerShape(50)
+              )
+              .padding(horizontal = 18.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = filter.label,
+              color = if (isSelected) Color.Black else if (isFocused) NovaCyanBright else NovaTextPrimary,
+              fontSize = 13.sp,
+              fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+            )
+          }
+        }
+      }
+    }
 
     // Vista Condizionale: Categoria Selezionata / Risultati di Ricerca Testo / Default con soli Badge Colorati
     when {
       selectedCategory != null -> {
         val cat = selectedCategory!!
+        val displayedCategoryMedia = if (categoryItems.isNotEmpty()) categoryItems else categoryMedia
+        val categoryGridState = rememberLazyGridState()
+
+        // Paginazione infinita allo scorrimento della griglia
+        LaunchedEffect(categoryGridState) {
+          snapshotFlow {
+            val layout = categoryGridState.layoutInfo
+            val total = layout.totalItemsCount
+            val last = layout.visibleItemsInfo.lastOrNull()?.index ?: 0
+            total to last
+          }.collect { (total, last) ->
+            if (total > 0 && last >= total - 6) {
+              viewModel.loadNextCategoryPage()
+            }
+          }
+        }
+
         Row(
           modifier = Modifier
             .fillMaxWidth()
@@ -711,28 +777,40 @@ fun SearchScreen(
               )
             }
             Text(
-              text = "Tutti i contenuti dedicati al genere",
+              text = "Tutti i contenuti dedicati al genere (TMDB Discover)",
               color = NovaTextSecondary,
               fontSize = 13.sp
             )
           }
 
-          Box(
-            modifier = Modifier
-              .background(Color(0x33000000), RoundedCornerShape(50))
-              .border(1.dp, cat.accentColor.copy(alpha = 0.5f), RoundedCornerShape(50))
-              .padding(horizontal = 16.dp, vertical = 6.dp)
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
           ) {
-            Text(
-              text = "${categoryMedia.size} Titoli Disponibili",
-              color = cat.accentColor,
-              fontSize = 12.sp,
-              fontWeight = FontWeight.Bold
-            )
+            if (isCategoryLoading) {
+              CircularProgressIndicator(
+                color = NovaCyanBright,
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp
+              )
+            }
+            Box(
+              modifier = Modifier
+                .background(Color(0x33000000), RoundedCornerShape(50))
+                .border(1.dp, cat.accentColor.copy(alpha = 0.5f), RoundedCornerShape(50))
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+            ) {
+              Text(
+                text = "${displayedCategoryMedia.size} Titoli Disponibili",
+                color = cat.accentColor,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+              )
+            }
           }
         }
 
-        if (categoryMedia.isEmpty()) {
+        if (displayedCategoryMedia.isEmpty() && !isCategoryLoading) {
           Box(
             modifier = Modifier
               .fillMaxSize()
@@ -748,13 +826,14 @@ fun SearchScreen(
         } else {
           TvFocusBringIntoView {
             LazyVerticalGrid(
+              state = categoryGridState,
               columns = GridCells.Adaptive(minSize = 155.dp),
               contentPadding = PaddingValues(bottom = 48.dp),
               horizontalArrangement = Arrangement.spacedBy(16.dp),
               verticalArrangement = Arrangement.spacedBy(16.dp),
               modifier = Modifier.fillMaxSize()
             ) {
-              items(categoryMedia, key = { "cat_${cat.id}_${it.id}" }) { item ->
+              items(displayedCategoryMedia, key = { "cat_${cat.id}_${it.id}" }) { item ->
                 PosterMediaCard(
                   media = item,
                   onClick = { onMediaClick(item) },
@@ -827,7 +906,7 @@ fun SearchScreen(
             letterSpacing = 1.sp
           )
           Text(
-            text = "Seleziona un badge per aprire la sezione dedicata e visualizzare tutti i poster",
+            text = "Seleziona un badge per aprire la sezione dedicata ed esplorare l'intero catalogo",
             color = NovaTextSecondary,
             fontSize = 13.sp,
             modifier = Modifier.padding(top = 2.dp, bottom = 14.dp)
@@ -853,6 +932,14 @@ fun SearchScreen(
                 onClick = {
                   selectedCategory = cat
                   isSearchSubmitted = false
+                  val localMatches = allMedia.filter { item ->
+                    cat.keywords.any { kw ->
+                      item.genres.any { g -> g.contains(kw, ignoreCase = true) } ||
+                      item.title.contains(kw, ignoreCase = true) ||
+                      item.synopsis.contains(kw, ignoreCase = true)
+                    }
+                  }
+                  viewModel.initCategory(cat.movieGenreId, cat.tvGenreId, localMatches)
                 }
               ) { isFocused ->
                 Box(

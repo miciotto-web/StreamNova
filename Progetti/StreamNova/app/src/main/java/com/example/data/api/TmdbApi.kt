@@ -304,6 +304,24 @@ interface TmdbApiService {
     @Query("page") page: Int = 1,
     @Query("include_adult") includeAdult: Boolean = false
   ): TmdbPaginatedResponse<TmdbMultiSearchResultDto>
+
+  @GET("search/movie")
+  suspend fun searchMovie(
+    @Query("api_key") apiKey: String,
+    @Query("query") query: String,
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1,
+    @Query("include_adult") includeAdult: Boolean = false
+  ): TmdbPaginatedResponse<TmdbMovieDto>
+
+  @GET("search/tv")
+  suspend fun searchTv(
+    @Query("api_key") apiKey: String,
+    @Query("query") query: String,
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1,
+    @Query("include_adult") includeAdult: Boolean = false
+  ): TmdbPaginatedResponse<TmdbTvDto>
 }
 
 object TmdbApiClient {

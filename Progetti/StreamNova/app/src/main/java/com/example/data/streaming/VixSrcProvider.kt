@@ -80,14 +80,20 @@ class VixSrcProvider(
     } else {
       "/api/movie/$tmdbId"
     }
-    val apiUrl = base + apiPath
+    val apiUrl = if ('?' in apiPath) "$base$apiPath&canPlayFHD=1&h=1" else "$base$apiPath?canPlayFHD=1&h=1"
     Log.i(TAG, "GET API  $apiUrl")
     val apiBody = get(apiUrl, referer = "$base/")
     val src = JSONObject(apiBody).optString("src").trim()
     if (src.isEmpty()) throw IOException("Risposta API senza campo 'src': ${apiBody.take(160)}")
     val rawEmbed = if (src.startsWith("http")) src else base + src
-    val embedUrl = if (rawEmbed.contains("canPlayFHD=")) rawEmbed else {
-      if ('?' in rawEmbed) "$rawEmbed&canPlayFHD=1" else "$rawEmbed?canPlayFHD=1"
+    val embedUrl = buildString {
+      append(rawEmbed)
+      if (!rawEmbed.contains("canPlayFHD=")) {
+        append(if ('?' in rawEmbed) "&canPlayFHD=1" else "?canPlayFHD=1")
+      }
+      if (!rawEmbed.contains("h=")) {
+        append(if ('?' in this) "&h=1" else "?h=1")
+      }
     }
     Log.i(TAG, "GET EMBED $embedUrl")
 
@@ -131,6 +137,7 @@ class VixSrcProvider(
             .append(key).append('=').append(value)
         }
         append(if ('?' in rawUrl || '?' in this) '&' else '?').append("h=1")
+        append("&canPlayFHD=1")
       }
 
       val playlistUrlStandard = buildString {
@@ -156,7 +163,7 @@ class VixSrcProvider(
         throw IOException("Playlist non HLS su $serverName: ${playlistBody.take(120)}")
       }
       val renditions = parseRenditions(playlistBody)
-      val isFhd = chosenUrl.contains("h=1")
+      val isFhd = chosenUrl.contains("h=1") || renditions.any { it.contains("1080", ignoreCase = true) }
       Log.i(TAG, "OK $serverName (FHD=$isFhd) renditions=$renditions url=$chosenUrl")
 
       sources += StreamSource(

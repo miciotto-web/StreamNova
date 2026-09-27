@@ -12,6 +12,12 @@ enum class VideoResolution(val label: String, val badge: String) {
   UHD_4K("Ultra HD 4K HDR", "4K HDR")
 }
 
+enum class SearchTypeFilter(val label: String) {
+  ALL("Tutti"),
+  FILM("Film"),
+  SERIE_TV("Serie TV")
+}
+
 data class AudioTrack(
   val id: String,
   val language: String,
