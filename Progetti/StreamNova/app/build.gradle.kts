@@ -21,6 +21,8 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    val tmdbEnv = System.getenv("TMDB_API_KEY") ?: "da92702177bb03ed4b4517e58eebb018"
+    buildConfigField("String", "ENV_TMDB_API_KEY", "\"$tmdbEnv\"")
   }
 
   signingConfigs {
@@ -95,7 +97,7 @@ dependencies {
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
-  // implementation(libs.androidx.navigation.compose)
+  implementation(libs.androidx.navigation.compose)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)

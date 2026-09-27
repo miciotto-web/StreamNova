@@ -9,6 +9,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -49,39 +50,11 @@ import com.example.ui.theme.NovaCyanGlow
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextPrimary
 
-
-@Composable
-fun FocusableBox(
-  modifier: Modifier = Modifier,
-  shape: Shape = RoundedCornerShape(12.dp),
-  focusedScale: Float = 1.05f,
-  onClick: () -> Unit = {},
-  content: @Composable BoxScope.(isFocused: Boolean) -> Unit
-) {
-  var isFocused by remember { mutableStateOf(false) }
-  val scale by animateFloatAsState(
-    targetValue = if (isFocused) focusedScale else 1.0f,
-    animationSpec = tween(durationMillis = 180),
-    label = "FocusScale"
-  )
-
-  Box(
-    modifier = modifier
-      .scale(scale)
-      .onFocusChanged { isFocused = it.isFocused }
-      .focusable()
-      .clickable(onClick = onClick)
-      .clip(shape)
-  ) {
-    content(isFocused)
-  }
-}
-
 @Composable
 fun TvFocusableBox(
   modifier: Modifier = Modifier,
   shape: Shape = RoundedCornerShape(12.dp),
-  focusedScale: Float = 1.05f,
+  focusedScale: Float = 1.08f,
   focusedBorderColor: Color = NovaCyanBright,
   unfocusedBorderColor: Color = Color.Transparent,
   borderWidth: Dp = 2.5.dp,
@@ -96,17 +69,34 @@ fun TvFocusableBox(
   )
   val interactionSource = remember { MutableInteractionSource() }
 
-   Box(
-     modifier = modifier
-       .zIndex(if (isFocused) 10f else 1f)
-       .scale(scale)
-       .onFocusChanged { isFocused = it.isFocused }
-       .focusable(interactionSource = interactionSource)
-       .clickable(
-         interactionSource = interactionSource,
-         indication = null,
-         onClick = onClick
-       )
+  Box(
+    modifier = modifier
+      .zIndex(if (isFocused) 10f else 1f)
+      .scale(scale)
+      .onFocusChanged { isFocused = it.isFocused }
+      .focusable(interactionSource = interactionSource)
+      .onKeyEvent { keyEvent ->
+        val nativeEvent = keyEvent.nativeKeyEvent
+        if (nativeEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+          nativeEvent.keyCode == KeyEvent.KEYCODE_ENTER
+        ) {
+          // Attiva solo alla pressione iniziale. Ignora auto-repeat e rilascio:
+          // altrimenti il rilascio/repetico dello stesso tasto viene recapitato
+          // all'elemento che riceve il focus dopo il cambio schermata (es. il
+          // pulsante "Torna Indietro"), chiudendo subito la schermata aperta.
+          if (nativeEvent.action == KeyEvent.ACTION_DOWN && nativeEvent.repeatCount == 0) {
+            onClick()
+          }
+          true
+        } else {
+          false
+        }
+      }
+      .clickable(
+        interactionSource = interactionSource,
+        indication = null,
+        onClick = onClick
+      )
       .then(
         if (isFocused) {
           Modifier
@@ -147,19 +137,18 @@ fun TvActionButton(
 ) {
   TvFocusableBox(
     modifier = modifier,
-    shape = RoundedCornerShape(10.dp),
-    focusedScale = 1.06f,
+    shape = RoundedCornerShape(50),
+    focusedScale = 1.05f,
     onClick = onClick
   ) { isFocused ->
     val bgBrush = when {
       isFocused && isPrimary -> Brush.horizontalGradient(listOf(NovaCyan, NovaCyanBright))
-      isFocused && !isPrimary -> Brush.horizontalGradient(listOf(NovaSurfaceVariant, NovaCyan.copy(alpha = 0.3f)))
-      isPrimary -> Brush.horizontalGradient(listOf(NovaCyan.copy(alpha = 0.9f), NovaCyan))
-      else -> Brush.horizontalGradient(listOf(Color(0xFF1E2638), Color(0xFF161E30)))
+      isFocused && !isPrimary -> Brush.horizontalGradient(listOf(NovaSurfaceVariant, NovaCyan.copy(alpha = 0.35f)))
+      isPrimary -> Brush.horizontalGradient(listOf(NovaCyan.copy(alpha = 0.95f), NovaCyan))
+      else -> Brush.horizontalGradient(listOf(Color(0xFF1E2638).copy(alpha = 0.9f), Color(0xFF161E30).copy(alpha = 0.9f)))
     }
 
     val contentColor = when {
-      isPrimary && isFocused -> Color.Black
       isPrimary -> Color.Black
       isFocused -> NovaCyanBright
       else -> NovaTextPrimary
@@ -167,23 +156,33 @@ fun TvActionButton(
 
     Row(
       modifier = Modifier
-        .background(bgBrush)
-        .padding(horizontal = 20.dp, vertical = 12.dp),
-      verticalAlignment = Alignment.CenterVertically
+        .background(bgBrush, RoundedCornerShape(50))
+        .border(
+          width = if (isFocused) 1.5.dp else 1.dp,
+          color = when {
+            isFocused -> NovaCyanBright
+            isPrimary -> Color.Transparent
+            else -> Color(0x33475569)
+          },
+          shape = RoundedCornerShape(50)
+        )
+        .padding(horizontal = 16.dp, vertical = 9.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.Center
     ) {
       if (icon != null) {
         Icon(
           imageVector = icon,
           contentDescription = null,
           tint = contentColor,
-          modifier = Modifier.size(20.dp)
+          modifier = Modifier.size(16.dp)
         )
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.width(6.dp))
       }
       Text(
         text = text,
         color = contentColor,
-        fontSize = 15.sp,
+        fontSize = 13.sp,
         fontWeight = FontWeight.Bold
       )
     }

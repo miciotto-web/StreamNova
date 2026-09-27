@@ -21,7 +21,12 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
+import androidx.annotation.DrawableRes
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -34,6 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.example.R
@@ -45,6 +51,107 @@ import com.example.ui.theme.NovaGold
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+
+/**
+ * Componente unificato per il caricamento dell'artwork con fallback robusto:
+ * 1. Prova prima primaryUrl (es. posterUrl per card verticale, backdropUrl per card orizzontale)
+ * 2. Se primaryUrl fallisce o è assente, passa a secondaryUrl (es. backdropUrl / posterUrl TMDB)
+ * 3. Se fallisce anche il secondario o entrambi sono vuoti, usa la risorsa locale fallbackRes
+ * 4. Evita definitivamente card completamente vuote quando esiste un'immagine TMDB alternativa
+ */
+@Composable
+fun CardMediaImage(
+  primaryUrl: String?,
+  secondaryUrl: String?,
+  @DrawableRes fallbackRes: Int,
+  contentDescription: String?,
+  modifier: Modifier = Modifier,
+  contentScale: ContentScale = ContentScale.Crop
+) {
+  val cleanPrimary = primaryUrl?.trim()?.takeIf { it.isNotEmpty() }
+  val cleanSecondary = secondaryUrl?.trim()?.takeIf { it.isNotEmpty() && it != cleanPrimary }
+
+  var primaryFailed by remember(cleanPrimary) { mutableStateOf(false) }
+
+  val targetUrl = when {
+    cleanPrimary != null && !primaryFailed -> cleanPrimary
+    cleanSecondary != null -> cleanSecondary
+    else -> null
+  }
+
+  if (targetUrl != null) {
+    SubcomposeAsyncImage(
+      model = ImageRequest.Builder(LocalContext.current)
+        .data(targetUrl)
+        .crossfade(true)
+        .apply {
+          if (primaryFailed || cleanSecondary == null) {
+            error(fallbackRes)
+            fallback(fallbackRes)
+          }
+        }
+        .build(),
+      contentDescription = contentDescription,
+      contentScale = contentScale,
+      modifier = modifier,
+      onError = {
+        if (!primaryFailed && targetUrl == cleanPrimary && cleanSecondary != null) {
+          primaryFailed = true
+        }
+      },
+      error = {
+        if (primaryFailed || cleanSecondary == null) {
+          Image(
+            painter = painterResource(id = fallbackRes),
+            contentDescription = contentDescription,
+            contentScale = contentScale,
+            modifier = Modifier.fillMaxSize()
+          )
+        }
+      }
+    )
+  } else {
+    Image(
+      painter = painterResource(id = fallbackRes),
+      contentDescription = contentDescription,
+      contentScale = contentScale,
+      modifier = modifier
+    )
+  }
+}
+
+/**
+ * Pillola del voto TMDB (stella + punteggio) in stile minimal.
+ * Pensata per essere ancorata in basso sulla locandina, dove il gradiente
+ * scuro garantisce ottima leggibilità senza coprire barre di progresso o titoli.
+ */
+@Composable
+fun PosterRatingBadge(
+  rating: Float,
+  modifier: Modifier = Modifier,
+  compact: Boolean = false
+) {
+  Row(
+    modifier = modifier
+      .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(6.dp))
+      .padding(horizontal = if (compact) 4.dp else 5.dp, vertical = 2.dp),
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    Icon(
+      imageVector = Icons.Default.Star,
+      contentDescription = "Voto TMDB",
+      tint = NovaGold,
+      modifier = Modifier.size(if (compact) 9.dp else 11.dp)
+    )
+    Spacer(modifier = Modifier.width(if (compact) 2.dp else 3.dp))
+    Text(
+      text = "%.1f".format(rating),
+      color = Color.White,
+      fontSize = if (compact) 10.sp else 11.sp,
+      fontWeight = FontWeight.Bold
+    )
+  }
+}
 
 /**
  * Continua a guardare (Landscape 16:9 con progresso)
@@ -72,25 +179,15 @@ fun ContinueWatchingCard(
           .fillMaxWidth()
           .height(146.dp)
       ) {
-        if (!media.backdropUrl.isNullOrBlank()) {
-          AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-              .data(media.backdropUrl)
-              .crossfade(true)
-              .build(),
-            contentDescription = media.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-          )
-        } else {
-          val imageRes = media.backdropRes ?: R.drawable.banner_dune
-          Image(
-            painter = painterResource(id = imageRes),
-            contentDescription = media.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-          )
-        }
+        val fallbackRes = media.backdropRes ?: media.posterRes ?: R.drawable.banner_dune
+        CardMediaImage(
+          primaryUrl = media.backdropUrl,
+          secondaryUrl = media.posterUrl,
+          fallbackRes = fallbackRes,
+          contentDescription = media.title,
+          modifier = Modifier.fillMaxSize(),
+          contentScale = ContentScale.Crop
+        )
 
         // Gradient overlay
         Box(
@@ -142,13 +239,13 @@ fun ContinueWatchingCard(
           )
         }
 
-        // Quality badge (top left)
+        // TMDB Rating Badge (in basso a sinistra, sopra la barra di progresso)
         Box(
           modifier = Modifier
-            .align(Alignment.TopStart)
-            .padding(8.dp)
+            .align(Alignment.BottomStart)
+            .padding(start = 8.dp, bottom = 10.dp)
         ) {
-          QualityBadge(text = media.resolution.badge, isHighlighted = true)
+          PosterRatingBadge(rating = media.rating)
         }
 
         // Progress bar at the very bottom of the thumbnail
@@ -233,26 +330,15 @@ fun StandardMediaCard(
           .fillMaxWidth()
           .height(124.dp)
       ) {
-        val imageUrl = media.backdropUrl ?: media.posterUrl
-        if (!imageUrl.isNullOrBlank()) {
-          AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-              .data(imageUrl)
-              .crossfade(true)
-              .build(),
-            contentDescription = media.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-          )
-        } else {
-          val imageRes = media.backdropRes ?: R.drawable.banner_dune
-          Image(
-            painter = painterResource(id = imageRes),
-            contentDescription = media.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-          )
-        }
+        val fallbackRes = media.backdropRes ?: media.posterRes ?: R.drawable.banner_dune
+        CardMediaImage(
+          primaryUrl = media.backdropUrl,
+          secondaryUrl = media.posterUrl,
+          fallbackRes = fallbackRes,
+          contentDescription = media.title,
+          modifier = Modifier.fillMaxSize(),
+          contentScale = ContentScale.Crop
+        )
 
         Box(
           modifier = Modifier
@@ -268,56 +354,13 @@ fun StandardMediaCard(
             )
         )
 
-         // Quality badge top left
-         Box(
-           modifier = Modifier
-             .align(Alignment.TopStart)
-             .padding(6.dp)
-         ) {
-           Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-             QualityBadge(text = media.resolution.badge, isHighlighted = isFocused)
-             if (media.isNew) {
-               Box(
-                 modifier = Modifier
-                   .background(
-                     Color(0xFF00C853),
-                     RoundedCornerShape(4.dp)
-                   )
-                   .padding(horizontal = 5.dp, vertical = 2.dp)
-               ) {
-                 Text(
-                   text = "NUOVO",
-                   color = Color.Black,
-                   fontSize = 9.sp,
-                   fontWeight = FontWeight.Bold
-                 )
-               }
-             }
-           }
-         }
-
-        // Rating top right
-        Row(
+        // TMDB Rating Badge (in basso a destra, sul gradiente scuro)
+        Box(
           modifier = Modifier
-            .align(Alignment.TopEnd)
+            .align(Alignment.BottomEnd)
             .padding(6.dp)
-            .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
-            .padding(horizontal = 5.dp, vertical = 2.dp),
-          verticalAlignment = Alignment.CenterVertically
         ) {
-          Icon(
-            imageVector = Icons.Default.Star,
-            contentDescription = null,
-            tint = NovaGold,
-            modifier = Modifier.size(11.dp)
-          )
-          Spacer(modifier = Modifier.width(3.dp))
-          Text(
-            text = "%.1f".format(media.rating),
-            color = Color.White,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
-          )
+          PosterRatingBadge(rating = media.rating)
         }
       }
 
@@ -339,38 +382,32 @@ fun StandardMediaCard(
           horizontalArrangement = Arrangement.spacedBy(6.dp),
           verticalAlignment = Alignment.CenterVertically
         ) {
-           Text(
-             text = media.year.toString(),
-             color = NovaTextMuted,
-             fontSize = 11.sp
-           )
-           Text(
-             text = "•",
-             color = NovaTextMuted,
-             fontSize = 10.sp
-           )
-           Text(
-             text = if (media.seasonsCount != null && media.episodes.isNotEmpty()) {
-               "${media.seasonsCount} Stag. • ${media.episodes.size} Epi."
-             } else if (media.seasonsCount != null) {
-               "${media.seasonsCount} Stag."
-             } else {
-               media.formattedDuration
-             },
-             color = NovaTextMuted,
-             fontSize = 11.sp
-           )
-           Text(
-             text = "•",
-             color = NovaTextMuted,
-             fontSize = 10.sp
-           )
-           Text(
-             text = media.genres.firstOrNull() ?: media.type.labelItalian,
-             color = NovaTextSecondary,
-             fontSize = 11.sp,
-             maxLines = 1
-           )
+          Text(
+            text = media.year.toString(),
+            color = NovaTextMuted,
+            fontSize = 11.sp
+          )
+          Text(
+            text = "•",
+            color = NovaTextMuted,
+            fontSize = 10.sp
+          )
+          Text(
+            text = if (media.seasonsCount != null) "${media.seasonsCount} Stag." else media.formattedDuration,
+            color = NovaTextMuted,
+            fontSize = 11.sp
+          )
+          Text(
+            text = "•",
+            color = NovaTextMuted,
+            fontSize = 10.sp
+          )
+          Text(
+            text = media.genres.firstOrNull() ?: media.type.labelItalian,
+            color = NovaTextSecondary,
+            fontSize = 11.sp,
+            maxLines = 1
+          )
         }
       }
     }
@@ -402,26 +439,15 @@ fun PosterMediaCard(
           .fillMaxWidth()
           .height(232.dp)
       ) {
-        val posterUrl = media.posterUrl ?: media.backdropUrl
-        if (!posterUrl.isNullOrBlank()) {
-          AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-              .data(posterUrl)
-              .crossfade(true)
-              .build(),
-            contentDescription = media.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-          )
-        } else {
-          val fallbackRes = media.posterRes ?: media.backdropRes ?: R.drawable.banner_dune
-          Image(
-            painter = painterResource(id = fallbackRes),
-            contentDescription = media.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-          )
-        }
+        val fallbackRes = media.posterRes ?: media.backdropRes ?: R.drawable.banner_dune
+        CardMediaImage(
+          primaryUrl = media.posterUrl,
+          secondaryUrl = media.backdropUrl,
+          fallbackRes = fallbackRes,
+          contentDescription = media.title,
+          modifier = Modifier.fillMaxSize(),
+          contentScale = ContentScale.Crop
+        )
 
         // Gradient overlay at bottom of poster
         Box(
@@ -439,64 +465,21 @@ fun PosterMediaCard(
             )
         )
 
-         // Quality Badge
-         Box(
-           modifier = Modifier
-             .align(Alignment.TopStart)
-             .padding(6.dp)
-         ) {
-           Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-             QualityBadge(text = media.resolution.badge, isHighlighted = isFocused)
-             if (media.isNew) {
-               Box(
-                 modifier = Modifier
-                   .background(
-                     Color(0xFF00C853),
-                     RoundedCornerShape(4.dp)
-                   )
-                   .padding(horizontal = 5.dp, vertical = 2.dp)
-               ) {
-                 Text(
-                   text = "NUOVO",
-                   color = Color.Black,
-                   fontSize = 9.sp,
-                   fontWeight = FontWeight.Bold
-                 )
-               }
-             }
-           }
-         }
-
-        // TMDB Rating Badge
-        Row(
+        // TMDB Rating Badge (in basso a sinistra, sul gradiente scuro)
+        Box(
           modifier = Modifier
-            .align(Alignment.TopEnd)
+            .align(Alignment.BottomStart)
             .padding(6.dp)
-            .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(4.dp))
-            .padding(horizontal = 5.dp, vertical = 2.dp),
-          verticalAlignment = Alignment.CenterVertically
         ) {
-          Icon(
-            imageVector = Icons.Default.Star,
-            contentDescription = null,
-            tint = NovaGold,
-            modifier = Modifier.size(11.dp)
-          )
-          Spacer(modifier = Modifier.width(3.dp))
-          Text(
-            text = "%.1f".format(media.rating),
-            color = Color.White,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
-          )
+          PosterRatingBadge(rating = media.rating)
         }
 
-        // If focused or at bottom, optionally show mini TMDB logo or title
+        // Titolo logo TMDB (solo in focus): sollevato per non sovrapporsi al voto
         if (!media.logoUrl.isNullOrBlank() && isFocused) {
           Box(
             modifier = Modifier
               .align(Alignment.BottomCenter)
-              .padding(8.dp)
+              .padding(start = 8.dp, end = 8.dp, bottom = 34.dp)
           ) {
             SubcomposeAsyncImage(
               model = ImageRequest.Builder(LocalContext.current)

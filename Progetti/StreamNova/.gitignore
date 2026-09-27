@@ -1,18 +1,26 @@
-*.iml
-.gradle
-.kotlin
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
+# --- Build / cache Gradle ---
+.gradle/
+build/
+app/build/
+.kotlin/
 .externalNativeBuild
 .cxx
+/captures
+
+# --- IDE / file locali della macchina ---
+.idea/
+*.iml
 local.properties
+.vscode/
+
+# --- Tooling / agent ---
+.kilo/
+
+# --- Segreti e ambienti ---
 .env
+
+# --- Sistema / OS ---
+.DS_Store
+
+# --- Keystore di firma (non versionare) ---
 debug.keystore

@@ -6,6 +6,7 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -16,7 +17,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -123,18 +123,25 @@ fun PlayerScreen(
   var areControlsVisible by remember { mutableStateOf(true) }
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
   var hasFallbackAttempted by remember { mutableStateOf(false) }
-  var introEndPositionMs by remember { mutableLongStateOf(0L) }
-  var isIntroActive by remember { mutableStateOf(false) }
-  // Per attivare il banner "Salta intro": imposta introEndPositionMs dal viewModel quando
-  // l'episodio contiene metadati intro (es. tramite API TMDB/Firebase).
-  // Esempio: introEndPositionMs = viewModel.getIntroEndTimeMs()
-
-  val pauseButtonFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
 
   // Modal dialog states
   var showAudioModal by remember { mutableStateOf(false) }
   var showSubtitleModal by remember { mutableStateOf(false) }
   var showQualityModal by remember { mutableStateOf(false) }
+
+  // BACK gerarchico (livello 1): finché è aperto un pannello modale (audio, sottotitoli,
+  // qualità) il tasto Back chiude SOLO il modale. Il player viene chiuso dal gestore
+  // di MainActivity solo quando nessun modale è più aperto.
+  BackHandler(enabled = showAudioModal || showSubtitleModal || showQualityModal) {
+    showAudioModal = false
+    showSubtitleModal = false
+    showQualityModal = false
+  }
+
+  // Gestione Intro per le serie TV
+  // Mostra "Salta Intro" nei primi 90 secondi dell'episodio se è presente una sigla
+  val introEndMs = 90_000L
+  val isIntroActive = episode != null && currentPosition in 3_000L..introEndMs
 
   // HttpDataSource configured with standard UserAgent and cross-protocol redirects
   val httpDataSourceFactory = remember {
@@ -201,6 +208,11 @@ fun PlayerScreen(
     onDispose {
       val finalPos = exoPlayer.currentPosition
       viewModel.updatePlaybackPosition(finalPos, exoPlayer.duration, exoPlayer.bufferedPosition)
+      // Persista l'ultima posizione in Room in ogni percorso di uscita (Back del telecomando incluso),
+      // così il ripristino del progresso non dipende solo da closePlayer().
+      if (finalPos > 0) {
+        MediaRepository.updateProgress(media.id, finalPos)
+      }
       exoPlayer.removeListener(listener)
       exoPlayer.release()
     }
@@ -213,9 +225,6 @@ fun PlayerScreen(
         currentPosition = exoPlayer.currentPosition
         totalDuration = exoPlayer.duration.coerceAtLeast(1L)
         viewModel.updatePlaybackPosition(currentPosition, totalDuration, exoPlayer.bufferedPosition)
-        
-        // Check if we're in the intro
-        isIntroActive = introEndPositionMs > 0 && currentPosition < introEndPositionMs && (introEndPositionMs - currentPosition) <= 10000L
       }
       delay(500)
     }
@@ -229,60 +238,67 @@ fun PlayerScreen(
     }
   }
 
-  // Focus Play/Pause button when controls become visible
-  LaunchedEffect(areControlsVisible) {
-    if (areControlsVisible) {
-      pauseButtonFocusRequester.requestFocus()
-    }
-  }
-
   val displayTitle = if (episode != null) {
     "${media.title} • S${episode.seasonNumber}:E${episode.episodeNumber} - ${episode.title}"
   } else {
     media.title
   }
 
-    Box(
-      modifier = modifier
-        .fillMaxSize()
-        .background(Color.Black)
-        .focusable()
-        .onKeyEvent { keyEvent ->
-          when (keyEvent.nativeKeyEvent.keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT,
-            KeyEvent.KEYCODE_DPAD_RIGHT,
-            KeyEvent.KEYCODE_DPAD_UP,
-            KeyEvent.KEYCODE_DPAD_DOWN,
-            KeyEvent.KEYCODE_DPAD_CENTER,
-            KeyEvent.KEYCODE_ENTER -> {
-              if (!areControlsVisible) {
-                areControlsVisible = true
-                true
-              } else {
-                false
-              }
-            }
-            KeyEvent.KEYCODE_BACK -> {
-              if (showAudioModal || showSubtitleModal || showQualityModal) {
-                showAudioModal = false
-                showSubtitleModal = false
-                showQualityModal = false
-              } else if (areControlsVisible) {
-                viewModel.closePlayer()
-              } else {
-                areControlsVisible = true
-              }
-              true
-            }
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-              if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      .background(Color.Black)
+      .onKeyEvent { keyEvent ->
+        when (keyEvent.nativeKeyEvent.keyCode) {
+          KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+            if (!areControlsVisible) {
               areControlsVisible = true
-              true
+            } else {
+              if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
             }
-            else -> false
+            true
           }
+          KeyEvent.KEYCODE_DPAD_LEFT -> {
+            areControlsVisible = true
+            val newPos = (exoPlayer.currentPosition - 10000L).coerceAtLeast(0L)
+            exoPlayer.seekTo(newPos)
+            currentPosition = newPos
+            true
+          }
+          KeyEvent.KEYCODE_DPAD_RIGHT -> {
+            areControlsVisible = true
+            val newPos = (exoPlayer.currentPosition + 10000L).coerceAtMost(exoPlayer.duration)
+            exoPlayer.seekTo(newPos)
+            currentPosition = newPos
+            true
+          }
+          KeyEvent.KEYCODE_BACK -> {
+            if (showAudioModal || showSubtitleModal || showQualityModal) {
+              showAudioModal = false
+              showSubtitleModal = false
+              showQualityModal = false
+            } else if (areControlsVisible) {
+              viewModel.closePlayer()
+            } else {
+              areControlsVisible = true
+            }
+            true
+          }
+          KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+            areControlsVisible = true
+            true
+          }
+          else -> false
         }
-    ) {
+      }
+      .clickable(
+        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+        indication = null
+      ) {
+        areControlsVisible = !areControlsVisible
+      }
+  ) {
     // 1. AndroidView holding PlayerView
     AndroidView(
       factory = { ctx ->
@@ -495,12 +511,12 @@ fun PlayerScreen(
                 ),
               contentAlignment = Alignment.Center
             ) {
-               Icon(
-                 imageVector = Icons.Default.Replay10,
-                 contentDescription = if (isFocused) "Riavvolgi 10 secondi" else "Riavvolgi",
-                 tint = if (isFocused) Color.Black else Color.White,
-                 modifier = Modifier.size(32.dp)
-               )
+              Icon(
+                imageVector = Icons.Default.Replay10,
+                contentDescription = "Riavvolgi 10 secondi",
+                tint = if (isFocused) Color.Black else Color.White,
+                modifier = Modifier.size(32.dp)
+              )
             }
           }
 
@@ -510,8 +526,7 @@ fun PlayerScreen(
             focusedScale = 1.15f,
             onClick = {
               if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-            },
-            modifier = Modifier.focusRequester(pauseButtonFocusRequester)
+            }
           ) { isFocused ->
             Box(
               modifier = Modifier
@@ -563,12 +578,12 @@ fun PlayerScreen(
                 ),
               contentAlignment = Alignment.Center
             ) {
-               Icon(
-                 imageVector = Icons.Default.Forward10,
-                 contentDescription = if (isFocused) "Avanza 10 secondi" else "Avanza",
-                 tint = if (isFocused) Color.Black else Color.White,
-                 modifier = Modifier.size(32.dp)
-               )
+              Icon(
+                imageVector = Icons.Default.Forward10,
+                contentDescription = "Avanza 10 secondi",
+                tint = if (isFocused) Color.Black else Color.White,
+                modifier = Modifier.size(32.dp)
+              )
             }
           }
         }
@@ -663,65 +678,74 @@ fun PlayerScreen(
               )
             }
 
-             Text(
-               text = "Usa le frecce del telecomando per navigare i controlli • Premi OK per selezionare",
-               color = NovaTextMuted,
-               fontSize = 11.sp
-             )
-           }
+            Text(
+              text = "Usa le frecce del telecomando per avanzare di 10s • Premi OK per Pausa",
+              color = NovaTextMuted,
+              fontSize = 11.sp
+            )
+          }
         }
-       }
-     }
+      }
+    }
 
-     // Skip Intro banner (bottom-right)
-     AnimatedVisibility(
-       visible = isIntroActive && areControlsVisible,
-       enter = fadeIn() + slideInHorizontally(initialOffsetX = { 150 }),
-       exit = fadeOut() + slideOutHorizontally(targetOffsetX = { 150 })
-     ) {
-       TvFocusableBox(
-         shape = RoundedCornerShape(8.dp),
-         onClick = {
-           exoPlayer.seekTo(introEndPositionMs)
-           introEndPositionMs = 0L
-         }
-       ) { isFocused ->
-         Box(
-           modifier = Modifier
-             .background(
-               if (isFocused) NovaCyan else Color.Black.copy(alpha = 0.85f),
-               RoundedCornerShape(8.dp)
-             )
-             .border(
-               width = 1.dp,
-               color = if (isFocused) NovaCyanBright else Color(0x33FFFFFF),
-               shape = RoundedCornerShape(8.dp)
-             )
-             .padding(horizontal = 16.dp, vertical = 10.dp),
-           contentAlignment = Alignment.Center
-         ) {
-           Row(
-             horizontalArrangement = Arrangement.spacedBy(8.dp),
-             verticalAlignment = Alignment.CenterVertically
-           ) {
-             Icon(
-               imageVector = Icons.Default.FastForward,
-               contentDescription = "Salta intro",
-               tint = if (isFocused) Color.Black else NovaCyanBright,
-               modifier = Modifier.size(18.dp)
-             )
-             Text(
-               text = "Salta intro",
-               color = if (isFocused) Color.Black else Color.White,
-               fontSize = 14.sp,
-               fontWeight = FontWeight.SemiBold
-             )
-           }
-         }
-       }
-     }
+    // 3. Banner "Salta Intro" posizionato in basso a destra dello schermo (per serie TV)
+    AnimatedVisibility(
+      visible = isIntroActive,
+      enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
+      exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
+      modifier = Modifier
+        .align(Alignment.BottomEnd)
+        .padding(
+          end = 40.dp,
+          bottom = if (areControlsVisible) 110.dp else 40.dp
+        )
+    ) {
+      TvFocusableBox(
+        shape = RoundedCornerShape(50),
+        onClick = {
+          // Salta direttamente alla fine della sigla
+          exoPlayer.seekTo(introEndMs)
+          currentPosition = introEndMs
+        }
+      ) { isFocused ->
+        Row(
+          modifier = Modifier
+            .shadow(
+              elevation = if (isFocused) 16.dp else 6.dp,
+              shape = RoundedCornerShape(50),
+              spotColor = NovaCyanBright
+            )
+            .background(
+              color = if (isFocused) NovaCyanBright else Color(0xCC0B111E),
+              shape = RoundedCornerShape(50)
+            )
+            .border(
+              width = if (isFocused) 2.dp else 1.5.dp,
+              color = if (isFocused) Color.White else NovaCyan.copy(alpha = 0.8f),
+              shape = RoundedCornerShape(50)
+            )
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          Icon(
+            imageVector = Icons.Default.FastForward,
+            contentDescription = "Salta Intro",
+            tint = if (isFocused) Color.Black else NovaCyanBright,
+            modifier = Modifier.size(18.dp)
+          )
+          Text(
+            text = "SALTA INTRO",
+            color = if (isFocused) Color.Black else Color.White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            letterSpacing = 0.5.sp
+          )
+        }
+      }
+    }
 
-     // Modal Audio
+    // Modal Audio
     if (showAudioModal) {
       TrackSelectionDialog(
         title = "Seleziona Traccia Audio",
@@ -773,35 +797,37 @@ fun PlayerBottomAction(
   onClick: () -> Unit
 ) {
   TvFocusableBox(
-    shape = RoundedCornerShape(8.dp),
+    shape = RoundedCornerShape(50),
+    focusedScale = 1.05f,
     onClick = onClick
   ) { isFocused ->
     Row(
       modifier = Modifier
         .background(
-          if (isFocused) NovaCyan.copy(alpha = 0.3f) else Color.Black.copy(alpha = 0.5f),
-          RoundedCornerShape(8.dp)
+          if (isFocused) Brush.horizontalGradient(listOf(NovaCyan, NovaCyanBright))
+          else Brush.horizontalGradient(listOf(Color(0xFF1E2638).copy(alpha = 0.9f), Color(0xFF161E30).copy(alpha = 0.9f))),
+          RoundedCornerShape(50)
         )
         .border(
-          width = 1.dp,
-          color = if (isFocused) NovaCyanBright else Color(0x33FFFFFF),
-          shape = RoundedCornerShape(8.dp)
+          width = if (isFocused) 1.5.dp else 1.dp,
+          color = if (isFocused) NovaCyanBright else Color(0x44475569),
+          shape = RoundedCornerShape(50)
         )
-        .padding(horizontal = 14.dp, vertical = 8.dp),
+        .padding(horizontal = 16.dp, vertical = 9.dp),
       verticalAlignment = Alignment.CenterVertically
     ) {
       Icon(
         imageVector = icon,
         contentDescription = null,
-        tint = if (isFocused) NovaCyanBright else Color.White,
+        tint = if (isFocused) Color.Black else NovaCyanBright,
         modifier = Modifier.size(16.dp)
       )
-      Spacer(modifier = Modifier.width(8.dp))
+      Spacer(modifier = Modifier.width(6.dp))
       Text(
         text = label,
-        color = if (isFocused) NovaCyanBright else Color.White,
+        color = if (isFocused) Color.Black else NovaTextPrimary,
         fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold
+        fontWeight = FontWeight.Bold
       )
     }
   }
@@ -819,8 +845,8 @@ fun TrackSelectionDialog(
     Column(
       modifier = Modifier
         .width(380.dp)
-        .background(NovaSurface, RoundedCornerShape(16.dp))
-        .border(1.5.dp, NovaCyan, RoundedCornerShape(16.dp))
+        .background(NovaSurface, RoundedCornerShape(20.dp))
+        .border(1.5.dp, NovaCyan, RoundedCornerShape(20.dp))
         .padding(24.dp)
     ) {
       Row(
@@ -850,7 +876,7 @@ fun TrackSelectionDialog(
         options.forEachIndexed { index, option ->
           val isSelected = index == selectedIndex
           TvFocusableBox(
-            shape = RoundedCornerShape(10.dp),
+            shape = RoundedCornerShape(50),
             onClick = { onSelect(index) },
             modifier = Modifier.fillMaxWidth()
           ) { isFocused ->
@@ -859,9 +885,14 @@ fun TrackSelectionDialog(
                 .fillMaxWidth()
                 .background(
                   if (isSelected) NovaCyan.copy(alpha = 0.2f) else if (isFocused) NovaSurfaceVariant else Color.Transparent,
-                  RoundedCornerShape(10.dp)
+                  RoundedCornerShape(50)
                 )
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .border(
+                  width = 1.dp,
+                  color = if (isFocused) NovaCyanBright else if (isSelected) NovaCyan else Color.Transparent,
+                  shape = RoundedCornerShape(50)
+                )
+                .padding(horizontal = 16.dp, vertical = 10.dp),
               horizontalArrangement = Arrangement.SpaceBetween,
               verticalAlignment = Alignment.CenterVertically
             ) {

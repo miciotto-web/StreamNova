@@ -21,7 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Search
@@ -78,7 +78,7 @@ fun SidebarNavigation(
     NavigationMenuItem(SidebarSection.HOME, Icons.Default.Home, "Home"),
     NavigationMenuItem(SidebarSection.FILM, Icons.Default.Movie, "Film"),
     NavigationMenuItem(SidebarSection.SERIE_TV, Icons.Default.Tv, "Serie TV"),
-    NavigationMenuItem(SidebarSection.I_MIEI_CONTENUTI, Icons.Default.Bookmark, "I miei contenuti"),
+    NavigationMenuItem(SidebarSection.I_MIEI_CONTENUTI, Icons.Default.Favorite, "Preferiti"),
     NavigationMenuItem(SidebarSection.CERCA, Icons.Default.Search, "Cerca"),
     NavigationMenuItem(SidebarSection.IMPOSTAZIONI, Icons.Default.Settings, "Impostazioni"),
   )
@@ -154,7 +154,7 @@ fun SidebarNavigation(
 
         TvFocusableBox(
           modifier = Modifier.height(48.dp),
-          shape = RoundedCornerShape(10.dp),
+          shape = RoundedCornerShape(50),
           focusedScale = 1.04f,
           onClick = {
             onSectionSelected(item.section)
@@ -185,8 +185,9 @@ fun SidebarNavigation(
 
           Row(
             modifier = Modifier
-              .background(bgColor, RoundedCornerShape(10.dp))
-              .padding(horizontal = 14.dp, vertical = 10.dp),
+              .height(48.dp)
+              .background(bgColor, RoundedCornerShape(50))
+              .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically
           ) {
             Icon(
@@ -210,47 +211,6 @@ fun SidebarNavigation(
               )
             }
           }
-        }
-      }
-    }
-
-    // Profile / Status Avatar at bottom
-    Row(
-      modifier = Modifier
-        .padding(horizontal = 8.dp),
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      Box(
-        modifier = Modifier
-          .size(32.dp)
-          .clip(CircleShape)
-          .background(NovaCyan),
-        contentAlignment = Alignment.Center
-      ) {
-        Text(
-          text = "SN",
-          color = Color.Black,
-          fontSize = 12.sp,
-          fontWeight = FontWeight.Bold
-        )
-      }
-      AnimatedVisibility(
-        visible = isSidebarFocused,
-        enter = fadeIn(),
-        exit = fadeOut()
-      ) {
-        Column(modifier = Modifier.padding(start = 10.dp)) {
-          Text(
-            text = "Profilo TV",
-            color = NovaTextPrimary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold
-          )
-          Text(
-            text = "4K HDR Attivo",
-            color = NovaCyanBright,
-            fontSize = 10.sp
-          )
         }
       }
     }

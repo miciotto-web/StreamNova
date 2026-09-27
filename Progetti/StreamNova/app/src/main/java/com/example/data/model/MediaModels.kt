@@ -36,6 +36,8 @@ data class Episode(
   val videoUrl: String,
   val currentProgressMs: Long = 0L,
   val totalDurationMs: Long = (durationMinutes * 60 * 1000).toLong(),
+  val rating: Float? = null,
+  val airDate: String? = null,
 ) {
   val isCompleted: Boolean
     get() = totalDurationMs > 0 && currentProgressMs >= (totalDurationMs * 0.9)
@@ -77,14 +79,13 @@ data class MediaItem(
   val totalDurationMs: Long = (durationMinutes * 60 * 1000).toLong(),
   val lastWatchedSeason: Int? = null,
   val lastWatchedEpisode: Int? = null,
-   val isFavorite: Boolean = false,
-   val releaseDate: Int? = null,
-   val episodes: List<Episode> = emptyList(),
- ) {
-  val isNew: Boolean
-    get() = releaseDate != null && releaseDate >= ((System.currentTimeMillis() / 1000 - 30 * 24 * 60 * 60).toInt())
-   
-   val progressFraction: Float
+  val isFavorite: Boolean = false,
+  val provider: String? = null,
+  val isTop10: Boolean = false,
+  val isTrending: Boolean = false,
+  val episodes: List<Episode> = emptyList(),
+) {
+  val progressFraction: Float
     get() = if (totalDurationMs > 0) (currentProgressMs.toFloat() / totalDurationMs.toFloat()).coerceIn(0f, 1f) else 0f
 
   val formattedDuration: String
@@ -111,3 +112,104 @@ data class MediaItem(
       }
     }
 }
+
+data class CastMember(
+  val id: Int,
+  val name: String,
+  val character: String,
+  val profileUrl: String? = null
+)
+
+data class CrewMember(
+  val id: Int,
+  val name: String,
+  val job: String,
+  val department: String? = null
+)
+
+data class ExtendedMediaDetails(
+  val tmdbId: Int,
+  val title: String,
+  val originalTitle: String,
+  val overview: String,
+  val backdropUrl: String?,
+  val posterUrl: String?,
+  val releaseYear: Int,
+  val rating: Float,
+  val voteCount: Int = 0,
+  val durationMinutes: Int = 120,
+  val seasonsCount: Int? = null,
+  val episodesCount: Int? = null,
+  val genres: List<String> = emptyList(),
+  val tagline: String? = null,
+  val status: String? = null,
+  val cast: List<CastMember> = emptyList(),
+  val director: String = "",
+  val similarItems: List<MediaItem> = emptyList(),
+  val isTv: Boolean = false
+)
+
+sealed interface MediaDetailUiState {
+  object Idle : MediaDetailUiState
+  data class Loading(val baseMedia: MediaItem? = null) : MediaDetailUiState
+  data class Success(
+    val media: MediaItem,
+    val details: ExtendedMediaDetails
+  ) : MediaDetailUiState
+  data class Error(
+    val baseMedia: MediaItem? = null,
+    val message: String = "Impossibile recuperare i dettagli estesi da TMDB"
+  ) : MediaDetailUiState
+}
+
+data class EpisodeItem(
+  val id: String,
+  val tmdbId: Int,
+  val episodeNumber: Int,
+  val seasonNumber: Int,
+  val title: String,
+  val overview: String,
+  val stillUrl: String? = null,
+  val durationMinutes: Int = 50,
+  val rating: Float = 8.0f,
+  val airDate: String? = null,
+  val videoUrl: String = "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8"
+) {
+  val formattedDuration: String
+    get() = if (durationMinutes > 0) "${durationMinutes} min" else "45 min"
+
+  val episodeBadge: String
+    get() = "E%02d".format(episodeNumber)
+}
+
+fun EpisodeItem.toEpisode(seriesId: String): Episode {
+  return Episode(
+    id = "${seriesId}_s${seasonNumber}e${episodeNumber}",
+    seasonNumber = seasonNumber,
+    episodeNumber = episodeNumber,
+    title = title,
+    synopsis = overview,
+    durationMinutes = durationMinutes.coerceAtLeast(15),
+    thumbnailUrl = stillUrl,
+    videoUrl = videoUrl,
+    rating = rating,
+    airDate = airDate
+  )
+}
+
+data class SeasonItem(
+  val id: Int,
+  val seasonNumber: Int,
+  val name: String,
+  val overview: String = "",
+  val episodes: List<EpisodeItem> = emptyList()
+)
+
+sealed interface SeasonEpisodesUiState {
+  object Idle : SeasonEpisodesUiState
+  data class Loading(val seasonNumber: Int) : SeasonEpisodesUiState
+  data class Success(val seasonNumber: Int, val season: SeasonItem) : SeasonEpisodesUiState
+  data class Error(val seasonNumber: Int, val message: String) : SeasonEpisodesUiState
+}
+
+

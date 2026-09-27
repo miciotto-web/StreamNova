@@ -66,7 +66,117 @@ data class TmdbLogoItemDto(
   val height: Int?,
 )
 
+data class TmdbGenreDto(
+  val id: Int,
+  val name: String
+)
+
+data class TmdbCastDto(
+  val id: Int,
+  val name: String,
+  val character: String? = null,
+  @Json(name = "profile_path") val profilePath: String? = null,
+  val order: Int? = null,
+  @Json(name = "known_for_department") val knownForDepartment: String? = null
+)
+
+data class TmdbCrewDto(
+  val id: Int,
+  val name: String,
+  val job: String? = null,
+  val department: String? = null,
+  @Json(name = "profile_path") val profilePath: String? = null
+)
+
+data class TmdbCreditsDto(
+  val id: Int? = null,
+  val cast: List<TmdbCastDto>? = emptyList(),
+  val crew: List<TmdbCrewDto>? = emptyList()
+)
+
+data class TmdbMovieDetailDto(
+  val id: Int,
+  val title: String?,
+  @Json(name = "original_title") val originalTitle: String? = null,
+  val overview: String? = null,
+  @Json(name = "backdrop_path") val backdropPath: String? = null,
+  @Json(name = "poster_path") val posterPath: String? = null,
+  @Json(name = "release_date") val releaseDate: String? = null,
+  @Json(name = "vote_average") val voteAverage: Float? = null,
+  @Json(name = "vote_count") val voteCount: Int? = null,
+  val runtime: Int? = null,
+  val genres: List<TmdbGenreDto>? = emptyList(),
+  val tagline: String? = null,
+  val status: String? = null,
+  val credits: TmdbCreditsDto? = null,
+  val similar: TmdbPaginatedResponse<TmdbMovieDto>? = null
+)
+
+data class TmdbTvDetailDto(
+  val id: Int,
+  val name: String?,
+  @Json(name = "original_name") val originalName: String? = null,
+  val overview: String? = null,
+  @Json(name = "backdrop_path") val backdropPath: String? = null,
+  @Json(name = "poster_path") val posterPath: String? = null,
+  @Json(name = "first_air_date") val firstAirDate: String? = null,
+  @Json(name = "vote_average") val voteAverage: Float? = null,
+  @Json(name = "vote_count") val voteCount: Int? = null,
+  @Json(name = "number_of_seasons") val numberOfSeasons: Int? = null,
+  @Json(name = "number_of_episodes") val numberOfEpisodes: Int? = null,
+  @Json(name = "episode_run_time") val episodeRunTime: List<Int>? = emptyList(),
+  val genres: List<TmdbGenreDto>? = emptyList(),
+  val tagline: String? = null,
+  val status: String? = null,
+  val credits: TmdbCreditsDto? = null,
+  val similar: TmdbPaginatedResponse<TmdbTvDto>? = null
+)
+
+data class TmdbEpisodeDto(
+  val id: Int,
+  val name: String?,
+  @Json(name = "episode_number") val episodeNumber: Int,
+  @Json(name = "season_number") val seasonNumber: Int,
+  val overview: String? = null,
+  @Json(name = "still_path") val stillPath: String? = null,
+  @Json(name = "air_date") val airDate: String? = null,
+  @Json(name = "vote_average") val voteAverage: Float? = null,
+  val runtime: Int? = null
+)
+
+data class TmdbSeasonDetailDto(
+  val id: Int,
+  val name: String?,
+  @Json(name = "season_number") val seasonNumber: Int,
+  val overview: String? = null,
+  val episodes: List<TmdbEpisodeDto>? = emptyList()
+)
+
 interface TmdbApiService {
+  @GET("tv/{series_id}/season/{season_number}")
+  suspend fun getSeasonDetails(
+    @Path("series_id") seriesId: Int,
+    @Path("season_number") seasonNumber: Int,
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT"
+  ): TmdbSeasonDetailDto
+
+  @GET("movie/{movie_id}")
+  suspend fun getMovieDetails(
+    @Path("movie_id") movieId: Int,
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT",
+    @Query("append_to_response") append: String = "credits,similar"
+  ): TmdbMovieDetailDto
+
+  @GET("tv/{series_id}")
+  suspend fun getTvDetails(
+    @Path("series_id") seriesId: Int,
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT",
+    @Query("append_to_response") append: String = "credits,similar"
+  ): TmdbTvDetailDto
+
   @GET("trending/movie/week")
   suspend fun getTrendingMovies(
     @Query("api_key") apiKey: String,
@@ -93,6 +203,67 @@ interface TmdbApiService {
     @Query("page") page: Int = 1
   ): TmdbPaginatedResponse<TmdbTvDto>
 
+  @GET("movie/top_rated")
+  suspend fun getTopRatedMovies(
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbMovieDto>
+
+  @GET("tv/top_rated")
+  suspend fun getTopRatedTv(
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
+  @GET("discover/movie")
+  suspend fun discoverMoviesByProvider(
+    @Query("api_key") apiKey: String,
+    @Query("with_watch_providers") providerId: String,
+    @Query("watch_region") region: String? = null,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbMovieDto>
+
+  @GET("discover/tv")
+  suspend fun discoverTvByProvider(
+    @Query("api_key") apiKey: String,
+    @Query("with_watch_providers") providerId: String,
+    @Query("watch_region") region: String? = null,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
+  @GET("discover/tv")
+  suspend fun discoverTvByNetwork(
+    @Query("api_key") apiKey: String,
+    @Query("with_networks") networkId: String,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
+  @GET("discover/movie")
+  suspend fun discoverMoviesByGenre(
+    @Query("api_key") apiKey: String,
+    @Query("with_genres") genreId: String,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbMovieDto>
+
+  @GET("discover/tv")
+  suspend fun discoverTvByGenre(
+    @Query("api_key") apiKey: String,
+    @Query("with_genres") genreId: String,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
   @GET("movie/{movie_id}/images")
   suspend fun getMovieImages(
     @Path("movie_id") movieId: Int,
@@ -115,23 +286,40 @@ object TmdbApiClient {
   // Helper functions for full TMDB URLs
   fun backdropUrl(path: String?, size: String = "w1280"): String? {
     if (path.isNullOrBlank()) return null
+    if (path.startsWith("http://") || path.startsWith("https://")) return path
     val clean = if (path.startsWith("/")) path else "/$path"
     return "$IMAGE_BASE_URL$size$clean"
   }
 
   fun posterUrl(path: String?, size: String = "w780"): String? {
     if (path.isNullOrBlank()) return null
+    if (path.startsWith("http://") || path.startsWith("https://")) return path
     val clean = if (path.startsWith("/")) path else "/$path"
     return "$IMAGE_BASE_URL$size$clean"
   }
 
   fun logoUrl(path: String?, size: String = "w500"): String? {
     if (path.isNullOrBlank()) return null
+    if (path.startsWith("http://") || path.startsWith("https://")) return path
     val clean = if (path.startsWith("/")) path else "/$path"
     return "$IMAGE_BASE_URL$size$clean"
   }
 
-  private val moshi: Moshi = Moshi.Builder()
+  fun profileUrl(path: String?, size: String = "w185"): String? {
+    if (path.isNullOrBlank()) return null
+    if (path.startsWith("http://") || path.startsWith("https://")) return path
+    val clean = if (path.startsWith("/")) path else "/$path"
+    return "$IMAGE_BASE_URL$size$clean"
+  }
+
+  fun stillUrl(path: String?, size: String = "w300"): String? {
+    if (path.isNullOrBlank()) return null
+    if (path.startsWith("http://") || path.startsWith("https://")) return path
+    val clean = if (path.startsWith("/")) path else "/$path"
+    return "$IMAGE_BASE_URL$size$clean"
+  }
+
+  val moshi: Moshi = Moshi.Builder()
     .add(KotlinJsonAdapterFactory())
     .build()
 

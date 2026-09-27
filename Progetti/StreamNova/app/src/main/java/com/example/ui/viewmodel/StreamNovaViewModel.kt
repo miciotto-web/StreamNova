@@ -4,10 +4,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.AudioTrack
 import com.example.data.model.Episode
+import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
+import com.example.data.model.MediaType
+import com.example.data.model.SeasonEpisodesUiState
+import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
 import com.example.data.model.VideoResolution
 import com.example.data.repository.MediaRepository
+import com.example.ui.components.StreamingProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,7 +34,8 @@ enum class SidebarSection(val title: String) {
 enum class ScreenState {
   BROWSING,
   DETAIL,
-  PLAYER
+  PLAYER,
+  PROVIDER
 }
 
 data class PlayerPlaybackState(
@@ -56,12 +62,50 @@ class StreamNovaViewModel : ViewModel() {
   private val _selectedMedia = MutableStateFlow<MediaItem?>(null)
   val selectedMedia: StateFlow<MediaItem?> = _selectedMedia.asStateFlow()
 
+  val detailUiState: StateFlow<MediaDetailUiState> = MediaRepository.detailUiState
+
+  private val _selectedSeasonNumber = MutableStateFlow(1)
+  val selectedSeasonNumber: StateFlow<Int> = _selectedSeasonNumber.asStateFlow()
+
+  private val _seasonEpisodesUiState = MutableStateFlow<SeasonEpisodesUiState>(SeasonEpisodesUiState.Idle)
+  val seasonEpisodesUiState: StateFlow<SeasonEpisodesUiState> = _seasonEpisodesUiState.asStateFlow()
+
+  private val _selectedProvider = MutableStateFlow<StreamingProvider?>(null)
+  val selectedProvider: StateFlow<StreamingProvider?> = _selectedProvider.asStateFlow()
+
   private val _playbackState = MutableStateFlow(PlayerPlaybackState())
   val playbackState: StateFlow<PlayerPlaybackState> = _playbackState.asStateFlow()
 
+  private val _isRefreshing = MutableStateFlow(false)
+  val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
   init {
     viewModelScope.launch {
-      MediaRepository.refreshTmdbData()
+      MediaRepository.loadFromCache()
+      refreshCatalog()
+    }
+  }
+
+  fun refreshCatalog() {
+    viewModelScope.launch {
+      _isRefreshing.value = true
+      try {
+        MediaRepository.refreshTmdbData()
+      } finally {
+        _isRefreshing.value = false
+      }
+    }
+  }
+
+  fun clearCacheAndRefresh() {
+    viewModelScope.launch {
+      _isRefreshing.value = true
+      try {
+        MediaRepository.clearCache()
+        MediaRepository.refreshTmdbData()
+      } finally {
+        _isRefreshing.value = false
+      }
     }
   }
 
@@ -93,9 +137,50 @@ class StreamNovaViewModel : ViewModel() {
     _screenState.value = ScreenState.BROWSING
   }
 
+  fun loadDetails(tmdbId: Int, isTv: Boolean, baseMedia: MediaItem? = null) {
+    viewModelScope.launch {
+      MediaRepository.loadMediaDetails(tmdbId, isTv, baseMedia)
+    }
+  }
+
+  fun selectSeason(seriesTmdbId: Int, seasonNumber: Int, fallbackSeries: MediaItem? = null) {
+    _selectedSeasonNumber.value = seasonNumber
+    _seasonEpisodesUiState.value = SeasonEpisodesUiState.Loading(seasonNumber)
+    viewModelScope.launch {
+      try {
+        val season = MediaRepository.getSeasonDetails(seriesTmdbId, seasonNumber, fallbackSeries)
+        _seasonEpisodesUiState.value = SeasonEpisodesUiState.Success(seasonNumber, season)
+      } catch (e: Exception) {
+        _seasonEpisodesUiState.value = SeasonEpisodesUiState.Error(
+          seasonNumber,
+          e.localizedMessage ?: "Errore nel caricamento degli episodi della stagione $seasonNumber"
+        )
+      }
+    }
+  }
+
   fun openDetail(media: MediaItem) {
     _selectedMedia.value = media
     _screenState.value = ScreenState.DETAIL
+    val tmdbId = media.tmdbId ?: 0
+    val isTv = media.type == MediaType.SERIE_TV
+    loadDetails(tmdbId, isTv, media)
+    if (isTv && tmdbId > 0) {
+      val initialSeason = media.lastWatchedSeason ?: 1
+      selectSeason(tmdbId, initialSeason, media)
+    } else {
+      _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+    }
+  }
+
+  fun retryLoadDetail() {
+    val media = _selectedMedia.value ?: return
+    val tmdbId = media.tmdbId ?: 0
+    val isTv = media.type == MediaType.SERIE_TV
+    loadDetails(tmdbId, isTv, media)
+    if (isTv && tmdbId > 0) {
+      selectSeason(tmdbId, _selectedSeasonNumber.value, media)
+    }
   }
 
   fun openPlayer(media: MediaItem, episode: Episode? = null) {
@@ -123,6 +208,27 @@ class StreamNovaViewModel : ViewModel() {
   }
 
   fun backToBrowsing() {
+    _selectedProvider.value = null
+    _selectedMedia.value = null
+    _screenState.value = ScreenState.BROWSING
+  }
+
+  fun backFromDetail() {
+    _selectedMedia.value = null
+    if (_selectedProvider.value != null) {
+      _screenState.value = ScreenState.PROVIDER
+    } else {
+      _screenState.value = ScreenState.BROWSING
+    }
+  }
+
+  fun openProvider(provider: StreamingProvider) {
+    _selectedProvider.value = provider
+    _screenState.value = ScreenState.PROVIDER
+  }
+
+  fun closeProvider() {
+    _selectedProvider.value = null
     _screenState.value = ScreenState.BROWSING
   }
 

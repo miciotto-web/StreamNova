@@ -1,7 +1,12 @@
 package com.example.ui.components
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,17 +20,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -38,45 +50,72 @@ import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.MediaItem
-import com.example.ui.theme.NovaGold
+import com.example.data.model.MediaType
+import com.example.ui.theme.NovaCyan
+import com.example.ui.theme.NovaCyanBright
+import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import kotlinx.coroutines.delay
 
 @Composable
 fun HeroBanner(
-  media: MediaItem,
-  onPlayClick: () -> Unit,
-  onInfoClick: () -> Unit,
+  items: List<MediaItem>,
+  onPlayClick: (MediaItem) -> Unit,
+  onInfoClick: (MediaItem) -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val safeItems = remember(items) { items.take(9) }
+  if (safeItems.isEmpty()) return
+
+  var currentIndex by remember(safeItems) { mutableStateOf(0) }
+
+  // Auto-scorrimento dinamico ogni 10 secondi
+  LaunchedEffect(safeItems, currentIndex) {
+    if (safeItems.size > 1) {
+      delay(10_000L)
+      currentIndex = (currentIndex + 1) % safeItems.size
+    }
+  }
+
+  val currentMedia = safeItems.getOrElse(currentIndex) { safeItems.first() }
+
   Box(
     modifier = modifier
       .fillMaxWidth()
       .height(350.dp)
   ) {
-    // Backdrop Image from TMDB
-    if (!media.backdropUrl.isNullOrBlank()) {
-      AsyncImage(
-        model = ImageRequest.Builder(LocalContext.current)
-          .data(media.backdropUrl)
-          .crossfade(true)
-          .build(),
-        contentDescription = media.title,
-        contentScale = ContentScale.Crop,
-        modifier = Modifier.fillMaxSize()
-      )
-    } else {
-      val backdrop = media.backdropRes ?: R.drawable.banner_dune
-      Image(
-        painter = painterResource(id = backdrop),
-        contentDescription = media.title,
-        contentScale = ContentScale.Crop,
-        modifier = Modifier.fillMaxSize()
-      )
+    // Backdrop Image con transizione morbida tra i titoli TMDB
+    Crossfade(
+      targetState = currentMedia,
+      animationSpec = tween(durationMillis = 800),
+      label = "HeroBackdropCrossfade"
+    ) { media ->
+      Box(modifier = Modifier.fillMaxSize()) {
+        if (!media.backdropUrl.isNullOrBlank()) {
+          AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+              .data(media.backdropUrl)
+              .crossfade(true)
+              .build(),
+            contentDescription = media.title,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+          )
+        } else {
+          val backdrop = media.backdropRes ?: R.drawable.banner_dune
+          Image(
+            painter = painterResource(id = backdrop),
+            contentDescription = media.title,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+          )
+        }
+      }
     }
 
-    // Gradients: dark from left, and dark from bottom
+    // Gradienti cinematografici di contrasto per leggibilità
     Box(
       modifier = Modifier
         .fillMaxSize()
@@ -109,50 +148,20 @@ fun HeroBanner(
         )
     )
 
-    // Content Overlay
+    // Contenuto Principale Sovrapposto
     Column(
       modifier = Modifier
         .align(Alignment.BottomStart)
-        .padding(start = 32.dp, bottom = 24.dp, end = 240.dp)
+        .padding(start = 32.dp, bottom = 24.dp, end = 200.dp)
     ) {
-      // Top row: "IN EVIDENZA" pill + Quality tags + Rating
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-      ) {
-        QualityBadge(text = "IN EVIDENZA", isHighlighted = true)
-        media.qualityTags.forEach { tag ->
-          QualityBadge(text = tag, isHighlighted = false)
-        }
-        Row(
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Icon(
-            imageVector = Icons.Default.Star,
-            contentDescription = null,
-            tint = NovaGold,
-            modifier = Modifier.size(14.dp)
-          )
-          Spacer(modifier = Modifier.width(3.dp))
-          Text(
-            text = "%.1f".format(media.rating),
-            color = Color.White,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold
-          )
-        }
-      }
-
-      Spacer(modifier = Modifier.height(10.dp))
-
-      // TMDB Original Title Logo or Title Text
-      if (!media.logoUrl.isNullOrBlank()) {
+      // Titolo / Logo del film o serie TMDB
+      if (!currentMedia.logoUrl.isNullOrBlank()) {
         SubcomposeAsyncImage(
           model = ImageRequest.Builder(LocalContext.current)
-            .data(media.logoUrl)
+            .data(currentMedia.logoUrl)
             .crossfade(true)
             .build(),
-          contentDescription = media.title,
+          contentDescription = currentMedia.title,
           contentScale = ContentScale.Fit,
           alignment = Alignment.CenterStart,
           modifier = Modifier
@@ -160,7 +169,7 @@ fun HeroBanner(
             .widthIn(max = 380.dp),
           error = {
             Text(
-              text = media.title,
+              text = currentMedia.title,
               color = NovaTextPrimary,
               fontSize = 32.sp,
               fontWeight = FontWeight.ExtraBold,
@@ -170,7 +179,7 @@ fun HeroBanner(
         )
       } else {
         Text(
-          text = media.title,
+          text = currentMedia.title,
           color = NovaTextPrimary,
           fontSize = 32.sp,
           fontWeight = FontWeight.ExtraBold,
@@ -180,37 +189,39 @@ fun HeroBanner(
 
       Spacer(modifier = Modifier.height(6.dp))
 
-      // Metadata line: Year • Duration • Genres
+      // Metadati essenziali: Anno • Durata / Stagioni • Generi
       Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
       ) {
         Text(
-          text = media.year.toString(),
+          text = currentMedia.year.toString(),
           color = NovaTextSecondary,
           fontSize = 13.sp,
           fontWeight = FontWeight.Medium
         )
         Text(text = "•", color = NovaTextMuted, fontSize = 12.sp)
         Text(
-          text = media.formattedDuration,
+          text = if (currentMedia.type == MediaType.SERIE_TV) "${currentMedia.seasonsCount} Stagioni" else currentMedia.formattedDuration,
           color = NovaTextSecondary,
           fontSize = 13.sp,
           fontWeight = FontWeight.Medium
         )
-        Text(text = "•", color = NovaTextMuted, fontSize = 12.sp)
-        Text(
-          text = media.genres.joinToString(", "),
-          color = NovaTextSecondary,
-          fontSize = 13.sp
-        )
+        if (currentMedia.genres.isNotEmpty()) {
+          Text(text = "•", color = NovaTextMuted, fontSize = 12.sp)
+          Text(
+            text = currentMedia.genres.take(3).joinToString(", "),
+            color = NovaTextSecondary,
+            fontSize = 13.sp
+          )
+        }
       }
 
       Spacer(modifier = Modifier.height(8.dp))
 
-      // Synopsis snippet from TMDB
+      // Sinossi
       Text(
-        text = media.synopsis,
+        text = currentMedia.synopsis,
         color = NovaTextSecondary,
         fontSize = 13.sp,
         lineHeight = 18.sp,
@@ -220,24 +231,101 @@ fun HeroBanner(
 
       Spacer(modifier = Modifier.height(16.dp))
 
-      // Primary Actions
+      // Pulsanti a forma di pillola più compatti
       Row(
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
       ) {
-        TvActionButton(
+        TvPillButton(
           text = "Guarda Ora",
           icon = Icons.Default.PlayArrow,
           isPrimary = true,
-          onClick = onPlayClick
+          onClick = { onPlayClick(currentMedia) }
         )
-        TvActionButton(
+        TvPillButton(
           text = "Scheda Dettagli",
           icon = Icons.Default.Info,
           isPrimary = false,
-          onClick = onInfoClick
+          onClick = { onInfoClick(currentMedia) }
         )
       }
     }
+
+    // Indicatori di Scorrimento posizionati in basso a destra
+    if (safeItems.size > 1) {
+      Row(
+        modifier = Modifier
+          .align(Alignment.BottomEnd)
+          .padding(end = 32.dp, bottom = 26.dp)
+          .background(
+            color = Color(0x66000000),
+            shape = RoundedCornerShape(50)
+          )
+          .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        safeItems.forEachIndexed { index, _ ->
+          val isSelected = index == currentIndex
+          val indicatorWidth by animateDpAsState(
+            targetValue = if (isSelected) 20.dp else 6.dp,
+            animationSpec = tween(durationMillis = 300),
+            label = "IndicatorWidth"
+          )
+          val indicatorColor by animateColorAsState(
+            targetValue = if (isSelected) NovaCyanBright else Color.White.copy(alpha = 0.35f),
+            animationSpec = tween(durationMillis = 300),
+            label = "IndicatorColor"
+          )
+
+          Box(
+            modifier = Modifier
+              .height(6.dp)
+              .width(indicatorWidth)
+              .clip(RoundedCornerShape(50))
+              .background(indicatorColor)
+              .clickable { currentIndex = index }
+          )
+        }
+      }
+    }
   }
+}
+
+/**
+ * Overload per retrocompatibilità
+ */
+@Composable
+fun HeroBanner(
+  media: MediaItem,
+  onPlayClick: () -> Unit,
+  onInfoClick: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  HeroBanner(
+    items = listOf(media),
+    onPlayClick = { onPlayClick() },
+    onInfoClick = { onInfoClick() },
+    modifier = modifier
+  )
+}
+
+/**
+ * Pulsante a pillola elegante per Hero Banner
+ */
+@Composable
+fun TvPillButton(
+  text: String,
+  icon: ImageVector? = null,
+  isPrimary: Boolean = true,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  TvActionButton(
+    text = text,
+    icon = icon,
+    isPrimary = isPrimary,
+    onClick = onClick,
+    modifier = modifier
+  )
 }
