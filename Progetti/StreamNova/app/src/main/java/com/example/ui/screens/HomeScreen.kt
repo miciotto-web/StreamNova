@@ -73,7 +73,7 @@ fun HomeScreen(
       HomeMainBrowsingContent(
         allMedia = allMedia,
         onMediaClick = handleMediaClick,
-        onPlayClick = { viewModel.openPlayer(it) },
+        onPlayClick = { viewModel.loadStream(it) },
         onProviderClick = onProviderClick,
         modifier = modifier
       )

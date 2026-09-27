@@ -90,6 +90,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.example.data.model.AudioTrack
@@ -196,13 +197,28 @@ fun PlayerScreen(
   val introEndMs = 90_000L
   val isIntroActive = episode != null && currentPosition in 3_000L..introEndMs
 
-  // HttpDataSource configured with standard UserAgent and cross-protocol redirects
-  val httpDataSourceFactory = remember {
-    DefaultHttpDataSource.Factory()
-      .setUserAgent("StreamNovaTV/1.0 (Linux; Android TV; Media3 ExoPlayer)")
+  // Header del flusso estratto dal provider (Referer/User-Agent): senza di essi
+  // il CDN VixSrc/vix-content risponde 403 Forbidden. Per i flussi demo del
+  // catalogo la mappa è vuota e si usa l'UA predefinito dell'app.
+  val streamHeaders = playbackState.streamHeaders
+
+  // URL di riproduzione: sorgente provider (VixSrc) se disponibile, altrimenti
+  // l'URL demo del catalogo (film/episodio).
+  val videoUrl = playbackState.streamUrl ?: episode?.videoUrl ?: media.videoUrl
+
+  // HttpDataSource with provider headers (Referer/User-Agent) and cross-protocol redirects
+  val httpDataSourceFactory = remember(streamHeaders) {
+    val factory = DefaultHttpDataSource.Factory()
+      .setUserAgent(streamHeaders["User-Agent"] ?: "StreamNovaTV/1.0 (Linux; Android TV; Media3 ExoPlayer)")
       .setAllowCrossProtocolRedirects(true)
       .setConnectTimeoutMs(15000)
       .setReadTimeoutMs(20000)
+    if (streamHeaders.isNotEmpty()) {
+      // Applica dinamicamente gli header di StreamSource (Referer incluso) a
+      // playlist master/variant, chiave AES e segmenti.
+      factory.setDefaultRequestProperties(streamHeaders)
+    }
+    factory
   }
 
   val mediaSourceFactory = remember(httpDataSourceFactory) {
@@ -210,12 +226,42 @@ fun PlayerScreen(
       .setDataSourceFactory(httpDataSourceFactory)
   }
 
+  // Le playlist dei provider (VixSrc) sono servite SENZA estensione .m3u8
+  // (es. /playlist/231752?token=...): senza un tipo esplicito ExoPlayer le
+  // classificherebbe come file progressivo e fallirebbe con
+  // UnrecognizedInputFormatException. In quel caso si usa la factory HLS.
+  val isHlsStream = run {
+    val path = videoUrl.substringBefore('?').substringBefore('#').lowercase()
+    when {
+      path.endsWith(".m3u8") -> true
+      path.endsWith(".mp4") || path.endsWith(".mkv") ||
+        path.endsWith(".webm") || path.endsWith(".avi") -> false
+      // Sorgente di un provider senza estensione nota -> è una master playlist
+      // HLS (validata con #EXTM3U durante l'estrazione)
+      playbackState.streamUrl != null -> true
+      else -> false
+    }
+  }
+
+  val playbackMediaSourceFactory = remember(mediaSourceFactory, isHlsStream) {
+    if (isHlsStream) {
+      // HLS esplicito: master + variant + chiave AES-128 + segmenti passano
+      // tutti da httpDataSourceFactory (Referer/User-Agent inclusi).
+      HlsMediaSource.Factory(httpDataSourceFactory)
+    } else {
+      mediaSourceFactory
+    }
+  }
+
   // ExoPlayer instance initialization
-  val exoPlayer = remember {
+  val exoPlayer = remember(playbackMediaSourceFactory) {
     ExoPlayer.Builder(context)
-      .setMediaSourceFactory(mediaSourceFactory)
+      .setMediaSourceFactory(playbackMediaSourceFactory)
       .build().apply {
-        val videoUrl = episode?.videoUrl ?: media.videoUrl
+        Log.i(
+          "PlayerScreen",
+          "Avvio riproduzione: url=$videoUrl referer=${streamHeaders["Referer"] ?: "-"}"
+        )
         val exoMediaItem = ExoMediaItem.fromUri(Uri.parse(videoUrl))
         setMediaItem(exoMediaItem)
         prepare()
@@ -624,7 +670,7 @@ fun PlayerScreen(
                 playbackErrorMessage = null
                 isBuffering = true
                 hasFallbackAttempted = false
-                val videoUrl = episode?.videoUrl ?: media.videoUrl
+                // Riutilizza lo stesso URL risolto (sorgente provider inclusa)
                 exoPlayer.setMediaItem(ExoMediaItem.fromUri(Uri.parse(videoUrl)))
                 exoPlayer.prepare()
                 exoPlayer.playWhenReady = true

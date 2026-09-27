@@ -34,8 +34,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.data.model.MediaType
 import com.example.data.repository.MediaRepository
+import com.example.data.streaming.StreamResult
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.SidebarNavigation
+import com.example.ui.components.StreamStatusOverlay
 import com.example.ui.components.StreamingProvider
 import com.example.ui.navigation.DetailNavArgs
 import com.example.ui.navigation.Screen
@@ -79,6 +81,14 @@ fun StreamNovaApp(
   val currentSection by viewModel.currentSection.collectAsState()
   val allMedia by viewModel.allMedia.collectAsState()
   val detailUiState by viewModel.detailUiState.collectAsState()
+  val streamResult by viewModel.streamResult.collectAsState()
+
+  // Feedback errore di estrazione sorgenti (es. provider non raggiungibile):
+  // il player si apre comunque sul flusso demo del catalogo (fallback).
+  LaunchedEffect(streamResult) {
+    val error = streamResult as? StreamResult.Error ?: return@LaunchedEffect
+    Toast.makeText(context, error.message, Toast.LENGTH_LONG).show()
+  }
 
   // Timestamp dell'ultima pressione di Back sulla Home (doppio Back per uscire)
   var lastExitRequestAt by remember { mutableLongStateOf(0L) }
@@ -204,7 +214,7 @@ fun StreamNovaApp(
               viewModel.backFromDetail()
               navController.popBackStack()
             },
-            onPlayClick = { m, ep -> viewModel.openPlayer(m, ep) },
+            onPlayClick = { m, ep -> viewModel.loadStream(m, ep) },
             onToggleFavorite = { viewModel.toggleFavorite(it) },
             onProviderClick = { provider ->
               viewModel.openProvider(provider)
@@ -222,7 +232,7 @@ fun StreamNovaApp(
               viewModel.selectSeason(baseMedia.tmdbId ?: 0, seasonNum, baseMedia)
             },
             onEpisodeClick = { episode ->
-              viewModel.openPlayer(baseMedia, episode)
+              viewModel.loadStream(baseMedia, episode)
             },
             onRetry = { viewModel.retryLoadDetail() }
           )
@@ -262,6 +272,12 @@ fun StreamNovaApp(
       // PlayerScreen, il progresso viene salvato in Room (closePlayer + onDispose) e
       // si torna alla schermata sottostante (Detail se aperto dal dettaglio, altrimenti Home).
       viewModel.closePlayer()
+    }
+
+    // Feedback "Ricerca sorgenti in corso..." durante l'estrazione del provider
+    // (VixSrc): overlay non focusabile, sotto il player e sopra le schermate.
+    if (streamResult is StreamResult.Loading) {
+      StreamStatusOverlay(result = streamResult)
     }
 
     // Player Screen overlay when media playback is requested

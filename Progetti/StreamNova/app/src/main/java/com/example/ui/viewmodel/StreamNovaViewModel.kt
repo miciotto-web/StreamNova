@@ -1,5 +1,6 @@
 package com.example.ui.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.AudioTrack
@@ -12,6 +13,10 @@ import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
 import com.example.data.model.VideoResolution
 import com.example.data.repository.MediaRepository
+import com.example.data.streaming.StreamProvider
+import com.example.data.streaming.StreamResult
+import com.example.data.streaming.StreamSource
+import com.example.data.streaming.VixSrcProvider
 import com.example.ui.components.StreamingProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -21,6 +26,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+
+/** Tag di log del ViewModel (ricerca sorgenti + playback). */
+private const val TAG = "StreamNovaVM"
 
 enum class SidebarSection(val title: String) {
   HOME("Home"),
@@ -49,6 +57,10 @@ data class PlayerPlaybackState(
   val selectedSubtitle: SubtitleTrack = MediaRepository.subtitleTracks[0],
   val selectedResolution: VideoResolution = VideoResolution.UHD_4K,
   val areControlsVisible: Boolean = true,
+  /** URL del provider streaming (VixSrc): se null si usa quello del catalogo. */
+  val streamUrl: String? = null,
+  /** Header obbligatori del flusso (Referer/User-Agent): senza essi = 403. */
+  val streamHeaders: Map<String, String> = emptyMap(),
 )
 
 class StreamNovaViewModel : ViewModel() {
@@ -75,6 +87,13 @@ class StreamNovaViewModel : ViewModel() {
 
   private val _playbackState = MutableStateFlow(PlayerPlaybackState())
   val playbackState: StateFlow<PlayerPlaybackState> = _playbackState.asStateFlow()
+
+  // Stato del ciclo di ricerca sorgenti (estrazione provider -> player)
+  private val _streamResult = MutableStateFlow<StreamResult>(StreamResult.Idle)
+  val streamResult: StateFlow<StreamResult> = _streamResult.asStateFlow()
+
+  // Provider di streaming HTTP diretto (senza Debrid): primo integrato = VixSrc
+  private val streamProvider: StreamProvider = VixSrcProvider()
 
   private val _isRefreshing = MutableStateFlow(false)
   val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
@@ -183,7 +202,7 @@ class StreamNovaViewModel : ViewModel() {
     }
   }
 
-  fun openPlayer(media: MediaItem, episode: Episode? = null) {
+  fun openPlayer(media: MediaItem, episode: Episode? = null, source: StreamSource? = null) {
     val initialPos = episode?.currentProgressMs ?: media.currentProgressMs
     val totalDur = episode?.totalDurationMs ?: media.totalDurationMs
 
@@ -194,9 +213,53 @@ class StreamNovaViewModel : ViewModel() {
       currentPositionMs = initialPos,
       durationMs = totalDur,
       selectedResolution = media.resolution,
-      areControlsVisible = true
+      areControlsVisible = true,
+      streamUrl = source?.url,
+      streamHeaders = source?.headers ?: emptyMap()
     )
     _screenState.value = ScreenState.PLAYER
+  }
+
+  /**
+   * Punto d'ingresso dei pulsanti "Riproduci" (film) e delle card episodio (serie TV).
+   *
+   * 1) emette [StreamResult.Loading] per il feedback UI,
+   * 2) interroga il provider streaming ([StreamProvider] -> VixSrc/VixCloud),
+   * 3) al successo apre il player sul primo [StreamSource] passando URL e header
+   *    (Referer/User-Agent) a [openPlayer], così ExoPlayer non riceve 403.
+   *
+   * In caso di errore viene pubblicato [StreamResult.Error] e il player si apre
+   * comunque sul flusso demo del catalogo, così il pulsante non resta morto.
+   */
+  fun loadStream(media: MediaItem, episode: Episode? = null) {
+    viewModelScope.launch {
+      _streamResult.value = StreamResult.Loading("Ricerca sorgenti in corso...")
+      val isTv = media.type == MediaType.SERIE_TV
+      try {
+        val tmdbId = media.tmdbId
+          ?: throw IllegalStateException("Titolo non collegato a TMDB (tmdbId assente)")
+        val season = episode?.seasonNumber ?: media.lastWatchedSeason ?: 1
+        val episodeNumber = episode?.episodeNumber ?: media.lastWatchedEpisode ?: 1
+        Log.i(TAG, "Ricerca sorgenti: tmdbId=$tmdbId isTv=$isTv S$season:E$episodeNumber")
+
+        val sources = streamProvider.getStreams(
+          tmdbId = tmdbId,
+          isTv = isTv,
+          season = if (isTv) season else null,
+          episode = if (isTv) episodeNumber else null
+        )
+        if (sources.isEmpty()) throw IllegalStateException("Nessuna sorgente disponibile")
+
+        val best = sources.first()
+        Log.i(TAG, "Sorgente scelta: ${best.serverName} ${best.quality} -> ${best.url}")
+        _streamResult.value = StreamResult.Success(sources)
+        openPlayer(media, episode, best)
+      } catch (e: Exception) {
+        Log.w(TAG, "Estrazione stream fallita: ${e.message}")
+        _streamResult.value = StreamResult.Error(e.message ?: "Impossibile estrarre lo stream")
+        openPlayer(media, episode)
+      }
+    }
   }
 
   fun closePlayer() {
@@ -204,6 +267,7 @@ class StreamNovaViewModel : ViewModel() {
     if (current.media != null) {
       MediaRepository.updateProgress(current.media.id, current.currentPositionMs)
     }
+    _streamResult.value = StreamResult.Idle
     _screenState.value = if (_selectedMedia.value != null) ScreenState.DETAIL else ScreenState.BROWSING
   }
 
