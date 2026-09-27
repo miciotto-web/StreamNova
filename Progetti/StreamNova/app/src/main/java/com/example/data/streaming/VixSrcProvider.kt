@@ -44,7 +44,9 @@ class VixSrcProvider(
     tmdbId: Int,
     isTv: Boolean,
     season: Int?,
-    episode: Int?
+    episode: Int?,
+    title: String?,
+    year: Int?
   ): List<StreamSource> = withContext(Dispatchers.IO) {
     if (tmdbId <= 0) throw IOException("TMDB ID non valido: $tmdbId")
 
@@ -83,7 +85,10 @@ class VixSrcProvider(
     val apiBody = get(apiUrl, referer = "$base/")
     val src = JSONObject(apiBody).optString("src").trim()
     if (src.isEmpty()) throw IOException("Risposta API senza campo 'src': ${apiBody.take(160)}")
-    val embedUrl = if (src.startsWith("http")) src else base + src
+    val rawEmbed = if (src.startsWith("http")) src else base + src
+    val embedUrl = if (rawEmbed.contains("canPlayFHD=")) rawEmbed else {
+      if ('?' in rawEmbed) "$rawEmbed&canPlayFHD=1" else "$rawEmbed?canPlayFHD=1"
+    }
     Log.i(TAG, "GET EMBED $embedUrl")
 
     // --- 2) Pagina embed -> streams, params, canPlayFHD --------------------
@@ -103,10 +108,10 @@ class VixSrcProvider(
       .associate { it.groupValues[1] to it.groupValues[2] }
 
     val canPlayFhd = Regex("""canPlayFHD\s*=\s*(true|false)""").find(embedHtml)
-      ?.groupValues?.get(1) == "true" || embedUrl.contains("canPlayFHD=1")
+      ?.groupValues?.get(1) != "false"
     Log.i(TAG, "masterPlaylist=$masterUrl params=$params canPlayFHD=$canPlayFhd")
 
-    // --- 3) Costruzione URL playlist per ogni server -----------------------
+    // --- 3) Costruzione URL playlist per ogni server (Priorità 1080p FHD) ---
     val headers = mapOf(
       "Referer" to REFERER,
       "User-Agent" to USER_AGENT
@@ -119,27 +124,44 @@ class VixSrcProvider(
       if (rawUrl.isEmpty()) continue
       val serverName = if (i == 0) SERVER_NAME else "$SERVER_NAME ${entry.optString("name", "Mirror")}"
 
-      val playlistUrl = buildString {
+      val playlistUrlFhd = buildString {
         append(rawUrl)
-        // Solo i parametri NON vuoti: un param vuoto (asn=) provoca 403.
         params.forEach { (key, value) ->
           if (value.isNotEmpty()) append(if ('?' in rawUrl || '?' in this) '&' else '?')
             .append(key).append('=').append(value)
         }
-        if (canPlayFhd) append(if ('?' in rawUrl || '?' in this) '&' else '?').append("h=1")
+        append(if ('?' in rawUrl || '?' in this) '&' else '?').append("h=1")
       }
 
-      // --- 4) Validazione con gli stessi header di playback -----------------
-      val playlistBody = get(playlistUrl, referer = REFERER)
+      val playlistUrlStandard = buildString {
+        append(rawUrl)
+        params.forEach { (key, value) ->
+          if (value.isNotEmpty()) append(if ('?' in rawUrl || '?' in this) '&' else '?')
+            .append(key).append('=').append(value)
+        }
+      }
+
+      // Tentativo primario Full HD (h=1), con fallback su standard
+      var chosenUrl = playlistUrlFhd
+      var playlistBody = try {
+        get(chosenUrl, referer = REFERER)
+      } catch (e: Exception) {
+        null
+      }
+      if (playlistBody == null || !playlistBody.startsWith("#EXTM3U")) {
+        chosenUrl = playlistUrlStandard
+        playlistBody = get(chosenUrl, referer = REFERER)
+      }
       if (!playlistBody.startsWith("#EXTM3U")) {
         throw IOException("Playlist non HLS su $serverName: ${playlistBody.take(120)}")
       }
       val renditions = parseRenditions(playlistBody)
-      Log.i(TAG, "OK $serverName renditions=$renditions url=$playlistUrl")
+      val isFhd = chosenUrl.contains("h=1")
+      Log.i(TAG, "OK $serverName (FHD=$isFhd) renditions=$renditions url=$chosenUrl")
 
       sources += StreamSource(
-        url = playlistUrl,
-        quality = "Auto",
+        url = chosenUrl,
+        quality = if (isFhd) "1080p" else "Auto",
         serverName = serverName,
         headers = headers
       )

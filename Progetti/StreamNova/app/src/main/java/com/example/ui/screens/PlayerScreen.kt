@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -85,6 +86,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -95,6 +97,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.model.AudioTrack
@@ -192,8 +195,9 @@ fun PlayerScreen(
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
   var hasFallbackAttempted by remember { mutableStateOf(false) }
 
-  // Risoluzione video rilevata in tempo reale da ExoPlayer
-  var detectedResolution by remember { mutableStateOf("Auto") }
+  // Risoluzione video rilevata in tempo reale da ExoPlayer (default 1080p Full HD prioritario)
+  var detectedResolution by remember { mutableStateOf("1080p") }
+  var selectedQualityLabel by remember { mutableStateOf("Auto") }
 
   // Aspect ratio / ResizeMode
   var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
@@ -215,6 +219,7 @@ fun PlayerScreen(
   // ---------------------------------------------------------------------------
   val playPauseFocusRequester = remember { FocusRequester() }
   val seekBarFocusRequester = remember { FocusRequester() }
+  val skipIntroFocusRequester = remember { FocusRequester() }
   val idleFocusRequester = remember { FocusRequester() }
   val focusScope = rememberCoroutineScope()
 
@@ -229,9 +234,13 @@ fun PlayerScreen(
     showSpeedModal = false
   }
 
-  // Gestione Intro per le serie TV
+  // Gestione Intro per le serie TV (attivo dai primi secondi fino a 90s, resettato al cambio episodio)
+  var isIntroDismissed by remember { mutableStateOf(false) }
+  LaunchedEffect(media.id, currentEp?.id) {
+    isIntroDismissed = false
+  }
   val introEndMs = 90_000L
-  val isIntroActive = isTvShow && currentPosition in 3_000L..introEndMs
+  val isIntroActive = isTvShow && !isIntroDismissed && currentPosition in 1_000L..introEndMs
 
   val streamHeaders = playbackState.streamHeaders
   val videoUrl = playbackState.streamUrl ?: currentEp?.videoUrl ?: media.videoUrl
@@ -272,6 +281,18 @@ fun PlayerScreen(
     }
   }
 
+  // TrackSelector con vincoli prioritari per Full HD 1080p (e 4K se disponibile)
+  val trackSelector = remember {
+    DefaultTrackSelector(context).apply {
+      setParameters(
+        buildUponParameters()
+          .setMaxVideoSize(3840, 2160)
+          .setMinVideoSize(1920, 1080)
+          .setExceedVideoConstraintsIfNecessary(true)
+      )
+    }
+  }
+
   fun updateResolutionFromHeight(h: Int) {
     if (h > 0) {
       detectedResolution = when {
@@ -283,10 +304,11 @@ fun PlayerScreen(
     }
   }
 
-  // ExoPlayer instance initialization
-  val exoPlayer = remember(playbackMediaSourceFactory) {
+  // ExoPlayer instance initialization con DefaultTrackSelector configurato
+  val exoPlayer = remember(playbackMediaSourceFactory, trackSelector) {
     ExoPlayer.Builder(context)
       .setMediaSourceFactory(playbackMediaSourceFactory)
+      .setTrackSelector(trackSelector)
       .build().apply {
         Log.i("PlayerScreen", "Avvio riproduzione: url=$videoUrl")
         val exoMediaItem = ExoMediaItem.fromUri(Uri.parse(videoUrl))
@@ -297,6 +319,41 @@ fun PlayerScreen(
         }
         playWhenReady = true
       }
+  }
+
+  fun getAvailableQualityOptions(): List<Pair<String, Int>> {
+    val options = mutableListOf<Pair<String, Int>>()
+    options.add("Auto" to 0)
+
+    val heights = mutableSetOf<Int>()
+    for (group in exoPlayer.currentTracks.groups) {
+      if (group.type == C.TRACK_TYPE_VIDEO) {
+        for (i in 0 until group.length) {
+          val format = group.getTrackFormat(i)
+          if (format.height > 0) {
+            heights.add(format.height)
+          }
+        }
+      }
+    }
+
+    if (heights.isNotEmpty()) {
+      heights.sortedDescending().forEach { h ->
+        val label = when {
+          h >= 2160 -> "4K (UHD)"
+          h >= 1080 -> "1080p (FHD)"
+          h >= 720  -> "720p (HD)"
+          h >= 480  -> "480p (SD)"
+          else      -> "${h}p"
+        }
+        options.add(label to h)
+      }
+    } else {
+      options.add("1080p (FHD)" to 1080)
+      options.add("720p (HD)" to 720)
+      options.add("480p (SD)" to 480)
+    }
+    return options
   }
 
   // Se l'URL o l'episodio cambia dinamicamente (es. click su Prossimo Episodio)
@@ -766,44 +823,113 @@ fun PlayerScreen(
             .padding(bottom = 24.dp)
         ) {
           // -------------------------------------------------------------------
-          // 1. SEZIONE INFORMATIVA (Sopra la barra di scorrimento, a sinistra)
+          // 1. SEZIONE INFORMATIVA & PULSANTE SALTA INTRO (Sopra la barra di scorrimento)
           // -------------------------------------------------------------------
-          Column(
+          Row(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(horizontal = 36.dp)
+              .padding(horizontal = 36.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom
           ) {
-            // Titolo Principale (grassetto bianco, font 24-26sp)
-            Text(
-              text = media.title,
-              color = Color.White,
-              fontSize = 25.sp,
-              fontWeight = FontWeight.Bold,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-
-            // Sottotitolo Episodio (Visibile SOLO per le Serie TV)
-            if (episodeSubtitle != null) {
-              Spacer(modifier = Modifier.height(3.dp))
+            // Lato Sinistro: Titolo + Sottotitolo + Risoluzione
+            Column(modifier = Modifier.weight(1f, fill = false)) {
               Text(
-                text = episodeSubtitle,
-                color = Color(0xFFD1D5DB),
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Normal,
+                text = media.title,
+                color = Color.White,
+                fontSize = 25.sp,
+                fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
               )
+
+              if (episodeSubtitle != null) {
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                  text = episodeSubtitle,
+                  color = Color(0xFFD1D5DB),
+                  fontSize = 15.sp,
+                  fontWeight = FontWeight.Normal,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+
+              Spacer(modifier = Modifier.height(3.dp))
+              Text(
+                text = detectedResolution,
+                color = Color(0xFF9CA3AF),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+              )
             }
 
-            // Info Risoluzione Video rilevata (es. "1080p", "4K", "720p", "SD")
-            Spacer(modifier = Modifier.height(3.dp))
-            Text(
-              text = detectedResolution,
-              color = Color(0xFF9CA3AF),
-              fontSize = 13.sp,
-              fontWeight = FontWeight.Medium
-            )
+            // Lato Destro: Pulsante a pillola "SALTA INTRO" visibile sopra la timeline
+            AnimatedVisibility(
+              visible = isIntroActive,
+              enter = fadeIn() + slideInHorizontally(initialOffsetX = { it / 2 }),
+              exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it / 2 })
+            ) {
+              TvFocusableBox(
+                modifier = Modifier
+                  .focusRequester(skipIntroFocusRequester)
+                  .onKeyEvent { keyEvent ->
+                    val native = keyEvent.nativeKeyEvent
+                    if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
+                    when (native.keyCode) {
+                      KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        requestFocusOn(seekBarFocusRequester)
+                        true
+                      }
+                      else -> false
+                    }
+                  },
+                shape = RoundedCornerShape(50),
+                onClick = {
+                  kickAutoHide()
+                  val target = (currentPosition + 85_000L).coerceAtMost(totalDuration)
+                  exoPlayer.seekTo(target)
+                  currentPosition = target
+                  isIntroDismissed = true
+                  requestFocusOn(playPauseFocusRequester)
+                }
+              ) { isFocused ->
+                Row(
+                  modifier = Modifier
+                    .shadow(
+                      elevation = if (isFocused) 16.dp else 4.dp,
+                      shape = RoundedCornerShape(50),
+                      spotColor = NovaCyanBright
+                    )
+                    .background(
+                      color = if (isFocused) NovaCyanBright else Color(0xCC0B111E),
+                      shape = RoundedCornerShape(50)
+                    )
+                    .border(
+                      width = if (isFocused) 2.dp else 1.5.dp,
+                      color = if (isFocused) Color.White else NovaCyan.copy(alpha = 0.8f),
+                      shape = RoundedCornerShape(50)
+                    )
+                    .padding(horizontal = 18.dp, vertical = 8.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  Icon(
+                    imageVector = Icons.Default.FastForward,
+                    contentDescription = "Salta Intro",
+                    tint = if (isFocused) Color.Black else NovaCyanBright,
+                    modifier = Modifier.size(18.dp)
+                  )
+                  Text(
+                    text = "SALTA INTRO",
+                    color = if (isFocused) Color.Black else Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    letterSpacing = 0.5.sp
+                  )
+                }
+              }
+            }
           }
 
           Spacer(modifier = Modifier.height(12.dp))
@@ -823,26 +949,38 @@ fun PlayerScreen(
             modifier = Modifier
               .fillMaxWidth()
               .padding(horizontal = 26.dp)
-              .onKeyEvent { keyEvent ->
-                val native = keyEvent.nativeKeyEvent
-                if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
-                when (native.keyCode) {
-                  KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    seekBy(-10_000L)
-                    true
-                  }
-                  KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    seekBy(10_000L)
-                    true
-                  }
-                  else -> false
-                }
-              }
           ) {
             TvFocusableBox(
               modifier = Modifier
                 .fillMaxWidth()
-                .focusRequester(seekBarFocusRequester),
+                .focusRequester(seekBarFocusRequester)
+                .onKeyEvent { keyEvent ->
+                  val native = keyEvent.nativeKeyEvent
+                  if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
+                  when (native.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                      seekBy(-10_000L)
+                      true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                      seekBy(10_000L)
+                      true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                      if (isIntroActive) {
+                        requestFocusOn(skipIntroFocusRequester)
+                        true
+                      } else {
+                        false
+                      }
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                      requestFocusOn(playPauseFocusRequester)
+                      true
+                    }
+                    else -> false
+                  }
+                },
               shape = RoundedCornerShape(8.dp),
               focusedScale = 1.0f,
               focusedBorderColor = NovaCyanBright,
@@ -986,7 +1124,17 @@ fun PlayerScreen(
                 }
               )
 
-              // 4. Velocità di riproduzione: icona tachimetro (0.75x, 1.0x, 1.25x, 1.5x)
+              // 4. Qualità Video (Risoluzione): icona HighQuality
+              PlayerControlIconButton(
+                icon = Icons.Default.HighQuality,
+                contentDescription = "Qualità Video",
+                onClick = {
+                  kickAutoHide()
+                  showQualityModal = true
+                }
+              )
+
+              // 5. Velocità di riproduzione: icona tachimetro (0.75x, 1.0x, 1.25x, 1.5x)
               PlayerControlIconButton(
                 icon = Icons.Default.Speed,
                 contentDescription = "Velocità di Riproduzione",
@@ -996,7 +1144,7 @@ fun PlayerScreen(
                 }
               )
 
-              // 5. Sottotitoli: icona CC (Closed Captions)
+              // 6. Sottotitoli: icona CC (Closed Captions)
               PlayerControlIconButton(
                 icon = Icons.Default.ClosedCaption,
                 contentDescription = "Sottotitoli",
@@ -1006,7 +1154,7 @@ fun PlayerScreen(
                 }
               )
 
-              // 6. Audio: icona altoparlante
+              // 7. Audio: icona altoparlante
               PlayerControlIconButton(
                 icon = Icons.AutoMirrored.Filled.VolumeUp,
                 contentDescription = "Tracce Audio",
@@ -1029,24 +1177,27 @@ fun PlayerScreen(
       }
     }
 
-    // 3. Banner "Salta Intro" posizionato in basso a destra dello schermo (per serie TV)
+    // 3. Banner "Salta Intro" fluttuante quando l'HUD è nascosto (per serie TV)
     AnimatedVisibility(
-      visible = isIntroActive,
+      visible = isIntroActive && !hudShown,
       enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
       exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
       modifier = Modifier
         .align(Alignment.BottomEnd)
         .padding(
           end = 40.dp,
-          bottom = if (hudShown) 160.dp else 40.dp
+          bottom = 40.dp
         )
     ) {
       TvFocusableBox(
         shape = RoundedCornerShape(50),
         onClick = {
           kickAutoHide()
-          exoPlayer.seekTo(introEndMs)
-          currentPosition = introEndMs
+          val target = (currentPosition + 85_000L).coerceAtMost(totalDuration)
+          exoPlayer.seekTo(target)
+          currentPosition = target
+          isIntroDismissed = true
+          showControls()
         }
       ) { isFocused ->
         Row(
@@ -1132,15 +1283,39 @@ fun PlayerScreen(
       )
     }
 
-    // Modal Qualità
+    // Modal Qualità Video (Risoluzione)
     if (showQualityModal) {
-      val resolutions = VideoResolution.values()
+      val qualityOptions = getAvailableQualityOptions()
       TrackSelectionDialog(
         title = "Seleziona Risoluzione Video",
-        options = resolutions.map { it.label },
-        selectedIndex = resolutions.indexOf(playbackState.selectedResolution).coerceAtLeast(0),
+        options = qualityOptions.map { it.first },
+        selectedIndex = qualityOptions.indexOfFirst { it.first == selectedQualityLabel }.coerceAtLeast(0),
         onSelect = { idx ->
-          viewModel.setResolution(resolutions[idx])
+          val (label, targetHeight) = qualityOptions[idx]
+          selectedQualityLabel = label
+          if (targetHeight == 0) {
+            // Auto: preferenza Full HD / 4K con fallback
+            trackSelector.setParameters(
+              trackSelector.buildUponParameters()
+                .setMaxVideoSize(3840, 2160)
+                .setMinVideoSize(1920, 1080)
+                .setExceedVideoConstraintsIfNecessary(true)
+            )
+          } else {
+            val targetWidth = (targetHeight * 16) / 9
+            trackSelector.setParameters(
+              trackSelector.buildUponParameters()
+                .setMaxVideoSize(targetWidth + 100, targetHeight + 10)
+                .setMinVideoSize(targetWidth - 100, targetHeight - 10)
+                .setExceedVideoConstraintsIfNecessary(false)
+            )
+            detectedResolution = when {
+              targetHeight >= 2160 -> "4K"
+              targetHeight >= 1080 -> "1080p"
+              targetHeight >= 720  -> "720p"
+              else                 -> "SD"
+            }
+          }
           showQualityModal = false
         },
         onDismiss = { showQualityModal = false }

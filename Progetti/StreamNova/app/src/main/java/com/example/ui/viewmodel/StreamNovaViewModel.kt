@@ -275,22 +275,32 @@ class StreamNovaViewModel : ViewModel() {
         val season = episode?.seasonNumber ?: media.lastWatchedSeason ?: 1
         val episodeNumber = episode?.episodeNumber ?: media.lastWatchedEpisode ?: 1
         val searchTitle = media.title.ifBlank { media.originalTitle }
-        Log.i(TAG, "Ricerca sorgenti: tmdbId=$tmdbId isTv=$isTv S$season:E$episodeNumber \"$searchTitle\" (${media.year})")
+        Log.i(TAG, "Ricerca sorgenti Fast-Start: tmdbId=$tmdbId isTv=$isTv S$season:E$episodeNumber \"$searchTitle\" (${media.year})")
 
-        val sources = streamManager.resolve(
+        var hasStartedPlaying = false
+
+        streamManager.resolveFlow(
           tmdbId = tmdbId,
           isTv = isTv,
           season = if (isTv) season else null,
           episode = if (isTv) episodeNumber else null,
           title = searchTitle,
           year = media.year
-        )
-        if (sources.isEmpty()) throw IllegalStateException("Nessuna sorgente disponibile dai provider")
+        ).collect { sources ->
+          if (sources.isNotEmpty()) {
+            _streamResult.value = StreamResult.Success(sources)
+            if (!hasStartedPlaying) {
+              hasStartedPlaying = true
+              val best = sources.first()
+              Log.i(TAG, "Fast-Start immediato: avvio con ${best.serverName} (${best.quality}) -> ${best.url}")
+              openPlayer(media, episode, best)
+            }
+          }
+        }
 
-        val best = sources.first()
-        Log.i(TAG, "Sorgente scelta: ${best.serverName} ${best.quality} -> ${best.url}")
-        _streamResult.value = StreamResult.Success(sources)
-        openPlayer(media, episode, best)
+        if (!hasStartedPlaying) {
+          throw IllegalStateException("Nessuna sorgente disponibile dai provider")
+        }
       } catch (e: Exception) {
         Log.w(TAG, "Estrazione stream fallita: ${e.message}")
         _streamResult.value = StreamResult.Error(e.message ?: "Impossibile estrarre lo stream")
