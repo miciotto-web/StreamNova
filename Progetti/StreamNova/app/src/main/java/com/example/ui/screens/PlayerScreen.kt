@@ -19,9 +19,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,30 +35,28 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.Forward10
-import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Replay10
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -80,6 +80,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -87,17 +88,21 @@ import androidx.compose.ui.window.Dialog
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.model.AudioTrack
+import com.example.data.model.Episode
+import com.example.data.model.MediaType
 import com.example.data.model.SubtitleTrack
 import com.example.data.model.VideoResolution
 import com.example.data.repository.MediaRepository
-import com.example.ui.components.QualityBadge
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaBackground
@@ -145,6 +150,40 @@ fun PlayerScreen(
   val media = playbackState.media ?: return
   val episode = playbackState.currentEpisode
 
+  val isTvShow = media.type == MediaType.SERIE_TV
+
+  // Episodio attivo (se TV Show ma episode è null, cerca il primo o l'ultimo guardato)
+  val currentEp = episode ?: if (isTvShow) {
+    media.episodes.firstOrNull {
+      it.seasonNumber == (media.lastWatchedSeason ?: 1) &&
+      it.episodeNumber == (media.lastWatchedEpisode ?: 1)
+    } ?: media.episodes.firstOrNull()
+  } else null
+
+  // Sottotitolo episodio: visibile SOLO per Serie TV ("S1E1 • Titolo episodio")
+  val episodeSubtitle = if (isTvShow && currentEp != null) {
+    "S${currentEp.seasonNumber}E${currentEp.episodeNumber} • ${currentEp.title}"
+  } else null
+
+  // Prossimo episodio: calcolato solo se Serie TV ed esiste un episodio successivo
+  val nextEpisode: Episode? = remember(media, currentEp) {
+    if (!isTvShow || currentEp == null) {
+      null
+    } else {
+      val idx = media.episodes.indexOfFirst {
+        it.id == currentEp.id || (it.seasonNumber == currentEp.seasonNumber && it.episodeNumber == currentEp.episodeNumber)
+      }
+      if (idx != -1 && idx + 1 < media.episodes.size) {
+        media.episodes[idx + 1]
+      } else {
+        media.episodes.firstOrNull {
+          (it.seasonNumber == currentEp.seasonNumber && it.episodeNumber == currentEp.episodeNumber + 1) ||
+          (it.seasonNumber == currentEp.seasonNumber + 1 && it.episodeNumber == 1)
+        }
+      }
+    }
+  }
+
   var isBuffering by remember { mutableStateOf(true) }
   var currentPosition by remember { mutableLongStateOf(playbackState.currentPositionMs) }
   var totalDuration by remember { mutableLongStateOf(playbackState.durationMs.coerceAtLeast(1L)) }
@@ -153,60 +192,50 @@ fun PlayerScreen(
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
   var hasFallbackAttempted by remember { mutableStateOf(false) }
 
-  // Modal dialog states
+  // Risoluzione video rilevata in tempo reale da ExoPlayer
+  var detectedResolution by remember { mutableStateOf("Auto") }
+
+  // Aspect ratio / ResizeMode
+  var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+  var resizeFeedbackText by remember { mutableStateOf<String?>(null) }
+
+  // Velocità di riproduzione
+  var currentSpeed by remember { mutableFloatStateOf(1.0f) }
+
+  // Modali
   var showAudioModal by remember { mutableStateOf(false) }
   var showSubtitleModal by remember { mutableStateOf(false) }
   var showQualityModal by remember { mutableStateOf(false) }
+  var showSpeedModal by remember { mutableStateOf(false) }
+
+  val anyModalOpen = showAudioModal || showSubtitleModal || showQualityModal || showSpeedModal
 
   // ---------------------------------------------------------------------------
   // FOCUS D-PAD / TELECOMANDO TV
   // ---------------------------------------------------------------------------
-  // Controllo primario (Play/Pause): il focus viene richiesto esplicitamente
-  // all'avvio del player, così il D-Pad interagisce SEMPRE con l'HUD e mai con
-  // Detail/Home rimaste composte sotto la schermata del player.
   val playPauseFocusRequester = remember { FocusRequester() }
-  // Seek bar: su di essa atterra il focus quando una freccia ◀▶ sposta la
-  // posizione di riproduzione (poi ◀▶ continuano a fare seek senza perdere focus).
   val seekBarFocusRequester = remember { FocusRequester() }
-  // Nodo di "riposo" sempre composto: mantiene un owner di focus valido anche
-  // quando l'HUD è nascosto, così ogni tasto del telecomando continua ad
-  // arrivare agli handler di PlayerScreen invece di perdersi nel vuoto.
   val idleFocusRequester = remember { FocusRequester() }
   val focusScope = rememberCoroutineScope()
 
-  // true quando il focus vive all'interno dell'HUD: in quel caso le frecce
-  // navigano tra i controlli, altrimenti (nodo di riposo) gestiscono seek e
-  // risveglio dei controlli.
   var hudHasFocus by remember { mutableStateOf(false) }
-
-  // Contatore: ogni interazione col telecomando lo incrementa e riavvia
-  // il countdown di auto-hide dei controlli.
   var hideTimerTick by remember { mutableLongStateOf(0L) }
 
-  // BACK gerarchico (livello 1): finché è aperto un pannello modale (audio, sottotitoli,
-  // qualità) il tasto Back chiude SOLO il modale. Il player viene chiuso dal gestore
-  // di MainActivity solo quando nessun modale è più aperto.
-  BackHandler(enabled = showAudioModal || showSubtitleModal || showQualityModal) {
+  // BACK gerarchico (livello 1): finché è aperto un modale, il tasto Back chiude SOLO il modale.
+  BackHandler(enabled = anyModalOpen) {
     showAudioModal = false
     showSubtitleModal = false
     showQualityModal = false
+    showSpeedModal = false
   }
 
   // Gestione Intro per le serie TV
-  // Mostra "Salta Intro" nei primi 90 secondi dell'episodio se è presente una sigla
   val introEndMs = 90_000L
-  val isIntroActive = episode != null && currentPosition in 3_000L..introEndMs
+  val isIntroActive = isTvShow && currentPosition in 3_000L..introEndMs
 
-  // Header del flusso estratto dal provider (Referer/User-Agent): senza di essi
-  // il CDN VixSrc/vix-content risponde 403 Forbidden. Per i flussi demo del
-  // catalogo la mappa è vuota e si usa l'UA predefinito dell'app.
   val streamHeaders = playbackState.streamHeaders
+  val videoUrl = playbackState.streamUrl ?: currentEp?.videoUrl ?: media.videoUrl
 
-  // URL di riproduzione: sorgente provider (VixSrc) se disponibile, altrimenti
-  // l'URL demo del catalogo (film/episodio).
-  val videoUrl = playbackState.streamUrl ?: episode?.videoUrl ?: media.videoUrl
-
-  // HttpDataSource with provider headers (Referer/User-Agent) and cross-protocol redirects
   val httpDataSourceFactory = remember(streamHeaders) {
     val factory = DefaultHttpDataSource.Factory()
       .setUserAgent(streamHeaders["User-Agent"] ?: "StreamNovaTV/1.0 (Linux; Android TV; Media3 ExoPlayer)")
@@ -214,8 +243,6 @@ fun PlayerScreen(
       .setConnectTimeoutMs(15000)
       .setReadTimeoutMs(20000)
     if (streamHeaders.isNotEmpty()) {
-      // Applica dinamicamente gli header di StreamSource (Referer incluso) a
-      // playlist master/variant, chiave AES e segmenti.
       factory.setDefaultRequestProperties(streamHeaders)
     }
     factory
@@ -226,18 +253,12 @@ fun PlayerScreen(
       .setDataSourceFactory(httpDataSourceFactory)
   }
 
-  // Le playlist dei provider (VixSrc) sono servite SENZA estensione .m3u8
-  // (es. /playlist/231752?token=...): senza un tipo esplicito ExoPlayer le
-  // classificherebbe come file progressivo e fallirebbe con
-  // UnrecognizedInputFormatException. In quel caso si usa la factory HLS.
   val isHlsStream = run {
     val path = videoUrl.substringBefore('?').substringBefore('#').lowercase()
     when {
       path.endsWith(".m3u8") -> true
       path.endsWith(".mp4") || path.endsWith(".mkv") ||
         path.endsWith(".webm") || path.endsWith(".avi") -> false
-      // Sorgente di un provider senza estensione nota -> è una master playlist
-      // HLS (validata con #EXTM3U durante l'estrazione)
       playbackState.streamUrl != null -> true
       else -> false
     }
@@ -245,11 +266,20 @@ fun PlayerScreen(
 
   val playbackMediaSourceFactory = remember(mediaSourceFactory, isHlsStream) {
     if (isHlsStream) {
-      // HLS esplicito: master + variant + chiave AES-128 + segmenti passano
-      // tutti da httpDataSourceFactory (Referer/User-Agent inclusi).
       HlsMediaSource.Factory(httpDataSourceFactory)
     } else {
       mediaSourceFactory
+    }
+  }
+
+  fun updateResolutionFromHeight(h: Int) {
+    if (h > 0) {
+      detectedResolution = when {
+        h >= 2160 -> "4K"
+        h >= 1080 -> "1080p"
+        h >= 720  -> "720p"
+        else      -> "SD"
+      }
     }
   }
 
@@ -258,10 +288,7 @@ fun PlayerScreen(
     ExoPlayer.Builder(context)
       .setMediaSourceFactory(playbackMediaSourceFactory)
       .build().apply {
-        Log.i(
-          "PlayerScreen",
-          "Avvio riproduzione: url=$videoUrl referer=${streamHeaders["Referer"] ?: "-"}"
-        )
+        Log.i("PlayerScreen", "Avvio riproduzione: url=$videoUrl")
         val exoMediaItem = ExoMediaItem.fromUri(Uri.parse(videoUrl))
         setMediaItem(exoMediaItem)
         prepare()
@@ -272,6 +299,28 @@ fun PlayerScreen(
       }
   }
 
+  // Se l'URL o l'episodio cambia dinamicamente (es. click su Prossimo Episodio)
+  LaunchedEffect(videoUrl) {
+    val currentUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
+    if (currentUri != null && currentUri != videoUrl) {
+      Log.i("PlayerScreen", "Caricamento nuovo flusso: $videoUrl")
+      isBuffering = true
+      val item = ExoMediaItem.fromUri(Uri.parse(videoUrl))
+      exoPlayer.setMediaItem(item)
+      exoPlayer.prepare()
+      exoPlayer.seekTo(playbackState.currentPositionMs)
+      exoPlayer.playWhenReady = true
+    }
+  }
+
+  // Feedback formato video temporaneo
+  LaunchedEffect(resizeFeedbackText) {
+    if (resizeFeedbackText != null) {
+      delay(2000L)
+      resizeFeedbackText = null
+    }
+  }
+
   // Release player on dispose & handle events
   DisposableEffect(exoPlayer) {
     val listener = object : Player.Listener {
@@ -280,7 +329,18 @@ fun PlayerScreen(
         if (state == Player.STATE_READY) {
           playbackErrorMessage = null
           totalDuration = exoPlayer.duration.coerceAtLeast(1L)
+          val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
+          updateResolutionFromHeight(h)
         }
+      }
+
+      override fun onVideoSizeChanged(videoSize: VideoSize) {
+        updateResolutionFromHeight(videoSize.height)
+      }
+
+      override fun onTracksChanged(tracks: Tracks) {
+        val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
+        updateResolutionFromHeight(h)
       }
 
       override fun onIsPlayingChanged(playing: Boolean) {
@@ -291,7 +351,6 @@ fun PlayerScreen(
         Log.e("PlayerScreen", "ExoPlayer playback error: ${error.message}", error)
         if (!hasFallbackAttempted) {
           hasFallbackAttempted = true
-          // Failover automatico a stream di backup ad alta disponibilità
           val fallbackItem = ExoMediaItem.fromUri(Uri.parse(MediaRepository.FALLBACK_VIDEO_URL))
           exoPlayer.setMediaItem(fallbackItem)
           exoPlayer.prepare()
@@ -307,8 +366,6 @@ fun PlayerScreen(
     onDispose {
       val finalPos = exoPlayer.currentPosition
       viewModel.updatePlaybackPosition(finalPos, exoPlayer.duration, exoPlayer.bufferedPosition)
-      // Persista l'ultima posizione in Room in ogni percorso di uscita (Back del telecomando incluso),
-      // così il ripristino del progresso non dipende solo da closePlayer().
       if (finalPos > 0) {
         MediaRepository.updateProgress(media.id, finalPos)
       }
@@ -317,23 +374,23 @@ fun PlayerScreen(
     }
   }
 
-  // Periodic polling for playback position
+  // Polling periodico per la posizione e aggiornamento risoluzione se non ancora agganciata
   LaunchedEffect(exoPlayer, isPlaying) {
     while (true) {
       if (exoPlayer.isPlaying) {
         currentPosition = exoPlayer.currentPosition
         totalDuration = exoPlayer.duration.coerceAtLeast(1L)
         viewModel.updatePlaybackPosition(currentPosition, totalDuration, exoPlayer.bufferedPosition)
+        if (detectedResolution == "Auto") {
+          val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
+          updateResolutionFromHeight(h)
+        }
       }
       delay(500)
     }
   }
 
-  // L'HUD è a schermo se i controlli sono esplicitamente visibili oppure se la
-  // riproduzione è in pausa (in pausa i controlli restano sempre mostrati).
   val hudShown = areControlsVisible || !isPlaying
-
-  // --- Helpers focus / telecomando -----------------------------------------
 
   fun kickAutoHide() {
     hideTimerTick++
@@ -360,17 +417,12 @@ fun PlayerScreen(
     hideTimerTick++
   }
 
-  /**
-   * Mostra i controlli (risveglio HUD) e, se [focusPrimary], riaggancia il
-   * telecomando al Play/Pause: usato da ogni pressione D-Pad quando l'HUD è nascosto.
-   */
   fun showControls(focusPrimary: Boolean = true) {
     hideTimerTick++
     areControlsVisible = true
     if (focusPrimary) requestFocusOn(playPauseFocusRequester)
   }
 
-  /** Nasconde i controlli spostando PRIMA il focus sul nodo di riposo. */
   fun hideControls() {
     if (hudHasFocus) {
       try {
@@ -382,8 +434,7 @@ fun PlayerScreen(
     areControlsVisible = false
   }
 
-  // (1) RICHIESTA FOCUS INIZIALE: appena l'HUD è composto e misurato, il D-Pad
-  // viene agganciato saldamente al controllo primario (Play/Pause).
+  // (1) Richiesta focus iniziale
   LaunchedEffect(Unit) {
     if (hudShown) {
       playPauseFocusRequester.requestFocusAfterFrame()
@@ -392,12 +443,9 @@ fun PlayerScreen(
     }
   }
 
-  // (2) AUTO-HIDE dei controlli dopo 5 secondi di inattività. Ogni pressione di
-  // un tasto incrementa hideTimerTick e riavvia il countdown. Il focus viene
-  // trasferito sul nodo di riposo PRIMA di smontare l'HUD, così nessun tasto va
-  // perso quando i controlli spariscono.
-  LaunchedEffect(hideTimerTick, areControlsVisible, isPlaying, showAudioModal, showSubtitleModal, showQualityModal) {
-    if (areControlsVisible && isPlaying && !showAudioModal && !showSubtitleModal && !showQualityModal) {
+  // (2) Auto-hide dei controlli dopo 5 secondi di inattività
+  LaunchedEffect(hideTimerTick, areControlsVisible, isPlaying, anyModalOpen) {
+    if (areControlsVisible && isPlaying && !anyModalOpen) {
       delay(CONTROLS_HIDE_DELAY_MS)
       if (hudHasFocus) {
         try {
@@ -410,24 +458,15 @@ fun PlayerScreen(
     }
   }
 
-  // (3) RIPRISTINO DOPO I MODALI: le tracce Audio/Sottotitoli/Qualità vivono in
-  // una finestra Dialog separata; alla chiusura, se il focus è andato perso,
-  // viene riagganciato al Play/Pause per non bloccare il telecomando.
-  val anyTrackModalOpen = showAudioModal || showSubtitleModal || showQualityModal
-  LaunchedEffect(anyTrackModalOpen, areControlsVisible) {
-    if (anyTrackModalOpen || !areControlsVisible) return@LaunchedEffect
-    delay(250)
+  // (3) Ripristino focus dopo chiusura modali
+  LaunchedEffect(anyModalOpen, areControlsVisible) {
+    if (anyModalOpen || !areControlsVisible) return@LaunchedEffect
+    delay(200)
     if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
   }
 
-  // BACK SUI CONTROLLI (livello 1 di questo schermo, sotto il livello modali):
-  // con l'HUD nascosto il tasto riapre i controlli e aggancia il focus al
-  // Play/Pause; con l'HUD visibile chiude il player. È la STESSA logica del
-  // onKeyEvent del Box radice, così il comportamento non dipende dal percorso di
-  // dispatch del tasto (KeyEvent in Compose oppure OnBackPressedDispatcher).
-  // Compuesto DOPO il BackHandler di MainActivity: mentre il player è aperto ha
-  // priorità su di esso, come il livello modali qui sopra.
-  BackHandler(enabled = !showAudioModal && !showSubtitleModal && !showQualityModal) {
+  // BACK su controlli
+  BackHandler(enabled = !anyModalOpen) {
     if (hudShown) {
       viewModel.closePlayer()
     } else {
@@ -435,32 +474,22 @@ fun PlayerScreen(
     }
   }
 
-  val displayTitle = if (episode != null) {
-    "${media.title} • S${episode.seasonNumber}:E${episode.episodeNumber} - ${episode.title}"
-  } else {
-    media.title
-  }
-
   Box(
     modifier = modifier
       .fillMaxSize()
       .background(Color.Black)
-      // --- INTERCETTAZIONE TASTI TELECOMANDO ---------------------------------
-      // Bubbling: arriva qui solo ciò che il controllo focalizzato NON ha
-      // consumato (OK sui pulsanti è già gestito dal TvFocusableBox).
       .onKeyEvent { keyEvent ->
         val native = keyEvent.nativeKeyEvent
         val keyCode = native.keyCode
 
-        // BACK viene intercettato su ENTRA le azioni: se il rilascio non venisse
-        // consumato, il framework chiamerebbe onBackPressed() e la BackHandler di
-        // MainActivity chiuderebbe il player saltando la logica gerarchica.
+        // Gestione BACK telecomando
         if (keyCode == KeyEvent.KEYCODE_BACK) {
           if (native.action == KeyEvent.ACTION_DOWN && native.repeatCount == 0) {
-            if (showAudioModal || showSubtitleModal || showQualityModal) {
+            if (anyModalOpen) {
               showAudioModal = false
               showSubtitleModal = false
               showQualityModal = false
+              showSpeedModal = false
             } else if (hudShown) {
               viewModel.closePlayer()
             } else {
@@ -470,9 +499,6 @@ fun PlayerScreen(
           return@onKeyEvent true
         }
 
-        // Le altre azioni scatenano SOLO sulla pressione iniziale (come in
-        // TvFocusableBox): altrimenti il rilascio del tasto rifarebbe seek o
-        // toggle una seconda volta.
         if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
         if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) &&
           native.repeatCount > 0
@@ -480,7 +506,7 @@ fun PlayerScreen(
           return@onKeyEvent false
         }
 
-        // Qualsiasi pressione riavvia il timer di auto-hide (5 s di inattività).
+        // Qualsiasi pressione riavvia l'auto-hide
         when (keyCode) {
           KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
           KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
@@ -508,25 +534,20 @@ fun PlayerScreen(
             true
           }
 
-          // OK / CENTRO
+          // OK / Centro D-Pad
           KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when {
-            // HUD nascosto: risveglia i controlli e aggancia il focus al Play/Pause
             !hudShown -> {
               showControls()
               true
             }
-            // Nessun controllo focalizzato: OK funziona come play/pause globale
             !hudHasFocus -> {
               togglePlayPause()
               true
             }
-            // Il controllo focalizzato (TvFocusableBox) gestisce già OK
             else -> false
           }
 
-          // Frecce: con il focus dentro l'HUD navigano tra i controlli (non
-          // vengono consumate qui, lasciate al sistema di focus); con il focus
-          // fuori fanno seek rapido e spostano il focus sulla seek bar.
+          // Frecce Sinistra / Destra
           KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> when {
             !hudShown -> {
               showControls()
@@ -540,6 +561,7 @@ fun PlayerScreen(
             }
           }
 
+          // Frecce Su / Giù
           KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> when {
             !hudShown -> {
               showControls()
@@ -559,14 +581,10 @@ fun PlayerScreen(
         interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
         indication = null
       ) {
-        // Tap sullo schermo: alterna i controlli (quando ricompaiono, il focus
-        // viene riagganciato al Play/Pause)
         if (areControlsVisible) hideControls() else showControls()
       }
   ) {
-    // NODO DI RIPOSO: 1dp invisibile e sempre composto. Diventa l'owner di focus
-    // quando l'HUD si nasconde, così ogni tasto D-Pad continua ad arrivare ai
-    // gestori di questo Box (bubbling) invece di perdersi nel vuoto.
+    // Nodo di riposo 1dp invisibile: mantiene il focus quando l'HUD si nasconde
     Box(
       modifier = Modifier
         .size(1.dp)
@@ -574,26 +592,53 @@ fun PlayerScreen(
         .focusable()
     )
 
-    // 1. AndroidView holding PlayerView
+    // 1. Vista Video ExoPlayer
     AndroidView(
       factory = { ctx ->
         PlayerView(ctx).apply {
-          player = exoPlayer
+          this.player = exoPlayer
           useController = false
-          // La vista video pura NON deve sottrarre il focus ai controlli Compose:
-          // né la superficie né i figli devono intercettare i tasti del D-Pad.
           isFocusable = false
           isFocusableInTouchMode = false
           descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
           isClickable = false
+          this.resizeMode = resizeMode
           layoutParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
           )
         }
       },
+      update = { view ->
+        view.player = exoPlayer
+        view.resizeMode = resizeMode
+      },
       modifier = Modifier.fillMaxSize()
     )
+
+    // Pill feedback formato video (Adatta, Zoom, Riempi)
+    AnimatedVisibility(
+      visible = resizeFeedbackText != null,
+      enter = fadeIn(),
+      exit = fadeOut(),
+      modifier = Modifier
+        .align(Alignment.TopCenter)
+        .padding(top = 40.dp)
+    ) {
+      Box(
+        modifier = Modifier
+          .background(Color.Black.copy(alpha = 0.82f), RoundedCornerShape(20.dp))
+          .border(1.dp, NovaCyanBright, RoundedCornerShape(20.dp))
+          .padding(horizontal = 20.dp, vertical = 8.dp)
+      ) {
+        Text(
+          text = "Formato: ${resizeFeedbackText ?: ""}",
+          color = NovaCyanBright,
+          fontSize = 14.sp,
+          fontWeight = FontWeight.Bold
+        )
+      }
+    }
 
     // Buffering indicator
     if (isBuffering && playbackErrorMessage == null) {
@@ -613,7 +658,7 @@ fun PlayerScreen(
           )
           Spacer(modifier = Modifier.height(12.dp))
           Text(
-            text = "Buffering Stream 4K HDR...",
+            text = "Caricamento Stream...",
             color = NovaTextPrimary,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold
@@ -622,7 +667,7 @@ fun PlayerScreen(
       }
     }
 
-    // Playback Error Overlay with TV retry affordance
+    // Errore riproduzione
     if (playbackErrorMessage != null) {
       Box(
         modifier = Modifier
@@ -670,7 +715,6 @@ fun PlayerScreen(
                 playbackErrorMessage = null
                 isBuffering = true
                 hasFallbackAttempted = false
-                // Riutilizza lo stesso URL risolto (sorgente provider inclusa)
                 exoPlayer.setMediaItem(ExoMediaItem.fromUri(Uri.parse(videoUrl)))
                 exoPlayer.prepare()
                 exoPlayer.playWhenReady = true
@@ -687,22 +731,17 @@ fun PlayerScreen(
       }
     }
 
-    // 2. Overlay Controlli Cinematografici
+    // 2. Overlay Controlli HUD Player TV
     AnimatedVisibility(
-      visible = areControlsVisible || !isPlaying,
+      visible = hudShown,
       enter = fadeIn(),
       exit = fadeOut(),
       modifier = Modifier.fillMaxSize()
     ) {
       Box(
         modifier = Modifier
-          // Traccia se il focus vive all'interno dell'HUD (anche sui discendenti):
-          // da qui dipende la mappa delle frecce (navigazione vs. seek/risveglio).
           .onFocusChanged { state -> hudHasFocus = state.hasFocus }
           .fillMaxSize()
-          // Ogni tasto premuto mentre l'HUD è aperto riavvia l'auto-hide.
-          // L'evento NON viene consumato, per non interferire con il controllo
-          // focalizzato che lo gestirà dopo (bubbling verso il Box radice).
           .onPreviewKeyEvent {
             kickAutoHide()
             false
@@ -710,211 +749,82 @@ fun PlayerScreen(
           .background(
             Brush.verticalGradient(
               colors = listOf(
-                Color.Black.copy(alpha = 0.85f),
                 Color.Transparent,
-                Color.Black.copy(alpha = 0.92f)
+                Color.Transparent,
+                Color(0x99040814),
+                Color(0xE6040814),
+                Color.Black.copy(alpha = 0.95f)
               )
             )
           )
       ) {
-        // TOP BAR: Pulsante Indietro + Titolo in alto a sinistra
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .align(Alignment.TopCenter)
-            .padding(horizontal = 32.dp, vertical = 24.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          TvFocusableBox(
-            shape = CircleShape,
-            onClick = { viewModel.closePlayer() }
-          ) { isFocused ->
-            Box(
-              modifier = Modifier
-                .size(44.dp)
-                .background(
-                  if (isFocused) NovaCyan else Color.Black.copy(alpha = 0.6f),
-                  CircleShape
-                ),
-              contentAlignment = Alignment.Center
-            ) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Esci dal player",
-                tint = if (isFocused) Color.Black else Color.White,
-                modifier = Modifier.size(24.dp)
-              )
-            }
-          }
-
-          Spacer(modifier = Modifier.width(16.dp))
-
-          Column {
-            Text(
-              text = displayTitle,
-              color = NovaTextPrimary,
-              fontSize = 18.sp,
-              fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Row(
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              QualityBadge(text = playbackState.selectedResolution.badge, isHighlighted = true)
-              Text(
-                text = "• ${playbackState.selectedAudio.language} (${playbackState.selectedAudio.format})",
-                color = NovaCyanBright,
-                fontSize = 12.sp
-              )
-              if (playbackState.selectedSubtitle.id != "off") {
-                Text(
-                  text = "• Sub: ${playbackState.selectedSubtitle.language}",
-                  color = NovaTextSecondary,
-                  fontSize = 12.sp
-                )
-              }
-            }
-          }
-        }
-
-        // CONTROLLI CENTRALI: -10s, PAUSA/PLAY GRANDE, +10s
-        Row(
-          modifier = Modifier.align(Alignment.Center),
-          horizontalArrangement = Arrangement.spacedBy(36.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          // -10s
-          TvFocusableBox(
-            shape = CircleShape,
-            onClick = { seekBy(-10_000L) }
-          ) { isFocused ->
-            Box(
-              modifier = Modifier
-                .size(54.dp)
-                .background(
-                  if (isFocused) NovaCyan else Color.Black.copy(alpha = 0.6f),
-                  CircleShape
-                ),
-              contentAlignment = Alignment.Center
-            ) {
-              Icon(
-                imageVector = Icons.Default.Replay10,
-                contentDescription = "Riavvolgi 10 secondi",
-                tint = if (isFocused) Color.Black else Color.White,
-                modifier = Modifier.size(32.dp)
-              )
-            }
-          }
-
-          // PLAY / PAUSE (Centrale Grande) — controllo primario del player:
-          // su questo elemento viene agganciato il focus D-Pad all'avvio e a ogni
-          // risveglio dell'HUD.
-          TvFocusableBox(
-            modifier = Modifier.focusRequester(playPauseFocusRequester),
-            shape = CircleShape,
-            focusedScale = 1.15f,
-            onClick = { togglePlayPause() }
-          ) { isFocused ->
-            Box(
-              modifier = Modifier
-                .size(80.dp)
-                .shadow(
-                  elevation = if (isFocused) 20.dp else 8.dp,
-                  shape = CircleShape,
-                  spotColor = NovaCyanBright
-                )
-                .background(
-                  brush = if (isFocused) {
-                    Brush.radialGradient(listOf(NovaCyanBright, NovaCyan))
-                  } else {
-                    Brush.radialGradient(listOf(Color(0xFF202A3C), Color(0xFF0F1522)))
-                  },
-                  shape = CircleShape
-                )
-                .border(
-                  width = 2.dp,
-                  color = if (isFocused) NovaCyanBright else NovaCyan.copy(alpha = 0.5f),
-                  shape = CircleShape
-                ),
-              contentAlignment = Alignment.Center
-            ) {
-              Icon(
-                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (isPlaying) "Pausa" else "Riproduci",
-                tint = if (isFocused) Color.Black else NovaCyanBright,
-                modifier = Modifier.size(46.dp)
-              )
-            }
-          }
-
-          // +10s
-          TvFocusableBox(
-            shape = CircleShape,
-            onClick = { seekBy(10_000L) }
-          ) { isFocused ->
-            Box(
-              modifier = Modifier
-                .size(54.dp)
-                .background(
-                  if (isFocused) NovaCyan else Color.Black.copy(alpha = 0.6f),
-                  CircleShape
-                ),
-              contentAlignment = Alignment.Center
-            ) {
-              Icon(
-                imageVector = Icons.Default.Forward10,
-                contentDescription = "Avanza 10 secondi",
-                tint = if (isFocused) Color.Black else Color.White,
-                modifier = Modifier.size(32.dp)
-              )
-            }
-          }
-        }
-
-        // BOTTOM BAR: Barra di riproduzione azzurra + tempo + selettori Audio/Sub/Qualità
+        // Contenitore unico inferiore (Sezione Info + Barra di Scorrimento + Barra Controlli)
         Column(
           modifier = Modifier
             .fillMaxWidth()
             .align(Alignment.BottomCenter)
-            .padding(horizontal = 32.dp, vertical = 20.dp)
+            .padding(bottom = 24.dp)
         ) {
-          // Progress Bar azzurra e minutaggio
-          val progressFraction = if (totalDuration > 0) {
-            (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
-          } else 0f
-
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+          // -------------------------------------------------------------------
+          // 1. SEZIONE INFORMATIVA (Sopra la barra di scorrimento, a sinistra)
+          // -------------------------------------------------------------------
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 36.dp)
           ) {
+            // Titolo Principale (grassetto bianco, font 24-26sp)
             Text(
-              text = formatTimeMs(currentPosition),
-              color = NovaCyanBright,
-              fontSize = 13.sp,
-              fontWeight = FontWeight.Bold
+              text = media.title,
+              color = Color.White,
+              fontSize = 25.sp,
+              fontWeight = FontWeight.Bold,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
             )
+
+            // Sottotitolo Episodio (Visibile SOLO per le Serie TV)
+            if (episodeSubtitle != null) {
+              Spacer(modifier = Modifier.height(3.dp))
+              Text(
+                text = episodeSubtitle,
+                color = Color(0xFFD1D5DB),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            }
+
+            // Info Risoluzione Video rilevata (es. "1080p", "4K", "720p", "SD")
+            Spacer(modifier = Modifier.height(3.dp))
             Text(
-              text = formatTimeMs(totalDuration),
-              color = NovaTextSecondary,
+              text = detectedResolution,
+              color = Color(0xFF9CA3AF),
               fontSize = 13.sp,
               fontWeight = FontWeight.Medium
             )
           }
 
-          Spacer(modifier = Modifier.height(6.dp))
+          Spacer(modifier = Modifier.height(12.dp))
 
-          // SEEK BAR — componente focusabile dell'HUD: quando il focus è qui le
-          // frecce ◀▶ spostano la posizione di 10 secondi; quando il focus è
-          // altrove (nodo di riposo) le stesse frecce fanno seek rapido e
-          // portano il focus proprio su questa barra.
+          // -------------------------------------------------------------------
+          // 2. BARRA DI SCORRIMENTO (Timeline)
+          // -------------------------------------------------------------------
+          val progressFraction = if (totalDuration > 0) {
+            (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
+          } else 0f
+
+          val bufferFraction = if (totalDuration > 0) {
+            (exoPlayer.bufferedPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
+          } else 0f
+
           Box(
             modifier = Modifier
               .fillMaxWidth()
+              .padding(horizontal = 26.dp)
               .onKeyEvent { keyEvent ->
                 val native = keyEvent.nativeKeyEvent
-                // Solo sulla pressione: altrimenti il rilascio rifarebbe il seek
                 if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
                 when (native.keyCode) {
                   KeyEvent.KEYCODE_DPAD_LEFT -> {
@@ -933,87 +843,186 @@ fun PlayerScreen(
               modifier = Modifier
                 .fillMaxWidth()
                 .focusRequester(seekBarFocusRequester),
-              shape = RoundedCornerShape(6.dp),
-              focusedScale = 1.0f
-            ) { _ ->
-              Column(
+              shape = RoundedCornerShape(8.dp),
+              focusedScale = 1.0f,
+              focusedBorderColor = NovaCyanBright,
+              borderWidth = 2.dp,
+              onClick = { togglePlayPause() }
+            ) { isFocused ->
+              BoxWithConstraints(
                 modifier = Modifier
                   .fillMaxWidth()
-                  .padding(vertical = 4.dp)
+                  .padding(horizontal = 10.dp, vertical = 8.dp),
+                contentAlignment = Alignment.CenterStart
               ) {
-                // Barra azzurra personalizzata
+                val widthPx = maxWidth
+
+                // Track Base della Timeline
                 Box(
                   modifier = Modifier
                     .fillMaxWidth()
-                    .height(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0x551E293B))
+                    .height(if (isFocused) 6.dp else 4.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(Color.White.copy(alpha = 0.22f))
                 ) {
-                  // Buffer indicator
-                  val bufferFraction = if (totalDuration > 0) {
-                    (exoPlayer.bufferedPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
-                  } else 0f
+                  // Buffer Indicator
                   Box(
                     modifier = Modifier
                       .fillMaxWidth(bufferFraction)
-                      .height(8.dp)
-                      .background(Color(0x3300A3FF))
+                      .fillMaxHeight()
+                      .background(Color.White.copy(alpha = 0.38f))
                   )
-                  // Playback progress indicator (Azzurro / Ciano neon)
+
+                  // Progress Indicator
                   Box(
                     modifier = Modifier
                       .fillMaxWidth(progressFraction)
-                      .height(8.dp)
+                      .fillMaxHeight()
                       .background(
-                        Brush.horizontalGradient(
-                          listOf(NovaCyan, NovaCyanBright)
-                        )
+                        if (isFocused) Brush.horizontalGradient(listOf(NovaCyan, NovaCyanBright))
+                        else Brush.horizontalGradient(listOf(Color(0xFFE2E8F0), Color.White))
                       )
                   )
                 }
+
+                // Thumb / Indicatore di avanzamento
+                val thumbOffset = (widthPx - 14.dp) * progressFraction
+                Box(
+                  modifier = Modifier
+                    .padding(start = thumbOffset.coerceAtLeast(0.dp))
+                    .size(if (isFocused) 14.dp else 9.dp)
+                    .shadow(
+                      elevation = if (isFocused) 10.dp else 2.dp,
+                      shape = CircleShape,
+                      spotColor = NovaCyanBright
+                    )
+                    .background(
+                      if (isFocused) NovaCyanBright else Color.White,
+                      CircleShape
+                    )
+                )
               }
             }
           }
 
-          Spacer(modifier = Modifier.height(16.dp))
+          Spacer(modifier = Modifier.height(10.dp))
 
-          // Action buttons row: Audio, Sottotitoli, Qualità, Impostazioni
+          // -------------------------------------------------------------------
+          // 3. BARRA CONTROLLI INFERIORE (Sotto la timeline)
+          // -------------------------------------------------------------------
           Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 36.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
           ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-              PlayerBottomAction(
-                label = "Audio: ${playbackState.selectedAudio.language}",
-                icon = Icons.Default.Audiotrack,
+            // LATO SINISTRO: Sequenza pulsanti azione
+            Row(
+              horizontalArrangement = Arrangement.spacedBy(16.dp),
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              // 1. Play / Pausa: pulsante circolare bianco ad alto contrasto
+              TvFocusableBox(
+                modifier = Modifier.focusRequester(playPauseFocusRequester),
+                shape = CircleShape,
+                focusedScale = 1.15f,
+                focusedBorderColor = NovaCyanBright,
+                borderWidth = 2.5.dp,
+                onClick = { togglePlayPause() }
+              ) { isFocused ->
+                Box(
+                  modifier = Modifier
+                    .size(48.dp)
+                    .shadow(
+                      elevation = if (isFocused) 16.dp else 4.dp,
+                      shape = CircleShape,
+                      spotColor = NovaCyanBright
+                    )
+                    .background(
+                      if (isFocused) NovaCyanBright else Color.White,
+                      CircleShape
+                    ),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Icon(
+                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (isPlaying) "Pausa" else "Riproduci",
+                    tint = Color.Black,
+                    modifier = Modifier.size(28.dp)
+                  )
+                }
+              }
+
+              // 2. Prossimo Episodio: icona Skip Next (Visibile SOLO se Serie TV e con episodio successivo)
+              if (isTvShow && nextEpisode != null) {
+                PlayerControlIconButton(
+                  icon = Icons.Default.SkipNext,
+                  contentDescription = "Prossimo Episodio",
+                  onClick = {
+                    kickAutoHide()
+                    viewModel.loadStream(media, nextEpisode)
+                  }
+                )
+              }
+
+              // 3. Adatta (Aspect Ratio): icona schermo per commutare ResizeMode (Fit, Zoom, Fill)
+              PlayerControlIconButton(
+                icon = Icons.Default.AspectRatio,
+                contentDescription = "Adatta Aspetto Video",
                 onClick = {
                   kickAutoHide()
-                  showAudioModal = true
+                  resizeMode = when (resizeMode) {
+                    AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                  }
+                  resizeFeedbackText = when (resizeMode) {
+                    AspectRatioFrameLayout.RESIZE_MODE_FIT -> "Adatta (Fit)"
+                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Zoom"
+                    AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Riempi (Fill)"
+                    else -> "Adatta"
+                  }
                 }
               )
-              PlayerBottomAction(
-                label = "Sottotitoli: ${playbackState.selectedSubtitle.language}",
-                icon = Icons.Default.Subtitles,
+
+              // 4. Velocità di riproduzione: icona tachimetro (0.75x, 1.0x, 1.25x, 1.5x)
+              PlayerControlIconButton(
+                icon = Icons.Default.Speed,
+                contentDescription = "Velocità di Riproduzione",
+                onClick = {
+                  kickAutoHide()
+                  showSpeedModal = true
+                }
+              )
+
+              // 5. Sottotitoli: icona CC (Closed Captions)
+              PlayerControlIconButton(
+                icon = Icons.Default.ClosedCaption,
+                contentDescription = "Sottotitoli",
                 onClick = {
                   kickAutoHide()
                   showSubtitleModal = true
                 }
               )
-              PlayerBottomAction(
-                label = "Qualità: ${playbackState.selectedResolution.badge}",
-                icon = Icons.Default.HighQuality,
+
+              // 6. Audio: icona altoparlante
+              PlayerControlIconButton(
+                icon = Icons.AutoMirrored.Filled.VolumeUp,
+                contentDescription = "Tracce Audio",
                 onClick = {
                   kickAutoHide()
-                  showQualityModal = true
+                  showAudioModal = true
                 }
               )
             }
 
+            // LATO DESTRO: Minutaggio formattato (es. "00:02 / 41:54")
             Text(
-              text = "Frecce ◀ ▶ per spostarti tra i controlli • OK per Pausa",
-              color = NovaTextMuted,
-              fontSize = 11.sp
+              text = formatTimePair(currentPosition, totalDuration),
+              color = Color.White,
+              fontSize = 16.sp,
+              fontWeight = FontWeight.SemiBold
             )
           }
         }
@@ -1029,13 +1038,12 @@ fun PlayerScreen(
         .align(Alignment.BottomEnd)
         .padding(
           end = 40.dp,
-          bottom = if (areControlsVisible) 110.dp else 40.dp
+          bottom = if (hudShown) 160.dp else 40.dp
         )
     ) {
       TvFocusableBox(
         shape = RoundedCornerShape(50),
         onClick = {
-          // Salta direttamente alla fine della sigla
           kickAutoHide()
           exoPlayer.seekTo(introEndMs)
           currentPosition = introEndMs
@@ -1106,6 +1114,24 @@ fun PlayerScreen(
       )
     }
 
+    // Modal Velocità di Riproduzione
+    if (showSpeedModal) {
+      val speedOptions = listOf("0.75x", "1.0x (Normale)", "1.25x", "1.5x")
+      val speedValues = listOf(0.75f, 1.0f, 1.25f, 1.5f)
+      TrackSelectionDialog(
+        title = "Velocità di Riproduzione",
+        options = speedOptions,
+        selectedIndex = speedValues.indexOf(currentSpeed).coerceAtLeast(1),
+        onSelect = { idx ->
+          val speed = speedValues[idx]
+          currentSpeed = speed
+          exoPlayer.setPlaybackSpeed(speed)
+          showSpeedModal = false
+        },
+        onDismiss = { showSpeedModal = false }
+      )
+    }
+
     // Modal Qualità
     if (showQualityModal) {
       val resolutions = VideoResolution.values()
@@ -1123,44 +1149,38 @@ fun PlayerScreen(
   }
 }
 
+/**
+ * Pulsante azione icona per la barra controlli inferiore TV con feedback focus NovaCyan
+ */
 @Composable
-fun PlayerBottomAction(
-  label: String,
+fun PlayerControlIconButton(
   icon: ImageVector,
+  contentDescription: String,
+  modifier: Modifier = Modifier,
   onClick: () -> Unit
 ) {
   TvFocusableBox(
-    shape = RoundedCornerShape(50),
-    focusedScale = 1.05f,
+    modifier = modifier,
+    shape = CircleShape,
+    focusedScale = 1.15f,
+    focusedBorderColor = NovaCyanBright,
+    borderWidth = 2.dp,
     onClick = onClick
   ) { isFocused ->
-    Row(
+    Box(
       modifier = Modifier
+        .size(44.dp)
         .background(
-          if (isFocused) Brush.horizontalGradient(listOf(NovaCyan, NovaCyanBright))
-          else Brush.horizontalGradient(listOf(Color(0xFF1E2638).copy(alpha = 0.9f), Color(0xFF161E30).copy(alpha = 0.9f))),
-          RoundedCornerShape(50)
-        )
-        .border(
-          width = if (isFocused) 1.5.dp else 1.dp,
-          color = if (isFocused) NovaCyanBright else Color(0x44475569),
-          shape = RoundedCornerShape(50)
-        )
-        .padding(horizontal = 16.dp, vertical = 9.dp),
-      verticalAlignment = Alignment.CenterVertically
+          if (isFocused) NovaCyan.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.08f),
+          CircleShape
+        ),
+      contentAlignment = Alignment.Center
     ) {
       Icon(
         imageVector = icon,
-        contentDescription = null,
-        tint = if (isFocused) Color.Black else NovaCyanBright,
-        modifier = Modifier.size(16.dp)
-      )
-      Spacer(modifier = Modifier.width(6.dp))
-      Text(
-        text = label,
-        color = if (isFocused) Color.Black else NovaTextPrimary,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.Bold
+        contentDescription = contentDescription,
+        tint = if (isFocused) NovaCyanBright else Color.White,
+        modifier = Modifier.size(24.dp)
       )
     }
   }
@@ -1251,14 +1271,23 @@ fun TrackSelectionDialog(
   }
 }
 
-private fun formatTimeMs(ms: Long): String {
-  val totalSeconds = (ms / 1000).toInt()
-  val hours = totalSeconds / 3600
-  val minutes = (totalSeconds % 3600) / 60
-  val seconds = totalSeconds % 60
-  return if (hours > 0) {
-    "%02d:%02d:%02d".format(hours, minutes, seconds)
-  } else {
-    "%02d:%02d".format(minutes, seconds)
+/**
+ * Formatta la coppia tempo corrente / durata totale
+ * Es: "00:02 / 41:54" oppure "01:05:20 / 02:15:30"
+ */
+private fun formatTimePair(currentMs: Long, totalMs: Long): String {
+  val curSec = (currentMs / 1000).coerceAtLeast(0)
+  val totSec = (totalMs / 1000).coerceAtLeast(0)
+  val hasHours = totSec >= 3600
+  fun fmt(sec: Long): String {
+    val h = sec / 3600
+    val m = (sec % 3600) / 60
+    val s = sec % 60
+    return if (hasHours) {
+      "%02d:%02d:%02d".format(h, m, s)
+    } else {
+      "%02d:%02d".format(m, s)
+    }
   }
+  return "${fmt(curSec)} / ${fmt(totSec)}"
 }
