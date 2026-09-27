@@ -20,8 +20,7 @@ import kotlinx.coroutines.withContext
  *  1. Interrogazione endpoint speculari (multiembed.mov, superembed.stream, getsuperembed.link);
  *  2. Estrazione playlist HLS (.m3u8) o stream MP4 diretto a 1080p Full HD;
  *  3. Validazione playlist HLS e marcatura esplicita della qualità a 1080p;
- *  4. In caso di blocco captcha Turnstile sul player web, aggancio resiliente su stream HLS multi-bitrate
- *     certificato 1080p Full HD per garantire continuità di riproduzione.
+ *  4. Se nessun mirror risponde con sorgenti valide, restituisce lista vuota senza flussi fittizi.
  */
 class MultiEmbedProvider : StreamProvider {
 
@@ -53,19 +52,9 @@ class MultiEmbedProvider : StreamProvider {
       }
     }
 
-    // Fallback ad alta resilienza 1080p Full HD garantito (HLS multi-bitrate fino a 1920x1080)
-    Log.i(TAG, "Attivazione sorgente garantita 1080p Full HD per TMDB $tmdbId (s=$s, e=$e)")
-    listOf(
-      StreamSource(
-        url = FHD_BACKUP_STREAM_URL,
-        quality = "1080p",
-        serverName = SERVER_NAME,
-        headers = mapOf(
-          "Referer" to "https://multiembed.mov/",
-          "User-Agent" to ExtractorHttp.USER_AGENT
-        )
-      )
-    )
+    // Se nessun mirror ha restituito sorgenti reali, restituisce lista vuota pulita
+    Log.d(TAG, "MultiEmbed: nessuna sorgente reale trovata per TMDB $tmdbId (s=$s, e=$e): ${failures.joinToString(" | ")}")
+    emptyList()
   }
 
   private fun resolveOnBase(
@@ -223,9 +212,6 @@ class MultiEmbedProvider : StreamProvider {
       "MultiEmbed" to "https://multiembed.mov",
       "SuperEmbed" to "https://superembed.stream"
     )
-
-    /** Flusso HLS multi-bitrate ad alte prestazioni con traccia garantita 1920x1080 Full HD */
-    const val FHD_BACKUP_STREAM_URL = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
 
     private val MEDIA_REGEX = Regex("""(https?://[^\s"'<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>\\]*)?)""", RegexOption.IGNORE_CASE)
     private val IFRAME_REGEX = Regex("""<iframe[^>]{0,400}?src="([^"]+)"""", RegexOption.IGNORE_CASE)
