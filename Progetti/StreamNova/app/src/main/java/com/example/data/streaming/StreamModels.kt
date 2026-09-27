@@ -16,7 +16,21 @@ data class StreamSource(
   val quality: String = "Auto",
   val serverName: String,
   val headers: Map<String, String> = emptyMap(),
-)
+  val declaredQuality: String = quality,
+  val verifiedHeight: Int? = null,
+) {
+  val effectiveHeight: Int
+    get() = verifiedHeight ?: when {
+      quality.contains("4k", ignoreCase = true) || quality.contains("2160") -> 2160
+      quality.contains("1080") -> 1080
+      quality.contains("720") -> 720
+      quality.contains("480") -> 480
+      else -> 0
+    }
+
+  val isVerifiedFhdOrHigher: Boolean
+    get() = (verifiedHeight ?: 0) >= 1080
+}
 
 /**
  * Stato del ciclo di ricerca delle sorgenti (estrazione provider -> player).

@@ -98,6 +98,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.model.AudioTrack
@@ -195,8 +196,8 @@ fun PlayerScreen(
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
   var hasFallbackAttempted by remember { mutableStateOf(false) }
 
-  // Risoluzione video rilevata in tempo reale da ExoPlayer o dichiarata dalla sorgente (default 1080p Full HD prioritario)
-  var detectedResolution by remember { mutableStateOf(playbackState.streamQuality ?: "1080p") }
+  // Risoluzione video rilevata in tempo reale da ExoPlayer (es. 1080p, 720p, 4K)
+  var detectedResolution by remember { mutableStateOf("") }
   var selectedQualityLabel by remember { mutableStateOf("Auto") }
 
   // Aspect ratio / ResizeMode
@@ -281,15 +282,24 @@ fun PlayerScreen(
     }
   }
 
-  // TrackSelector con vincoli prioritari rigidi per Full HD 1080p (e 4K se disponibile)
+  // DefaultBandwidthMeter con stima iniziale a 35 Mbps per forzare l'avvio sul profilo a bitrate massimo (1080p FHD)
+  val bandwidthMeter = remember {
+    DefaultBandwidthMeter.Builder(context)
+      .setInitialBitrateEstimate(35_000_000L) // 35 Mbps per forzare l'avvio sul profilo a bitrate massimo
+      .build().also {
+        Log.i("StreamNovaDiag", "BandwidthMeter inizializzato con stima iniziale: ${it.bitrateEstimate / 1_000_000} Mbps (${it.bitrateEstimate} bps)")
+      }
+  }
+
+  // TrackSelector configurato per prediligere la risoluzione più alta disponibile senza blocchi sul viewport
   val trackSelector = remember {
     DefaultTrackSelector(context).apply {
       setParameters(
         buildUponParameters()
-          .setMaxVideoSize(3840, 2160)
-          .setMinVideoSize(1920, 1080)
+          .setViewportSize(Int.MAX_VALUE, Int.MAX_VALUE, false)
           .setForceHighestSupportedBitrate(true)
           .setExceedVideoConstraintsIfNecessary(true)
+          .setExceedRendererCapabilitiesIfNecessary(true)
       )
     }
   }
@@ -302,16 +312,15 @@ fun PlayerScreen(
         h >= 720  -> "720p"
         else      -> "SD"
       }
-    } else if (playbackState.streamQuality != null) {
-      detectedResolution = playbackState.streamQuality!!
     }
   }
 
-  // ExoPlayer instance initialization con DefaultTrackSelector configurato
-  val exoPlayer = remember(playbackMediaSourceFactory, trackSelector) {
+  // ExoPlayer instance initialization con DefaultTrackSelector e DefaultBandwidthMeter (35 Mbps)
+  val exoPlayer = remember(playbackMediaSourceFactory, trackSelector, bandwidthMeter) {
     ExoPlayer.Builder(context)
       .setMediaSourceFactory(playbackMediaSourceFactory)
       .setTrackSelector(trackSelector)
+      .setBandwidthMeter(bandwidthMeter)
       .build().apply {
         Log.i("PlayerScreen", "Avvio riproduzione: url=$videoUrl")
         val exoMediaItem = ExoMediaItem.fromUri(Uri.parse(videoUrl))
@@ -359,16 +368,19 @@ fun PlayerScreen(
     return options
   }
 
-  // Se l'URL o l'episodio cambia dinamicamente (es. click su Prossimo Episodio)
+  // Se l'URL cambia dinamicamente (es. click su Prossimo Episodio o Upgrade di qualità a caldo)
   LaunchedEffect(videoUrl) {
     val currentUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
     if (currentUri != null && currentUri != videoUrl) {
-      Log.i("PlayerScreen", "Caricamento nuovo flusso: $videoUrl")
+      Log.i("PlayerScreen", "Upgrade o cambio flusso stream: $videoUrl")
+      val resumePos = exoPlayer.currentPosition.takeIf { it > 0 } ?: playbackState.currentPositionMs
       isBuffering = true
       val item = ExoMediaItem.fromUri(Uri.parse(videoUrl))
       exoPlayer.setMediaItem(item)
       exoPlayer.prepare()
-      exoPlayer.seekTo(playbackState.currentPositionMs)
+      if (resumePos > 0) {
+        exoPlayer.seekTo(resumePos)
+      }
       exoPlayer.playWhenReady = true
     }
   }
@@ -399,27 +411,17 @@ fun PlayerScreen(
       }
 
       override fun onTracksChanged(tracks: Tracks) {
-        var has1080pOrHigher = false
         for (group in tracks.groups) {
           if (group.type == C.TRACK_TYPE_VIDEO) {
+            Log.i("StreamNovaDiag", "=== TRACCE VIDEO DISPONIBILI (${group.length}) ===")
             for (i in 0 until group.length) {
-              val f = group.getTrackFormat(i)
-              if (f.height >= 1080) {
-                has1080pOrHigher = true
-                break
-              }
+              val format = group.getTrackFormat(i)
+              val selected = group.isTrackSelected(i)
+              val supported = group.isTrackSupported(i)
+              val kbps = if (format.bitrate > 0) format.bitrate / 1000 else 0
+              Log.i("StreamNovaDiag", "Traccia #$i: ${format.width}x${format.height} @ $kbps kbps | Selezionata: $selected | Supportata: $supported")
             }
           }
-        }
-        if (has1080pOrHigher && selectedQualityLabel == "Auto") {
-          // Vincolo rigido che forza la traccia video 1080p ed impedisce l'aggancio a 720p
-          trackSelector.setParameters(
-            trackSelector.buildUponParameters()
-              .setMaxVideoSize(3840, 2160)
-              .setMinVideoSize(1920, 1080)
-              .setForceHighestSupportedBitrate(true)
-              .setExceedVideoConstraintsIfNecessary(false)
-          )
         }
         val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
         updateResolutionFromHeight(h)
@@ -1319,20 +1321,32 @@ fun PlayerScreen(
           val (label, targetHeight) = qualityOptions[idx]
           selectedQualityLabel = label
           if (targetHeight == 0) {
-            // Auto: preferenza Full HD / 4K con fallback
+            // Auto: preferenza massima risoluzione e bitrate più alto senza vincoli fissi
             trackSelector.setParameters(
               trackSelector.buildUponParameters()
-                .setMaxVideoSize(3840, 2160)
-                .setMinVideoSize(1920, 1080)
+                .clearVideoSizeConstraints()
+                .setViewportSize(Int.MAX_VALUE, Int.MAX_VALUE, false)
+                .setForceHighestSupportedBitrate(true)
                 .setExceedVideoConstraintsIfNecessary(true)
+                .setExceedRendererCapabilitiesIfNecessary(true)
             )
           } else {
-            val targetWidth = (targetHeight * 16) / 9
+            // Forzatura vincoli risoluzione esatti per la traccia selezionata (es. 1920x1080 per 1080p)
+            val targetWidth = when (targetHeight) {
+              2160 -> 3840
+              1080 -> 1920
+              720 -> 1280
+              480 -> 854
+              else -> (targetHeight * 16) / 9
+            }
             trackSelector.setParameters(
               trackSelector.buildUponParameters()
-                .setMaxVideoSize(targetWidth + 100, targetHeight + 10)
-                .setMinVideoSize(targetWidth - 100, targetHeight - 10)
-                .setExceedVideoConstraintsIfNecessary(false)
+                .setMinVideoSize(targetWidth, targetHeight)
+                .setMaxVideoSize(targetWidth, targetHeight)
+                .setViewportSize(Int.MAX_VALUE, Int.MAX_VALUE, false)
+                .setForceHighestSupportedBitrate(true)
+                .setExceedVideoConstraintsIfNecessary(true)
+                .setExceedRendererCapabilitiesIfNecessary(true)
             )
             detectedResolution = when {
               targetHeight >= 2160 -> "4K"

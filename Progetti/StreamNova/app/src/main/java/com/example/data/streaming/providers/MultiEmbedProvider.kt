@@ -105,17 +105,19 @@ class MultiEmbedProvider : StreamProvider {
 
     if (direct.isNotEmpty()) {
       val url = direct.first()
-      val quality = probeQuality(url, base)
-      Log.i(TAG, "$name sorgente diretta trovata: $url (qualità $quality)")
+      val qualityInfo = probeQuality(url, base)
+      Log.i(TAG, "$name sorgente diretta trovata: $url (qualità ${qualityInfo.label}, verifiedHeight=${qualityInfo.verifiedHeight})")
       return listOf(
         StreamSource(
           url = url,
-          quality = quality,
-          serverName = "$SERVER_NAME 1080p",
+          quality = qualityInfo.label,
+          serverName = SERVER_NAME,
           headers = mapOf(
             "Referer" to "$base/",
             "User-Agent" to ExtractorHttp.USER_AGENT
-          )
+          ),
+          declaredQuality = qualityInfo.label,
+          verifiedHeight = qualityInfo.verifiedHeight
         )
       )
     }
@@ -123,17 +125,19 @@ class MultiEmbedProvider : StreamProvider {
     // 2) Tag <video> o <source>
     val srcTag = SOURCE_REGEX.find(normalized)?.groupValues?.get(1)
     if (srcTag != null && srcTag.startsWith("http")) {
-      val quality = probeQuality(srcTag, base)
-      Log.i(TAG, "$name sorgente da <source>: $srcTag (qualità $quality)")
+      val qualityInfo = probeQuality(srcTag, base)
+      Log.i(TAG, "$name sorgente da <source>: $srcTag (qualità ${qualityInfo.label})")
       return listOf(
         StreamSource(
           url = srcTag,
-          quality = quality,
-          serverName = "$SERVER_NAME 1080p",
+          quality = qualityInfo.label,
+          serverName = SERVER_NAME,
           headers = mapOf(
             "Referer" to "$base/",
             "User-Agent" to ExtractorHttp.USER_AGENT
-          )
+          ),
+          declaredQuality = qualityInfo.label,
+          verifiedHeight = qualityInfo.verifiedHeight
         )
       )
     }
@@ -155,16 +159,18 @@ class MultiEmbedProvider : StreamProvider {
         val nestedDirect = MEDIA_REGEX.findAll(nested).map { it.groupValues[1] }.distinct().toList()
         if (nestedDirect.isNotEmpty()) {
           val url = nestedDirect.first()
-          val quality = probeQuality(url, originOf(iframeUrl))
+          val qualityInfo = probeQuality(url, originOf(iframeUrl))
           return listOf(
             StreamSource(
               url = url,
-              quality = quality,
-              serverName = "$SERVER_NAME 1080p",
+              quality = qualityInfo.label,
+              serverName = SERVER_NAME,
               headers = mapOf(
                 "Referer" to iframeUrl,
                 "User-Agent" to ExtractorHttp.USER_AGENT
-              )
+              ),
+              declaredQuality = qualityInfo.label,
+              verifiedHeight = qualityInfo.verifiedHeight
             )
           )
         }
@@ -180,19 +186,33 @@ class MultiEmbedProvider : StreamProvider {
     throw IOException("$name senza sorgenti dirette leggibili")
   }
 
-  private fun probeQuality(url: String, referer: String): String {
-    if (url.endsWith(".mp4", ignoreCase = true)) return "1080p"
+  data class QualityInfo(val label: String, val verifiedHeight: Int?)
+
+  private fun probeQuality(url: String, referer: String): QualityInfo {
+    if (url.endsWith(".mp4", ignoreCase = true)) {
+      val h = when {
+        url.contains("1080", ignoreCase = true) -> 1080
+        url.contains("720", ignoreCase = true) -> 720
+        url.contains("480", ignoreCase = true) -> 480
+        else -> null
+      }
+      return QualityInfo(if (h != null) "${h}p" else "Auto", h)
+    }
     return try {
       val playlist = ExtractorHttp.get(url, referer = "$referer/")
-      if (playlist.contains("1080") || playlist.contains("1920x1080")) {
-        "1080p"
+      if (!playlist.startsWith("#EXTM3U")) {
+        QualityInfo("Auto", null)
+      } else if (playlist.contains("1080") || playlist.contains("1920x1080")) {
+        QualityInfo("1080p", 1080)
       } else if (playlist.contains("720") || playlist.contains("1280x720")) {
-        "720p"
+        QualityInfo("720p", 720)
+      } else if (playlist.contains("480") || playlist.contains("854x480")) {
+        QualityInfo("480p", 480)
       } else {
-        "1080p"
+        QualityInfo("Auto", null)
       }
     } catch (e: Exception) {
-      "1080p"
+      QualityInfo("Auto", null)
     }
   }
 

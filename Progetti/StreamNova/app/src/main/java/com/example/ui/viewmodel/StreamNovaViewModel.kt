@@ -368,7 +368,7 @@ class StreamNovaViewModel : ViewModel() {
         val searchTitle = media.title.ifBlank { media.originalTitle }
         Log.i(TAG, "Ricerca sorgenti Fast-Start: tmdbId=$tmdbId isTv=$isTv S$season:E$episodeNumber \"$searchTitle\" (${media.year})")
 
-        var hasStartedPlaying = false
+        var activePlayingSource: StreamSource? = null
 
         streamManager.resolveFlow(
           tmdbId = tmdbId,
@@ -380,16 +380,31 @@ class StreamNovaViewModel : ViewModel() {
         ).collect { sources ->
           if (sources.isNotEmpty()) {
             _streamResult.value = StreamResult.Success(sources)
-            if (!hasStartedPlaying) {
-              hasStartedPlaying = true
-              val best = sources.first()
+            val best = sources.first()
+
+            if (activePlayingSource == null) {
+              // Fast-Start: primo flusso valido disponibile
+              activePlayingSource = best
               Log.i(TAG, "Fast-Start immediato: avvio con ${best.serverName} (${best.quality}) -> ${best.url}")
               openPlayer(media, episode, best)
+            } else {
+              // Valutazione sorgente tardiva: verifica se rappresenta un effettivo miglioramento qualitativo
+              val currentScore = StreamManager.qualityScore(activePlayingSource!!)
+              val newScore = StreamManager.qualityScore(best)
+              val isDifferentUrl = best.url != activePlayingSource!!.url
+
+              if (isDifferentUrl && newScore > currentScore) {
+                Log.i(TAG, "Upgrade qualitativo sorgente tardiva: da ${activePlayingSource!!.serverName} (${activePlayingSource!!.quality}, score=$currentScore) a ${best.serverName} (${best.quality}, score=$newScore)")
+                activePlayingSource = best
+                upgradeStreamSource(best)
+              } else {
+                Log.d(TAG, "Sorgenti aggiornate (${sources.size}), ma la qualità non migliora (score: attuale=$currentScore, nuova=$newScore). Nessun reload.")
+              }
             }
           }
         }
 
-        if (!hasStartedPlaying) {
+        if (activePlayingSource == null) {
           throw IllegalStateException("Nessuna sorgente disponibile dai provider")
         }
       } catch (e: Exception) {
@@ -398,6 +413,17 @@ class StreamNovaViewModel : ViewModel() {
         openPlayer(media, episode)
       }
     }
+  }
+
+  fun upgradeStreamSource(source: StreamSource) {
+    val current = _playbackState.value
+    if (current.streamUrl == source.url) return
+    _playbackState.value = current.copy(
+      streamUrl = source.url,
+      streamHeaders = source.headers,
+      streamQuality = source.quality,
+      streamServer = source.serverName
+    )
   }
 
   fun closePlayer() {

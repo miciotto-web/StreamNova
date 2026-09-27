@@ -99,12 +99,12 @@ class StreamManager(
                   collected.add(s)
                 }
               }
-              // Riordina la lista con priorità qualitativa decrescente
-              collected.sortWith(compareByDescending { qualityScore(it.quality) })
+              // Riordina la lista con priorità qualitativa decrescente basata sulla qualità verificata
+              collected.sortWith(compareByDescending { qualityScore(it) })
 
-              val has1080p = collected.any { isFullHdOrHigher(it.quality) }
+              val has1080p = collected.any { isFullHdOrHigher(it) }
               if (has1080p) {
-                // Flusso Full HD 1080p presente: cancellazione immediata del fallback timer ed emissione prioritaria
+                // Flusso Full HD 1080p reale presente: cancellazione immediata del fallback timer ed emissione prioritaria
                 fallbackTimerJob.cancel()
                 emittedFirst = true
                 logAndSendSelected(collected.toList())
@@ -153,19 +153,42 @@ class StreamManager(
     const val DEFAULT_TIMEOUT_MS = 15_000L
     const val FAST_START_FALLBACK_DELAY_MS = 1200L
 
+    fun isFullHdOrHigher(source: StreamSource): Boolean {
+      val vHeight = source.verifiedHeight
+      if (vHeight != null) {
+        return vHeight >= 1080
+      }
+      return isFullHdOrHigher(source.quality)
+    }
+
     fun isFullHdOrHigher(quality: String): Boolean {
       val q = quality.lowercase()
+      if (q == "auto") return false
       return q.contains("1080") || q.contains("4k") || q.contains("2160") || q.contains("fhd") || q.contains("uhd")
+    }
+
+    fun qualityScore(source: StreamSource): Int {
+      val vHeight = source.verifiedHeight
+      if (vHeight != null) {
+        return when {
+          vHeight >= 2160 -> 250 // 4K verificato
+          vHeight >= 1080 -> 200 // 1080p FHD verificato
+          vHeight >= 720  -> 100 // 720p HD verificato
+          vHeight >= 480  -> 50  // 480p SD verificato
+          else            -> 20
+        }
+      }
+      return qualityScore(source.quality)
     }
 
     fun qualityScore(quality: String): Int {
       val q = quality.lowercase()
       return when {
-        q.contains("4k") || q.contains("2160") || q.contains("uhd") -> 200
-        q.contains("1080") || q.contains("fhd") -> 100
-        q.contains("720") || q.contains("hd") -> 50
-        q.contains("auto") -> 30
-        q.contains("480") || q.contains("sd") -> 20
+        q.contains("4k") || q.contains("2160") || q.contains("uhd") -> 180
+        q.contains("1080") || q.contains("fhd") -> 150
+        q.contains("720") || q.contains("hd") -> 80
+        q.contains("auto") -> 40
+        q.contains("480") || q.contains("sd") -> 30
         else -> 10
       }
     }

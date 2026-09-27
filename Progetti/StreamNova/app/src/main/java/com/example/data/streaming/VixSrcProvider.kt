@@ -163,21 +163,28 @@ class VixSrcProvider(
         throw IOException("Playlist non HLS su $serverName: ${playlistBody.take(120)}")
       }
       val renditions = parseRenditions(playlistBody)
-      val has1080 = renditions.any { it.contains("1080", ignoreCase = true) }
-      val detectedQuality = when {
-        has1080 -> "1080p"
-        renditions.any { it.contains("720", ignoreCase = true) } -> "720p"
-        renditions.any { it.contains("480", ignoreCase = true) } -> "480p"
-        chosenUrl.contains("h=1") && renditions.isEmpty() -> "1080p"
+      val verifiedHeight = when {
+        renditions.any { it.contains("1080", ignoreCase = true) } -> 1080
+        renditions.any { it.contains("720", ignoreCase = true) } -> 720
+        renditions.any { it.contains("480", ignoreCase = true) } -> 480
+        else -> null
+      }
+      val detectedQuality = when (verifiedHeight) {
+        1080 -> "1080p"
+        720 -> "720p"
+        480 -> "480p"
         else -> "Auto"
       }
-      Log.i(TAG, "OK $serverName (detectedQuality=$detectedQuality) renditions=$renditions url=$chosenUrl")
+      val declared = if (chosenUrl.contains("h=1")) "1080p" else "Auto"
+      Log.i(TAG, "OK $serverName (declared=$declared, verifiedHeight=$verifiedHeight, renditions=$renditions) url=$chosenUrl")
 
       sources += StreamSource(
         url = chosenUrl,
         quality = detectedQuality,
         serverName = serverName,
-        headers = headers
+        headers = headers,
+        declaredQuality = declared,
+        verifiedHeight = verifiedHeight
       )
     }
     if (sources.isEmpty()) throw IOException("Nessun server attivo nell'embed")
