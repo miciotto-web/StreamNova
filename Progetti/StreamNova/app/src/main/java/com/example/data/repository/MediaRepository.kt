@@ -8,6 +8,7 @@ import com.example.data.api.TmdbApiClient
 import com.example.data.api.TmdbMovieDto
 import com.example.data.api.TmdbPaginatedResponse
 import com.example.data.api.TmdbTvDto
+import com.example.data.api.TmdbMultiSearchResultDto
 import com.example.data.api.TmdbMovieDetailDto
 import com.example.data.api.TmdbSeasonDetailDto
 import com.example.data.api.TmdbTvDetailDto
@@ -34,9 +35,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1377,6 +1380,8 @@ object MediaRepository {
     return getMediaByProvider("prime")
   }
 
+  const val DEFAULT_FALLBACK_TMDB_API_KEY = "da92702177bb03ed4b4517e58eebb018"
+
   fun getEffectiveApiKey(): String {
     val buildKey = BuildConfig.TMDB_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'")
     if (buildKey.isNotBlank() && buildKey.length >= 20 && !buildKey.startsWith("DEFAULT_")) {
@@ -1390,7 +1395,286 @@ object MediaRepository {
     if (envKey.isNotBlank() && envKey.length >= 20 && !envKey.startsWith("DEFAULT_")) {
       return envKey
     }
-    return "da92702177bb03ed4b4517e58eebb018"
+    Log.i("MediaRepository", "Uso TMDB API Key predefinita incorporata ($DEFAULT_FALLBACK_TMDB_API_KEY)")
+    return DEFAULT_FALLBACK_TMDB_API_KEY
+  }
+
+  suspend fun verifyTmdbApiKey(apiKey: String = getEffectiveApiKey()): Boolean = withContext(Dispatchers.IO) {
+    try {
+      val response = TmdbApiClient.service.getTrendingMovies(apiKey = apiKey, language = "it-IT")
+      val isValid = response.results.isNotEmpty()
+      Log.i("MediaRepository", "Verifica TMDB API Key: ${if (isValid) "ATTIVA E VALIDA (HTTP 200 OK)" else "NESSUN RISULTATO"}")
+      isValid
+    } catch (e: Exception) {
+      Log.e("MediaRepository", "Verifica TMDB API Key FALLITA: ${e.message}. Verificare la chiave.")
+      false
+    }
+  }
+
+  /**
+   * Ricerca remota globale su TMDB con fallback locale (cache-first resiliente).
+   * Emette istantaneamente i risultati locali già in memoria / cache.
+   * Se la query ha almeno 2 caratteri, interroga l'endpoint /3/search/multi,
+   * salva i nuovi titoli in Room e ri-emette la lista aggiornata.
+   */
+  fun searchTmdb(query: String): Flow<List<MediaItem>> = flow {
+    val cleanQuery = query.trim()
+    val currentList = _mediaList.value
+
+    if (cleanQuery.isBlank()) {
+      emit(currentList)
+      return@flow
+    }
+
+    val q = cleanQuery.lowercase()
+    val localMatches = currentList.filter {
+      it.title.lowercase().contains(q) ||
+        it.originalTitle.lowercase().contains(q) ||
+        it.synopsis.lowercase().contains(q) ||
+        it.genres.any { g -> g.lowercase().contains(q) } ||
+        it.cast.any { c -> c.lowercase().contains(q) }
+    }
+    // Emette subito i risultati locali
+    emit(localMatches)
+
+    if (cleanQuery.length >= 2) {
+      try {
+        val apiKey = getEffectiveApiKey()
+        val response = TmdbApiClient.service.searchMulti(
+          apiKey = apiKey,
+          query = cleanQuery,
+          language = "it-IT",
+          page = 1,
+          includeAdult = false
+        )
+        val remoteItems = response.results.mapNotNull { dto ->
+          when (dto.mediaType) {
+            "movie" -> multiSearchMovieToMediaItem(dto, currentList)
+            "tv" -> multiSearchTvToMediaItem(dto, currentList)
+            else -> null
+          }
+        }
+
+        if (remoteItems.isNotEmpty()) {
+          // Salva in Room per cache-first resiliente
+          val db = database
+          if (db != null) {
+            withContext(Dispatchers.IO) {
+              try {
+                db.cachedMediaDao().insertOrUpdate(remoteItems.map { it.toEntity() })
+              } catch (e: Exception) {
+                Log.w("MediaRepository", "Errore salvataggio Room searchTmdb: ${e.message}")
+              }
+            }
+          }
+
+          // Unisci risultati remoti e locali evitando duplicati (precedenza ai risultati remoti)
+          val resultMap = LinkedHashMap<String, MediaItem>()
+          remoteItems.forEach { resultMap[it.id] = it }
+          localMatches.forEach {
+            if (!resultMap.containsKey(it.id)) {
+              resultMap[it.id] = it
+            }
+          }
+
+          // Aggiungi a _mediaList gli elementi mancanti
+          val updatedGlobal = _mediaList.value.toMutableList()
+          var addedToGlobal = false
+          remoteItems.forEach { item ->
+            if (updatedGlobal.none { it.id == item.id }) {
+              updatedGlobal.add(item)
+              addedToGlobal = true
+            }
+          }
+          if (addedToGlobal) {
+            _mediaList.value = updatedGlobal
+          }
+
+          emit(resultMap.values.toList())
+        }
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Ricerca remota TMDB fallita per \"$cleanQuery\": ${e.message}")
+      }
+    }
+  }
+
+  private fun multiSearchMovieToMediaItem(
+    movie: TmdbMultiSearchResultDto,
+    existingItems: List<MediaItem>
+  ): MediaItem {
+    val existing = existingItems.firstOrNull { it.tmdbId == movie.id && it.type == MediaType.FILM }
+    val year = movie.releaseDate?.take(4)?.toIntOrNull() ?: 2024
+    val backdrop = TmdbApiClient.backdropUrl(movie.backdropPath)
+    val poster = TmdbApiClient.posterUrl(movie.posterPath)
+    val streams = listOf(URL_DUNE, URL_OPPENHEIMER, URL_COSMOS, URL_LASTOFUS)
+    val assignedStream = streams[kotlin.math.abs(movie.id) % streams.size]
+    val genres = mapGenreIds(movie.genreIds, isMovie = true)
+    val detectedProvider = existing?.provider ?: when {
+      movie.id % 4 == 0 -> "netflix"
+      movie.id % 4 == 1 -> "hbo"
+      movie.id % 4 == 2 -> "disney"
+      else -> "prime"
+    }
+    val dur = existing?.durationMinutes ?: (100 + (kotlin.math.abs(movie.id) % 50))
+    val ratingVal = (movie.voteAverage ?: 7.5f).coerceIn(1.0f, 10.0f)
+    val titleStr = movie.title?.takeIf { it.isNotBlank() } ?: movie.originalTitle ?: "Film TMDB"
+
+    return MediaItem(
+      id = existing?.id ?: "tmdb_m_${movie.id}",
+      tmdbId = movie.id,
+      title = titleStr,
+      originalTitle = movie.originalTitle ?: "",
+      synopsis = movie.overview?.takeIf { it.isNotBlank() } ?: existing?.synopsis ?: "Disponibile su catalogo TMDB in streaming 4K HDR.",
+      videoUrl = existing?.videoUrl ?: assignedStream,
+      resolution = VideoResolution.UHD_4K,
+      qualityTags = listOf("4K", "HDR", "Dolby Atmos", "Cinema"),
+      backdropRes = existing?.backdropRes,
+      backdropUrl = backdrop ?: existing?.backdropUrl,
+      posterRes = existing?.posterRes,
+      posterUrl = poster ?: existing?.posterUrl,
+      logoUrl = existing?.logoUrl,
+      type = MediaType.FILM,
+      year = year,
+      durationMinutes = dur,
+      rating = ((ratingVal * 10).toInt() / 10f),
+      genres = if (genres.isNotEmpty()) genres else (existing?.genres ?: listOf("Cinema")),
+      director = existing?.director ?: "Regia Internazionale",
+      cast = existing?.cast ?: listOf("Cast Principale"),
+      currentProgressMs = existing?.currentProgressMs ?: 0L,
+      totalDurationMs = dur * 60 * 1000L,
+      isFavorite = existing?.isFavorite ?: false,
+      provider = detectedProvider,
+      isTrending = existing?.isTrending ?: false,
+      isTop10 = existing?.isTop10 ?: false
+    )
+  }
+
+  private fun multiSearchTvToMediaItem(
+    tv: TmdbMultiSearchResultDto,
+    existingItems: List<MediaItem>
+  ): MediaItem {
+    val existing = existingItems.firstOrNull { it.tmdbId == tv.id && it.type == MediaType.SERIE_TV }
+    val year = tv.firstAirDate?.take(4)?.toIntOrNull() ?: 2023
+    val backdrop = TmdbApiClient.backdropUrl(tv.backdropPath)
+    val poster = TmdbApiClient.posterUrl(tv.posterPath)
+    val streams = listOf(URL_LASTOFUS, URL_COSMOS, URL_OPPENHEIMER, URL_DUNE)
+    val assignedStream = streams[kotlin.math.abs(tv.id) % streams.size]
+    val genres = mapGenreIds(tv.genreIds, isMovie = false)
+    val detectedProvider = existing?.provider ?: when {
+      tv.id % 4 == 0 -> "netflix"
+      tv.id % 4 == 1 -> "hbo"
+      tv.id % 4 == 2 -> "disney"
+      else -> "prime"
+    }
+    val ratingVal = (tv.voteAverage ?: 8.0f).coerceIn(1.0f, 10.0f)
+    val titleStr = tv.name?.takeIf { it.isNotBlank() } ?: tv.originalName ?: "Serie TMDB"
+    val eps = existing?.episodes?.takeIf { it.isNotEmpty() }
+      ?: generateEpisodesForTv(tv.id, titleStr, backdrop, poster, seasons = 2)
+
+    return MediaItem(
+      id = existing?.id ?: "tmdb_tv_${tv.id}",
+      tmdbId = tv.id,
+      title = titleStr,
+      originalTitle = tv.originalName ?: "",
+      synopsis = tv.overview?.takeIf { it.isNotBlank() } ?: existing?.synopsis ?: "Serie TV originale disponibile in streaming ad alta definizione.",
+      videoUrl = existing?.videoUrl ?: assignedStream,
+      resolution = VideoResolution.UHD_4K,
+      qualityTags = listOf("4K", "Dolby Atmos", "Serie TV"),
+      backdropRes = existing?.backdropRes,
+      backdropUrl = backdrop ?: existing?.backdropUrl,
+      posterRes = existing?.posterRes,
+      posterUrl = poster ?: existing?.posterUrl,
+      logoUrl = existing?.logoUrl,
+      type = MediaType.SERIE_TV,
+      year = year,
+      durationMinutes = 55,
+      seasonsCount = existing?.seasonsCount ?: 2,
+      rating = ((ratingVal * 10).toInt() / 10f),
+      genres = if (genres.isNotEmpty()) genres else (existing?.genres ?: listOf("Serie TV")),
+      director = existing?.director ?: "Showrunner Internazionale",
+      cast = existing?.cast ?: listOf("Cast Principale"),
+      currentProgressMs = existing?.currentProgressMs ?: 0L,
+      totalDurationMs = 55 * 60 * 1000L,
+      isFavorite = existing?.isFavorite ?: false,
+      provider = detectedProvider,
+      isTrending = existing?.isTrending ?: false,
+      isTop10 = existing?.isTop10 ?: false,
+      episodes = eps
+    )
+  }
+
+  /**
+   * Paginazione Catalogo Film: scarica la pagina richiesta da TMDB e la salva in Room.
+   */
+  suspend fun loadMoreMovies(page: Int): List<MediaItem> = withContext(Dispatchers.IO) {
+    val cleanKey = getEffectiveApiKey()
+    try {
+      val response = TmdbApiClient.service.getPopularMovies(cleanKey, page = page)
+      val currentList = _mediaList.value
+      val newItems = response.results.map { movieToMediaItem(it, currentList) }
+      if (newItems.isNotEmpty()) {
+        val db = database
+        if (db != null) {
+          try {
+            db.cachedMediaDao().insertOrUpdate(newItems.map { it.toEntity() })
+          } catch (e: Exception) {
+            Log.w("MediaRepository", "Errore salvataggio Room loadMoreMovies: ${e.message}")
+          }
+        }
+        val updated = _mediaList.value.toMutableList()
+        var added = false
+        newItems.forEach { item ->
+          if (updated.none { it.id == item.id }) {
+            updated.add(item)
+            added = true
+          }
+        }
+        if (added) {
+          _mediaList.value = updated
+        }
+      }
+      newItems
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Errore caricamento pagina $page film: ${e.message}")
+      emptyList()
+    }
+  }
+
+  /**
+   * Paginazione Catalogo Serie TV: scarica la pagina richiesta da TMDB e la salva in Room.
+   */
+  suspend fun loadMoreTv(page: Int): List<MediaItem> = withContext(Dispatchers.IO) {
+    val cleanKey = getEffectiveApiKey()
+    try {
+      val response = TmdbApiClient.service.getPopularTv(cleanKey, page = page)
+      val currentList = _mediaList.value
+      val newItems = response.results.map { tvToMediaItem(it, currentList) }
+      if (newItems.isNotEmpty()) {
+        val db = database
+        if (db != null) {
+          try {
+            db.cachedMediaDao().insertOrUpdate(newItems.map { it.toEntity() })
+          } catch (e: Exception) {
+            Log.w("MediaRepository", "Errore salvataggio Room loadMoreTv: ${e.message}")
+          }
+        }
+        val updated = _mediaList.value.toMutableList()
+        var added = false
+        newItems.forEach { item ->
+          if (updated.none { it.id == item.id }) {
+            updated.add(item)
+            added = true
+          }
+        }
+        if (added) {
+          _mediaList.value = updated
+        }
+      }
+      newItems
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Errore caricamento pagina $page serie TV: ${e.message}")
+      emptyList()
+    }
   }
 
   private fun mapGenreIds(genreIds: List<Int>?, isMovie: Boolean): List<String> {

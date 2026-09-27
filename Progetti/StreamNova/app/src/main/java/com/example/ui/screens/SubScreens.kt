@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -96,6 +97,7 @@ fun CategoryBrowsingScreen(
   subtitle: String,
   items: List<MediaItem>,
   onMediaClick: (MediaItem) -> Unit,
+  onLoadMore: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   var selectedFilter by remember { mutableStateOf("Tutti") }
@@ -230,7 +232,12 @@ fun CategoryBrowsingScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize()
       ) {
-        items(filteredItems, key = { it.id }) { item ->
+        itemsIndexed(filteredItems, key = { _, item -> item.id }) { index, item ->
+          if (index >= filteredItems.size - 6) {
+            LaunchedEffect(Unit) {
+              onLoadMore?.invoke()
+            }
+          }
           PosterMediaCard(
             media = item,
             onClick = { onMediaClick(item) },
@@ -632,7 +639,7 @@ fun SearchScreen(
         )
       }
 
-      if (selectedCategory != null || (isSearchSubmitted && query.isNotBlank())) {
+      if (selectedCategory != null || query.isNotBlank()) {
         TvActionButton(
           text = "Torna alle Categorie",
           icon = Icons.AutoMirrored.Filled.ArrowBack,
@@ -759,7 +766,7 @@ fun SearchScreen(
         }
       }
 
-      isSearchSubmitted && query.isNotBlank() -> {
+      query.isNotBlank() -> {
         Row(
           modifier = Modifier
             .fillMaxWidth()

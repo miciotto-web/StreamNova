@@ -37,6 +37,24 @@ data class TmdbTvDto(
   @Json(name = "genre_ids") val genreIds: List<Int>? = emptyList(),
 )
 
+data class TmdbMultiSearchResultDto(
+  val id: Int,
+  @Json(name = "media_type") val mediaType: String? = null,
+  val title: String? = null,
+  @Json(name = "original_title") val originalTitle: String? = null,
+  val name: String? = null,
+  @Json(name = "original_name") val originalName: String? = null,
+  val overview: String? = null,
+  @Json(name = "backdrop_path") val backdropPath: String? = null,
+  @Json(name = "poster_path") val posterPath: String? = null,
+  @Json(name = "release_date") val releaseDate: String? = null,
+  @Json(name = "first_air_date") val firstAirDate: String? = null,
+  @Json(name = "vote_average") val voteAverage: Float? = null,
+  @Json(name = "vote_count") val voteCount: Int? = null,
+  @Json(name = "genre_ids") val genreIds: List<Int>? = emptyList(),
+  val popularity: Float? = null
+)
+
 data class TmdbPaginatedResponse<T>(
   val page: Int,
   val results: List<T>,
@@ -277,6 +295,15 @@ interface TmdbApiService {
     @Query("api_key") apiKey: String,
     @Query("include_image_language") languages: String = "it,en,null"
   ): TmdbImagesDto
+
+  @GET("search/multi")
+  suspend fun searchMulti(
+    @Query("api_key") apiKey: String,
+    @Query("query") query: String,
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1,
+    @Query("include_adult") includeAdult: Boolean = false
+  ): TmdbPaginatedResponse<TmdbMultiSearchResultDto>
 }
 
 object TmdbApiClient {

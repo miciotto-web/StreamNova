@@ -13,17 +13,21 @@ import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
 import com.example.data.model.VideoResolution
 import com.example.data.repository.MediaRepository
-import com.example.data.streaming.StreamProvider
+import com.example.data.streaming.StreamManager
 import com.example.data.streaming.StreamResult
 import com.example.data.streaming.StreamSource
-import com.example.data.streaming.VixSrcProvider
 import com.example.ui.components.StreamingProvider
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 
@@ -92,8 +96,10 @@ class StreamNovaViewModel : ViewModel() {
   private val _streamResult = MutableStateFlow<StreamResult>(StreamResult.Idle)
   val streamResult: StateFlow<StreamResult> = _streamResult.asStateFlow()
 
-  // Provider di streaming HTTP diretto (senza Debrid): primo integrato = VixSrc
-  private val streamProvider: StreamProvider = VixSrcProvider()
+  // Interrogazione parallela dei provider di streaming HTTP diretto:
+  // 1) VixSrc/VixCloud (istantaneo via TMDB ID), 2) CB01 e 3) Eurostreaming
+  // (cataloghi italiani, ricerca per titolo/anno) con timeout per ciascuno.
+  private val streamManager = StreamManager()
 
   private val _isRefreshing = MutableStateFlow(false)
   val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
@@ -133,23 +139,49 @@ class StreamNovaViewModel : ViewModel() {
 
   val allMedia: StateFlow<List<MediaItem>> = MediaRepository.mediaList
 
-  val filteredSearchResults: StateFlow<List<MediaItem>> = combine(
-    allMedia,
-    _searchQuery
-  ) { mediaList, query ->
-    if (query.isBlank()) {
-      mediaList
-    } else {
-      val q = query.trim().lowercase()
-      mediaList.filter {
-        it.title.lowercase().contains(q) ||
-          it.originalTitle.lowercase().contains(q) ||
-          it.synopsis.lowercase().contains(q) ||
-          it.genres.any { g -> g.lowercase().contains(q) } ||
-          it.cast.any { c -> c.lowercase().contains(q) }
+  @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+  val filteredSearchResults: StateFlow<List<MediaItem>> = _searchQuery
+    .debounce { query -> if (query.isBlank()) 0L else 400L }
+    .distinctUntilChanged()
+    .flatMapLatest { query ->
+      MediaRepository.searchTmdb(query)
+    }
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+  private var currentMoviePage = 1
+  private var currentTvPage = 1
+  private var isLoadingMoreMovies = false
+  private var isLoadingMoreTv = false
+
+  fun loadNextMoviesPage() {
+    if (isLoadingMoreMovies) return
+    isLoadingMoreMovies = true
+    viewModelScope.launch {
+      try {
+        currentMoviePage++
+        MediaRepository.loadMoreMovies(currentMoviePage)
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore paginazione film: ${e.message}")
+      } finally {
+        isLoadingMoreMovies = false
       }
     }
-  }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+  }
+
+  fun loadNextTvPage() {
+    if (isLoadingMoreTv) return
+    isLoadingMoreTv = true
+    viewModelScope.launch {
+      try {
+        currentTvPage++
+        MediaRepository.loadMoreTv(currentTvPage)
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore paginazione serie TV: ${e.message}")
+      } finally {
+        isLoadingMoreTv = false
+      }
+    }
+  }
 
   fun setSection(section: SidebarSection) {
     _currentSection.value = section
@@ -224,9 +256,11 @@ class StreamNovaViewModel : ViewModel() {
    * Punto d'ingresso dei pulsanti "Riproduci" (film) e delle card episodio (serie TV).
    *
    * 1) emette [StreamResult.Loading] per il feedback UI,
-   * 2) interroga il provider streaming ([StreamProvider] -> VixSrc/VixCloud),
-   * 3) al successo apre il player sul primo [StreamSource] passando URL e header
-   *    (Referer/User-Agent) a [openPlayer], così ExoPlayer non riceve 403.
+   * 2) interroga [StreamManager], che interrogano IN PARALLELO VixSrc (TMDB ID),
+   *    CB01 ed Eurostreaming (titolo/anno), ciascuno con timeout dedicato,
+   * 3) unisce i risultati e al successo apre il player sul primo [StreamSource]
+   *    passando URL e header (Referer/User-Agent) a [openPlayer], così ExoPlayer
+   *    non riceve 403.
    *
    * In caso di errore viene pubblicato [StreamResult.Error] e il player si apre
    * comunque sul flusso demo del catalogo, così il pulsante non resta morto.
@@ -240,15 +274,18 @@ class StreamNovaViewModel : ViewModel() {
           ?: throw IllegalStateException("Titolo non collegato a TMDB (tmdbId assente)")
         val season = episode?.seasonNumber ?: media.lastWatchedSeason ?: 1
         val episodeNumber = episode?.episodeNumber ?: media.lastWatchedEpisode ?: 1
-        Log.i(TAG, "Ricerca sorgenti: tmdbId=$tmdbId isTv=$isTv S$season:E$episodeNumber")
+        val searchTitle = media.title.ifBlank { media.originalTitle }
+        Log.i(TAG, "Ricerca sorgenti: tmdbId=$tmdbId isTv=$isTv S$season:E$episodeNumber \"$searchTitle\" (${media.year})")
 
-        val sources = streamProvider.getStreams(
+        val sources = streamManager.resolve(
           tmdbId = tmdbId,
           isTv = isTv,
           season = if (isTv) season else null,
-          episode = if (isTv) episodeNumber else null
+          episode = if (isTv) episodeNumber else null,
+          title = searchTitle,
+          year = media.year
         )
-        if (sources.isEmpty()) throw IllegalStateException("Nessuna sorgente disponibile")
+        if (sources.isEmpty()) throw IllegalStateException("Nessuna sorgente disponibile dai provider")
 
         val best = sources.first()
         Log.i(TAG, "Sorgente scelta: ${best.serverName} ${best.quality} -> ${best.url}")

@@ -84,6 +84,7 @@ fun HomeScreen(
         subtitle = "Catalogo cinematografico completo da TMDB con classificazione 4K HDR",
         items = allMedia.filter { it.type == MediaType.FILM },
         onMediaClick = handleMediaClick,
+        onLoadMore = { viewModel.loadNextMoviesPage() },
         modifier = modifier
       )
     }
@@ -93,6 +94,7 @@ fun HomeScreen(
         subtitle = "Produzioni pluripremiate con audio immersivo Dolby Atmos da TMDB",
         items = allMedia.filter { it.type == MediaType.SERIE_TV },
         onMediaClick = handleMediaClick,
+        onLoadMore = { viewModel.loadNextTvPage() },
         modifier = modifier
       )
     }
