@@ -1,11 +1,12 @@
 # --- Build / cache Gradle ---
 .gradle/
 build/
+*/build/
 app/build/
 .kotlin/
-.externalNativeBuild
-.cxx
-/captures
+.externalNativeBuild/
+.cxx/
+/captures/
 
 # --- IDE / file locali della macchina ---
 .idea/
@@ -18,17 +19,29 @@ local.properties
 
 # --- Segreti e ambienti ---
 .env
+.env.*
+!.env.example
+
+# --- Artefatti compilati ---
+*.apk
+*.aab
+
+# --- Keystore / certificati di firma ---
+*.jks
+*.keystore
+*.p12
+debug.keystore
 
 # --- Sistema / OS ---
 .DS_Store
+Thumbs.db
 
-# --- Keystore di firma (non versionare) ---
-debug.keystore
+# --- Log ---
+*.log
 
-# --- Artefatti locali / scratch ---
+# --- Artefatti locali ---
 scratch/
 androidx/
 
-# --- Artefatti locali / scratch ---
-scratch/
-androidx/
+# --- Vecchio progetto ---
+SnakeNeon/
