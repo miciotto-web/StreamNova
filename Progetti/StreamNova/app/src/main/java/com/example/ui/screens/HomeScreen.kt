@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
@@ -36,14 +37,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
+import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.MediaRepository
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import com.example.ui.components.ContinueWatchingCard
+import com.example.ui.components.MediaContextMenu
 import com.example.ui.components.HeroBanner
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.ProviderConstants
-import com.example.ui.components.ProviderHubCard
+import com.example.ui.components.ProviderCard
 import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.Top10RankedMediaCard
@@ -73,15 +79,15 @@ fun HomeScreen(
       HomeMainBrowsingContent(
         allMedia = allMedia,
         onMediaClick = handleMediaClick,
-        onPlayClick = { viewModel.loadStream(it) },
+        onPlayClick = { viewModel.openStreamForMedia(it) },
+        onRemoveFromContinueWatching = { viewModel.removeFromContinueWatching(it) },
         onProviderClick = onProviderClick,
         modifier = modifier
       )
     }
     SidebarSection.FILM -> {
       CategoryBrowsingScreen(
-        title = "Tutti i Film in 4K HDR",
-        subtitle = "Catalogo cinematografico completo da TMDB con classificazione 4K HDR",
+        title = stringResource(R.string.category_all_movies),
         items = allMedia.filter { it.type == MediaType.FILM },
         onMediaClick = handleMediaClick,
         onLoadMore = { viewModel.loadNextMoviesPage() },
@@ -90,8 +96,7 @@ fun HomeScreen(
     }
     SidebarSection.SERIE_TV -> {
       CategoryBrowsingScreen(
-        title = "Serie TV & Stagioni Complete",
-        subtitle = "Produzioni pluripremiate con audio immersivo Dolby Atmos da TMDB",
+        title = stringResource(R.string.category_all_tv_series),
         items = allMedia.filter { it.type == MediaType.SERIE_TV },
         onMediaClick = handleMediaClick,
         onLoadMore = { viewModel.loadNextTvPage() },
@@ -112,6 +117,12 @@ fun HomeScreen(
         modifier = modifier
       )
     }
+    SidebarSection.ADDON -> {
+      AddonsScreen(
+        viewModel = viewModel,
+        modifier = modifier
+      )
+    }
     SidebarSection.IMPOSTAZIONI -> {
       SettingsScreen(
         viewModel = viewModel,
@@ -127,11 +138,18 @@ fun HomeMainBrowsingContent(
   allMedia: List<MediaItem>,
   onMediaClick: (MediaItem) -> Unit,
   onPlayClick: (MediaItem) -> Unit,
+  onRemoveFromContinueWatching: (String) -> Unit,
   onProviderClick: (StreamingProvider) -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   // Liste dinamiche dai dati reali TMDB sincronizzati nel repository
-  val continueWatching = remember(allMedia) { allMedia.filter { it.currentProgressMs > 0 } }
+  val continueWatching = remember(allMedia) {
+    allMedia
+      .filter { it.currentProgressMs > 0 }
+      .sortedByDescending { it.lastWatchedAt ?: 0L }
+  }
+  var contextMenuMedia by remember { mutableStateOf<MediaItem?>(null) }
+
   val top10Movies = remember(allMedia) { MediaRepository.getTop10Movies() }
   val top10Series = remember(allMedia) { MediaRepository.getTop10Series() }
   val trendingMovies = remember(allMedia) { MediaRepository.getTrendingMovies() }
@@ -207,17 +225,19 @@ fun HomeMainBrowsingContent(
     // 2. Hub Streaming Providers (Netflix, HBO, Disney+, Prime Video)
     item(key = "section_providers_hub") {
       CarouselHeader(
-        title = "Piattaforme di Streaming",
-        badge = "Seleziona Provider"
+        title = stringResource(R.string.home_section_streaming_platforms),
+        badge = stringResource(R.string.home_badge_select_provider)
       )
       LazyRow(
-        contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(125.dp),
+        contentPadding = PaddingValues(horizontal = 48.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp)
       ) {
         items(ProviderConstants.ALL, key = { it.id }) { provider ->
-          ProviderHubCard(
+          ProviderCard(
             provider = provider,
-            isSelected = false,
             onClick = {
               onProviderClick(provider)
             }
@@ -231,8 +251,8 @@ fun HomeMainBrowsingContent(
     if (continueWatching.isNotEmpty()) {
       item(key = "section_continue_watching") {
         CarouselHeader(
-          title = "Continua a guardare",
-          badge = "${continueWatching.size} titoli in corso"
+          title = stringResource(R.string.home_section_continue_watching),
+          badge = stringResource(R.string.home_badge_in_progress, continueWatching.size)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -241,7 +261,14 @@ fun HomeMainBrowsingContent(
           items(continueWatching, key = { "cw_${it.id}" }) { item ->
             ContinueWatchingCard(
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = {
+                Log.d("HomeScreen", "ContinueWatchingCard onClick called for ${item.title}")
+                onMediaClick(item)
+              },
+              onLongPress = {
+                Log.d("HomeScreen", "ContinueWatchingCard onLongPress called for ${item.title}")
+                contextMenuMedia = item
+              }
             )
           }
         }
@@ -253,8 +280,8 @@ fun HomeMainBrowsingContent(
     if (top10Movies.isNotEmpty()) {
       item(key = "section_top_10_film") {
         CarouselHeader(
-          title = "Top 10 Film di Oggi",
-          badge = "Classifica TMDB Italia"
+          title = stringResource(R.string.home_section_top_10_movies),
+          badge = stringResource(R.string.home_badge_tmdb_ranking_italy)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -276,8 +303,8 @@ fun HomeMainBrowsingContent(
     if (top10Series.isNotEmpty()) {
       item(key = "section_top_10_serie") {
         CarouselHeader(
-          title = "Top 10 Serie TV di Oggi",
-          badge = "Più Viste su TMDB"
+          title = stringResource(R.string.home_section_top_10_series),
+          badge = stringResource(R.string.home_badge_most_watched_tmdb)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -299,8 +326,8 @@ fun HomeMainBrowsingContent(
     if (trendingMovies.isNotEmpty()) {
       item(key = "section_trending_film") {
         CarouselHeader(
-          title = "Trending Film",
-          badge = "In Tendenza questa settimana"
+          title = stringResource(R.string.home_section_trending_movies),
+          badge = stringResource(R.string.home_badge_trending_week)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -321,8 +348,8 @@ fun HomeMainBrowsingContent(
     if (trendingSeries.isNotEmpty()) {
       item(key = "section_trending_serie") {
         CarouselHeader(
-          title = "Trending Serie TV",
-          badge = "Fenomeni del momento"
+          title = stringResource(R.string.home_section_trending_series),
+          badge = stringResource(R.string.home_badge_trending_phenomena)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -343,8 +370,8 @@ fun HomeMainBrowsingContent(
     if (forYouMovies.isNotEmpty()) {
       item(key = "section_for_you_film") {
         CarouselHeader(
-          title = "For You: Film scelti per te",
-          badge = "In base alle tue preferenze"
+          title = stringResource(R.string.home_section_for_you_movies),
+          badge = stringResource(R.string.home_badge_based_on_preferences)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -365,8 +392,8 @@ fun HomeMainBrowsingContent(
     if (forYouSeries.isNotEmpty()) {
       item(key = "section_for_you_serie") {
         CarouselHeader(
-          title = "For You: Serie TV da non perdere",
-          badge = "Suggerite per te"
+          title = stringResource(R.string.home_section_for_you_series),
+          badge = stringResource(R.string.home_badge_suggested_for_you)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -387,8 +414,8 @@ fun HomeMainBrowsingContent(
     if (popularMovies.isNotEmpty()) {
       item(key = "section_popolari_film") {
         CarouselHeader(
-          title = "Popolari Film",
-          badge = "I più visti del cinema"
+          title = stringResource(R.string.home_section_popular_movies),
+          badge = stringResource(R.string.home_badge_most_watched_cinema)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -409,8 +436,8 @@ fun HomeMainBrowsingContent(
     if (popularSeries.isNotEmpty()) {
       item(key = "section_popolari_serie") {
         CarouselHeader(
-          title = "Popolari Serie",
-          badge = "Le serie più discusse"
+          title = stringResource(R.string.home_section_popular_series),
+          badge = stringResource(R.string.home_badge_most_discussed_series)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -423,9 +450,22 @@ fun HomeMainBrowsingContent(
             )
           }
         }
+        Spacer(modifier = Modifier.height(20.dp))
       }
     }
   }
+  }
+
+  // Context menu per long-press su Continue Watching (posto fuori da LazyColumn per essere in composable scope)
+  if (contextMenuMedia != null) {
+    val media = contextMenuMedia!!
+    MediaContextMenu(
+      media = media,
+      onPlay = { onPlayClick(media) },
+      onDetails = { onMediaClick(media) },
+      onRemoveFromContinueWatching = { onRemoveFromContinueWatching(media.id) },
+      onDismiss = { contextMenuMedia = null }
+    )
   }
 }
 

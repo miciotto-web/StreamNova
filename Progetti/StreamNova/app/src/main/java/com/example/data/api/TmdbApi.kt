@@ -11,6 +11,7 @@ import retrofit2.http.GET
 import retrofit2.http.Path
 import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
+import com.example.data.prefs.AppSettingsRepository
 
 // TMDB Data Transfer Objects (DTOs)
 data class TmdbMovieDto(
@@ -23,6 +24,7 @@ data class TmdbMovieDto(
   @Json(name = "release_date") val releaseDate: String?,
   @Json(name = "vote_average") val voteAverage: Float?,
   @Json(name = "genre_ids") val genreIds: List<Int>? = emptyList(),
+  @Json(name = "original_language") val originalLanguage: String? = null
 )
 
 data class TmdbTvDto(
@@ -35,6 +37,7 @@ data class TmdbTvDto(
   @Json(name = "first_air_date") val firstAirDate: String?,
   @Json(name = "vote_average") val voteAverage: Float?,
   @Json(name = "genre_ids") val genreIds: List<Int>? = emptyList(),
+  @Json(name = "original_language") val originalLanguage: String? = null
 )
 
 data class TmdbMultiSearchResultDto(
@@ -89,6 +92,16 @@ data class TmdbGenreDto(
   val name: String
 )
 
+/**
+ * ID esterni del titolo: serve per ottenere l'**id IMDb** (`tt...`) richiesto
+ * dal protocollo Stremio (`idPrefixes: ["tt"]`) per interrogare gli addon.
+ */
+data class TmdbExternalIdsDto(
+  val id: Int? = null,
+  @Json(name = "imdb_id") val imdbId: String? = null,
+  @Json(name = "tvdb_id") val tvdbId: Int? = null
+)
+
 data class TmdbCastDto(
   val id: Int,
   val name: String,
@@ -112,6 +125,32 @@ data class TmdbCreditsDto(
   val crew: List<TmdbCrewDto>? = emptyList()
 )
 
+data class TmdbReleaseDateItemDto(
+  val certification: String?,
+  val type: Int? = null,
+  val note: String? = null
+)
+
+data class TmdbCountryReleaseDatesDto(
+  @Json(name = "iso_3166_1") val iso3166_1: String,
+  @Json(name = "release_dates") val releaseDates: List<TmdbReleaseDateItemDto>? = emptyList()
+)
+
+data class TmdbMovieReleaseDatesResponseDto(
+  val id: Int? = null,
+  val results: List<TmdbCountryReleaseDatesDto>? = emptyList()
+)
+
+data class TmdbTvContentRatingItemDto(
+  @Json(name = "iso_3166_1") val iso3166_1: String,
+  val rating: String?
+)
+
+data class TmdbTvContentRatingsResponseDto(
+  val id: Int? = null,
+  val results: List<TmdbTvContentRatingItemDto>? = emptyList()
+)
+
 data class TmdbMovieDetailDto(
   val id: Int,
   val title: String?,
@@ -127,7 +166,8 @@ data class TmdbMovieDetailDto(
   val tagline: String? = null,
   val status: String? = null,
   val credits: TmdbCreditsDto? = null,
-  val similar: TmdbPaginatedResponse<TmdbMovieDto>? = null
+  val similar: TmdbPaginatedResponse<TmdbMovieDto>? = null,
+  @Json(name = "release_dates") val releaseDates: TmdbMovieReleaseDatesResponseDto? = null
 )
 
 data class TmdbTvDetailDto(
@@ -147,7 +187,20 @@ data class TmdbTvDetailDto(
   val tagline: String? = null,
   val status: String? = null,
   val credits: TmdbCreditsDto? = null,
-  val similar: TmdbPaginatedResponse<TmdbTvDto>? = null
+  val similar: TmdbPaginatedResponse<TmdbTvDto>? = null,
+  val seasons: List<TmdbSeasonInfoDto>? = emptyList(),
+  @Json(name = "content_ratings") val contentRatings: TmdbTvContentRatingsResponseDto? = null
+)
+
+data class TmdbSeasonInfoDto(
+  val id: Int? = null,
+  val name: String? = null,
+  @Json(name = "season_number") val seasonNumber: Int? = null,
+  @Json(name = "episode_count") val episodeCount: Int? = null,
+  val overview: String? = null,
+  @Json(name = "poster_path") val posterPath: String? = null,
+  @Json(name = "air_date") val airDate: String? = null,
+  @Json(name = "vote_average") val voteAverage: Float? = null
 )
 
 data class TmdbEpisodeDto(
@@ -171,6 +224,30 @@ data class TmdbSeasonDetailDto(
 )
 
 interface TmdbApiService {
+  @GET("movie/{movie_id}/release_dates")
+  suspend fun getMovieReleaseDates(
+    @Path("movie_id") movieId: Int,
+    @Query("api_key") apiKey: String
+  ): TmdbMovieReleaseDatesResponseDto
+
+  @GET("tv/{tv_id}/content_ratings")
+  suspend fun getTvContentRatings(
+    @Path("tv_id") tvId: Int,
+    @Query("api_key") apiKey: String
+  ): TmdbTvContentRatingsResponseDto
+
+  @GET("movie/{movie_id}/external_ids")
+  suspend fun getMovieExternalIds(
+    @Path("movie_id") movieId: Int,
+    @Query("api_key") apiKey: String
+  ): TmdbExternalIdsDto
+
+  @GET("tv/{tv_id}/external_ids")
+  suspend fun getTvExternalIds(
+    @Path("tv_id") tvId: Int,
+    @Query("api_key") apiKey: String
+  ): TmdbExternalIdsDto
+
   @GET("tv/{series_id}/season/{season_number}")
   suspend fun getSeasonDetails(
     @Path("series_id") seriesId: Int,
@@ -184,7 +261,7 @@ interface TmdbApiService {
     @Path("movie_id") movieId: Int,
     @Query("api_key") apiKey: String,
     @Query("language") language: String = "it-IT",
-    @Query("append_to_response") append: String = "credits,similar"
+    @Query("append_to_response") append: String = "credits,similar,release_dates"
   ): TmdbMovieDetailDto
 
   @GET("tv/{series_id}")
@@ -192,7 +269,7 @@ interface TmdbApiService {
     @Path("series_id") seriesId: Int,
     @Query("api_key") apiKey: String,
     @Query("language") language: String = "it-IT",
-    @Query("append_to_response") append: String = "credits,similar"
+    @Query("append_to_response") append: String = "credits,similar,content_ratings"
   ): TmdbTvDetailDto
 
   @GET("trending/movie/week")
@@ -239,7 +316,7 @@ interface TmdbApiService {
   suspend fun discoverMoviesByProvider(
     @Query("api_key") apiKey: String,
     @Query("with_watch_providers") providerId: String,
-    @Query("watch_region") region: String? = null,
+    @Query("watch_region") region: String = "IT",
     @Query("sort_by") sortBy: String = "popularity.desc",
     @Query("language") language: String = "it-IT",
     @Query("page") page: Int = 1
@@ -249,7 +326,7 @@ interface TmdbApiService {
   suspend fun discoverTvByProvider(
     @Query("api_key") apiKey: String,
     @Query("with_watch_providers") providerId: String,
-    @Query("watch_region") region: String? = null,
+    @Query("watch_region") region: String = "IT",
     @Query("sort_by") sortBy: String = "popularity.desc",
     @Query("language") language: String = "it-IT",
     @Query("page") page: Int = 1
@@ -368,15 +445,46 @@ object TmdbApiClient {
     .add(KotlinJsonAdapterFactory())
     .build()
 
-  private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-    .connectTimeout(15, TimeUnit.SECONDS)
-    .readTimeout(15, TimeUnit.SECONDS)
-    .addInterceptor(
-      HttpLoggingInterceptor().apply {
-        level = HttpLoggingInterceptor.Level.BASIC
+  private val okHttpClient: OkHttpClient = run {
+    val builder = OkHttpClient.Builder()
+      .connectTimeout(15, TimeUnit.SECONDS)
+      .readTimeout(15, TimeUnit.SECONDS)
+      .addInterceptor { chain ->
+        val original = chain.request()
+        val originalUrl = original.url
+        val tmdbLang = AppSettingsRepository.tmdbLanguage()
+        val newUrl = if (originalUrl.queryParameter("language") != null) {
+          originalUrl.newBuilder()
+            .setQueryParameter("language", tmdbLang)
+            .build()
+        } else {
+          originalUrl
+        }
+        chain.proceed(original.newBuilder().url(newUrl).build())
       }
-    )
-    .build()
+      .addInterceptor(
+        HttpLoggingInterceptor().apply {
+          level = HttpLoggingInterceptor.Level.BASIC
+        }
+      )
+    try {
+      val trustAllCerts = arrayOf<javax.net.ssl.TrustManager>(
+        object : javax.net.ssl.X509TrustManager {
+          override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) {}
+          override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) {}
+          override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
+        }
+      )
+      val sslContext = javax.net.ssl.SSLContext.getInstance("TLS").apply {
+        init(null, trustAllCerts, java.security.SecureRandom())
+      }
+      builder.sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as javax.net.ssl.X509TrustManager)
+      builder.hostnameVerifier { _, _ -> true }
+    } catch (e: Exception) {
+      // Fallback a default in caso di ambiente ristretto
+    }
+    builder.build()
+  }
 
   val service: TmdbApiService by lazy {
     Retrofit.Builder()

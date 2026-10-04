@@ -13,11 +13,14 @@ import com.example.data.api.TmdbMovieDetailDto
 import com.example.data.api.TmdbSeasonDetailDto
 import com.example.data.api.TmdbTvDetailDto
 import com.example.data.local.CachedMediaItemEntity
+import com.example.data.local.CatalogProgressEntity
+import com.example.data.local.EpisodeProgressEntity
 import com.example.data.local.MediaCacheMapper
 import com.example.data.local.MediaCacheMapper.toEntity
 import com.example.data.local.MediaCacheMapper.toMediaItem
 import com.example.data.local.StreamNovaDatabase
 import com.example.data.local.TmdbResponseCacheEntity
+import java.util.concurrent.ConcurrentHashMap
 import com.example.data.model.AudioTrack
 import com.example.data.model.CastMember
 import com.example.data.model.CrewMember
@@ -41,14 +44,29 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import com.example.data.util.AgeRatingClassifier
+import com.example.data.util.AsyncSingleFlight
 import kotlinx.coroutines.withContext
 
 object MediaRepository {
 
   private var database: StreamNovaDatabase? = null
   private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  private val episodeProgressMap = ConcurrentHashMap<String, Long>()
+  private val detailsSingleFlight = AsyncSingleFlight<ExtendedMediaDetails>()
+  private val ageRatingSingleFlight = AsyncSingleFlight<Int?>()
+
+  private val BLOCKED_TMDB_IDS = setOf(318508) // The Pitt Podcast - not the real TV show
+
+  private fun isBlockedTv(tvId: Int, tvName: String?): Boolean {
+    return tvId in BLOCKED_TMDB_IDS || tvName?.contains("Podcast", ignoreCase = true) == true ||
+           tvName?.contains("Talk Show", ignoreCase = true) == true ||
+           tvName?.contains("After Show", ignoreCase = true) == true ||
+           tvName?.contains("Review", ignoreCase = true) == true
+  }
 
   /**
    * Collettore del Flow Room: è l'unica sorgente della lista esposta all'UI.
@@ -60,6 +78,25 @@ object MediaRepository {
   fun init(context: Context, db: StreamNovaDatabase? = null) {
     database = db ?: StreamNovaDatabase.getInstance(context)
     startDatabaseObserver()
+    cleanBlockedContentFromCache()
+  }
+
+  private fun cleanBlockedContentFromCache() {
+    val db = database ?: return
+    repoScope.launch {
+      try {
+        val idsToDelete = listOf(
+          "tmdb_tv_318508",
+          "318508",
+          "tv_318508"
+        )
+        val rawIdsToDelete = listOf(318508)
+        db.cachedMediaDao().deleteByIds(idsToDelete, rawIdsToDelete)
+        Log.i("MediaRepository", "Cleaned blocked content (ID 318508) from cache")
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Failed to clean blocked content from cache: ${e.message}")
+      }
+    }
   }
 
   /**
@@ -88,7 +125,16 @@ object MediaRepository {
   private const val URL_LASTOFUS = "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8"
   private const val URL_COSMOS = "https://vjs.zencdn.net/v/oceans.mp4"
   private const val URL_OPPENHEIMER = "https://storage.googleapis.com/exoplayer-test-media-1/mp4/frame-counter-one-hour.mp4"
-  const val FALLBACK_VIDEO_URL = "https://vjs.zencdn.net/v/oceans.mp4"
+  const val FALLBACK_VIDEO_URL = ""
+
+  /**
+   * ID dei contenuti seed/demo del catalogo iniziale (Dune, The Last of Us, Fallout...).
+   * Questi elementi possono usare il proprio video demo; i titoli provenienti da TMDB no.
+   */
+  private val demoSeedIds: Set<String> by lazy { getInitialMedia().map { it.id }.toSet() }
+
+  /** true se l'elemento appartiene al catalogo seed/demo (non un titolo TMDB live). */
+  fun isDemoSeedItem(id: String): Boolean = id in demoSeedIds
 
   val audioTracks = listOf(
     AudioTrack("it_51", "Italiano", "Dolby Digital Plus 5.1"),
@@ -115,7 +161,6 @@ object MediaRepository {
       thumbnailRes = R.drawable.banner_lastofus,
       thumbnailUrl = "https://image.tmdb.org/t/p/w780/uDgy6hyPd82kOHh6I95FLtLnj6p.jpg",
       videoUrl = URL_LASTOFUS,
-      currentProgressMs = 81 * 60 * 1000L, // completato
     ),
     Episode(
       id = "tlou_s1e2",
@@ -127,7 +172,6 @@ object MediaRepository {
       thumbnailRes = R.drawable.banner_lastofus,
       thumbnailUrl = "https://image.tmdb.org/t/p/w780/uDgy6hyPd82kOHh6I95FLtLnj6p.jpg",
       videoUrl = URL_LASTOFUS,
-      currentProgressMs = 53 * 60 * 1000L,
     ),
     Episode(
       id = "tlou_s1e3",
@@ -139,7 +183,6 @@ object MediaRepository {
       thumbnailRes = R.drawable.banner_lastofus,
       thumbnailUrl = "https://image.tmdb.org/t/p/w780/uDgy6hyPd82kOHh6I95FLtLnj6p.jpg",
       videoUrl = URL_LASTOFUS,
-      currentProgressMs = 75 * 60 * 1000L,
     ),
     Episode(
       id = "tlou_s1e4",
@@ -151,7 +194,6 @@ object MediaRepository {
       thumbnailRes = R.drawable.banner_lastofus,
       thumbnailUrl = "https://image.tmdb.org/t/p/w780/uDgy6hyPd82kOHh6I95FLtLnj6p.jpg",
       videoUrl = URL_LASTOFUS,
-      currentProgressMs = 45 * 60 * 1000L,
     ),
     Episode(
       id = "tlou_s1e5",
@@ -163,7 +205,6 @@ object MediaRepository {
       thumbnailRes = R.drawable.banner_lastofus,
       thumbnailUrl = "https://image.tmdb.org/t/p/w780/uDgy6hyPd82kOHh6I95FLtLnj6p.jpg",
       videoUrl = URL_LASTOFUS,
-      currentProgressMs = 31 * 60 * 1000L, // 28m rimanenti!
     ),
     Episode(
       id = "tlou_s1e6",
@@ -434,9 +475,8 @@ object MediaRepository {
       synopsis = "Primavera 1986. Mike e Dustin si uniscono al club di D&D condotto da Eddie Munson, mentre in città si consuma una morte brutale e inspiegabile.",
       durationMinutes = 76,
       thumbnailRes = R.drawable.banner_cosmos,
-      thumbnailUrl = "https://image.tmdb.org/t/p/w780/56v2KjBlU4XaOv9rVYEQypROD7P.jpg",
+      thumbnailUrl = "https://image.tmdb.org/t/p/w780/56v2KjBlU4XaOv9rVYEQypROD7p.jpg",
       videoUrl = URL_COSMOS,
-      currentProgressMs = 18 * 60 * 1000L,
     ),
     Episode(
       id = "st_s4e2",
@@ -677,7 +717,7 @@ object MediaRepository {
     val mappedItems = cachedEntities.map { entity ->
       val initItem = initialMap[entity.id]
       val base = entity.toMediaItem(episodesById)
-      if (initItem != null) {
+      val itemWithSeed = if (initItem != null) {
         base.copy(
           backdropRes = initItem.backdropRes,
           posterRes = initItem.posterRes,
@@ -686,7 +726,7 @@ object MediaRepository {
           logoUrl = initItem.logoUrl ?: base.logoUrl,
           episodes = if (initItem.episodes.isNotEmpty()) initItem.episodes else base.episodes,
           // Stato utente: la riga Room vince sempre sul seed
-          isFavorite = entity.isFavorite || initItem.isFavorite,
+          isFavorite = entity.isFavorite,
           currentProgressMs = if (entity.currentProgressMs > 0) entity.currentProgressMs else initItem.currentProgressMs,
           lastWatchedSeason = entity.lastWatchedSeason ?: initItem.lastWatchedSeason,
           lastWatchedEpisode = entity.lastWatchedEpisode ?: initItem.lastWatchedEpisode
@@ -694,6 +734,12 @@ object MediaRepository {
       } else {
         base
       }
+      // Sincronizza il progresso persistito dei singoli episodi
+      val enrichedEpisodes = itemWithSeed.episodes.map { ep ->
+        val saved = episodeProgressMap["${itemWithSeed.id}_s${ep.seasonNumber}e${ep.episodeNumber}"]
+        if (saved != null) ep.copy(currentProgressMs = saved) else ep
+      }
+      itemWithSeed.copy(episodes = enrichedEpisodes)
     }
     return mappedItems.sortedByDescending { it.rating }
   }
@@ -707,6 +753,17 @@ object MediaRepository {
    */
   suspend fun loadFromCache() = withContext(Dispatchers.IO) {
     val db = database ?: return@withContext
+    // Carica tutti i progressi degli episodi persistiti in memoria
+    try {
+      val allEpisodeProgress = db.episodeProgressDao().getAllProgress()
+      allEpisodeProgress.forEach { ep ->
+        episodeProgressMap["${ep.mediaId}_s${ep.seasonNumber}e${ep.episodeNumber}"] = ep.progressMs
+      }
+      Log.i("MediaRepository", "Caricati ${allEpisodeProgress.size} progressi episodio da Room")
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Errore lettura progressi episodio: ${e.message}")
+    }
+
     startDatabaseObserver()
     try {
       val dao = db.cachedMediaDao()
@@ -739,7 +796,7 @@ object MediaRepository {
           if (prev != null) {
             item.copy(
               currentProgressMs = if (prev.currentProgressMs > 0) prev.currentProgressMs else item.currentProgressMs,
-              isFavorite = prev.isFavorite || item.isFavorite,
+              isFavorite = prev.isFavorite,
               lastWatchedSeason = prev.lastWatchedSeason ?: item.lastWatchedSeason,
               lastWatchedEpisode = prev.lastWatchedEpisode ?: item.lastWatchedEpisode,
               totalDurationMs = if (prev.totalDurationMs > 0) prev.totalDurationMs else item.totalDurationMs
@@ -774,11 +831,13 @@ object MediaRepository {
    */
   private fun CachedMediaItemEntity.preserveUserStateInto(item: MediaItem): MediaItem {
     return item.copy(
-      isFavorite = item.isFavorite || this.isFavorite,
+      isFavorite = this.isFavorite,
       currentProgressMs = if (this.currentProgressMs > 0) this.currentProgressMs else item.currentProgressMs,
       totalDurationMs = if (this.totalDurationMs > 0) this.totalDurationMs else item.totalDurationMs,
       lastWatchedSeason = this.lastWatchedSeason ?: item.lastWatchedSeason,
-      lastWatchedEpisode = this.lastWatchedEpisode ?: item.lastWatchedEpisode
+      lastWatchedEpisode = this.lastWatchedEpisode ?: item.lastWatchedEpisode,
+      lastWatchedAt = this.lastWatchedAt ?: item.lastWatchedAt,
+      ageRating = this.ageRating ?: item.ageRating
     )
   }
 
@@ -790,6 +849,9 @@ object MediaRepository {
         val userStateById = dao.getAllCachedMedia().associateBy { it.id }
 
         db.tmdbResponseCacheDao().clearAll()
+        // Annulla anche la progressione di paginazione provider: il prossimo
+        // refresh riparte dalla pagina 1 per ogni coppia (provider, tipo).
+        db.catalogProgressDao().clearAll()
         dao.clearAll()
 
         // Re-seed immediato: Room resta popolata e la UI (che legge dalla tabella) non resta mai vuota
@@ -804,10 +866,123 @@ object MediaRepository {
     }
   }
 
+  /**
+   * Numero massimo di pagine scaricate per ciascuna coppia (provider, tipo).
+   * Il crawl si ferma comunque su `total_pages` dichiarato da TMDB o su una pagina vuota:
+   * non esiste alcun limite fisso del tipo `for (pg in 1..2)`.
+   */
+  const val MAX_PROVIDER_PAGES = 25
+
+  /** TMDB ID di Crunchyroll: fallback watch_region (IT -> US) e priorita' alle serie TV. */
+  const val CRUNCHYROLL_TMDB_ID = 283
+
+  /** TMDB ID di Paramount+ (utile per controlli specifici sul catalogo). */
+  const val PARAMOUNT_TMDB_ID = 531
+
+  /**
+   * Provider ID REALI di TMDB condivisi da entrambi i cataloghi (Film e Serie TV),
+   * interrogati con `with_watch_providers` + `watch_region=IT`.
+   */
+  private val TMDB_PROVIDERS = listOf(
+    Pair("8", "netflix"),
+    Pair("337", "disney"),
+    Pair("119", "prime"),
+    Pair("1899|384", "hbo"),
+    Pair("350", "apple"),
+    Pair("531", "paramount"),
+    Pair("283", "crunchyroll")
+  )
+
+  /** Pagina scaricata da un catalogo provider, con lo stato di prosecuzione. */
+  data class ProviderCatalogPage(
+    val providerId: Int,
+    val isTv: Boolean,
+    val page: Int,
+    val totalPages: Int,
+    val items: List<MediaItem>
+  ) {
+    /** Prosegui solo se la pagina ha prodotto titoli e non si sono raggiunti i limiti. */
+    val hasMore: Boolean
+      get() = items.isNotEmpty() && page < totalPages && page < MAX_PROVIDER_PAGES
+  }
+
+  /** Stato di ripresa della paginazione per UNA coppia (provider, tipo). */
+  data class ProviderPaginationState(val nextPage: Int, val hasMore: Boolean)
+
+  /**
+   * Chiave canonica di un titolo TMDB: separa SEMPRE gli ID film da quelli serie TV,
+   * così il film 123 e la serie 123 non collidono mai nella stessa mappa.
+   */
+  private fun tmdbKey(tmdbId: Int, isTv: Boolean): String =
+    if (isTv) "tmdb_tv_$tmdbId" else "tmdb_m_$tmdbId"
+
+  private fun mediaTypeKey(isTv: Boolean): String = if (isTv) "tv" else "movie"
+
+  /**
+   * Etichetta provider derivata SOLO da un catalogo reale (endpoint discover
+   * con `with_watch_providers`): l'attribuzione tramite `id % 4` è stata eliminata.
+   */
+  private fun providerTagFor(providerId: Int): String = when (providerId) {
+    8 -> "netflix"
+    119 -> "prime"
+    337 -> "disney"
+    384, 1899 -> "hbo"
+    350, 2 -> "apple"
+    531 -> "paramount"
+    283 -> "crunchyroll"
+    else -> providerId.toString()
+  }
+
+  /** Cache key distinta per provider + tipo + pagina: nessuna collisione tra cataloghi. */
+  private fun providerCacheKey(providerIds: String, isTv: Boolean, page: Int): String {
+    val sanitized = providerIds.replace("|", "_").replace(",", "_")
+    return "provider_${mediaTypeKey(isTv)}_${sanitized}_p$page"
+  }
+
+  /** Persiste la progressione (prossima pagina + total_pages) per la coppia (provider, tipo). */
+  private suspend fun saveProviderProgress(providerId: Int, isTv: Boolean, page: Int, totalPages: Int) {
+    val db = database ?: return
+    try {
+      db.catalogProgressDao().upsert(
+        CatalogProgressEntity(
+          providerId = providerId,
+          mediaType = mediaTypeKey(isTv),
+          nextPage = page + 1,
+          totalPages = totalPages
+        )
+      )
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Salvataggio progresso paginazione provider fallito: ${e.message}")
+    }
+  }
+
+  /**
+   * Stato di ripresa della paginazione per la coppia (provider, tipo):
+   * prossima pagina persistita e se ne esistono ancora, limitate da
+   * `total_pages` (TMDB) e da [MAX_PROVIDER_PAGES].
+   */
+  suspend fun getProviderPaginationState(providerId: Int, isTv: Boolean): ProviderPaginationState =
+    withContext(Dispatchers.IO) {
+      val progress = try {
+        database?.catalogProgressDao()?.get(providerId, mediaTypeKey(isTv))
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Lettura progresso paginazione provider fallita: ${e.message}")
+        null
+      }
+      if (progress == null) {
+        return@withContext ProviderPaginationState(nextPage = 1, hasMore = true)
+      }
+      val cap = if (progress.totalPages > 0) minOf(progress.totalPages, MAX_PROVIDER_PAGES) else MAX_PROVIDER_PAGES
+      ProviderPaginationState(
+        nextPage = progress.nextPage.coerceIn(1, MAX_PROVIDER_PAGES),
+        hasMore = progress.nextPage <= cap
+      )
+    }
+
   suspend fun fetchMoviesWithCache(
     cacheKey: String,
     networkCall: suspend () -> TmdbPaginatedResponse<TmdbMovieDto>
-  ): List<TmdbMovieDto> {
+  ): TmdbPaginatedResponse<TmdbMovieDto> {
     val db = database
     if (db != null) {
       try {
@@ -816,7 +991,7 @@ object MediaRepository {
           val deserialized = MediaCacheMapper.deserializeMovieResponse(cached.jsonResponse)
           if (deserialized != null && deserialized.results.isNotEmpty()) {
             Log.d("MediaRepository", "TMDB Cache HIT (Movie) [$cacheKey] - ${deserialized.results.size} titoli")
-            return deserialized.results
+            return deserialized
           }
         }
       } catch (e: Exception) {
@@ -840,13 +1015,13 @@ object MediaRepository {
         Log.w("MediaRepository", "Salvataggio cache TMDB fallito per $cacheKey: ${e.message}")
       }
     }
-    return response.results
+    return response
   }
 
   suspend fun fetchTvWithCache(
     cacheKey: String,
     networkCall: suspend () -> TmdbPaginatedResponse<TmdbTvDto>
-  ): List<TmdbTvDto> {
+  ): TmdbPaginatedResponse<TmdbTvDto> {
     val db = database
     if (db != null) {
       try {
@@ -855,7 +1030,7 @@ object MediaRepository {
           val deserialized = MediaCacheMapper.deserializeTvResponse(cached.jsonResponse)
           if (deserialized != null && deserialized.results.isNotEmpty()) {
             Log.d("MediaRepository", "TMDB Cache HIT (TV) [$cacheKey] - ${deserialized.results.size} titoli")
-            return deserialized.results
+            return deserialized
           }
         }
       } catch (e: Exception) {
@@ -879,7 +1054,7 @@ object MediaRepository {
         Log.w("MediaRepository", "Salvataggio cache TMDB fallito per $cacheKey: ${e.message}")
       }
     }
-    return response.results
+    return response
   }
 
   fun toggleFavorite(id: String) {
@@ -916,15 +1091,26 @@ object MediaRepository {
     }
   }
 
+  fun getEpisodeProgress(mediaId: String, seasonNumber: Int, episodeNumber: Int): Long {
+    return episodeProgressMap["${mediaId}_s${seasonNumber}e${episodeNumber}"] ?: 0L
+  }
+
   fun updateProgress(id: String, progressMs: Long) {
+    val now = System.currentTimeMillis()
     _mediaList.update { list ->
       list.map { item ->
         if (item.id == id) {
-          item.copy(currentProgressMs = progressMs)
+          item.copy(currentProgressMs = progressMs, lastWatchedAt = now)
         } else {
           item
         }
       }
+    }
+    val currentDetail = _detailUiState.value
+    if (currentDetail is MediaDetailUiState.Success && currentDetail.media.id == id) {
+      _detailUiState.value = currentDetail.copy(
+        media = currentDetail.media.copy(currentProgressMs = progressMs, lastWatchedAt = now)
+      )
     }
     database?.let { db ->
       repoScope.launch {
@@ -932,10 +1118,10 @@ object MediaRepository {
           val dao = db.cachedMediaDao()
           val existing = dao.getMediaById(id)
           if (existing != null) {
-            dao.updateProgress(id, progressMs)
+            dao.updateProgressWithTimestamp(id, progressMs, now)
           } else {
             _mediaList.value.find { it.id == id }?.let { item ->
-              dao.insertOrUpdate(item.copy(currentProgressMs = progressMs).toEntity())
+              dao.insertOrUpdate(item.copy(currentProgressMs = progressMs, lastWatchedAt = now).toEntity())
             }
           }
         } catch (e: Exception) {
@@ -945,8 +1131,109 @@ object MediaRepository {
     }
   }
 
+  fun updateEpisodeProgress(
+    mediaId: String,
+    seasonNumber: Int,
+    episodeNumber: Int,
+    progressMs: Long,
+    durationMs: Long
+  ) {
+    val key = "${mediaId}_s${seasonNumber}e${episodeNumber}"
+    episodeProgressMap[key] = progressMs
+    val now = System.currentTimeMillis()
+
+    _mediaList.update { list ->
+      list.map { item ->
+        if (item.id == mediaId) {
+          val updatedEpisodes = item.episodes.map { ep ->
+            if (ep.seasonNumber == seasonNumber && ep.episodeNumber == episodeNumber) {
+              ep.copy(currentProgressMs = progressMs)
+            } else ep
+          }
+          item.copy(
+            lastWatchedSeason = seasonNumber,
+            lastWatchedEpisode = episodeNumber,
+            lastWatchedAt = now,
+            episodes = updatedEpisodes
+          )
+        } else {
+          item
+        }
+      }
+    }
+
+    val currentDetail = _detailUiState.value
+    if (currentDetail is MediaDetailUiState.Success && currentDetail.media.id == mediaId) {
+      val updatedEpisodes = currentDetail.media.episodes.map { ep ->
+        if (ep.seasonNumber == seasonNumber && ep.episodeNumber == episodeNumber) {
+          ep.copy(currentProgressMs = progressMs)
+        } else ep
+      }
+      _detailUiState.value = currentDetail.copy(
+        media = currentDetail.media.copy(
+          lastWatchedSeason = seasonNumber,
+          lastWatchedEpisode = episodeNumber,
+          lastWatchedAt = now,
+          episodes = updatedEpisodes
+        )
+      )
+    }
+
+    database?.let { db ->
+      repoScope.launch {
+        try {
+          db.episodeProgressDao().saveEpisodeProgress(
+            EpisodeProgressEntity(
+              mediaId = mediaId,
+              seasonNumber = seasonNumber,
+              episodeNumber = episodeNumber,
+              progressMs = progressMs,
+              durationMs = durationMs
+            )
+          )
+          db.cachedMediaDao().updateTvProgressWithTimestamp(mediaId, progressMs, seasonNumber, episodeNumber, now)
+        } catch (e: Exception) {
+          Log.w("MediaRepository", "Failed to update episode progress in Room: ${e.message}")
+        }
+      }
+    }
+  }
+
+  suspend fun removeFromContinueWatching(mediaId: String) {
+    val rawId = mediaId.removePrefix("tmdb_m_").removePrefix("tmdb_tv_").removePrefix("movie_").removePrefix("tv_")
+    val idsToRemove = setOf(mediaId, rawId, "tmdb_m_$rawId", "tmdb_tv_$rawId", "movie_$rawId", "tv_$rawId")
+    val rawIds = idsToRemove.mapNotNull { it.toIntOrNull() }
+
+    Log.d("REMOVE_CW", "Removing mediaId=$mediaId rawId=$rawId idsToRemove=$idsToRemove rawIds=$rawIds")
+    Log.d("REMOVE_CW", "Before filter: _mediaList size=${_mediaList.value.size}")
+
+    _mediaList.update { list ->
+      list.filterNot { item -> idsToRemove.contains(item.id) }
+    }
+
+    Log.d("REMOVE_CW", "After filter: _mediaList size=${_mediaList.value.size}")
+
+    database?.let { db ->
+      try {
+        Log.d("REMOVE_CW", "Deleting from CachedMediaDao for ids: $idsToRemove rawIds: $rawIds")
+        val deletedCount = db.cachedMediaDao().deleteByIds(idsToRemove.toList(), rawIds)
+        Log.d("REMOVE_CW", "Deleted $deletedCount rows from cached_media_items")
+
+        Log.d("REMOVE_CW", "Clearing EpisodeProgressDao for ids: $idsToRemove")
+        idsToRemove.forEach { id ->
+          db.episodeProgressDao().clearProgressForMedia(id)
+        }
+        Log.d("REMOVE_CW", "Database deletion completed")
+      } catch (e: Exception) {
+        Log.e("REMOVE_CW", "Failed to remove from continue watching in Room: ${e.message}", e)
+      }
+    }
+  }
+
   suspend fun loadMediaDetails(tmdbId: Int, isTv: Boolean, baseMedia: MediaItem? = null) {
-    val existingBase = baseMedia ?: _mediaList.value.find { it.tmdbId == tmdbId }
+    // Match tipizzato: un ID film e un ID serie TMDB coincidenti non si confondono.
+    val wantedType = if (isTv) MediaType.SERIE_TV else MediaType.FILM
+    val existingBase = baseMedia ?: _mediaList.value.find { it.tmdbId == tmdbId && it.type == wantedType }
     _detailUiState.value = MediaDetailUiState.Loading(existingBase)
 
     try {
@@ -960,9 +1247,19 @@ object MediaRepository {
         seasonsCount = details.seasonsCount ?: existingBase?.seasonsCount,
         rating = if (details.rating > 0f) details.rating else existingBase?.rating ?: 8.0f,
         backdropUrl = details.backdropUrl ?: existingBase?.backdropUrl,
-        posterUrl = details.posterUrl ?: existingBase?.posterUrl
+        posterUrl = details.posterUrl ?: existingBase?.posterUrl,
+        seasonEpisodesCount = if (details.seasonEpisodesCount.isNotEmpty()) details.seasonEpisodesCount else (existingBase?.seasonEpisodesCount ?: emptyMap()),
+        ageRating = details.ageRating ?: existingBase?.ageRating
       )
       _detailUiState.value = MediaDetailUiState.Success(enrichedMedia, details)
+
+      // Se ageRating è stato arricchito o valorizzato, aggiorna lo stato in-memory e la riga Room
+      if (enrichedMedia.ageRating != null && existingBase?.ageRating != enrichedMedia.ageRating) {
+        _mediaList.update { list ->
+          list.map { if (it.id == enrichedMedia.id) enrichedMedia else it }
+        }
+        database?.cachedMediaDao()?.insertOrUpdate(enrichedMedia.toEntity())
+      }
     } catch (e: Exception) {
       Log.e("MediaRepository", "Errore nel caricamento dettagli TMDB ($tmdbId): ${e.message}", e)
       if (existingBase != null) {
@@ -986,66 +1283,88 @@ object MediaRepository {
   ): ExtendedMediaDetails = withContext(Dispatchers.IO) {
     val apiKey = getEffectiveApiKey()
     val cacheKey = if (isTv) "tv_details_$tmdbId" else "movie_details_$tmdbId"
-    val db = database
 
-    // 1. Lettura da cache Room
-    if (db != null) {
-      try {
-        val cached = db.tmdbResponseCacheDao().getCache(cacheKey)
-        if (cached != null && !cached.isExpired()) {
-          val deserialized = if (isTv) {
-            MediaCacheMapper.deserializeTvDetail(cached.jsonResponse)?.let { tvDtoToExtended(it, baseMedia) }
-          } else {
-            MediaCacheMapper.deserializeMovieDetail(cached.jsonResponse)?.let { movieDtoToExtended(it, baseMedia) }
+    detailsSingleFlight.run(cacheKey) {
+      val db = database
+
+      // 1. Lettura da cache Room
+      if (db != null) {
+        try {
+          val cached = db.tmdbResponseCacheDao().getCache(cacheKey)
+          if (cached != null && !cached.isExpired()) {
+            val deserialized = if (isTv) {
+              MediaCacheMapper.deserializeTvDetail(cached.jsonResponse)?.let { tvDtoToExtended(it, baseMedia) }
+            } else {
+              MediaCacheMapper.deserializeMovieDetail(cached.jsonResponse)?.let { movieDtoToExtended(it, baseMedia) }
+            }
+            if (deserialized != null) {
+              if (isTv && deserialized.seasonEpisodesCount.isEmpty() && (deserialized.seasonsCount ?: 0) > 0) {
+                Log.d("MediaRepository", "TMDB Details Cache HIT ma manca seasonEpisodesCount -> refresh da rete [$cacheKey]")
+              } else {
+                Log.d("MediaRepository", "TMDB Details Cache HIT [$cacheKey]")
+                if (deserialized.ageRating != null) {
+                  return@run deserialized
+                }
+                // Se la cache precedente non aveva release_dates/content_ratings, recuperiamo il rating dall'endpoint dedicato
+                val fetchedRating = try {
+                  if (isTv) {
+                    val tvRatings = TmdbApiClient.service.getTvContentRatings(tmdbId, apiKey)
+                    AgeRatingClassifier.classifyTvRating(tvRatings)
+                  } else {
+                    val movieDates = TmdbApiClient.service.getMovieReleaseDates(tmdbId, apiKey)
+                    AgeRatingClassifier.classifyMovieRating(movieDates)
+                  }
+                } catch (_: Exception) {
+                  null
+                }
+                return@run deserialized.copy(ageRating = fetchedRating ?: baseMedia?.ageRating)
+              }
+            }
           }
-          if (deserialized != null) {
-            Log.d("MediaRepository", "TMDB Details Cache HIT [$cacheKey]")
-            return@withContext deserialized
-          }
+        } catch (e: Exception) {
+          Log.w("MediaRepository", "Errore lettura cache dettagli [$cacheKey]: ${e.message}")
         }
-      } catch (e: Exception) {
-        Log.w("MediaRepository", "Errore lettura cache dettagli [$cacheKey]: ${e.message}")
       }
-    }
 
-    // 2. Chiamata di rete verso TMDB
-    val (details, rawJson) = if (isTv) {
-      val dto = TmdbApiClient.service.getTvDetails(
-        seriesId = tmdbId,
-        apiKey = apiKey,
-        language = "it-IT",
-        append = "credits,similar"
-      )
-      val json = MediaCacheMapper.serializeTvDetail(dto)
-      tvDtoToExtended(dto, baseMedia) to json
-    } else {
-      val dto = TmdbApiClient.service.getMovieDetails(
-        movieId = tmdbId,
-        apiKey = apiKey,
-        language = "it-IT",
-        append = "credits,similar"
-      )
-      val json = MediaCacheMapper.serializeMovieDetail(dto)
-      movieDtoToExtended(dto, baseMedia) to json
-    }
-
-    // 3. Salvataggio in cache Room
-    if (db != null && rawJson.isNotBlank()) {
-      try {
-        db.tmdbResponseCacheDao().insertCache(
-          TmdbResponseCacheEntity(
-            endpointKey = cacheKey,
-            jsonResponse = rawJson,
-            cachedAt = System.currentTimeMillis()
-          )
+      // 2. Chiamata di rete verso TMDB
+      val (details, rawJson) = if (isTv) {
+        val dto = TmdbApiClient.service.getTvDetails(
+          seriesId = tmdbId,
+          apiKey = apiKey,
+          language = "it-IT",
+          append = "credits,similar,content_ratings"
         )
-        Log.d("MediaRepository", "TMDB Details Cache STORED [$cacheKey]")
-      } catch (e: Exception) {
-        Log.w("MediaRepository", "Errore salvataggio cache dettagli [$cacheKey]: ${e.message}")
+        val json = MediaCacheMapper.serializeTvDetail(dto)
+        tvDtoToExtended(dto, baseMedia) to json
+      } else {
+        val dto = TmdbApiClient.service.getMovieDetails(
+          movieId = tmdbId,
+          apiKey = apiKey,
+          language = "it-IT",
+          append = "credits,similar,release_dates"
+        )
+        val json = MediaCacheMapper.serializeMovieDetail(dto)
+        movieDtoToExtended(dto, baseMedia) to json
       }
-    }
 
-    return@withContext details
+      // 3. Salvataggio in cache Room
+      if (db != null && rawJson.isNotBlank()) {
+        try {
+          db.tmdbResponseCacheDao().insertCache(
+            TmdbResponseCacheEntity(
+              endpointKey = cacheKey,
+              jsonResponse = rawJson,
+              cachedAt = System.currentTimeMillis()
+            )
+          )
+          Log.d("MediaRepository", "TMDB Details Cache STORED [$cacheKey]")
+        } catch (e: Exception) {
+          Log.w("MediaRepository", "Errore salvataggio cache dettagli [$cacheKey]: ${e.message}")
+        }
+      }
+
+      details
+    }
   }
 
   private fun movieDtoToExtended(dto: TmdbMovieDetailDto, baseMedia: MediaItem?): ExtendedMediaDetails {
@@ -1066,6 +1385,9 @@ object MediaRepository {
 
     val backdrop = TmdbApiClient.backdropUrl(dto.backdropPath) ?: baseMedia?.backdropUrl
     val poster = TmdbApiClient.posterUrl(dto.posterPath) ?: baseMedia?.posterUrl
+
+    val ageRating = AgeRatingClassifier.classifyMovieRating(dto.releaseDates)
+      ?: baseMedia?.ageRating
 
     return ExtendedMediaDetails(
       tmdbId = dto.id,
@@ -1088,7 +1410,8 @@ object MediaRepository {
       },
       director = directorName,
       similarItems = similar,
-      isTv = false
+      isTv = false,
+      ageRating = ageRating
     )
   }
 
@@ -1111,6 +1434,14 @@ object MediaRepository {
     val backdrop = TmdbApiClient.backdropUrl(dto.backdropPath) ?: baseMedia?.backdropUrl
     val poster = TmdbApiClient.posterUrl(dto.posterPath) ?: baseMedia?.posterUrl
 
+    val seasonEpCounts = dto.seasons
+      ?.filter { (it.seasonNumber ?: 0) > 0 }
+      ?.associate { (it.seasonNumber ?: 0) to (it.episodeCount ?: 0) }
+      ?: emptyMap()
+
+    val ageRating = AgeRatingClassifier.classifyTvRating(dto.contentRatings)
+      ?: baseMedia?.ageRating
+
     return ExtendedMediaDetails(
       tmdbId = dto.id,
       title = dto.name?.takeIf { it.isNotBlank() } ?: dto.originalName ?: baseMedia?.title ?: "Serie TV",
@@ -1132,7 +1463,9 @@ object MediaRepository {
       },
       director = directorName,
       similarItems = similar,
-      isTv = true
+      isTv = true,
+      seasonEpisodesCount = seasonEpCounts,
+      ageRating = ageRating
     )
   }
 
@@ -1143,7 +1476,7 @@ object MediaRepository {
       title = details.title,
       originalTitle = details.originalTitle,
       synopsis = details.overview,
-      videoUrl = FALLBACK_VIDEO_URL,
+      videoUrl = "",
       resolution = VideoResolution.UHD_4K,
       qualityTags = listOf("4K", "HDR", "Dolby Atmos", "16+"),
       backdropUrl = details.backdropUrl,
@@ -1155,8 +1488,53 @@ object MediaRepository {
       rating = details.rating,
       genres = details.genres,
       director = details.director,
-      cast = details.cast.map { it.name }
+      cast = details.cast.map { it.name },
+      seasonEpisodesCount = details.seasonEpisodesCount,
+      ageRating = details.ageRating
     )
+  }
+
+  /**
+   * Recupera il rating d'età normalizzato (0, 12, 14, 16, 18) per un Film o Serie TV.
+   * Utilizza in-memory cache, Room cache, deduplicazione single-flight e fallback TMDB.
+   * Se il rating non è disponibile o non affidabile, restituisce null.
+   */
+  suspend fun getAgeRating(tmdbId: Int, isTv: Boolean): Int? = withContext(Dispatchers.IO) {
+    val key = "age_rating_${if (isTv) "tv" else "m"}_$tmdbId"
+    ageRatingSingleFlight.run(key) {
+      // 1. In-memory check
+      val existing = _mediaList.value.firstOrNull {
+        it.tmdbId == tmdbId && it.type == (if (isTv) MediaType.SERIE_TV else MediaType.FILM)
+      }
+      if (existing?.ageRating != null) return@run existing.ageRating
+
+      // 2. Room check
+      val cachedEntity = database?.cachedMediaDao()?.getMediaById(if (isTv) "tmdb_tv_$tmdbId" else "tmdb_m_$tmdbId")
+      if (cachedEntity?.ageRating != null) return@run cachedEntity.ageRating
+
+      // 3. TMDB API call
+      val apiKey = getEffectiveApiKey()
+      try {
+        if (isTv) {
+          val ratings = TmdbApiClient.service.getTvContentRatings(tmdbId, apiKey)
+          val classified = AgeRatingClassifier.classifyTvRating(ratings)
+          if (classified != null && cachedEntity != null) {
+            database?.cachedMediaDao()?.insertOrUpdate(cachedEntity.copy(ageRating = classified))
+          }
+          classified
+        } else {
+          val dates = TmdbApiClient.service.getMovieReleaseDates(tmdbId, apiKey)
+          val classified = AgeRatingClassifier.classifyMovieRating(dates)
+          if (classified != null && cachedEntity != null) {
+            database?.cachedMediaDao()?.insertOrUpdate(cachedEntity.copy(ageRating = classified))
+          }
+          classified
+        }
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Errore recupero ageRating per tmdbId=$tmdbId (isTv=$isTv): ${e.message}")
+        null
+      }
+    }
   }
 
   suspend fun getSeasonDetails(
@@ -1192,6 +1570,11 @@ object MediaRepository {
         apiKey = apiKey,
         language = "it-IT"
       )
+
+      Log.d("THE_PITT", "Fetching season $seasonNumber for mediaId=$tvTmdbId, episodes returned: ${dto.episodes?.size ?: 0}")
+      dto.episodes?.forEach { ep ->
+        Log.d("THE_PITT", "  S${ep.seasonNumber}E${ep.episodeNumber}: ${ep.name} (airDate=${ep.airDate})")
+      }
 
       // 3. Salvataggio in cache Room
       val rawJson = MediaCacheMapper.serializeSeasonDetail(dto)
@@ -1248,7 +1631,7 @@ object MediaRepository {
             stillUrl = fallbackSeries?.backdropUrl,
             durationMinutes = fallbackSeries?.durationMinutes?.takeIf { it > 0 } ?: 55,
             rating = fallbackSeries?.rating ?: 8.0f,
-            videoUrl = fallbackSeries?.videoUrl ?: FALLBACK_VIDEO_URL
+            videoUrl = fallbackSeries?.videoUrl ?: ""
           )
         }
         return@withContext SeasonItem(
@@ -1275,7 +1658,7 @@ object MediaRepository {
         durationMinutes = epDto.runtime?.takeIf { it > 0 } ?: fallbackSeries?.durationMinutes ?: 50,
         rating = epDto.voteAverage ?: fallbackSeries?.rating ?: 8.0f,
         airDate = epDto.airDate,
-        videoUrl = fallbackSeries?.videoUrl ?: FALLBACK_VIDEO_URL
+        videoUrl = fallbackSeries?.videoUrl ?: ""
       )
     } ?: emptyList()
 
@@ -1471,7 +1854,9 @@ object MediaRepository {
               page = 1,
               includeAdult = false
             )
-            response.results.map { tvToMediaItem(it, currentList) }
+            response.results
+              .filter { tv -> tv.name?.contains("Podcast", ignoreCase = true) != true }
+              .map { tvToMediaItem(it, currentList) }
           }
           SearchTypeFilter.ALL -> {
             val response = TmdbApiClient.service.searchMulti(
@@ -1484,7 +1869,7 @@ object MediaRepository {
             response.results.mapNotNull { dto ->
               when (dto.mediaType) {
                 "movie" -> multiSearchMovieToMediaItem(dto, currentList)
-                "tv" -> multiSearchTvToMediaItem(dto, currentList)
+                "tv" -> if (dto.name?.contains("Podcast", ignoreCase = true) == true) null else multiSearchTvToMediaItem(dto, currentList)
                 else -> null
               }
             }
@@ -1558,7 +1943,9 @@ object MediaRepository {
           language = "it-IT",
           page = page
         )
-        val movies = movieResponse.results.map { movieToMediaItem(it, currentList) }
+        val movies = movieResponse.results
+          .filterNot { movieGenreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
+          .map { movieToMediaItem(it, currentList) }
         results.addAll(movies)
       } catch (e: Exception) {
         Log.w("MediaRepository", "Errore discoverMoviesByGenre (genere=$movieGenreId, pag=$page): ${e.message}")
@@ -1575,7 +1962,10 @@ object MediaRepository {
           language = "it-IT",
           page = page
         )
-        val tvs = tvResponse.results.map { tvToMediaItem(it, currentList) }
+        val tvs = tvResponse.results
+          .filterNot { isBlockedTv(it.id, it.name) }
+          .filterNot { tvGenreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
+          .map { tvToMediaItem(it, currentList) }
         results.addAll(tvs)
       } catch (e: Exception) {
         Log.w("MediaRepository", "Errore discoverTvByGenre (genere=$tvGenreId, pag=$page): ${e.message}")
@@ -1619,12 +2009,8 @@ object MediaRepository {
     val streams = listOf(URL_DUNE, URL_OPPENHEIMER, URL_COSMOS, URL_LASTOFUS)
     val assignedStream = streams[kotlin.math.abs(movie.id) % streams.size]
     val genres = mapGenreIds(movie.genreIds, isMovie = true)
-    val detectedProvider = existing?.provider ?: when {
-      movie.id % 4 == 0 -> "netflix"
-      movie.id % 4 == 1 -> "hbo"
-      movie.id % 4 == 2 -> "disney"
-      else -> "prime"
-    }
+    // Attribuzione provider REALE: mai derivata da `id % 4` (regola eliminata).
+    val detectedProvider = existing?.provider
     val dur = existing?.durationMinutes ?: (100 + (kotlin.math.abs(movie.id) % 50))
     val ratingVal = (movie.voteAverage ?: 7.5f).coerceIn(1.0f, 10.0f)
     val titleStr = movie.title?.takeIf { it.isNotBlank() } ?: movie.originalTitle ?: "Film TMDB"
@@ -1655,7 +2041,8 @@ object MediaRepository {
       isFavorite = existing?.isFavorite ?: false,
       provider = detectedProvider,
       isTrending = existing?.isTrending ?: false,
-      isTop10 = existing?.isTop10 ?: false
+      isTop10 = existing?.isTop10 ?: false,
+      ageRating = existing?.ageRating
     )
   }
 
@@ -1670,12 +2057,8 @@ object MediaRepository {
     val streams = listOf(URL_LASTOFUS, URL_COSMOS, URL_OPPENHEIMER, URL_DUNE)
     val assignedStream = streams[kotlin.math.abs(tv.id) % streams.size]
     val genres = mapGenreIds(tv.genreIds, isMovie = false)
-    val detectedProvider = existing?.provider ?: when {
-      tv.id % 4 == 0 -> "netflix"
-      tv.id % 4 == 1 -> "hbo"
-      tv.id % 4 == 2 -> "disney"
-      else -> "prime"
-    }
+    // Attribuzione provider REALE: mai derivata da `id % 4` (regola eliminata).
+    val detectedProvider = existing?.provider
     val ratingVal = (tv.voteAverage ?: 8.0f).coerceIn(1.0f, 10.0f)
     val titleStr = tv.name?.takeIf { it.isNotBlank() } ?: tv.originalName ?: "Serie TMDB"
     val eps = existing?.episodes?.takeIf { it.isNotEmpty() }
@@ -1709,7 +2092,8 @@ object MediaRepository {
       provider = detectedProvider,
       isTrending = existing?.isTrending ?: false,
       isTop10 = existing?.isTop10 ?: false,
-      episodes = eps
+      episodes = eps,
+      ageRating = existing?.ageRating
     )
   }
 
@@ -1758,7 +2142,8 @@ object MediaRepository {
     try {
       val response = TmdbApiClient.service.getPopularTv(cleanKey, page = page)
       val currentList = _mediaList.value
-      val newItems = response.results.map { tvToMediaItem(it, currentList) }
+      val newItems = response.results.filterNot { isBlockedTv(it.id, it.name) }
+        .map { tvToMediaItem(it, currentList) }
       if (newItems.isNotEmpty()) {
         val db = database
         if (db != null) {
@@ -1786,6 +2171,134 @@ object MediaRepository {
       emptyList()
     }
   }
+
+  /**
+   * Paginazione remota dei cataloghi provider (Film e Serie TV):
+   * - `discover/movie` o `discover/tv` con `with_watch_providers` + `watch_region=IT`,
+   * - cache key distinta per provider + tipo + pagina,
+   * - progresso persistito in Room (prossima pagina, `total_pages`) per la SINGOLA
+   *   coppia (provider, tipo), quindi Netflix Film non blocca Netflix Serie TV,
+   * - nessun limite globale: la pagina viene avanzata finché `total_pages` (TMDB)
+   *   e [MAX_PROVIDER_PAGES] lo consentono.
+   */
+  fun loadProviderCatalog(
+    providerId: Int,
+    isTv: Boolean,
+    page: Int
+  ): Flow<ProviderCatalogPage> = flow {
+    val cleanKey = getEffectiveApiKey()
+    val providerIds = providerId.toString()
+    val providerTag = providerTagFor(providerId)
+    val cacheKey = providerCacheKey(providerIds, isTv, page)
+    try {
+      val currentList = _mediaList.value
+      var totalPages = 0
+      // Regione catalogo: IT. Per Crunchyroll (283) fallback a "US" se "IT" non
+      // restituisce titoli (pochi anime tracciati su TMDB con watch_region=IT).
+      var region = "IT"
+      val newItems: List<MediaItem> = if (isTv) {
+        var response = fetchTvWithCache(cacheKey) {
+          TmdbApiClient.service.discoverTvByProvider(
+            apiKey = cleanKey,
+            providerId = providerIds,
+            region = "IT",
+            sortBy = "popularity.desc",
+            language = "it-IT",
+            page = page
+          )
+        }
+        if (response.results.isEmpty() && page == 1 && providerId == CRUNCHYROLL_TMDB_ID) {
+          Log.d("PROVIDER_CATALOG", "watch_region=IT vuoto (provider=$providerId), riprova con watch_region=US")
+          region = "US"
+          response = fetchTvWithCache("${cacheKey}_us") {
+            TmdbApiClient.service.discoverTvByProvider(
+              apiKey = cleanKey,
+              providerId = providerIds,
+              region = "US",
+              sortBy = "popularity.desc",
+              language = "it-IT",
+              page = page
+            )
+          }
+        }
+        totalPages = response.totalPages ?: 0
+        response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = providerTag) }
+      } else {
+        var response = fetchMoviesWithCache(cacheKey) {
+          TmdbApiClient.service.discoverMoviesByProvider(
+            apiKey = cleanKey,
+            providerId = providerIds,
+            region = "IT",
+            sortBy = "popularity.desc",
+            language = "it-IT",
+            page = page
+          )
+        }
+        if (response.results.isEmpty() && page == 1 && providerId == CRUNCHYROLL_TMDB_ID) {
+          Log.d("PROVIDER_CATALOG", "watch_region=IT vuoto (provider=$providerId, movie), riprova con watch_region=US")
+          region = "US"
+          response = fetchMoviesWithCache("${cacheKey}_us") {
+            TmdbApiClient.service.discoverMoviesByProvider(
+              apiKey = cleanKey,
+              providerId = providerIds,
+              region = "US",
+              sortBy = "popularity.desc",
+              language = "it-IT",
+              page = page
+            )
+          }
+        }
+        totalPages = response.totalPages ?: 0
+        response.results.map { movieToMediaItem(it, currentList, provider = providerTag) }
+      }
+
+      Log.d(
+        "PROVIDER_CATALOG",
+        "provider=$providerId (${providerTag}) isTv=$isTv page=$page region=$region -> " +
+          "${newItems.size} titoli (total_pages=$totalPages)"
+      )
+
+      if (newItems.isNotEmpty()) {
+        val db = database
+        if (db != null) {
+          try {
+            db.cachedMediaDao().insertOrUpdate(newItems.map { it.toEntity() })
+          } catch (e: Exception) {
+            Log.w("MediaRepository", "Errore salvataggio Room loadProviderCatalog: ${e.message}")
+          }
+        }
+        val updated = _mediaList.value.toMutableList()
+        var modified = false
+        newItems.forEach { item ->
+          val idx = updated.indexOfFirst { it.id == item.id }
+          if (idx >= 0) {
+            val existing = updated[idx]
+            if (existing.provider == null || !existing.provider.contains(providerTag)) {
+              val combinedProvider = if (existing.provider.isNullOrBlank()) providerTag else "${existing.provider},$providerTag"
+              updated[idx] = existing.copy(provider = combinedProvider)
+              modified = true
+            }
+          } else {
+            updated.add(item)
+            modified = true
+          }
+        }
+        if (modified) {
+          _mediaList.value = updated
+        }
+      }
+
+      // Progresso indipendente per coppia (provider, tipo)
+      saveProviderProgress(providerId, isTv, page, totalPages)
+
+      emit(ProviderCatalogPage(providerId, isTv, page, totalPages, newItems))
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Errore loadProviderCatalog (providerId=$providerId, isTv=$isTv, page=$page): ${e.message}")
+      // Lo stato di "fine paginazione" resta limitato a questa coppia: gli altri
+      // provider e l'altro tipo (Film/Serie) continuano a caricarsi normalmente.
+      emit(ProviderCatalogPage(providerId, isTv, page, 0, emptyList()))
+    }
+  }.flowOn(Dispatchers.IO)
 
   private fun mapGenreIds(genreIds: List<Int>?, isMovie: Boolean): List<String> {
     if (genreIds.isNullOrEmpty()) return listOf(if (isMovie) "Cinema" else "Serie TV")
@@ -1847,19 +2360,17 @@ object MediaRepository {
     isTrending: Boolean = false,
     isTop10: Boolean = false
   ): MediaItem {
-    val existing = existingItems.firstOrNull { it.tmdbId == movie.id }
+    // Match tipizzato: un film e una serie con lo stesso TMDB ID restano separati.
+    val existing = existingItems.firstOrNull { it.tmdbId == movie.id && it.type == MediaType.FILM }
     val year = movie.releaseDate?.take(4)?.toIntOrNull() ?: 2024
     val backdrop = TmdbApiClient.backdropUrl(movie.backdropPath)
     val poster = TmdbApiClient.posterUrl(movie.posterPath)
     val streams = listOf(URL_DUNE, URL_OPPENHEIMER, URL_COSMOS, URL_LASTOFUS)
     val assignedStream = streams[kotlin.math.abs(movie.id) % streams.size]
     val genres = mapGenreIds(movie.genreIds, isMovie = true)
-    val detectedProvider = provider ?: existing?.provider ?: when {
-      movie.id % 4 == 0 -> "netflix"
-      movie.id % 4 == 1 -> "hbo"
-      movie.id % 4 == 2 -> "disney"
-      else -> "prime"
-    }
+    // Provider solo da catalogo reale (discover con with_watch_providers) o dal titolo
+    // già noto: l'attribuzione tramite `id % 4` è stata eliminata.
+    val detectedProvider = provider ?: existing?.provider
     val dur = existing?.durationMinutes ?: (100 + (kotlin.math.abs(movie.id) % 50))
     val ratingVal = (movie.voteAverage ?: 7.5f).coerceIn(1.0f, 10.0f)
 
@@ -1889,7 +2400,8 @@ object MediaRepository {
       isFavorite = existing?.isFavorite ?: false,
       provider = detectedProvider,
       isTrending = isTrending || (existing?.isTrending ?: false),
-      isTop10 = isTop10 || (existing?.isTop10 ?: false)
+      isTop10 = isTop10 || (existing?.isTop10 ?: false),
+      ageRating = existing?.ageRating
     )
   }
 
@@ -1900,19 +2412,17 @@ object MediaRepository {
     isTrending: Boolean = false,
     isTop10: Boolean = false
   ): MediaItem {
-    val existing = existingItems.firstOrNull { it.tmdbId == tv.id }
+    // Match tipizzato: una serie e un film con lo stesso TMDB ID restano separati.
+    val existing = existingItems.firstOrNull { it.tmdbId == tv.id && it.type == MediaType.SERIE_TV }
     val year = tv.firstAirDate?.take(4)?.toIntOrNull() ?: 2023
     val backdrop = TmdbApiClient.backdropUrl(tv.backdropPath)
     val poster = TmdbApiClient.posterUrl(tv.posterPath)
     val streams = listOf(URL_LASTOFUS, URL_COSMOS, URL_OPPENHEIMER, URL_DUNE)
     val assignedStream = streams[kotlin.math.abs(tv.id) % streams.size]
     val genres = mapGenreIds(tv.genreIds, isMovie = false)
-    val detectedProvider = provider ?: existing?.provider ?: when {
-      tv.id % 4 == 0 -> "netflix"
-      tv.id % 4 == 1 -> "hbo"
-      tv.id % 4 == 2 -> "disney"
-      else -> "prime"
-    }
+    // Provider solo da catalogo reale (discover con with_watch_providers) o dal titolo
+    // già noto: l'attribuzione tramite `id % 4` è stata eliminata.
+    val detectedProvider = provider ?: existing?.provider
     val ratingVal = (tv.voteAverage ?: 8.0f).coerceIn(1.0f, 10.0f)
     val eps = existing?.episodes?.takeIf { it.isNotEmpty() }
       ?: generateEpisodesForTv(tv.id, tv.name ?: tv.originalName ?: "Serie TV", backdrop, poster, seasons = 2)
@@ -1945,10 +2455,22 @@ object MediaRepository {
       provider = detectedProvider,
       isTrending = isTrending || (existing?.isTrending ?: false),
       isTop10 = isTop10 || (existing?.isTop10 ?: false),
-      episodes = eps
+      episodes = eps,
+      ageRating = existing?.ageRating
     )
   }
 
+  /** Evita refresh concorrenti: il caricamento è incrementale ma controllato. */
+  private val refreshInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
+
+  /**
+   * Refresh del catalogo TMDB con caricamento INCREMENTALE e controllato:
+   * - non blocca l'avvio (viene eseguito in coroutine su Dispatchers.IO),
+   * - un solo refresh alla volta (guardia atomica),
+   * - ogni blocco fetchato viene subito persistito in Room, così la UI vede il
+   *   catalogo crescere progressivamente invece di attendere l'intero ciclo,
+   * - le chiavi distinguono SEMPRE gli ID film da quelli serie TV.
+   */
   suspend fun refreshTmdbData(apiKey: String = getEffectiveApiKey()) {
     val cleanKey = apiKey.trim().removeSurrounding("\"").removeSurrounding("'")
     if (cleanKey.isBlank() || cleanKey.length < 20) {
@@ -1956,272 +2478,355 @@ object MediaRepository {
       return
     }
 
-    // Garantisce che l'osservatore del Flow Room sia attivo prima di scrivere
-    startDatabaseObserver()
+    if (!refreshInProgress.compareAndSet(false, true)) {
+      Log.i("MediaRepository", "Refresh TMDB già in corso: nuova richiesta ignorata (caricamento controllato)")
+      return
+    }
 
-    withContext(Dispatchers.IO) {
-      try {
-        val currentList = _mediaList.value.toMutableList()
-        val fetchedItemsMap = mutableMapOf<Int, MediaItem>()
+    try {
+      // Garantisce che l'osservatore del Flow Room sia attivo prima di scrivere
+      startDatabaseObserver()
 
-        // 1. Trending Movies & Trending TV
+      withContext(Dispatchers.IO) {
         try {
-          val trendingM = fetchMoviesWithCache("trending_movies") {
-            TmdbApiClient.service.getTrendingMovies(cleanKey)
-          }
-          trendingM.forEachIndexed { idx, m ->
-            fetchedItemsMap[m.id] = movieToMediaItem(m, currentList, isTrending = true, isTop10 = idx < 10)
-          }
-        } catch (e: Exception) {
-          Log.w("MediaRepository", "Trending movies call failed: ${e.message}")
-        }
+          val currentList = _mediaList.value.toMutableList()
+          // Nessun MutableMap<Int, MediaItem>: le chiavi sono canoniche
+          // ("tmdb_m_<id>" per i film, "tmdb_tv_<id>" per le serie), così un ID
+          // film e un ID serie identici non collidono mai.
+          val fetchedItemsMap = LinkedHashMap<String, MediaItem>()
 
-        try {
-          val trendingT = fetchTvWithCache("trending_tv") {
-            TmdbApiClient.service.getTrendingTv(cleanKey)
+          // Persistenza progressiva: la UI (che legge dalla tabella Room) si aggiorna
+          // dopo ogni blocco invece di restare ferma per tutto il refresh.
+          suspend fun checkpoint(label: String) {
+            val total = mergeAndPersistCatalog(currentList, fetchedItemsMap)
+            Log.i("MediaRepository", "Checkpoint [$label]: $total titoli in catalogo (persistiti in Room)")
           }
-          trendingT.forEachIndexed { idx, t ->
-            fetchedItemsMap[t.id] = tvToMediaItem(t, currentList, isTrending = true, isTop10 = idx < 10)
-          }
-        } catch (e: Exception) {
-          Log.w("MediaRepository", "Trending TV call failed: ${e.message}")
-        }
 
-        // 2. Popular Movies (pages 1 & 2)
-        try {
-          val popM1 = fetchMoviesWithCache("popular_movies_p1") {
-            TmdbApiClient.service.getPopularMovies(cleanKey, page = 1)
-          }
-          popM1.forEach { m ->
-            if (!fetchedItemsMap.containsKey(m.id)) {
-              fetchedItemsMap[m.id] = movieToMediaItem(m, currentList)
+          // 1. Trending Movies & Trending TV
+          try {
+            val trendingM = fetchMoviesWithCache("trending_movies") {
+              TmdbApiClient.service.getTrendingMovies(cleanKey)
+            }.results
+            trendingM.forEachIndexed { idx, m ->
+              fetchedItemsMap[tmdbKey(m.id, isTv = false)] =
+                movieToMediaItem(m, currentList, isTrending = true, isTop10 = idx < 10)
             }
+          } catch (e: Exception) {
+            Log.w("MediaRepository", "Trending movies call failed: ${e.message}")
           }
-          val popM2 = fetchMoviesWithCache("popular_movies_p2") {
-            TmdbApiClient.service.getPopularMovies(cleanKey, page = 2)
-          }
-          popM2.forEach { m ->
-            if (!fetchedItemsMap.containsKey(m.id)) {
-              fetchedItemsMap[m.id] = movieToMediaItem(m, currentList)
-            }
-          }
-        } catch (e: Exception) {
-          Log.w("MediaRepository", "Popular movies call failed: ${e.message}")
-        }
 
-        // 3. Popular TV (pages 1 & 2)
-        try {
-          val popT1 = fetchTvWithCache("popular_tv_p1") {
-            TmdbApiClient.service.getPopularTv(cleanKey, page = 1)
-          }
-          popT1.forEach { t ->
-            if (!fetchedItemsMap.containsKey(t.id)) {
-              fetchedItemsMap[t.id] = tvToMediaItem(t, currentList)
+          try {
+            val trendingT = fetchTvWithCache("trending_tv") {
+              TmdbApiClient.service.getTrendingTv(cleanKey)
+            }.results.filterNot { isBlockedTv(it.id, it.name) }
+            trendingT.forEachIndexed { idx, t ->
+              fetchedItemsMap[tmdbKey(t.id, isTv = true)] =
+                tvToMediaItem(t, currentList, isTrending = true, isTop10 = idx < 10)
             }
+          } catch (e: Exception) {
+            Log.w("MediaRepository", "Trending TV call failed: ${e.message}")
           }
-          val popT2 = fetchTvWithCache("popular_tv_p2") {
-            TmdbApiClient.service.getPopularTv(cleanKey, page = 2)
-          }
-          popT2.forEach { t ->
-            if (!fetchedItemsMap.containsKey(t.id)) {
-              fetchedItemsMap[t.id] = tvToMediaItem(t, currentList)
-            }
-          }
-        } catch (e: Exception) {
-          Log.w("MediaRepository", "Popular TV call failed: ${e.message}")
-        }
+          checkpoint("trending")
 
-        // 4. Top Rated Movies & TV
-        try {
-          val topM = fetchMoviesWithCache("top_rated_movies_p1") {
-            TmdbApiClient.service.getTopRatedMovies(cleanKey, page = 1)
-          }
-          topM.forEach { m ->
-            if (!fetchedItemsMap.containsKey(m.id)) {
-              fetchedItemsMap[m.id] = movieToMediaItem(m, currentList)
-            }
-          }
-        } catch (e: Exception) {
-          Log.w("MediaRepository", "Top Rated movies call failed: ${e.message}")
-        }
-
-        try {
-          val topT = fetchTvWithCache("top_rated_tv_p1") {
-            TmdbApiClient.service.getTopRatedTv(cleanKey, page = 1)
-          }
-          topT.forEach { t ->
-            if (!fetchedItemsMap.containsKey(t.id)) {
-              fetchedItemsMap[t.id] = tvToMediaItem(t, currentList)
-            }
-          }
-        } catch (e: Exception) {
-          Log.w("MediaRepository", "Top Rated TV call failed: ${e.message}")
-        }
-
-        // 5. Providers & Networks Discover per Serie TV (Multi-page per ottenere 20-40 titoli per piattaforma)
-        val tvNetworks = listOf(
-          Pair("213", "netflix"),
-          Pair("49|3186", "hbo"),
-          Pair("2739", "disney"),
-          Pair("1024", "prime")
-        )
-        for ((netId, pName) in tvNetworks) {
-          for (pg in 1..2) {
-            try {
-              val pTv = fetchTvWithCache("tv_network_${pName}_p$pg") {
-                TmdbApiClient.service.discoverTvByNetwork(cleanKey, netId, page = pg)
+          // 2. Popular Movies (pages 1 & 2)
+          try {
+            val popM1 = fetchMoviesWithCache("popular_movies_p1") {
+              TmdbApiClient.service.getPopularMovies(cleanKey, page = 1)
+            }.results
+            popM1.forEach { m ->
+              val key = tmdbKey(m.id, isTv = false)
+              if (!fetchedItemsMap.containsKey(key)) {
+                fetchedItemsMap[key] = movieToMediaItem(m, currentList)
               }
-              pTv.forEach { t ->
-                val item = fetchedItemsMap[t.id]
-                if (item != null) {
-                  fetchedItemsMap[t.id] = item.copy(provider = pName)
-                } else {
-                  fetchedItemsMap[t.id] = tvToMediaItem(t, currentList, provider = pName)
+            }
+            val popM2 = fetchMoviesWithCache("popular_movies_p2") {
+              TmdbApiClient.service.getPopularMovies(cleanKey, page = 2)
+            }.results
+            popM2.forEach { m ->
+              val key = tmdbKey(m.id, isTv = false)
+              if (!fetchedItemsMap.containsKey(key)) {
+                fetchedItemsMap[key] = movieToMediaItem(m, currentList)
+              }
+            }
+          } catch (e: Exception) {
+            Log.w("MediaRepository", "Popular movies call failed: ${e.message}")
+          }
+
+          // 3. Popular TV (pages 1 & 2)
+          try {
+            val popT1 = fetchTvWithCache("popular_tv_p1") {
+              TmdbApiClient.service.getPopularTv(cleanKey, page = 1)
+            }.results.filterNot { isBlockedTv(it.id, it.name) }
+            popT1.forEach { t ->
+              val key = tmdbKey(t.id, isTv = true)
+              if (!fetchedItemsMap.containsKey(key)) {
+                fetchedItemsMap[key] = tvToMediaItem(t, currentList)
+              }
+            }
+            val popT2 = fetchTvWithCache("popular_tv_p2") {
+              TmdbApiClient.service.getPopularTv(cleanKey, page = 2)
+            }.results.filterNot { isBlockedTv(it.id, it.name) }
+            popT2.forEach { t ->
+              val key = tmdbKey(t.id, isTv = true)
+              if (!fetchedItemsMap.containsKey(key)) {
+                fetchedItemsMap[key] = tvToMediaItem(t, currentList)
+              }
+            }
+          } catch (e: Exception) {
+            Log.w("MediaRepository", "Popular TV call failed: ${e.message}")
+          }
+          checkpoint("popular")
+
+          // 4. Top Rated Movies & TV
+          try {
+            val topM = fetchMoviesWithCache("top_rated_movies_p1") {
+              TmdbApiClient.service.getTopRatedMovies(cleanKey, page = 1)
+            }.results
+            topM.forEach { m ->
+              val key = tmdbKey(m.id, isTv = false)
+              if (!fetchedItemsMap.containsKey(key)) {
+                fetchedItemsMap[key] = movieToMediaItem(m, currentList)
+              }
+            }
+          } catch (e: Exception) {
+            Log.w("MediaRepository", "Top Rated movies call failed: ${e.message}")
+          }
+
+          try {
+            val topT = fetchTvWithCache("top_rated_tv_p1") {
+              TmdbApiClient.service.getTopRatedTv(cleanKey, page = 1)
+            }.results.filterNot { isBlockedTv(it.id, it.name) }
+            topT.forEach { t ->
+              val key = tmdbKey(t.id, isTv = true)
+              if (!fetchedItemsMap.containsKey(key)) {
+                fetchedItemsMap[key] = tvToMediaItem(t, currentList)
+              }
+            }
+          } catch (e: Exception) {
+            Log.w("MediaRepository", "Top Rated TV call failed: ${e.message}")
+          }
+          checkpoint("top_rated")
+
+          // 5. Cataloghi Provider per Serie TV: discover/tv con with_watch_providers
+          //    + watch_region=IT e STESSI provider ID reali dei cataloghi Film.
+          for ((pIds, pName) in TMDB_PROVIDERS) {
+            crawlProviderCatalog(
+              isTv = true,
+              providerIds = pIds,
+              providerTag = pName,
+              apiKey = cleanKey,
+              currentList = currentList,
+              fetchedItems = fetchedItemsMap
+            )
+            checkpoint("provider_tv_$pName")
+          }
+
+          // 6. Cataloghi Provider per Film: discover/movie con with_watch_providers + watch_region=IT
+          for ((pIds, pName) in TMDB_PROVIDERS) {
+            crawlProviderCatalog(
+              isTv = false,
+              providerIds = pIds,
+              providerTag = pName,
+              apiKey = cleanKey,
+              currentList = currentList,
+              fetchedItems = fetchedItemsMap
+            )
+            checkpoint("provider_movie_$pName")
+          }
+
+          // 7. Genere Discover (Azione, Fantascienza, Dramma, Commedia)
+          val genreQueries = listOf(
+            Pair("28", "10759"),  // Azione Film (28), Azione TV (10759)
+            Pair("878", "10765"), // Fantascienza Film (878), Sci-Fi & Fantasy TV (10765)
+            Pair("18", "18"),     // Dramma Film (18), Dramma TV (18)
+            Pair("35", "35")      // Commedia Film (35), Commedia TV (35)
+          )
+          for ((mGenre, tvGenre) in genreQueries) {
+            try {
+              val gMovies = fetchMoviesWithCache("genre_movies_$mGenre") {
+                TmdbApiClient.service.discoverMoviesByGenre(cleanKey, mGenre, page = 1)
+              }.results
+              gMovies.forEach { m ->
+                val key = tmdbKey(m.id, isTv = false)
+                if (!fetchedItemsMap.containsKey(key)) {
+                  fetchedItemsMap[key] = movieToMediaItem(m, currentList)
                 }
               }
             } catch (e: Exception) {
-              Log.w("MediaRepository", "Discover TV network $pName (pg $pg) failed: ${e.message}")
+              Log.w("MediaRepository", "Discover genre movies $mGenre failed: ${e.message}")
             }
-          }
-        }
 
-        // 6. Providers Discover per Film (Multi-page per ottenere 20-40 titoli per piattaforma)
-        val movieProviders = listOf(
-          Pair("8", "netflix"),
-          Pair("337", "disney"),
-          Pair("119", "prime"),
-          Pair("1899|384", "hbo")
-        )
-        for ((pId, pName) in movieProviders) {
-          for (pg in 1..2) {
             try {
-              val pMovies = fetchMoviesWithCache("movie_provider_${pName}_p$pg") {
-                TmdbApiClient.service.discoverMoviesByProvider(cleanKey, pId, page = pg)
-              }
-              pMovies.forEach { m ->
-                val item = fetchedItemsMap[m.id]
-                if (item != null) {
-                  fetchedItemsMap[m.id] = item.copy(provider = pName)
-                } else {
-                  fetchedItemsMap[m.id] = movieToMediaItem(m, currentList, provider = pName)
+              val gTv = fetchTvWithCache("genre_tv_$tvGenre") {
+                TmdbApiClient.service.discoverTvByGenre(cleanKey, tvGenre, page = 1)
+              }.results.filterNot { isBlockedTv(it.id, it.name) }
+              gTv.forEach { t ->
+                val key = tmdbKey(t.id, isTv = true)
+                if (!fetchedItemsMap.containsKey(key)) {
+                  fetchedItemsMap[key] = tvToMediaItem(t, currentList)
                 }
               }
             } catch (e: Exception) {
-              Log.w("MediaRepository", "Discover movies for $pName (pg $pg) failed: ${e.message}")
+              Log.w("MediaRepository", "Discover genre TV $tvGenre failed: ${e.message}")
             }
           }
-        }
+          checkpoint("generi")
 
-        // 7. Genere Discover (Azione, Fantascienza, Dramma, Commedia)
-        val genreQueries = listOf(
-          Pair("28", "10759"),  // Azione Film (28), Azione TV (10759)
-          Pair("878", "10765"), // Fantascienza Film (878), Sci-Fi & Fantasy TV (10765)
-          Pair("18", "18"),     // Dramma Film (18), Dramma TV (18)
-          Pair("35", "35")      // Commedia Film (35), Commedia TV (35)
-        )
-        for ((mGenre, tvGenre) in genreQueries) {
-          try {
-            val gMovies = fetchMoviesWithCache("genre_movies_$mGenre") {
-              TmdbApiClient.service.discoverMoviesByGenre(cleanKey, mGenre, page = 1)
-            }
-            gMovies.forEach { m ->
-              if (!fetchedItemsMap.containsKey(m.id)) {
-                fetchedItemsMap[m.id] = movieToMediaItem(m, currentList)
-              }
-            }
-          } catch (e: Exception) {
-            Log.w("MediaRepository", "Discover genre movies $mGenre failed: ${e.message}")
-          }
-
-          try {
-            val gTv = fetchTvWithCache("genre_tv_$tvGenre") {
-              TmdbApiClient.service.discoverTvByGenre(cleanKey, tvGenre, page = 1)
-            }
-            gTv.forEach { t ->
-              if (!fetchedItemsMap.containsKey(t.id)) {
-                fetchedItemsMap[t.id] = tvToMediaItem(t, currentList)
-              }
-            }
-          } catch (e: Exception) {
-            Log.w("MediaRepository", "Discover genre TV $tvGenre failed: ${e.message}")
-          }
+          database?.tmdbResponseCacheDao()?.deleteExpired()
+        } catch (e: retrofit2.HttpException) {
+          Log.w("MediaRepository", "TMDB HTTP error ${e.code()}: ${e.message}")
+        } catch (e: Exception) {
+          Log.w("MediaRepository", "TMDB error: ${e.message}")
         }
+      }
+    } finally {
+      refreshInProgress.set(false)
+    }
+  }
 
-        // Merge: keep all initial curated items with special episodes/trailers, and add all newly fetched TMDB items
-        val finalMap = mutableMapOf<String, MediaItem>()
-        // Put all fetched items first
-        fetchedItemsMap.values.forEach { item ->
-          finalMap[item.id] = item
-        }
-        // Then overlay or preserve existing items so that user favourites or progress are never lost
-        val initMap = getInitialMedia().associateBy { it.id }
-        currentList.forEach { cur ->
-          val existingKey = cur.tmdbId?.let { if (cur.type == MediaType.FILM) "tmdb_m_$it" else "tmdb_tv_$it" } ?: cur.id
-          val fetched = finalMap[existingKey] ?: finalMap[cur.id]
-          val init = initMap[cur.id]
-          if (fetched != null) {
-            finalMap[cur.id] = cur.copy(
-              backdropUrl = fetched.backdropUrl ?: init?.backdropUrl ?: cur.backdropUrl,
-              posterUrl = fetched.posterUrl ?: init?.posterUrl ?: cur.posterUrl,
-              rating = fetched.rating,
-              synopsis = if (cur.synopsis.length < fetched.synopsis.length) fetched.synopsis else cur.synopsis,
-              provider = fetched.provider ?: cur.provider,
-              isTrending = cur.isTrending || fetched.isTrending,
-              isTop10 = cur.isTop10 || fetched.isTop10
+  /**
+   * Scarica l'intero catalogo di UN provider per UN tipo (Film o Serie TV) con
+   * paginazione indipendente: parte dalla pagina 1 e si ferma su
+   * `min(total_pages, MAX_PROVIDER_PAGES)` o su una pagina vuota.
+   * Non esiste più il limite fisso `for (pg in 1..2)`.
+   */
+  private suspend fun crawlProviderCatalog(
+    isTv: Boolean,
+    providerIds: String,
+    providerTag: String,
+    apiKey: String,
+    currentList: List<MediaItem>,
+    fetchedItems: MutableMap<String, MediaItem>
+  ) {
+    var page = 1
+    var totalPages = 0
+    while (page <= MAX_PROVIDER_PAGES && (page == 1 || page <= totalPages)) {
+      val cacheKey = providerCacheKey(providerIds, isTv, page)
+      val pageItems: List<MediaItem> = try {
+        if (isTv) {
+          val response = fetchTvWithCache(cacheKey) {
+            TmdbApiClient.service.discoverTvByProvider(
+              apiKey = apiKey,
+              providerId = providerIds,
+              region = "IT",
+              sortBy = "popularity.desc",
+              language = "it-IT",
+              page = page
             )
-          } else {
-            finalMap[cur.id] = if (init != null) {
-              cur.copy(
-                posterUrl = init.posterUrl ?: cur.posterUrl,
-                backdropUrl = init.backdropUrl ?: cur.backdropUrl
-              )
-            } else {
-              cur
-            }
           }
-        }
-
-        val combinedList = finalMap.values.filter {
-          (it.posterUrl != null || it.backdropUrl != null || it.posterRes != null) && it.title.isNotBlank()
-        }.sortedByDescending { it.rating }
-
-        Log.i("MediaRepository", "Catalogo TMDB sincronizzato con successo: ${combinedList.size} titoli disponibili (${combinedList.count { it.type == MediaType.FILM }} film, ${combinedList.count { it.type == MediaType.SERIE_TV }} serie TV)")
-
-        // Room è la Single Source of Truth: il refresh scrive in tabella e l'UI
-        // riceve la nuova lista tramite il Flow del DAO (nessuno snapshot in memoria).
-        val db = database
-        if (db != null) {
-          try {
-            val dao = db.cachedMediaDao()
-            // Preserva SEMPRE preferiti, progressi ed episodio visto sui dati remoti
-            val existingById = dao.getAllCachedMedia().associateBy { it.id }
-            val preservedList = combinedList.map { item ->
-              existingById[item.id]?.preserveUserStateInto(item) ?: item
-            }
-            dao.insertOrUpdate(preservedList.map { it.toEntity() })
-            db.tmdbResponseCacheDao().deleteExpired()
-            Log.i(
-              "MediaRepository",
-              "Salvati ${preservedList.size} titoli in Room Database (preferiti/progressi preservati)"
-            )
-            // Fallback solo se l'osservatore del Flow non fosse attivo
-            if (dbObserverJob?.isActive != true) {
-              _mediaList.value = mapEntitiesToUiState(dao.getAllCachedMedia())
-            }
-          } catch (e: Exception) {
-            Log.w("MediaRepository", "Salvataggio in Room fallito: ${e.message}")
-            _mediaList.value = combinedList
-          }
+          totalPages = response.totalPages ?: 0
+          response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = providerTag) }
         } else {
-          // Nessun database disponibile: fallback in-memory
-          _mediaList.value = combinedList
+          val response = fetchMoviesWithCache(cacheKey) {
+            TmdbApiClient.service.discoverMoviesByProvider(
+              apiKey = apiKey,
+              providerId = providerIds,
+              region = "IT",
+              sortBy = "popularity.desc",
+              language = "it-IT",
+              page = page
+            )
+          }
+          totalPages = response.totalPages ?: 0
+          response.results.map { movieToMediaItem(it, currentList, provider = providerTag) }
         }
-      } catch (e: retrofit2.HttpException) {
-        Log.w("MediaRepository", "TMDB HTTP error ${e.code()}: ${e.message}")
       } catch (e: Exception) {
-        Log.w("MediaRepository", "TMDB error: ${e.message}")
+        Log.w(
+          "MediaRepository",
+          "Discover $providerTag (${mediaTypeKey(isTv)}) pagina $page fallita: ${e.message}"
+        )
+        break
+      }
+
+      if (pageItems.isEmpty()) break
+
+      pageItems.forEach { item ->
+        val existing = fetchedItems[item.id]
+        fetchedItems[item.id] = if (existing != null) {
+          existing.copy(provider = providerTag)
+        } else {
+          item
+        }
+      }
+      page++
+    }
+    Log.d(
+      "MediaRepository",
+      "Catalogo $providerTag (${mediaTypeKey(isTv)}): ${page - 1} pagine scaricate (total_pages=$totalPages, max=$MAX_PROVIDER_PAGES)"
+    )
+  }
+
+  /**
+   * Merge incrementale del catalogo + persistenza su Room (Single Source of Truth).
+   * Nessuno scarto per poster/backdrop mancanti: un titolo con titolo valido resta
+   * in catalogo; preferiti e progressi vengono SEMPRE preservati dalla riga Room.
+   */
+  private suspend fun mergeAndPersistCatalog(
+    currentList: List<MediaItem>,
+    fetchedItems: Map<String, MediaItem>
+  ): Int {
+    val finalMap = LinkedHashMap<String, MediaItem>()
+    // Prima tutti i titoli appena fetchati (chiavi distinte movie/tv)
+    fetchedItems.values.forEach { item ->
+      finalMap[item.id] = item
+    }
+
+    // Poi sovrapponi/preserva quelli già noti: preferiti e progressi non si perdono mai
+    val initMap = getInitialMedia().associateBy { it.id }
+    currentList.forEach { cur ->
+      val existingKey = cur.tmdbId?.let { tmdbKey(it, cur.type == MediaType.SERIE_TV) } ?: cur.id
+      val fetched = finalMap[existingKey] ?: finalMap[cur.id]
+      val init = initMap[cur.id]
+      if (fetched != null) {
+        finalMap[cur.id] = cur.copy(
+          backdropUrl = fetched.backdropUrl ?: init?.backdropUrl ?: cur.backdropUrl,
+          posterUrl = fetched.posterUrl ?: init?.posterUrl ?: cur.posterUrl,
+          rating = fetched.rating,
+          synopsis = if (cur.synopsis.length < fetched.synopsis.length) fetched.synopsis else cur.synopsis,
+          provider = fetched.provider ?: cur.provider,
+          isTrending = cur.isTrending || fetched.isTrending,
+          isTop10 = cur.isTop10 || fetched.isTop10
+        )
+      } else {
+        finalMap[cur.id] = if (init != null) {
+          cur.copy(
+            posterUrl = init.posterUrl ?: cur.posterUrl,
+            backdropUrl = init.backdropUrl ?: cur.backdropUrl
+          )
+        } else {
+          cur
+        }
       }
     }
+
+    // Catalogo PERSISTENTE e senza limite artificiale: non si elimina più un titolo
+    // solo perché manca il poster/backdrop, basta che abbia un titolo.
+    val combinedList = finalMap.values.filter { it.title.isNotBlank() }.sortedByDescending { it.rating }
+
+    val db = database
+    if (db != null) {
+      try {
+        val dao = db.cachedMediaDao()
+        // Preserva SEMPRE preferiti, progressi ed episodio visto sui dati remoti
+        val existingById = dao.getAllCachedMedia().associateBy { it.id }
+        val preservedList = combinedList.map { item ->
+          existingById[item.id]?.preserveUserStateInto(item) ?: item
+        }
+        dao.insertOrUpdate(preservedList.map { it.toEntity() })
+        // Fallback solo se l'osservatore del Flow non fosse attivo
+        if (dbObserverJob?.isActive != true) {
+          _mediaList.value = mapEntitiesToUiState(dao.getAllCachedMedia())
+        }
+        return preservedList.size
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Salvataggio in Room fallito: ${e.message}")
+        _mediaList.value = combinedList
+        return combinedList.size
+      }
+    }
+    // Nessun database disponibile: fallback in-memory
+    _mediaList.value = combinedList
+    return combinedList.size
   }
 
   private fun getInitialMedia(): List<MediaItem> = listOf(
@@ -2245,9 +2850,9 @@ object MediaRepository {
       genres = listOf("Fantascienza", "Avventura", "Dramma"),
       director = "Denis Villeneuve",
       cast = listOf("Timothée Chalamet", "Zendaya", "Rebecca Ferguson", "Javier Bardem", "Austin Butler"),
-      currentProgressMs = 72 * 60 * 1000L,
+      currentProgressMs = 0L,
       totalDurationMs = 166 * 60 * 1000L,
-      isFavorite = true,
+      isFavorite = false,
       provider = "hbo",
       isTop10 = true,
       isTrending = true,
@@ -2273,11 +2878,11 @@ object MediaRepository {
       genres = listOf("Dramma", "Fantascienza", "Azione"),
       director = "Craig Mazin & Neil Druckmann",
       cast = listOf("Pedro Pascal", "Bella Ramsey", "Gabriel Luna", "Anna Torv"),
-      currentProgressMs = 31 * 60 * 1000L,
+      currentProgressMs = 0L,
       totalDurationMs = 59 * 60 * 1000L,
-      lastWatchedSeason = 1,
-      lastWatchedEpisode = 5,
-      isFavorite = true,
+      lastWatchedSeason = null,
+      lastWatchedEpisode = null,
+      isFavorite = false,
       provider = "hbo",
       isTop10 = true,
       isTrending = true,
@@ -2303,7 +2908,7 @@ object MediaRepository {
       genres = listOf("Fantascienza", "Dramma", "Avventura"),
       director = "Christopher Nolan",
       cast = listOf("Matthew McConaughey", "Anne Hathaway", "Jessica Chastain", "Michael Caine"),
-      currentProgressMs = 105 * 60 * 1000L,
+      currentProgressMs = 0L,
       totalDurationMs = 169 * 60 * 1000L,
       isFavorite = false,
       provider = "prime",
@@ -2331,11 +2936,11 @@ object MediaRepository {
       genres = listOf("Sci-Fi & Fantasy", "Dramma", "Mistero"),
       director = "I fratelli Duffer",
       cast = listOf("Millie Bobby Brown", "Finn Wolfhard", "Winona Ryder", "David Harbour"),
-      currentProgressMs = 18 * 60 * 1000L,
+      currentProgressMs = 0L,
       totalDurationMs = 55 * 60 * 1000L,
-      lastWatchedSeason = 4,
-      lastWatchedEpisode = 1,
-      isFavorite = true,
+      lastWatchedSeason = null,
+      lastWatchedEpisode = null,
+      isFavorite = false,
       provider = "netflix",
       isTop10 = true,
       isTrending = true,
@@ -2420,7 +3025,7 @@ object MediaRepository {
       cast = listOf("Adam Scott", "Patricia Arquette", "John Turturro", "Christopher Walken"),
       currentProgressMs = 0L,
       totalDurationMs = 55 * 60 * 1000L,
-      isFavorite = true,
+      isFavorite = false,
       provider = "prime",
       isTop10 = true,
       isTrending = true,
@@ -2503,7 +3108,7 @@ object MediaRepository {
       cast = listOf("Ella Purnell", "Walton Goggins", "Aaron Moten"),
       currentProgressMs = 0L,
       totalDurationMs = 60 * 60 * 1000L,
-      isFavorite = true,
+      isFavorite = false,
       provider = "prime",
       isTop10 = true,
       isTrending = true,

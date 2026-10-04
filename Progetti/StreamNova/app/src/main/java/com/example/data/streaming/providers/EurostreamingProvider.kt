@@ -5,7 +5,10 @@ import com.example.data.streaming.StreamProvider
 import com.example.data.streaming.StreamSource
 import com.example.data.streaming.extractors.ExtractorHttp
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -40,6 +43,7 @@ class EurostreamingProvider : StreamProvider {
     // I mirror redirigono sullo stesso sito: l'articolo si processa una volta.
     val attemptedArticles = HashSet<String>()
     for (base in BASE_URLS) {
+      currentCoroutineContext().ensureActive()
       try {
         val sources = resolveOnBase(base, query, title, isTv, season, episode, attemptedArticles)
         if (sources.isNotEmpty()) {
@@ -47,6 +51,8 @@ class EurostreamingProvider : StreamProvider {
           return@withContext sources
         }
         failures += "$base -> nessuna sorgente"
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (e: Exception) {
         Log.w(TAG, "fallback mirror $base: ${e.message}")
         failures += "$base -> ${e.message}"

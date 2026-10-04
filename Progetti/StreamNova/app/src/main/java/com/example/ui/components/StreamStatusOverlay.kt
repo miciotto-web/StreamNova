@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Column
@@ -12,13 +13,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.zIndex
+import com.example.R
+import com.example.data.prefs.StreamingEngineMode
 import com.example.data.streaming.StreamResult
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
@@ -32,11 +37,19 @@ import com.example.ui.theme.NovaTextPrimary
  *
  * Non contiene elementi focusabili: non sottrae il focus D-Pad alla schermata
  * sottostante e sparisce non appena il player viene aperto (Success) o in caso
- * di errore (Error, con toast + fallback demo).
+ * di errore (Error, con messaggio all'utente).
  */
 @Composable
-fun StreamStatusOverlay(result: StreamResult, modifier: Modifier = Modifier) {
-  val loading = result as? StreamResult.Loading ?: return
+fun StreamStatusOverlay(
+  modifier: Modifier = Modifier,
+  message: String? = null,
+  streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB
+) {
+  DisposableEffect(Unit) {
+    onDispose {
+      Log.d("BACK_TRACE", "STREAMSTATUSOVERLAY: passa da Loading ad altro stato (disposed)")
+    }
+  }
 
   Column(
     modifier = modifier
@@ -59,17 +72,41 @@ fun StreamStatusOverlay(result: StreamResult, modifier: Modifier = Modifier) {
       )
       Spacer(modifier = Modifier.height(18.dp))
       Text(
-        text = loading.message,
+        text = if (message.isNullOrBlank() || message == "Ricerca sorgenti in corso...") {
+          stringResource(R.string.stream_status_searching_sources)
+        } else {
+          message
+        },
         color = NovaTextPrimary,
         fontSize = 16.sp,
         fontWeight = FontWeight.SemiBold
       )
       Spacer(modifier = Modifier.height(6.dp))
       Text(
-        text = "VixSrc • Streaming HTTP diretto",
+        text = when (streamingEngineMode) {
+          StreamingEngineMode.DEBRID_TORBOX -> stringResource(R.string.stream_status_torbox_stremio)
+          StreamingEngineMode.HTTP_WEB -> stringResource(R.string.stream_status_vixsrc_http)
+        },
         color = NovaTextMuted,
         fontSize = 12.sp
       )
     }
   }
+}
+
+@Composable
+fun StreamStatusOverlay(
+  result: StreamResult,
+  modifier: Modifier = Modifier,
+  streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB
+) {
+  val loading = result as? StreamResult.Loading ?: run {
+    Log.d("BACK_TRACE", "STREAMSTATUSOVERLAY: passa da Loading ad altro stato ($result)")
+    return
+  }
+  StreamStatusOverlay(
+    modifier = modifier,
+    message = loading.message,
+    streamingEngineMode = streamingEngineMode
+  )
 }

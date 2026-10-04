@@ -6,7 +6,10 @@ import com.example.data.streaming.StreamSource
 import com.example.data.streaming.extractors.ExtractorHttp
 import java.io.IOException
 import java.net.URI
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -39,6 +42,7 @@ class MultiEmbedProvider : StreamProvider {
     val failures = mutableListOf<String>()
 
     for ((name, base) in BASE_URLS) {
+      currentCoroutineContext().ensureActive()
       try {
         val sources = resolveOnBase(name, base, tmdbId, isTv, s, e)
         if (sources.isNotEmpty()) {
@@ -46,6 +50,8 @@ class MultiEmbedProvider : StreamProvider {
           return@withContext sources
         }
         failures += "$name -> nessuna sorgente"
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         Log.w(TAG, "$name: ${ex.message}")
         failures += "$name -> ${ex.message}"
@@ -57,7 +63,7 @@ class MultiEmbedProvider : StreamProvider {
     emptyList()
   }
 
-  private fun resolveOnBase(
+  private suspend fun resolveOnBase(
     name: String,
     base: String,
     tmdbId: Int,
@@ -79,9 +85,15 @@ class MultiEmbedProvider : StreamProvider {
       )
     }
 
+    Log.d("THE_PITT_STREAM", "MultiEmbed resolving TMDB=$tmdbId isTv=$isTv S=$s E=$e")
+    candidates.forEach { url ->
+      Log.d("THE_PITT_STREAM", "  Trying URL: $url")
+    }
+
     var page: String? = null
     var usedUrl = ""
     for (candidate in candidates) {
+      currentCoroutineContext().ensureActive()
       try {
         val resp = ExtractorHttp.get(candidate, referer = "$base/")
         if (resp.isNotBlank() && !resp.contains("Not Found!", ignoreCase = true)) {
@@ -89,6 +101,8 @@ class MultiEmbedProvider : StreamProvider {
           usedUrl = candidate
           break
         }
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         Log.d(TAG, "$name endpoint non disponibile: $candidate (${ex.message})")
       }
@@ -109,7 +123,7 @@ class MultiEmbedProvider : StreamProvider {
       Log.i(TAG, "$name sorgente diretta trovata: $url (qualità ${qualityInfo.label}, verifiedHeight=${qualityInfo.verifiedHeight})")
       return listOf(
         StreamSource(
-          url = url,
+          streamUrl = url,
           quality = qualityInfo.label,
           serverName = SERVER_NAME,
           headers = mapOf(
@@ -129,7 +143,7 @@ class MultiEmbedProvider : StreamProvider {
       Log.i(TAG, "$name sorgente da <source>: $srcTag (qualità ${qualityInfo.label})")
       return listOf(
         StreamSource(
-          url = srcTag,
+          streamUrl = srcTag,
           quality = qualityInfo.label,
           serverName = SERVER_NAME,
           headers = mapOf(
@@ -149,6 +163,7 @@ class MultiEmbedProvider : StreamProvider {
       .toList()
 
     for (iframe in iframes) {
+      currentCoroutineContext().ensureActive()
       val iframeUrl = when {
         iframe.startsWith("http") -> iframe
         iframe.startsWith("//") -> "https:$iframe"
@@ -162,7 +177,7 @@ class MultiEmbedProvider : StreamProvider {
           val qualityInfo = probeQuality(url, originOf(iframeUrl))
           return listOf(
             StreamSource(
-              url = url,
+              streamUrl = url,
               quality = qualityInfo.label,
               serverName = SERVER_NAME,
               headers = mapOf(
@@ -174,6 +189,8 @@ class MultiEmbedProvider : StreamProvider {
             )
           )
         }
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         Log.d(TAG, "Iframe nested $iframeUrl non risolto: ${ex.message}")
       }
@@ -188,7 +205,7 @@ class MultiEmbedProvider : StreamProvider {
 
   data class QualityInfo(val label: String, val verifiedHeight: Int?)
 
-  private fun probeQuality(url: String, referer: String): QualityInfo {
+  private suspend fun probeQuality(url: String, referer: String): QualityInfo {
     if (url.endsWith(".mp4", ignoreCase = true)) {
       val h = when {
         url.contains("1080", ignoreCase = true) -> 1080

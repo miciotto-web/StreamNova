@@ -100,7 +100,7 @@ class MixdropExtractor : VideoExtractor {
   }
 
   private fun source(url: String, referer: String) = StreamSource(
-    url = url,
+    streamUrl = url,
     quality = "Auto",
     serverName = SERVER_NAME,
     headers = mapOf("Referer" to referer, "User-Agent" to ExtractorHttp.USER_AGENT)

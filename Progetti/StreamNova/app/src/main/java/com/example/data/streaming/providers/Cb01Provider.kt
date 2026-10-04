@@ -5,7 +5,10 @@ import com.example.data.streaming.StreamProvider
 import com.example.data.streaming.StreamSource
 import com.example.data.streaming.extractors.ExtractorHttp
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -45,6 +48,7 @@ class Cb01Provider : StreamProvider {
     // cb01uno.top): l'articolo viene processato una sola volta.
     val attemptedArticles = HashSet<String>()
     for (base in BASE_URLS) {
+      currentCoroutineContext().ensureActive()
       try {
         val sources = resolveOnBase(base, query, title, attemptedArticles)
         if (sources.isNotEmpty()) {
@@ -52,6 +56,8 @@ class Cb01Provider : StreamProvider {
           return@withContext sources
         }
         failures += "$base -> nessuna sorgente"
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (e: Exception) {
         Log.w(TAG, "fallback mirror $base: ${e.message}")
         failures += "$base -> ${e.message}"

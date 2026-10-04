@@ -127,7 +127,9 @@ object MediaCacheMapper {
       currentProgressMs = this.currentProgressMs,
       totalDurationMs = this.totalDurationMs,
       lastWatchedSeason = this.lastWatchedSeason,
-      lastWatchedEpisode = this.lastWatchedEpisode
+      lastWatchedEpisode = this.lastWatchedEpisode,
+      lastWatchedAt = this.lastWatchedAt,
+      ageRating = this.ageRating
     )
   }
 
@@ -180,7 +182,7 @@ object MediaCacheMapper {
       title = this.title,
       originalTitle = this.originalTitle,
       synopsis = this.synopsis,
-      videoUrl = this.videoUrl.ifBlank { MediaRepository.FALLBACK_VIDEO_URL },
+      videoUrl = this.videoUrl,
       resolution = res,
       qualityTags = qualityList,
       backdropRes = null,
@@ -200,11 +202,13 @@ object MediaCacheMapper {
       totalDurationMs = if (this.totalDurationMs > 0) this.totalDurationMs else (this.durationMinutes * 60 * 1000L),
       lastWatchedSeason = this.lastWatchedSeason,
       lastWatchedEpisode = this.lastWatchedEpisode,
+      lastWatchedAt = this.lastWatchedAt,
       isFavorite = this.isFavorite,
       provider = this.provider,
       isTrending = this.isTrending,
       isTop10 = this.isTop10,
-      episodes = eps
+      episodes = eps,
+      ageRating = this.ageRating
     )
   }
 }

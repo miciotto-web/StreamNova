@@ -1,23 +1,39 @@
 package com.example.data.streaming
 
 /**
- * Sorgente video singola derivata da un provider di streaming HTTP diretto
- * (senza servizi Debrid).
+ * Sorgente video singola per streaming Debrid (TorBox Instant).
  *
- * @param url URL diretto del flusso: playlist HLS `.m3u8` (consigliata, supporta
- *        adattiva/audio/sottotitoli) oppure file `.mp4` HTTP.
- * @param quality etichetta qualità ("1080p", "720p", "Auto" per master adattivo).
- * @param serverName nome del server/origine che serve il flusso (es. "VixSrc").
- * @param headers header obbligatori per la riproduzione (Referer, User-Agent...).
- *        Senza di essi molti CDN rispondono 403 Forbidden.
+ * NOTA: `streamUrl` e' NULL fino al click dell'utente. Il flusso viene sbloccato
+ * su richiesta (on-demand) al momento della selezione.
+ *
+ * @param addonName nome dell'addon Stremio di origine (es. "IlCorsaroViola IT").
+ * @param instantTag tag istantanea (es. "1080p TB Instant").
+ * @param releaseTitle nome del file rilascio (es. "See.S01E01.1080p.ITA-ENG.mkv").
+ * @param details dettagli size/peer (es. "2.18 GB | 👤 474").
+ * @param infoHash hash torrent per lo sblocco TorBox.
+ * @param resolution risoluzione video ("4K", "1080p", "720p", "480p").
+ * @param isItalian true se la sorgente e' in italiano.
+ * @param codec codec video ("H264", "HEVC", "AV1").
+ * @param streamUrl URL diretto NULL fino al click dell'utente! Sbloccato on-demand.
  */
 data class StreamSource(
-  val url: String,
+  val streamUrl: String? = null,
   val quality: String = "Auto",
   val serverName: String,
   val headers: Map<String, String> = emptyMap(),
   val declaredQuality: String = quality,
   val verifiedHeight: Int? = null,
+  val isProgressive: Boolean? = null,
+  val isItalian: Boolean = false,
+  val addonName: String? = null,
+  val instantTag: String? = null,
+  val releaseTitle: String? = null,
+  val details: String? = null,
+  val infoHash: String? = null,
+  val fileIdx: Int? = null,
+  val codec: String? = null,
+  val isCached: Boolean = false,
+  val releaseType: String? = null,
 ) {
   val effectiveHeight: Int
     get() = verifiedHeight ?: when {
@@ -30,6 +46,51 @@ data class StreamSource(
 
   val isVerifiedFhdOrHigher: Boolean
     get() = (verifiedHeight ?: 0) >= 1080
+
+  val resolution: String
+    get() = when {
+      effectiveHeight >= 2160 -> "4K"
+      effectiveHeight >= 1080 -> "1080p"
+      effectiveHeight >= 720 -> "720p"
+      effectiveHeight >= 480 -> "480p"
+      else -> "Auto"
+    }
+
+  @Deprecated("Use streamUrl instead", ReplaceWith("streamUrl"))
+  val url: String
+    get() = streamUrl ?: ""
+
+  companion object {
+    private val ITALIAN_KEYWORDS = listOf("ita", "italian", "italiano", "ilcorsaroviola", "corsaro")
+
+    fun isItalianSource(serverName: String): Boolean {
+      val lower = serverName.lowercase()
+      return ITALIAN_KEYWORDS.any { lower.contains(it) }
+    }
+
+    fun parseCodec(text: String): String? {
+      val lower = text.lowercase()
+      return when {
+        lower.contains("hevc") || lower.contains("x265") || lower.contains("hvc1") || lower.contains("hdr10") || lower.contains("hdr") -> "HEVC"
+        lower.contains("av1") || lower.contains("vp9") -> "AV1/VP9"
+        lower.contains("h264") || lower.contains("x264") || lower.contains("avc") -> "H264"
+        else -> null
+      }
+    }
+
+    fun parseReleaseType(text: String): String? {
+      val lower = text.lowercase()
+      return when {
+        lower.contains("web-dl") || lower.contains("webdl") || lower.contains("web rip") -> "WEB-DL"
+        lower.contains("bluray") || lower.contains("blu-ray") || lower.contains("bdrip") -> "BluRay"
+        lower.contains("hdtv") || lower.contains("tv rip") -> "HDTV"
+        lower.contains("dvdrip") || lower.contains("dvdr") -> "DVD"
+        lower.contains("hdr") -> "HDR"
+        lower.contains("dv") || lower.contains("dolby vision") -> "Dolby Vision"
+        else -> null
+      }
+    }
+  }
 }
 
 /**

@@ -6,7 +6,10 @@ import com.example.data.streaming.StreamSource
 import com.example.data.streaming.extractors.ExtractorHttp
 import java.io.IOException
 import java.net.URI
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -43,6 +46,7 @@ class SuperEmbedProvider : StreamProvider {
 
     val failures = mutableListOf<String>()
     for ((name, base) in BASE_URLS) {
+      currentCoroutineContext().ensureActive()
       try {
         val sources = resolveOnBase(name, base, tmdbId, isTv, s, e)
         if (sources.isNotEmpty()) {
@@ -50,6 +54,8 @@ class SuperEmbedProvider : StreamProvider {
           return@withContext sources
         }
         failures += "$name -> nessuna sorgente"
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         Log.w(TAG, "$name: ${ex.message}")
         failures += "$name -> ${ex.message}"
@@ -58,7 +64,7 @@ class SuperEmbedProvider : StreamProvider {
     throw IOException("SuperEmbed/MultiEmbed non risolvibile (${failures.joinToString(" | ")})")
   }
 
-  private fun resolveOnBase(
+  private suspend fun resolveOnBase(
     name: String,
     base: String,
     tmdbId: Int,
@@ -81,10 +87,13 @@ class SuperEmbedProvider : StreamProvider {
     var page: String? = null
     var used = ""
     for (candidate in candidates) {
+      currentCoroutineContext().ensureActive()
       try {
         page = ExtractorHttp.get(candidate, referer = "$base/")
         used = candidate
         break
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         Log.i(TAG, "$name endpoint non disponibile: $candidate (${ex.message})")
       }
@@ -100,7 +109,7 @@ class SuperEmbedProvider : StreamProvider {
       Log.i(TAG, "$name sorgente diretta: $url")
       return listOf(
         StreamSource(
-          url = url,
+          streamUrl = url,
           quality = if (url.contains(".m3u8", ignoreCase = true)) "Auto" else "1080p",
           serverName = name,
           headers = mapOf("Referer" to "$base/", "User-Agent" to ExtractorHttp.USER_AGENT)
@@ -114,7 +123,7 @@ class SuperEmbedProvider : StreamProvider {
       Log.i(TAG, "$name sorgente da <source>: $srcTag")
       return listOf(
         StreamSource(
-          url = srcTag,
+          streamUrl = srcTag,
           quality = "Auto",
           serverName = name,
           headers = mapOf("Referer" to "$base/", "User-Agent" to ExtractorHttp.USER_AGENT)
@@ -135,6 +144,8 @@ class SuperEmbedProvider : StreamProvider {
       Log.i(TAG, "$name iframe annidato: $iframeUrl")
       val nested = try {
         ExtractorHttp.get(iframeUrl, referer = used).replace("\\/", "/")
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         throw IOException("iframe $name non raggiungibile: ${ex.message}")
       }
@@ -142,7 +153,7 @@ class SuperEmbedProvider : StreamProvider {
       if (nestedMedia.isNotEmpty()) {
         return listOf(
           StreamSource(
-            url = nestedMedia.first(),
+            streamUrl = nestedMedia.first(),
             quality = "Auto",
             serverName = name,
             headers = mapOf("Referer" to iframeUrl, "User-Agent" to ExtractorHttp.USER_AGENT)

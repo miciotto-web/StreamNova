@@ -9,6 +9,10 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
 class StreamPriorityTest {
 
   @Test
@@ -46,6 +50,23 @@ class StreamPriorityTest {
       assertTrue("Header Referer assente", source.headers.containsKey("Referer"))
       assertTrue("Header User-Agent assente", source.headers.containsKey("User-Agent"))
     }
+  }
+
+  @Test
+  fun testVixSrcResolvesTbbtS1E1(): Unit = runBlocking {
+    val provider = VixSrcProvider()
+    val sources = provider.getStreams(
+      tmdbId = 1418, // The Big Bang Theory
+      isTv = true,
+      season = 1,
+      episode = 1,
+      title = "The Big Bang Theory",
+      year = 2007
+    )
+    assertTrue("VixSrc deve trovare almeno una sorgente per TBBT S1E1", sources.isNotEmpty())
+    val first = sources.first()
+    assertTrue("URL deve iniziare per http", first.url.startsWith("http"))
+    assertTrue("Header Referer presente", first.headers.containsKey("Referer"))
   }
 
   @Test

@@ -208,4 +208,55 @@ class SeasonEpisodePickerTest {
     viewModel.openDetail(movie)
     assertEquals(SeasonEpisodesUiState.Idle, viewModel.seasonEpisodesUiState.value)
   }
+
+  @Test
+  fun testTmdbTvDetailSeasonsAndEpisodeCountMapping() {
+    val sampleTvJson = """
+      {
+        "id": 1418,
+        "name": "The Big Bang Theory",
+        "number_of_seasons": 12,
+        "number_of_episodes": 279,
+        "seasons": [
+          {
+            "id": 3623,
+            "season_number": 0,
+            "episode_count": 5,
+            "name": "Specials"
+          },
+          {
+            "id": 3624,
+            "season_number": 1,
+            "episode_count": 17,
+            "name": "Stagione 1"
+          },
+          {
+            "id": 3625,
+            "season_number": 2,
+            "episode_count": 23,
+            "name": "Stagione 2"
+          },
+          {
+            "id": 3626,
+            "season_number": 3,
+            "episode_count": 23,
+            "name": "Stagione 3"
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val dto = MediaCacheMapper.deserializeTvDetail(sampleTvJson)
+    assertNotNull(dto)
+    assertEquals(4, dto!!.seasons?.size)
+
+    val s1 = dto.seasons?.find { it.seasonNumber == 1 }
+    assertNotNull(s1)
+    assertEquals(17, s1?.episodeCount)
+
+    val s2 = dto.seasons?.find { it.seasonNumber == 2 }
+    assertNotNull(s2)
+    assertEquals(23, s2?.episodeCount)
+  }
 }
+

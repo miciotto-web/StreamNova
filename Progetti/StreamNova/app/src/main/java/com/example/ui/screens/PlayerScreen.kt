@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import com.example.ui.screens.player.*
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -62,6 +63,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -79,6 +81,7 @@ import androidx.compose.ui.input.key.nativeKeyCode
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -86,26 +89,32 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import com.example.R
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem as ExoMediaItem
-import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackException as ExoPlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.example.data.model.AudioTrack
 import com.example.data.model.Episode
 import com.example.data.model.MediaType
 import com.example.data.model.SubtitleTrack
 import com.example.data.model.VideoResolution
+import com.example.data.prefs.PreferredResolution
+import com.example.data.prefs.SubtitleBackground
 import com.example.data.repository.MediaRepository
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusableBox
@@ -113,17 +122,40 @@ import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaCyanGlow
+import com.example.ui.theme.NovaGreen
 import com.example.ui.theme.NovaSurface
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import com.example.ui.util.streamUnavailableMessage
+import java.util.Locale
 import com.example.ui.viewmodel.StreamNovaViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Auto-hide dei controlli del player dopo N ms di inattività con il telecomando. */
 private const val CONTROLS_HIDE_DELAY_MS = 5_000L
+
+/**
+ * FASE 3.4 "Sfondo dei sottotitoli": costruisce il CaptionStyleCompat da applicare al
+ * SubtitleView Media3 (API disponibile in 1.5.1: SubtitleView.setStyle). Le altre
+ * proprietà restano quelle del default Media3 (testo bianco, nessun bordo, window
+ * trasparente): varia solo il colore di sfondo dietro al testo, così che:
+ * - NESSUNO: alpha 0 → SubtitlePainter non disegna alcun background;
+ * - NERO: nero opaco; NERO SEMI-TRASPARENTE: nero con trasparenza (50%).
+ */
+private fun subtitleCaptionStyleFor(background: SubtitleBackground): CaptionStyleCompat {
+  val base = CaptionStyleCompat.DEFAULT
+  return CaptionStyleCompat(
+    base.foregroundColor,
+    background.backgroundColor,
+    base.windowColor,
+    base.edgeType,
+    base.edgeColor,
+    base.typeface
+  )
+}
 
 /**
  * Richiede il focus sul frame successivo (dopo compose + layout) e riprova qualche
@@ -151,8 +183,13 @@ fun PlayerScreen(
 ) {
   val context = LocalContext.current
   val playbackState by viewModel.playbackState.collectAsState()
+  val playbackSettings by viewModel.playbackSettings.collectAsState()
+  val showSourceDialog by viewModel.showSourceDialog.collectAsState()
+  val availableSources by viewModel.availableSources.collectAsState()
   val media = playbackState.media ?: return
   val episode = playbackState.currentEpisode
+
+  val isSourceSelectionActive = showSourceDialog && availableSources.isNotEmpty()
 
   val isTvShow = media.type == MediaType.SERIE_TV
 
@@ -194,11 +231,20 @@ fun PlayerScreen(
   var isPlaying by remember { mutableStateOf(true) }
   var areControlsVisible by remember { mutableStateOf(true) }
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
-  var hasFallbackAttempted by remember { mutableStateOf(false) }
+
 
   // Risoluzione video rilevata in tempo reale da ExoPlayer (es. 1080p, 720p, 4K)
   var detectedResolution by remember { mutableStateOf("") }
   var selectedQualityLabel by remember { mutableStateOf("Auto") }
+
+  // Stato per l'applicazione della "Risoluzione preferita" persistente (una volta per episodio)
+  var playerReady by remember { mutableStateOf(false) }
+  var initialQualityApplied by remember { mutableStateOf(false) }
+  // Stato per il passaggio automatico all'episodio successivo a fine riproduzione
+  var playbackEnded by remember { mutableStateOf(false) }
+  // Sessione fallita/non conclusa: errore ExoPlayer, streamUrl assente/vuoto o errore di
+  // risoluzione. Un errore NON deve mai causare il passaggio all'episodio successivo.
+  var playbackFailed by remember { mutableStateOf(false) }
 
   // Aspect ratio / ResizeMode
   var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
@@ -212,6 +258,12 @@ fun PlayerScreen(
   var showSubtitleModal by remember { mutableStateOf(false) }
   var showQualityModal by remember { mutableStateOf(false) }
   var showSpeedModal by remember { mutableStateOf(false) }
+
+  // Traccia manuale selezionata dall'utente: quando non null, indica che l'utente ha
+  // fatto una scelta esplicita dal menu Player. Questo previene la ri-applicazione
+  // automatica della preferenza Settings dopo una selezione manuale.
+  var manualSubtitleSelection by remember { mutableStateOf<ManualSubtitleSelection?>(null) }
+  var manualAudioSelection by remember { mutableStateOf<ManualAudioSelection?>(null) }
 
   val anyModalOpen = showAudioModal || showSubtitleModal || showQualityModal || showSpeedModal
 
@@ -229,6 +281,8 @@ fun PlayerScreen(
 
   // BACK gerarchico (livello 1): finché è aperto un modale, il tasto Back chiude SOLO il modale.
   BackHandler(enabled = anyModalOpen) {
+    Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler (modale)")
+    Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
     showAudioModal = false
     showSubtitleModal = false
     showQualityModal = false
@@ -244,7 +298,28 @@ fun PlayerScreen(
   val isIntroActive = isTvShow && !isIntroDismissed && currentPosition in 1_000L..introEndMs
 
   val streamHeaders = playbackState.streamHeaders
-  val videoUrl = playbackState.streamUrl ?: currentEp?.videoUrl ?: media.videoUrl
+  // FASE 3.3: frazione altezza per la dimensione testo sottotitoli (lettura tracciata in
+  // composizione: qualsiasi cambio preferenza ri-esegue l'update del PlayerView).
+  val subtitleTextSizeFraction = playbackSettings.subtitleSize.textSizeFraction
+  // FASE 3.4: stile caption per lo sfondo dei sottotitoli (lettura tracciata in
+  // composizione: qualsiasi cambio preferenza ri-esegue l'update del PlayerView).
+  val subtitleCaptionStyle = subtitleCaptionStyleFor(playbackSettings.subtitleBackground)
+  // FASE 3.5: frazione per la posizione verticale dei sottotitoli (lettura tracciata in
+  // composizione: qualsiasi cambio preferenza ri-esegue l'update del PlayerView).
+  val subtitleBottomPaddingFraction = playbackSettings.subtitlePosition.bottomPaddingFraction
+  // Sorgente riproducibile SOLO se reale. Per un titolo TMDB la mancanza di stream NON
+  // deve mai ripiegare su un video demo di un altro contenuto: in quel caso videoUrl = null.
+  // Il fallback al video seed è consentito esclusivamente per gli elementi demo reali.
+  val videoUrl: String? = playbackState.streamUrl?.takeIf { it.isNotBlank() }
+    ?: if (MediaRepository.isDemoSeedItem(media.id)) {
+      currentEp?.videoUrl ?: media.videoUrl
+    } else {
+      null
+    }
+
+  if (media.tmdbId == 318508) {
+    Log.d("THE_PITT_PLAYER", "PlayerScreen: media.tmdbId=318508, videoUrl=$videoUrl, streamUrl=${playbackState.streamUrl}, isDemoSeed=${MediaRepository.isDemoSeedItem(media.id)}")
+  }
 
   val httpDataSourceFactory = remember(streamHeaders) {
     val factory = DefaultHttpDataSource.Factory()
@@ -261,16 +336,29 @@ fun PlayerScreen(
   val mediaSourceFactory = remember(httpDataSourceFactory) {
     DefaultMediaSourceFactory(context)
       .setDataSourceFactory(httpDataSourceFactory)
+      .setLoadErrorHandlingPolicy(PlayerLoadErrorHandlingPolicy())
   }
 
   val isHlsStream = run {
-    val path = videoUrl.substringBefore('?').substringBefore('#').lowercase()
-    when {
-      path.endsWith(".m3u8") -> true
-      path.endsWith(".mp4") || path.endsWith(".mkv") ||
-        path.endsWith(".webm") || path.endsWith(".avi") -> false
-      playbackState.streamUrl != null -> true
-      else -> false
+    val url = videoUrl
+    if (url == null) {
+      false
+    } else {
+      val lower = url.lowercase()
+      val path = url.substringBefore('?').substringBefore('#').lowercase()
+      val hint = playbackState.streamProgressive
+      when {
+        path.endsWith(".m3u8") || lower.contains(".m3u8") -> true
+        path.endsWith(".mp4") || path.endsWith(".mkv") ||
+          path.endsWith(".webm") || path.endsWith(".avi") ||
+          // Link Debrid CDN (TorBox) con estensione anche solo in query string:
+          lower.contains(".mp4") || lower.contains(".mkv") || lower.contains(".m4v") -> false
+        // Hint esplicito della sorgente: i link Debrid sbloccati (requestdl) sono
+        // file progressivi anche quando l'URL non ha estensione.
+        hint != null -> !hint
+        playbackState.streamUrl != null -> true
+        else -> false
+      }
     }
   }
 
@@ -282,55 +370,312 @@ fun PlayerScreen(
     }
   }
 
-  // DefaultBandwidthMeter con stima iniziale a 35 Mbps per forzare l'avvio sul profilo a bitrate massimo (1080p FHD)
+  // Nuvio BandwidthMeter (stima iniziale a 50 Mbps per avvio al profilo a bitrate massimo)
   val bandwidthMeter = remember {
-    DefaultBandwidthMeter.Builder(context)
-      .setInitialBitrateEstimate(35_000_000L) // 35 Mbps per forzare l'avvio sul profilo a bitrate massimo
-      .build().also {
-        Log.i("StreamNovaDiag", "BandwidthMeter inizializzato con stima iniziale: ${it.bitrateEstimate / 1_000_000} Mbps (${it.bitrateEstimate} bps)")
-      }
-  }
-
-  // TrackSelector configurato per prediligere la risoluzione più alta disponibile senza blocchi sul viewport
-  val trackSelector = remember {
-    DefaultTrackSelector(context).apply {
-      setParameters(
-        buildUponParameters()
-          .setViewportSize(Int.MAX_VALUE, Int.MAX_VALUE, false)
-          .setForceHighestSupportedBitrate(true)
-          .setExceedVideoConstraintsIfNecessary(true)
-          .setExceedRendererCapabilitiesIfNecessary(true)
-      )
+    NuvioExoPlayerPerformanceHelper.buildBandwidthMeter(context).also {
+      Log.i("StreamNovaDiag", "NuvioBandwidthMeter inizializzato con stima: ${it.bitrateEstimate / 1_000_000} Mbps (${it.bitrateEstimate} bps)")
     }
   }
 
-  fun updateResolutionFromHeight(h: Int) {
-    if (h > 0) {
-      detectedResolution = when {
-        h >= 2160 -> "4K"
-        h >= 1080 -> "1080p"
-        h >= 720  -> "720p"
-        else      -> "SD"
-      }
-    }
-  }
-
-  // ExoPlayer instance initialization con DefaultTrackSelector e DefaultBandwidthMeter (35 Mbps)
-  val exoPlayer = remember(playbackMediaSourceFactory, trackSelector, bandwidthMeter) {
-    ExoPlayer.Builder(context)
-      .setMediaSourceFactory(playbackMediaSourceFactory)
-      .setTrackSelector(trackSelector)
-      .setBandwidthMeter(bandwidthMeter)
-      .build().apply {
-        Log.i("PlayerScreen", "Avvio riproduzione: url=$videoUrl")
-        val exoMediaItem = ExoMediaItem.fromUri(Uri.parse(videoUrl))
-        setMediaItem(exoMediaItem)
-        prepare()
-        if (playbackState.currentPositionMs > 0) {
-          seekTo(playbackState.currentPositionMs)
+  // Nuvio TrackSelector e ExoPlayer configurati con NuvioRenderersFactory, BitrateAwareLoadControl e Decoder Fallback
+  val (trackSelector, exoPlayer) = remember(playbackMediaSourceFactory, bandwidthMeter, playbackSettings.preferredResolution) {
+    val isBluetooth = AudioOutputRouteDetector.isBluetoothMediaOutput(context)
+    val renderersFactory = NuvioRenderersFactory(
+      context = context,
+      bluetoothForcePcm = isBluetooth,
+      playbackSpeedProvider = { currentSpeed }
+    )
+    val maxHeight = playbackSettings.preferredResolution.targetHeight
+    val preferredAudioLangs = mapPreferredAudioLanguages(playbackSettings.preferredAudioLanguage)
+    val trackSelector = NuvioTrackSelector.create(
+      context = context,
+      streamUrlProvider = { videoUrl },
+      streamNameProvider = { media.title },
+      tunnelingEnabled = false,
+      safeAudioMode = false,
+      preferredAudioLanguages = preferredAudioLangs,
+      subtitlesEnabled = playbackSettings.subtitlesEnabled,
+      forcedSubtitlesEnabled = playbackSettings.forcedSubtitlesEnabled
+    ).apply {
+      if (maxHeight > 0) {
+        val maxWidth = when {
+          maxHeight >= 2160 -> 3840
+          maxHeight >= 1080 -> 1920
+          maxHeight >= 720 -> 1280
+          maxHeight >= 480 -> 854
+          else -> (maxHeight * 16) / 9
         }
-        playWhenReady = true
+        setParameters(buildUponParameters().setMaxVideoSize(maxWidth, maxHeight))
       }
+    }
+    val loadControl = NuvioExoPlayerPerformanceHelper.buildLoadControl(context)
+    val player = ExoPlayer.Builder(context, renderersFactory)
+      .setTrackSelector(trackSelector)
+      .setMediaSourceFactory(playbackMediaSourceFactory)
+      .setBandwidthMeter(bandwidthMeter)
+      .setLoadControl(loadControl)
+      .setVideoChangeFrameRateStrategy(C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF)
+      .build().apply {
+        if (videoUrl != null) {
+          Log.i("PlayerScreen", "Avvio riproduzione NuvioEngine: url=$videoUrl")
+          stop()
+          clearMediaItems()
+          val exoMediaItem = ExoMediaItem.fromUri(Uri.parse(videoUrl))
+          setMediaItem(exoMediaItem)
+          prepare()
+          if (playbackState.currentPositionMs > 0) {
+            seekTo(playbackState.currentPositionMs)
+          }
+          playWhenReady = true
+        } else {
+          Log.i("PlayerScreen", "Nessuna sorgente disponibile per '${media.title}': nessun fallback demo.")
+        }
+      }
+    trackSelector to player
+  }
+
+  var currentTracksState by remember(exoPlayer) { mutableStateOf(exoPlayer.currentTracks) }
+
+  fun formatAudioTrackDisplayName(
+    formatLanguage: String?,
+    formatLabel: String?,
+    roleFlags: Int,
+    channels: Int = -1
+  ): String {
+    val cleanLang = formatLanguage?.trim()?.lowercase() ?: ""
+    val isNonUdenti = (roleFlags and C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND != 0) ||
+        (roleFlags and C.ROLE_FLAG_TRANSCRIBES_DIALOG != 0) ||
+        (formatLabel?.contains("non udenti", ignoreCase = true) == true) ||
+        (formatLabel?.contains("hearing impaired", ignoreCase = true) == true) ||
+        (formatLabel?.contains("sdh", ignoreCase = true) == true)
+
+    val isAudioDesc = (roleFlags and C.ROLE_FLAG_DESCRIBES_VIDEO != 0) ||
+        (formatLabel?.contains("audiodescrizione", ignoreCase = true) == true) ||
+        (formatLabel?.contains("audio description", ignoreCase = true) == true)
+
+    val isCommentary = (roleFlags and C.ROLE_FLAG_COMMENTARY != 0) ||
+        (formatLabel?.contains("commento", ignoreCase = true) == true) ||
+        (formatLabel?.contains("commentary", ignoreCase = true) == true)
+
+    val baseLang = when {
+      cleanLang.startsWith("it") -> context.getString(R.string.lang_italian)
+      cleanLang.startsWith("en") -> context.getString(R.string.lang_english)
+      cleanLang.startsWith("es") || cleanLang == "spa" -> context.getString(R.string.lang_spanish)
+      cleanLang.startsWith("fr") || cleanLang == "fra" || cleanLang == "fre" -> context.getString(R.string.lang_french)
+      cleanLang.startsWith("de") || cleanLang == "deu" || cleanLang == "ger" -> context.getString(R.string.lang_german)
+      cleanLang.startsWith("pt") || cleanLang == "por" -> context.getString(R.string.track_lang_portuguese)
+      cleanLang.startsWith("ja") || cleanLang == "jpn" -> context.getString(R.string.track_lang_japanese)
+      cleanLang.startsWith("ko") || cleanLang == "kor" -> context.getString(R.string.track_lang_korean)
+      cleanLang.startsWith("zh") || cleanLang == "zho" || cleanLang == "chi" -> context.getString(R.string.track_lang_chinese)
+      cleanLang.startsWith("ru") || cleanLang == "rus" -> context.getString(R.string.track_lang_russian)
+      cleanLang.startsWith("ar") || cleanLang == "ara" -> context.getString(R.string.track_lang_arabic)
+      cleanLang.startsWith("hi") || cleanLang == "hin" -> context.getString(R.string.track_lang_hindi)
+      cleanLang.startsWith("pl") || cleanLang == "pol" -> context.getString(R.string.track_lang_polish)
+      formatLabel?.isNotBlank() == true -> formatLabel.trim()
+      cleanLang.isNotBlank() && cleanLang != "und" -> {
+        val currentLocale = context.resources.configuration.locales[0] ?: java.util.Locale.getDefault()
+        val locName = try {
+          java.util.Locale.forLanguageTag(cleanLang).getDisplayLanguage(currentLocale)
+        } catch (_: Exception) { "" }
+        if (locName.isNotBlank() && !locName.equals(cleanLang, ignoreCase = true)) {
+          locName.replaceFirstChar { it.uppercase() }
+        } else {
+          cleanLang.uppercase()
+        }
+      }
+      else -> context.getString(R.string.player_audio_fallback)
+    }
+
+    val extra = mutableListOf<String>()
+    if (isNonUdenti) {
+      extra.add(context.getString(R.string.track_flag_sdh))
+    } else if (isAudioDesc) {
+      extra.add(context.getString(R.string.track_flag_audio_desc))
+    } else if (isCommentary) {
+      extra.add(context.getString(R.string.track_flag_commentary))
+    }
+
+    if (channels >= 6) {
+      extra.add("5.1")
+    }
+
+    val labelClean = formatLabel?.trim() ?: ""
+    val isRedundantLabel = labelClean.isBlank() ||
+        labelClean.equals(baseLang, ignoreCase = true) ||
+        labelClean.equals("und", ignoreCase = true) ||
+        labelClean.equals("default", ignoreCase = true) ||
+        labelClean.equals("main", ignoreCase = true)
+
+    return when {
+      extra.isNotEmpty() -> "$baseLang (${extra.joinToString(", ")})"
+      !isRedundantLabel -> "$baseLang - $labelClean"
+      else -> baseLang
+    }
+  }
+
+  fun getAvailableAudioOptions(tracks: Tracks = currentTracksState): List<MediaAudioTrackOption> {
+    val options = mutableListOf<MediaAudioTrackOption>()
+    for (group in tracks.groups) {
+      if (group.type == C.TRACK_TYPE_AUDIO) {
+        for (i in 0 until group.length) {
+          val format = group.getTrackFormat(i)
+          val lang = format.language ?: ""
+          val label = format.label ?: ""
+          val roleFlags = format.roleFlags
+          val isSelected = group.isTrackSelected(i)
+          val name = formatAudioTrackDisplayName(lang, label, roleFlags, format.channelCount)
+          options.add(
+            MediaAudioTrackOption(
+              group = group,
+              trackIndex = i,
+              language = lang,
+              label = label,
+              roleFlags = roleFlags,
+              displayName = name,
+              isSelected = isSelected
+            )
+          )
+        }
+      }
+    }
+
+    val counts = options.groupingBy { it.displayName }.eachCount()
+    return if (counts.values.any { it > 1 }) {
+      val tracker = mutableMapOf<String, Int>()
+      options.map { opt ->
+        if ((counts[opt.displayName] ?: 0) > 1) {
+          val count = (tracker[opt.displayName] ?: 0) + 1
+          tracker[opt.displayName] = count
+          opt.copy(displayName = "${opt.displayName} #$count")
+        } else {
+          opt
+        }
+      }
+    } else {
+      options
+    }
+  }
+
+  fun formatSubtitleTrackDisplayName(
+    formatLanguage: String?,
+    formatLabel: String?,
+    roleFlags: Int,
+    selectionFlags: Int = 0
+  ): String {
+    val cleanLang = formatLanguage?.trim()?.lowercase() ?: ""
+    val labelLower = formatLabel?.lowercase() ?: ""
+    val hasForcedFlag = (selectionFlags and C.SELECTION_FLAG_FORCED) != 0
+    val isForced = hasForcedFlag ||
+        labelLower.contains("forced") ||
+        labelLower.contains("forzato") ||
+        labelLower.contains("forzati")
+    val isCC = (roleFlags and C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND != 0) ||
+        (roleFlags and C.ROLE_FLAG_TRANSCRIBES_DIALOG != 0) ||
+        labelLower.contains("non udenti") ||
+        labelLower.contains("hearing impaired") ||
+        labelLower.contains("cc") ||
+        labelLower.contains("sdh")
+
+    val baseLang = when {
+      cleanLang.startsWith("it") -> context.getString(R.string.lang_italian)
+      cleanLang.startsWith("en") -> context.getString(R.string.lang_english)
+      cleanLang.startsWith("es") || cleanLang == "spa" -> context.getString(R.string.lang_spanish)
+      cleanLang.startsWith("fr") || cleanLang == "fra" || cleanLang == "fre" -> context.getString(R.string.lang_french)
+      cleanLang.startsWith("de") || cleanLang == "deu" || cleanLang == "ger" -> context.getString(R.string.lang_german)
+      cleanLang.startsWith("pt") || cleanLang == "por" -> context.getString(R.string.track_lang_portuguese)
+      cleanLang.startsWith("ja") || cleanLang == "jpn" -> context.getString(R.string.track_lang_japanese)
+      cleanLang.startsWith("ko") || cleanLang == "kor" -> context.getString(R.string.track_lang_korean)
+      cleanLang.startsWith("zh") || cleanLang == "zho" || cleanLang == "chi" -> context.getString(R.string.track_lang_chinese)
+      cleanLang.startsWith("ru") || cleanLang == "rus" -> context.getString(R.string.track_lang_russian)
+      cleanLang.startsWith("ar") || cleanLang == "ara" -> context.getString(R.string.track_lang_arabic)
+      cleanLang.startsWith("hi") || cleanLang == "hin" -> context.getString(R.string.track_lang_hindi)
+      cleanLang.startsWith("pl") || cleanLang == "pol" -> context.getString(R.string.track_lang_polish)
+      formatLabel?.isNotBlank() == true -> formatLabel.trim()
+      cleanLang.isNotBlank() && cleanLang != "und" -> {
+        val currentLocale = context.resources.configuration.locales[0] ?: java.util.Locale.getDefault()
+        val locName = try {
+          java.util.Locale.forLanguageTag(cleanLang).getDisplayLanguage(currentLocale)
+        } catch (_: Exception) { "" }
+        if (locName.isNotBlank() && !locName.equals(cleanLang, ignoreCase = true)) {
+          locName.replaceFirstChar { it.uppercase() }
+        } else {
+          cleanLang.uppercase()
+        }
+      }
+      else -> context.getString(R.string.player_subtitles_unknown)
+    }
+
+    val labelClean = formatLabel?.trim() ?: ""
+    val isRedundantLabel = labelClean.isBlank() ||
+        labelClean.equals(baseLang, ignoreCase = true) ||
+        labelClean.equals("und", ignoreCase = true) ||
+        labelClean.equals("default", ignoreCase = true) ||
+        labelClean.equals("main", ignoreCase = true)
+
+    val forcedText = context.getString(R.string.track_flag_forced)
+    val sdhText = context.getString(R.string.track_flag_sdh)
+    return when {
+      isForced -> {
+        if (baseLang.contains(forcedText, ignoreCase = true) ||
+            baseLang.contains("forced", ignoreCase = true) ||
+            baseLang.contains("forzat", ignoreCase = true)
+        ) {
+          baseLang
+        } else {
+          "$baseLang ($forcedText)"
+        }
+      }
+      isCC -> "$baseLang ($sdhText)"
+      !isRedundantLabel -> "$baseLang - $labelClean"
+      else -> baseLang
+    }
+  }
+
+  fun getAvailableSubtitleOptions(tracks: Tracks = currentTracksState): List<MediaSubtitleTrackOption> {
+    val options = mutableListOf<MediaSubtitleTrackOption>()
+    for (group in tracks.groups) {
+      if (group.type == C.TRACK_TYPE_TEXT) {
+        for (i in 0 until group.length) {
+          val format = group.getTrackFormat(i)
+          val lang = format.language ?: ""
+          val label = format.label ?: ""
+          val roleFlags = format.roleFlags
+          val selectionFlags = format.selectionFlags
+          val isSelected = group.isTrackSelected(i)
+          val name = formatSubtitleTrackDisplayName(lang, label, roleFlags, selectionFlags)
+          val isForced = (selectionFlags and C.SELECTION_FLAG_FORCED) != 0 ||
+              label.contains("forced", ignoreCase = true) ||
+              label.contains("forzat", ignoreCase = true)
+          options.add(
+            MediaSubtitleTrackOption(
+              group = group,
+              trackIndex = i,
+              language = lang,
+              label = label,
+              roleFlags = roleFlags,
+              selectionFlags = selectionFlags,
+              isForced = isForced,
+              displayName = name,
+              isSelected = isSelected
+            )
+          )
+        }
+      }
+    }
+    return options
+  }
+
+  fun updateResolutionFromHeight(h: Int, w: Int = -1) {
+    if (h > 0 || w > 0) {
+      val prev = detectedResolution
+      detectedResolution = when {
+        h >= 1400 || w >= 2500 -> "4K"
+        h >= 750 || w >= 1400  -> "1080p"
+        h >= 500 || w >= 900   -> "720p"
+        else                   -> "SD"
+      }
+      Log.i("[StreamNova-Video-Debug]", "updateResolutionFromHeight: h=$h, w=$w -> detectedResolution='$detectedResolution' (era='$prev')")
+    }
   }
 
   fun getAvailableQualityOptions(): List<Pair<String, Int>> {
@@ -352,10 +697,10 @@ fun PlayerScreen(
     if (heights.isNotEmpty()) {
       heights.sortedDescending().forEach { h ->
         val label = when {
-          h >= 2160 -> "4K (UHD)"
-          h >= 1080 -> "1080p (FHD)"
-          h >= 720  -> "720p (HD)"
-          h >= 480  -> "480p (SD)"
+          h >= 1400 -> "4K (UHD)"
+          h >= 750  -> "1080p (FHD)"
+          h >= 500  -> "720p (HD)"
+          h >= 400  -> "480p (SD)"
           else      -> "${h}p"
         }
         options.add(label to h)
@@ -368,20 +713,365 @@ fun PlayerScreen(
     return options
   }
 
-  // Se l'URL cambia dinamicamente (es. click su Prossimo Episodio o Upgrade di qualità a caldo)
+  fun videoTrackHeights(): List<Int> {
+    val heights = mutableSetOf<Int>()
+    for (group in exoPlayer.currentTracks.groups) {
+      if (group.type == C.TRACK_TYPE_VIDEO) {
+        for (i in 0 until group.length) {
+          val h = group.getTrackFormat(i).height
+          if (h > 0) heights.add(h)
+        }
+      }
+    }
+    return heights.sortedDescending()
+  }
+
+  /**
+   * Applica la "Risoluzione preferita" persistente scegliendo la migliore qualità
+   * REALMENTE disponibile compatibile con la preferenza. Se la risoluzione richiesta
+   * non è disponibile usa la più vicina realmente presente (mai inventata/forzata).
+   * "Auto" non tocca nulla: mantiene il comportamento attuale del player.
+   */
+  fun applyPreferredResolution(pref: PreferredResolution) {
+    if (pref == PreferredResolution.AUTO) return
+    val heights = videoTrackHeights()
+    val target = heights.filter { it <= pref.targetHeight }.maxOrNull()
+      ?: heights.minOrNull()
+      ?: pref.targetHeight
+    val targetWidth = when {
+      target >= 1400 -> 3840
+      target >= 750  -> 1920
+      target >= 500  -> 1280
+      target >= 400  -> 854
+      else -> (target * 16) / 9
+    }
+    Log.i("[StreamNova-Video-Debug]", "applyPreferredResolution: pref=${pref.label} (${pref.targetHeight}p), tracce video disponibili=$heights -> target=${target}p")
+    Log.i("PlayerScreen", "Risoluzione preferita ${pref.label}: tracce disponibili=$heights -> target=${target}p")
+    trackSelector.setParameters(
+      trackSelector.buildUponParameters()
+        .setMinVideoSize(targetWidth, target)
+        .setMaxVideoSize(targetWidth, target)
+        .setViewportSize(Int.MAX_VALUE, Int.MAX_VALUE, false)
+        .setForceHighestSupportedBitrate(true)
+        .setExceedVideoConstraintsIfNecessary(true)
+        .setExceedRendererCapabilitiesIfNecessary(true)
+    )
+    updateResolutionFromHeight(target, targetWidth)
+    selectedQualityLabel = when {
+      target >= 1400 -> "4K (UHD)"
+      target >= 750  -> "1080p (FHD)"
+      target >= 500  -> "720p (HD)"
+      target >= 400  -> "480p (SD)"
+      else -> "${target}p"
+    }
+  }
+
+  fun isCurrentAudioItalian(tracks: Tracks): Boolean {
+    for (group in tracks.groups) {
+      if (group.type == C.TRACK_TYPE_AUDIO && group.isSelected) {
+        for (i in 0 until group.length) {
+          if (group.isTrackSelected(i)) {
+            val format = group.getTrackFormat(i)
+            val lang = format.language?.trim()?.lowercase() ?: ""
+            val label = format.label?.trim()?.lowercase() ?: ""
+            if (lang.startsWith("it") || lang == "ita" || label.contains("italiano") || label.contains("italian")) {
+              return true
+            }
+            if (lang.isNotBlank() && lang != "und") {
+              return false
+            }
+          }
+        }
+      }
+    }
+    val pref = playbackSettings.preferredAudioLanguage.trim().lowercase()
+    return pref.startsWith("it") || pref == "ita"
+  }
+
+  /**
+   * Applica al TrackSelector Media3 le preferenze dei sottotitoli (Forced e/o Completi):
+   * 1. Se Sottotitoli Forced è abilitato:
+   *    - Imposta i parametri richiesti da ExoPlayer (preferredTextLanguage "it", preferredTextRoleFlags,
+   *      ignoredTextSelectionFlags = 0, selectUndeterminedTextLanguage = false).
+   *    - Logica di selezione intelligente se audio in riproduzione è "it":
+   *      - Seleziona traccia con flag C.SELECTION_FLAG_FORCED != 0 (priorità 1).
+   *      - Altrimenti cerca traccia etichettata "forced" o "forzati" nel label o ID (priorità 2).
+   *      - Se nessuna traccia forced presente e sottotitoli completi OFF, disabilita il renderer testo.
+   * 2. Se Sottotitoli Forced è disabilitato:
+   *    - Se sottotitoli completi ON, applica selezione automatica standard per la lingua preferita.
+   *    - Se sottotitoli completi OFF, disabilita il renderer testo (setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)).
+   * 3. Rispetta sempre la selezione manuale dell'utente (manualSubtitleSelection) se attiva.
+   */
+  fun applySubtitlesConfiguration(
+    forcedEnabled: Boolean,
+    fullSubtitlesEnabled: Boolean,
+    preferredLanguage: String,
+    tracks: Tracks,
+    manualSelection: ManualSubtitleSelection?
+  ) {
+    if (manualSelection != null) {
+      if (manualSelection.isNone) {
+        val builder = trackSelector.buildUponParameters()
+          .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+          .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+        trackSelector.setParameters(builder)
+        Log.i("PlayerScreen", "Sottotitoli: selezione manuale 'Nessuno' attiva, renderer disabilitato")
+      } else if (manualSelection.group != null && manualSelection.trackIndex >= 0) {
+        val override = TrackSelectionOverride(manualSelection.group.mediaTrackGroup, manualSelection.trackIndex)
+        val builder = trackSelector.buildUponParameters()
+          .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+          .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+          .setOverrideForType(override)
+        trackSelector.setParameters(builder)
+        Log.i("PlayerScreen", "Sottotitoli: selezione manuale traccia applicata (index=${manualSelection.trackIndex})")
+      }
+      return
+    }
+
+    if (forcedEnabled) {
+      val baseBuilder = trackSelector.buildUponParameters()
+        .setPreferredTextLanguage("it")
+        .setPreferredTextRoleFlags(C.ROLE_FLAG_SUBTITLE)
+        .setIgnoredTextSelectionFlags(0)
+        .setSelectUndeterminedTextLanguage(false)
+
+      val isAudioIt = isCurrentAudioItalian(tracks)
+      Log.i("PlayerScreen", "Sottotitoli Forced ON: lingua audio italiana=$isAudioIt")
+
+      if (isAudioIt) {
+        var explicitCandidate: Pair<Tracks.Group, Int>? = null
+        var labelCandidate: Pair<Tracks.Group, Int>? = null
+
+        for (group in tracks.groups) {
+          if (group.type != C.TRACK_TYPE_TEXT) continue
+          for (i in 0 until group.length) {
+            val format = group.getTrackFormat(i)
+            val lang = format.language?.trim()?.lowercase() ?: ""
+            val label = format.label?.trim()?.lowercase() ?: ""
+            val id = format.id?.trim()?.lowercase() ?: ""
+            val groupId = group.mediaTrackGroup.id.trim().lowercase()
+
+            val isItalian = lang.startsWith("it") || lang == "ita" ||
+                label.contains("italiano") || label.contains("italian")
+
+            if (!isItalian && lang.isNotBlank() && lang != "und") {
+              continue
+            }
+
+            val hasForcedFlag = (format.selectionFlags and C.SELECTION_FLAG_FORCED) != 0
+            val hasForcedName = label.contains("forced") || label.contains("forzat") ||
+                id.contains("forced") || id.contains("forzat") ||
+                groupId.contains("forced") || groupId.contains("forzat")
+
+            if (hasForcedFlag) {
+              explicitCandidate = group to i
+              break
+            } else if (hasForcedName && labelCandidate == null) {
+              labelCandidate = group to i
+            }
+          }
+          if (explicitCandidate != null) break
+        }
+
+        val forcedTrack = explicitCandidate ?: labelCandidate
+        if (forcedTrack != null) {
+          val (group, trackIndex) = forcedTrack
+          val override = TrackSelectionOverride(group.mediaTrackGroup, trackIndex)
+          baseBuilder
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setOverrideForType(override)
+          trackSelector.setParameters(baseBuilder)
+          Log.i("PlayerScreen", "Traccia sottotitoli forced (IT) selezionata: gruppo=${group.mediaTrackGroup.id}, traccia=$trackIndex, flag=${explicitCandidate != null}")
+        } else {
+          if (fullSubtitlesEnabled) {
+            baseBuilder
+              .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+              .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            trackSelector.setParameters(baseBuilder)
+            Log.i("PlayerScreen", "Nessuna traccia forced trovata: abilitati sottotitoli standard (fullSubtitles=ON)")
+          } else {
+            baseBuilder
+              .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+              .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            trackSelector.setParameters(baseBuilder)
+            Log.i("PlayerScreen", "Nessuna traccia forced trovata e fullSubtitles=OFF: renderer testo disabilitato")
+          }
+        }
+      } else {
+        if (fullSubtitlesEnabled) {
+          baseBuilder
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+          if (preferredLanguage.isNotBlank()) {
+            baseBuilder.setPreferredTextLanguage(preferredLanguage)
+          }
+          trackSelector.setParameters(baseBuilder)
+        } else {
+          baseBuilder
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+          trackSelector.setParameters(baseBuilder)
+        }
+      }
+    } else {
+      Log.i("PlayerScreen", "Sottotitoli Forced OFF: fullSubtitlesEnabled=$fullSubtitlesEnabled")
+      val builder = trackSelector.buildUponParameters()
+        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+      if (fullSubtitlesEnabled) {
+        builder
+          .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+          .setIgnoredTextSelectionFlags(C.SELECTION_FLAG_FORCED)
+        if (preferredLanguage.isBlank()) {
+          builder.setPreferredTextLanguages()
+        } else {
+          builder.setPreferredTextLanguage(preferredLanguage)
+        }
+      } else {
+        builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+      }
+      trackSelector.setParameters(builder)
+    }
+  }
+
+  /**
+   * Applica al TrackSelector Media3 le preferenze persistenti "Lingua audio preferita":
+   * mapping su codici ISO 639-1 e 639-2.
+   * Rimuove eventuali override manuali per consentire la corretta selezione automatica.
+   */
+  fun applyAudioAutoSelection(preferredLanguage: String) {
+    val languages = mapPreferredAudioLanguages(preferredLanguage)
+    val languageDesc = if (languages.isEmpty()) "nessuna preferenza" else languages.joinToString(", ")
+    Log.i("PlayerScreen", "Audio preferito automatico: $languageDesc")
+    val builder = trackSelector.buildUponParameters()
+      .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+    if (languages.isEmpty()) {
+      builder.setPreferredAudioLanguages()
+    } else {
+      builder.setPreferredAudioLanguages(*languages.toTypedArray())
+    }
+    trackSelector.setParameters(builder)
+  }
+
+  val currentEpKey = "${currentEp?.seasonNumber}_${currentEp?.episodeNumber}"
+  var lastLoadedEpKey by remember { mutableStateOf(currentEpKey) }
+
+  // Sorgente assente per un titolo TMDB: mostra lo stato di errore, SENZA avviare video demo.
+  // La sessione viene marcata come fallita: nessun auto-next da errore di risoluzione.
+  // Ma se siamo in modalita' selezione sorgente (autoplay disattivato), NON e' un errore:
+  // l'utente sta scegliendo la sorgente e il player aspettara' l'URL dopo la selezione.
   LaunchedEffect(videoUrl) {
+    if (videoUrl == null) {
+      if (!isSourceSelectionActive) {
+        isBuffering = false
+        playbackEnded = false
+        playbackFailed = true
+        playbackErrorMessage = streamUnavailableMessage(isTvShow, currentEp)
+      }
+    } else {
+      playbackErrorMessage = null
+    }
+  }
+
+  // Se l'URL o l'episodio cambiano dinamicamente (es. click su Prossimo Episodio o Upgrade di qualita' a caldo)
+  // oppure quando l'URL diventa disponibile dopo la selezione della sorgente TorBox.
+  LaunchedEffect(currentEpKey, videoUrl) {
+    val url = videoUrl ?: return@LaunchedEffect
+    val isEpisodeChange = currentEpKey != lastLoadedEpKey
     val currentUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
-    if (currentUri != null && currentUri != videoUrl) {
-      Log.i("PlayerScreen", "Upgrade o cambio flusso stream: $videoUrl")
-      val resumePos = exoPlayer.currentPosition.takeIf { it > 0 } ?: playbackState.currentPositionMs
+    val isUrlChange = currentUri == null || currentUri != url
+
+    if (isEpisodeChange || isUrlChange) {
+      val targetPos = if (isEpisodeChange) {
+        lastLoadedEpKey = currentEpKey
+        playbackState.currentPositionMs
+      } else {
+        exoPlayer.currentPosition.takeIf { it > 0 } ?: playbackState.currentPositionMs
+      }
+
+      Log.i("PlayerScreen", "Caricamento stream: url=$url, isEpisodeChange=$isEpisodeChange, pos=$targetPos")
       isBuffering = true
-      val item = ExoMediaItem.fromUri(Uri.parse(videoUrl))
+      playbackFailed = false
+      currentPosition = targetPos
+
+      // Ferma e ripulisce la vecchia istanza di ExoPlayer per evitare STATE_BUFFERING fantasma
+      exoPlayer.stop()
+      exoPlayer.clearMediaItems()
+
+      val item = ExoMediaItem.fromUri(Uri.parse(url))
       exoPlayer.setMediaItem(item)
       exoPlayer.prepare()
-      if (resumePos > 0) {
-        exoPlayer.seekTo(resumePos)
+      if (targetPos > 0) {
+        exoPlayer.seekTo(targetPos)
+      } else {
+        exoPlayer.seekTo(0L)
       }
       exoPlayer.playWhenReady = true
+    }
+  }
+
+  // Reset degli stati di sessione quando cambia l'episodio (nuova applicazione qualità,
+  // nuovo eventuale auto-advance). La chiave exoPlayer copre anche la ricreazione del
+  // player a parità di episodio (es. upgrade sorgente): con il nuovo TrackSelector le
+  // preferenze qualità vengono riapplicate dal momento READY successivo, come accadeva
+  // con il selettore persistente precedente.
+  LaunchedEffect(currentEpKey, exoPlayer) {
+    playbackEnded = false
+    playerReady = false
+    initialQualityApplied = false
+    manualSubtitleSelection = null
+    manualAudioSelection = null
+  }
+
+  // Applica la "Risoluzione preferita" una sola volta, quando il player è pronto
+  LaunchedEffect(playerReady, currentEpKey) {
+    if (playerReady && !initialQualityApplied) {
+      initialQualityApplied = true
+      applyPreferredResolution(playbackSettings.preferredResolution)
+    }
+  }
+
+  // "Sottotitoli Forced" + "Abilita automaticamente i sottotitoli" + "Lingua preferita":
+  // applica/riapplica le preferenze persistenti al TrackSelector quando cambiano,
+  // all'arrivo/aggiornamento delle tracce della sorgente o al cambio episodio.
+  LaunchedEffect(
+    exoPlayer,
+    playbackSettings.forcedSubtitlesEnabled,
+    playbackSettings.subtitlesEnabled,
+    playbackSettings.preferredSubtitleLanguage,
+    currentEpKey,
+    currentTracksState,
+    manualSubtitleSelection
+  ) {
+    applySubtitlesConfiguration(
+      forcedEnabled = playbackSettings.forcedSubtitlesEnabled,
+      fullSubtitlesEnabled = playbackSettings.subtitlesEnabled,
+      preferredLanguage = playbackSettings.preferredSubtitleLanguage,
+      tracks = currentTracksState,
+      manualSelection = manualSubtitleSelection
+    )
+  }
+
+  // "Lingua audio preferita": applica/riapplica le preferenze persistenti al TrackSelector
+  // quando cambiano o al cambio episodio/ricreazione player.
+  // Se l'utente ha fatto una selezione manuale, non sovrascriviamo la scelta.
+  LaunchedEffect(exoPlayer, playbackSettings.preferredAudioLanguage, currentEpKey, manualAudioSelection) {
+    if (manualAudioSelection == null) {
+      applyAudioAutoSelection(playbackSettings.preferredAudioLanguage)
+    }
+  }
+
+  // "Riproduci automaticamente il prossimo episodio": a fine episodio, se l'opzione
+  // è ON e esiste un episodio successivo, passa automaticamente al successivo.
+  // Il nuovo episodio riparte dal proprio progresso (o da 0), mai da quello precedente.
+  // Solo conclusione NORMALE (STATE_ENDED senza errori): una sessione fallita non
+  // deve mai generare auto-next.
+  LaunchedEffect(playbackEnded, currentEpKey) {
+    if (playbackEnded && !playbackFailed && isTvShow && nextEpisode != null && playbackSettings.autoPlayNextEpisode) {
+      playbackEnded = false
+      Log.i("PlayerScreen", "Auto-advance episodio: fine E${currentEp?.episodeNumber}, prossimo E${nextEpisode.episodeNumber}")
+      viewModel.saveCurrentPlaybackProgress(exoPlayer.duration.coerceAtLeast(exoPlayer.currentPosition))
+      viewModel.playNextEpisode(nextEpisode)
     }
   }
 
@@ -400,17 +1090,42 @@ fun PlayerScreen(
         isBuffering = state == Player.STATE_BUFFERING
         if (state == Player.STATE_READY) {
           playbackErrorMessage = null
+          playbackFailed = false
           totalDuration = exoPlayer.duration.coerceAtLeast(1L)
-          val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
-          updateResolutionFromHeight(h)
+          val vf = exoPlayer.videoFormat
+          val vs = exoPlayer.videoSize
+          val activeTrack = exoPlayer.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+            .flatMap { (0 until it.length).map { i -> it to i } }
+            .firstOrNull { (g, i) -> g.isTrackSelected(i) }
+            ?.let { (g, i) -> g.getTrackFormat(i) }
+          Log.i(
+            "[StreamNova-Video-Debug]",
+            "Player STATE_READY -> activeTrack: ${activeTrack?.width}x${activeTrack?.height} @ ${activeTrack?.bitrate}bps mime=${activeTrack?.sampleMimeType} codecs=${activeTrack?.codecs} fps=${activeTrack?.frameRate} | videoFormat: ${vf?.width}x${vf?.height} @ ${vf?.bitrate}bps mime=${vf?.sampleMimeType} codecs=${vf?.codecs} fps=${vf?.frameRate} | videoSize: ${vs.width}x${vs.height} par=${vs.pixelWidthHeightRatio}"
+          )
+          val h = vf?.height ?: vs.height
+          val w = vf?.width ?: vs.width
+          updateResolutionFromHeight(h, w)
+          playerReady = true
+        } else if (state == Player.STATE_ENDED) {
+          isBuffering = false
+          // Conclusione normale SOLO se la sessione non è fallita e la riproduzione
+          // ha effettivamente consumato contenuto (no ENDED istantaneo da stream vuoto/rotto).
+          if (!playbackFailed && exoPlayer.currentPosition > 0L && exoPlayer.duration > 0L) {
+            playbackEnded = true
+          }
         }
       }
 
       override fun onVideoSizeChanged(videoSize: VideoSize) {
-        updateResolutionFromHeight(videoSize.height)
+        Log.i(
+          "[StreamNova-Video-Debug]",
+          "onVideoSizeChanged -> width=${videoSize.width}, height=${videoSize.height}, pixelWidthHeightRatio=${videoSize.pixelWidthHeightRatio}"
+        )
+        updateResolutionFromHeight(videoSize.height, videoSize.width)
       }
 
       override fun onTracksChanged(tracks: Tracks) {
+        var videoTrackIndex = 0
         for (group in tracks.groups) {
           if (group.type == C.TRACK_TYPE_VIDEO) {
             Log.i("StreamNovaDiag", "=== TRACCE VIDEO DISPONIBILI (${group.length}) ===")
@@ -419,10 +1134,41 @@ fun PlayerScreen(
               val selected = group.isTrackSelected(i)
               val supported = group.isTrackSupported(i)
               val kbps = if (format.bitrate > 0) format.bitrate / 1000 else 0
+              Log.i(
+                "[StreamNova-Video-Debug]",
+                "onTracksChanged -> video track index=$videoTrackIndex (groupIndex=$i), width=${format.width}, height=${format.height}, bitrate=${format.bitrate}, mimeType=${format.sampleMimeType}, codecs=${format.codecs}, frameRate=${format.frameRate}, isSelected=$selected"
+              )
               Log.i("StreamNovaDiag", "Traccia #$i: ${format.width}x${format.height} @ $kbps kbps | Selezionata: $selected | Supportata: $supported")
+              videoTrackIndex++
+            }
+          } else if (group.type == C.TRACK_TYPE_TEXT) {
+            Log.i("StreamNovaDiag", "=== TRACCE SOTTOTITOLI (${group.length}) ===")
+            for (i in 0 until group.length) {
+              val format = group.getTrackFormat(i)
+              Log.i(
+                "StreamNovaDiag",
+                "Sottotitolo #$i: lang=${format.language ?: "und"} label=${format.label ?: "-"} | Selezionata: ${group.isTrackSelected(i)}"
+              )
+            }
+          } else if (group.type == C.TRACK_TYPE_AUDIO) {
+            Log.i("StreamNovaDiag", "=== TRACCE AUDIO DISPONIBILI (${group.length}) ===")
+            for (i in 0 until group.length) {
+              val format = group.getTrackFormat(i)
+              val sampleRate = if (format.sampleRate > 0) "${format.sampleRate}" else "N/A"
+              val bitrate = if (format.bitrate > 0) "${format.bitrate}" else "N/A"
+              val codecs = format.codecs ?: "N/A"
+              val mimeType = format.sampleMimeType ?: "N/A"
+              Log.i(
+                "StreamNovaDiag",
+                "Audio #$i: trackIndex=$i isSelected=${group.isTrackSelected(i)} lang=${format.language ?: "und"} label=${format.label ?: "-"} roleFlags=${format.roleFlags} mimeType=$mimeType sampleRate=$sampleRate channels=${format.channelCount} bitrate=$bitrate codecs=$codecs"
+              )
             }
           }
         }
+        if (videoTrackIndex == 0) {
+          Log.i("[StreamNova-Video-Debug]", "onTracksChanged -> nessuna traccia video presente in Tracks")
+        }
+        currentTracksState = tracks
         val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
         updateResolutionFromHeight(h)
       }
@@ -431,18 +1177,45 @@ fun PlayerScreen(
         isPlaying = playing
       }
 
-      override fun onPlayerError(error: PlaybackException) {
-        Log.e("PlayerScreen", "ExoPlayer playback error: ${error.message}", error)
-        if (!hasFallbackAttempted) {
-          hasFallbackAttempted = true
-          val fallbackItem = ExoMediaItem.fromUri(Uri.parse(MediaRepository.FALLBACK_VIDEO_URL))
-          exoPlayer.setMediaItem(fallbackItem)
-          exoPlayer.prepare()
-          exoPlayer.playWhenReady = true
-        } else {
-          isBuffering = false
-          playbackErrorMessage = "Impossibile caricare il flusso video (HTTP ${error.errorCodeName}). Verifica la connessione di rete."
+      override fun onPlayerError(error: ExoPlaybackException) {
+        val displayMsg = PlayerRuntimeControllerErrorRecovery.toDisplayMessage(error, context)
+        Log.e("THE_PITT_PLAYER", "Playback Error: ${error.errorCodeName} (${error.errorCode}) - $displayMsg", error)
+        Log.e("THE_PITT_PLAYER", "Error cause: ${error.cause?.javaClass?.simpleName ?: "null"} - ${error.cause?.message ?: "no cause"}")
+        Log.d("THE_PITT_PLAYER", "ExoPlayer attempting to play URL: ${playbackState.streamUrl}")
+        Log.d("THE_PITT_PLAYER", "Player state: isPlaying=$isPlaying, isBuffering=$isBuffering, position=${exoPlayer.currentPosition}, duration=${exoPlayer.duration}")
+        val currentAudioFormat = exoPlayer.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }.firstOrNull { it.isTrackSelected(0) }?.getTrackFormat(0)
+        Log.e("THE_PITT_PLAYER", "Current audio track - mimeType=${currentAudioFormat?.sampleMimeType ?: "N/A"} sampleRate=${currentAudioFormat?.sampleRate ?: "N/A"} channels=${currentAudioFormat?.channelCount ?: "N/A"} bitrate=${currentAudioFormat?.bitrate ?: "N/A"} codecs=${currentAudioFormat?.codecs ?: "N/A"}")
+
+        val isCodecError = error.cause is android.media.MediaCodec.CodecException ||
+                error.errorCode == ExoPlaybackException.ERROR_CODE_DECODING_FAILED ||
+                error.errorCode == ExoPlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
+                PlayerRuntimeControllerErrorRecovery.isDolbyVisionDecoderFailure(error) ||
+                Vc1VideoFormatHeuristics.isVc1PlaybackFailure(error, false, media.title)
+
+        if (isCodecError && !playbackFailed) {
+          Log.w("THE_PITT_PLAYER", "Codec/Format error detected ($displayMsg). Attempting 720p fallback...")
+          try {
+            trackSelector.setParameters(
+              trackSelector.buildUponParameters()
+                .setMaxVideoSize(1280, 720)
+                .setExceedRendererCapabilitiesIfNecessary(false)
+            )
+            isBuffering = true
+            playbackFailed = false
+            playbackErrorMessage = null
+            exoPlayer.prepare()
+            exoPlayer.play()
+            Log.i("THE_PITT_PLAYER", "720p fallback: riproduzione riavviata")
+            return
+          } catch (e: Exception) {
+            Log.e("THE_PITT_PLAYER", "Fallback 720p fallito: ${e.message}")
+          }
         }
+
+        isBuffering = false
+        playbackEnded = false
+        playbackFailed = true
+        playbackErrorMessage = context.getString(R.string.player_playback_error_message, displayMsg)
       }
     }
     exoPlayer.addListener(listener)
@@ -451,23 +1224,32 @@ fun PlayerScreen(
       val finalPos = exoPlayer.currentPosition
       viewModel.updatePlaybackPosition(finalPos, exoPlayer.duration, exoPlayer.bufferedPosition)
       if (finalPos > 0) {
-        MediaRepository.updateProgress(media.id, finalPos)
+        viewModel.saveCurrentPlaybackProgress(finalPos)
       }
+      viewModel.resetStreamState()
       exoPlayer.removeListener(listener)
+      exoPlayer.stop()
+      exoPlayer.clearMediaItems()
       exoPlayer.release()
     }
   }
 
   // Polling periodico per la posizione e aggiornamento risoluzione se non ancora agganciata
+  val currentPositionRef by rememberUpdatedState(currentPosition)
+  val totalDurationRef by rememberUpdatedState(totalDuration)
+  val selectedQualityLabelRef by rememberUpdatedState(selectedQualityLabel)
+  val detectedResolutionRef by rememberUpdatedState(detectedResolution)
+
   LaunchedEffect(exoPlayer, isPlaying) {
     while (true) {
       if (exoPlayer.isPlaying) {
         currentPosition = exoPlayer.currentPosition
         totalDuration = exoPlayer.duration.coerceAtLeast(1L)
         viewModel.updatePlaybackPosition(currentPosition, totalDuration, exoPlayer.bufferedPosition)
-        if (detectedResolution == "Auto") {
+        if (selectedQualityLabelRef == "Auto" && detectedResolutionRef.isEmpty()) {
           val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
-          updateResolutionFromHeight(h)
+          val w = exoPlayer.videoFormat?.width ?: exoPlayer.videoSize.width
+          updateResolutionFromHeight(h, w)
         }
       }
       delay(500)
@@ -551,11 +1333,11 @@ fun PlayerScreen(
 
   // BACK su controlli
   BackHandler(enabled = !anyModalOpen) {
-    if (hudShown) {
-      viewModel.closePlayer()
-    } else {
-      showControls()
-    }
+    Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler")
+    Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
+    Log.d("BACK_TRACE", "PLAYERSCREEN: chiamata a closePlayer()")
+    viewModel.resetStreamState()
+    viewModel.closePlayer()
   }
 
   Box(
@@ -569,15 +1351,16 @@ fun PlayerScreen(
         // Gestione BACK telecomando
         if (keyCode == KeyEvent.KEYCODE_BACK) {
           if (native.action == KeyEvent.ACTION_DOWN && native.repeatCount == 0) {
+            Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent KEYCODE_BACK down, anyModalOpen=$anyModalOpen")
             if (anyModalOpen) {
               showAudioModal = false
               showSubtitleModal = false
               showQualityModal = false
               showSpeedModal = false
-            } else if (hudShown) {
-              viewModel.closePlayer()
             } else {
-              showControls()
+              Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent chiamata a closePlayer()")
+              viewModel.resetStreamState()
+              viewModel.closePlayer()
             }
           }
           return@onKeyEvent true
@@ -696,6 +1479,30 @@ fun PlayerScreen(
       update = { view ->
         view.player = exoPlayer
         view.resizeMode = resizeMode
+        // FASE 3.3 "Dimensione sottotitoli": applica la dimensione persistente al rendering
+        // dei sottotitoli Media3 (SubtitleView di PlayerView). Frazione dell'altezza vista;
+        // senza tracce sottotitoli non produce alcun effetto o errore.
+        view.subtitleView?.setFractionalTextSize(subtitleTextSizeFraction)
+        // FASE 3.4 "Sfondo dei sottotitoli": applica lo sfondo persistente via
+        // SubtitleView.setStyle(CaptionStyleCompat) (API disponibile in Media3 1.5.1).
+        // Nei cue senza background incorporato, SubtitlePainter disegna
+        // CaptionStyleCompat.backgroundColor dietro al testo solo se alpha > 0, quindi
+        // con "Nessuno" (alpha 0) nessuno sfondo è disegnato. Senza tracce sottotitoli
+        // non produce alcun effetto o errore.
+        view.subtitleView?.setStyle(subtitleCaptionStyle)
+        // FASE 3.5 "Posizione dei sottotitoli": applica la posizione verticale persistente
+        // via SubtitleView.setBottomPaddingFraction (API nativa disponibile in Media3 1.5.1).
+        // È la distanza dal bordo inferiore come frazione dell'altezza vista, usata da
+        // SubtitlePainter per i cue senza posizione esplicita (Cue.line == DIMEN_UNSET,
+        // caso standard); cue con posizione propria e cue bitmap restano nativi Media3.
+        // Senza tracce sottotitoli non produce alcun effetto o errore.
+        view.subtitleView?.setBottomPaddingFraction(subtitleBottomPaddingFraction)
+        Log.i(
+          "PlayerScreen",
+          "Dimensione sottotitoli: ${playbackSettings.subtitleSize.label} (fraction=$subtitleTextSizeFraction); " +
+            "sfondo: ${playbackSettings.subtitleBackground.label} (${subtitleCaptionStyle.backgroundColor}); " +
+            "posizione: ${playbackSettings.subtitlePosition.label} (bottomFraction=$subtitleBottomPaddingFraction)"
+        )
       },
       modifier = Modifier.fillMaxSize()
     )
@@ -716,7 +1523,7 @@ fun PlayerScreen(
           .padding(horizontal = 20.dp, vertical = 8.dp)
       ) {
         Text(
-          text = "Formato: ${resizeFeedbackText ?: ""}",
+          text = stringResource(R.string.player_format_label, resizeFeedbackText ?: ""),
           color = NovaCyanBright,
           fontSize = 14.sp,
           fontWeight = FontWeight.Bold
@@ -742,7 +1549,7 @@ fun PlayerScreen(
           )
           Spacer(modifier = Modifier.height(12.dp))
           Text(
-            text = "Caricamento Stream...",
+            text = stringResource(R.string.player_loading_stream),
             color = NovaTextPrimary,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold
@@ -769,13 +1576,13 @@ fun PlayerScreen(
         ) {
           Icon(
             imageVector = Icons.Default.Warning,
-            contentDescription = "Errore Riproduzione",
+            contentDescription = stringResource(R.string.player_cd_playback_error),
             tint = Color(0xFFFF5252),
             modifier = Modifier.size(54.dp)
           )
           Spacer(modifier = Modifier.height(16.dp))
           Text(
-            text = "Errore di Riproduzione",
+            text = stringResource(R.string.player_playback_error_title),
             color = NovaTextPrimary,
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold
@@ -791,24 +1598,29 @@ fun PlayerScreen(
           Row(
             horizontalArrangement = Arrangement.spacedBy(16.dp)
           ) {
+            // "Riprova" solo se esiste una sorgente riproducibile (nessun fallback demo)
+            if (videoUrl != null) {
+              TvActionButton(
+                text = stringResource(R.string.action_retry),
+                icon = Icons.Default.Refresh,
+                isPrimary = true,
+                onClick = {
+                  playbackErrorMessage = null
+                  isBuffering = true
+                  exoPlayer.setMediaItem(ExoMediaItem.fromUri(Uri.parse(videoUrl)))
+                  exoPlayer.prepare()
+                  exoPlayer.playWhenReady = true
+                }
+              )
+            }
             TvActionButton(
-              text = "Riprova",
-              icon = Icons.Default.Refresh,
-              isPrimary = true,
-              onClick = {
-                playbackErrorMessage = null
-                isBuffering = true
-                hasFallbackAttempted = false
-                exoPlayer.setMediaItem(ExoMediaItem.fromUri(Uri.parse(videoUrl)))
-                exoPlayer.prepare()
-                exoPlayer.playWhenReady = true
-              }
-            )
-            TvActionButton(
-              text = "Torna al Catalogo",
+              text = stringResource(R.string.player_back_to_catalog),
               icon = Icons.AutoMirrored.Filled.ArrowBack,
               isPrimary = false,
-              onClick = { viewModel.closePlayer() }
+              onClick = {
+                viewModel.resetStreamState()
+                viewModel.closePlayer()
+              }
             )
           }
         }
@@ -889,6 +1701,23 @@ fun PlayerScreen(
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium
               )
+
+              // Badge sorgente: evidenzia i flussi Debrid istantanei
+              // (es. [TorBox Instant 4K] / [TorBox Instant 1080p]).
+              val serverBadge = playbackState.streamServer
+              if (!serverBadge.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                  text = serverBadge,
+                  color = NovaCyanBright,
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.SemiBold,
+                  modifier = Modifier
+                    .background(NovaCyan.copy(alpha = 0.16f), RoundedCornerShape(50))
+                    .border(1.dp, NovaCyan.copy(alpha = 0.6f), RoundedCornerShape(50))
+                    .padding(horizontal = 10.dp, vertical = 3.dp)
+                )
+              }
             }
 
             // Lato Destro: Pulsante a pillola "SALTA INTRO" visibile sopra la timeline
@@ -943,12 +1772,12 @@ fun PlayerScreen(
                 ) {
                   Icon(
                     imageVector = Icons.Default.FastForward,
-                    contentDescription = "Salta Intro",
+                    contentDescription = stringResource(R.string.player_cd_skip_intro),
                     tint = if (isFocused) Color.Black else NovaCyanBright,
                     modifier = Modifier.size(18.dp)
                   )
                   Text(
-                    text = "SALTA INTRO",
+                    text = stringResource(R.string.player_skip_intro),
                     color = if (isFocused) Color.Black else Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
@@ -1112,7 +1941,7 @@ fun PlayerScreen(
                 ) {
                   Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Pausa" else "Riproduci",
+                    contentDescription = if (isPlaying) stringResource(R.string.player_cd_pause) else stringResource(R.string.player_cd_play),
                     tint = Color.Black,
                     modifier = Modifier.size(28.dp)
                   )
@@ -1123,38 +1952,30 @@ fun PlayerScreen(
               if (isTvShow && nextEpisode != null) {
                 PlayerControlIconButton(
                   icon = Icons.Default.SkipNext,
-                  contentDescription = "Prossimo Episodio",
+                  contentDescription = stringResource(R.string.player_cd_next_episode),
                   onClick = {
                     kickAutoHide()
-                    viewModel.loadStream(media, nextEpisode)
+                    viewModel.saveCurrentPlaybackProgress(exoPlayer.currentPosition)
+                    viewModel.playNextEpisode(nextEpisode)
                   }
                 )
               }
 
-              // 3. Adatta (Aspect Ratio): icona schermo per commutare ResizeMode (Fit, Zoom, Fill)
+              // 3. Adatta (Aspect Ratio): icona schermo per commutare ResizeMode
               PlayerControlIconButton(
                 icon = Icons.Default.AspectRatio,
-                contentDescription = "Adatta Aspetto Video",
+                contentDescription = stringResource(R.string.player_cd_aspect_ratio),
                 onClick = {
                   kickAutoHide()
-                  resizeMode = when (resizeMode) {
-                    AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                  }
-                  resizeFeedbackText = when (resizeMode) {
-                    AspectRatioFrameLayout.RESIZE_MODE_FIT -> "Adatta (Fit)"
-                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Zoom"
-                    AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Riempi (Fill)"
-                    else -> "Adatta"
-                  }
+                  resizeMode = PlayerDisplayModeUtils.nextResizeMode(resizeMode)
+                  resizeFeedbackText = PlayerDisplayModeUtils.resizeModeLabel(resizeMode, context)
                 }
               )
 
               // 4. Qualità Video (Risoluzione): icona HighQuality
               PlayerControlIconButton(
                 icon = Icons.Default.HighQuality,
-                contentDescription = "Qualità Video",
+                contentDescription = stringResource(R.string.player_cd_video_quality),
                 onClick = {
                   kickAutoHide()
                   showQualityModal = true
@@ -1164,7 +1985,7 @@ fun PlayerScreen(
               // 5. Velocità di riproduzione: icona tachimetro (0.75x, 1.0x, 1.25x, 1.5x)
               PlayerControlIconButton(
                 icon = Icons.Default.Speed,
-                contentDescription = "Velocità di Riproduzione",
+                contentDescription = stringResource(R.string.player_cd_playback_speed),
                 onClick = {
                   kickAutoHide()
                   showSpeedModal = true
@@ -1174,7 +1995,7 @@ fun PlayerScreen(
               // 6. Sottotitoli: icona CC (Closed Captions)
               PlayerControlIconButton(
                 icon = Icons.Default.ClosedCaption,
-                contentDescription = "Sottotitoli",
+                contentDescription = stringResource(R.string.player_cd_subtitles),
                 onClick = {
                   kickAutoHide()
                   showSubtitleModal = true
@@ -1184,7 +2005,7 @@ fun PlayerScreen(
               // 7. Audio: icona altoparlante
               PlayerControlIconButton(
                 icon = Icons.AutoMirrored.Filled.VolumeUp,
-                contentDescription = "Tracce Audio",
+                contentDescription = stringResource(R.string.player_cd_audio_tracks),
                 onClick = {
                   kickAutoHide()
                   showAudioModal = true
@@ -1249,12 +2070,12 @@ fun PlayerScreen(
         ) {
           Icon(
             imageVector = Icons.Default.FastForward,
-            contentDescription = "Salta Intro",
+            contentDescription = stringResource(R.string.player_cd_skip_intro),
             tint = if (isFocused) Color.Black else NovaCyanBright,
             modifier = Modifier.size(18.dp)
           )
           Text(
-            text = "SALTA INTRO",
+            text = stringResource(R.string.player_skip_intro),
             color = if (isFocused) Color.Black else Color.White,
             fontWeight = FontWeight.Bold,
             fontSize = 13.sp,
@@ -1264,28 +2085,72 @@ fun PlayerScreen(
       }
     }
 
-    // Modal Audio
+    // Modal Audio dinamico con tracce Media3 reali
     if (showAudioModal) {
-      TrackSelectionDialog(
-        title = "Seleziona Traccia Audio",
-        options = MediaRepository.audioTracks.map { it.language + " (" + it.format + ")" },
-        selectedIndex = MediaRepository.audioTracks.indexOf(playbackState.selectedAudio).coerceAtLeast(0),
-        onSelect = { idx ->
-          viewModel.setAudioTrack(MediaRepository.audioTracks[idx])
-          showAudioModal = false
-        },
-        onDismiss = { showAudioModal = false }
-      )
+      val audioOptions = getAvailableAudioOptions(currentTracksState)
+      if (audioOptions.isNotEmpty()) {
+        val selectedIdx = audioOptions.indexOfFirst { it.isSelected }.takeIf { it >= 0 } ?: 0
+        TrackSelectionDialog(
+          title = stringResource(R.string.player_audio_dialog_title),
+          options = audioOptions.map { it.displayName },
+          selectedIndex = selectedIdx,
+          onSelect = { idx ->
+            val selectedOption = audioOptions.getOrNull(idx)
+            if (selectedOption != null) {
+              Log.i("PlayerScreen", "Selezione traccia audio Media3: ${selectedOption.displayName} (trackIndex=${selectedOption.trackIndex}, lang=${selectedOption.language})")
+              manualAudioSelection = ManualAudioSelection(selectedOption.group, selectedOption.trackIndex)
+              PlayerRuntimeControllerTrackSelection.selectAudioTrack(exoPlayer, idx)
+            }
+            showAudioModal = false
+          },
+          onDismiss = { showAudioModal = false }
+        )
+      } else {
+        TrackSelectionDialog(
+          title = stringResource(R.string.player_audio_dialog_title),
+          options = listOf(stringResource(R.string.player_audio_default)),
+          selectedIndex = 0,
+          onSelect = { showAudioModal = false },
+          onDismiss = { showAudioModal = false }
+        )
+      }
     }
 
     // Modal Sottotitoli
     if (showSubtitleModal) {
+      val subtitleOptions = getAvailableSubtitleOptions(currentTracksState)
+      val noneOption = stringResource(R.string.player_subtitles_none)
+      val allOptions = listOf(noneOption) + subtitleOptions.map { it.displayName }
+      val selectedIndex = if (manualSubtitleSelection?.isNone == true) {
+        0
+      } else if (subtitleOptions.any { it.isSelected }) {
+        subtitleOptions.indexOfFirst { it.isSelected } + 1
+      } else {
+        0
+      }
       TrackSelectionDialog(
-        title = "Seleziona Sottotitoli",
-        options = MediaRepository.subtitleTracks.map { it.language },
-        selectedIndex = MediaRepository.subtitleTracks.indexOf(playbackState.selectedSubtitle).coerceAtLeast(0),
+        title = stringResource(R.string.player_subtitles_dialog_title),
+        options = allOptions,
+        selectedIndex = selectedIndex,
+        headerSwitchLabel = stringResource(R.string.settings_forced_subtitles),
+        headerSwitchChecked = playbackSettings.forcedSubtitlesEnabled,
+        onHeaderSwitchToggle = { enabled ->
+          viewModel.setForcedSubtitlesEnabled(enabled)
+          manualSubtitleSelection = null
+        },
         onSelect = { idx ->
-          viewModel.setSubtitleTrack(MediaRepository.subtitleTracks[idx])
+          if (idx == 0) {
+            manualSubtitleSelection = ManualSubtitleSelection(null, -1)
+            PlayerRuntimeControllerTrackSelection.disableSubtitles(exoPlayer)
+            Log.i("PlayerScreen", "Sottotitoli disabilitati manualmente (Nessuno)")
+          } else {
+            val selectedOption = subtitleOptions.getOrNull(idx - 1)
+            if (selectedOption != null) {
+              manualSubtitleSelection = ManualSubtitleSelection(selectedOption.group, selectedOption.trackIndex)
+              PlayerRuntimeControllerTrackSelection.selectSubtitleTrack(exoPlayer, idx - 1)
+              Log.i("PlayerScreen", "Selezione traccia sottotitolo Media3: ${selectedOption.displayName} (trackIndex=${selectedOption.trackIndex}, lang=${selectedOption.language})")
+            }
+          }
           showSubtitleModal = false
         },
         onDismiss = { showSubtitleModal = false }
@@ -1294,10 +2159,10 @@ fun PlayerScreen(
 
     // Modal Velocità di Riproduzione
     if (showSpeedModal) {
-      val speedOptions = listOf("0.75x", "1.0x (Normale)", "1.25x", "1.5x")
+      val speedOptions = listOf("0.75x", stringResource(R.string.player_speed_normal), "1.25x", "1.5x")
       val speedValues = listOf(0.75f, 1.0f, 1.25f, 1.5f)
       TrackSelectionDialog(
-        title = "Velocità di Riproduzione",
+        title = stringResource(R.string.player_speed_dialog_title),
         options = speedOptions,
         selectedIndex = speedValues.indexOf(currentSpeed).coerceAtLeast(1),
         onSelect = { idx ->
@@ -1314,7 +2179,7 @@ fun PlayerScreen(
     if (showQualityModal) {
       val qualityOptions = getAvailableQualityOptions()
       TrackSelectionDialog(
-        title = "Seleziona Risoluzione Video",
+        title = stringResource(R.string.player_quality_dialog_title),
         options = qualityOptions.map { it.first },
         selectedIndex = qualityOptions.indexOfFirst { it.first == selectedQualityLabel }.coerceAtLeast(0),
         onSelect = { idx ->
@@ -1332,11 +2197,11 @@ fun PlayerScreen(
             )
           } else {
             // Forzatura vincoli risoluzione esatti per la traccia selezionata (es. 1920x1080 per 1080p)
-            val targetWidth = when (targetHeight) {
-              2160 -> 3840
-              1080 -> 1920
-              720 -> 1280
-              480 -> 854
+            val targetWidth = when {
+              targetHeight >= 1400 -> 3840
+              targetHeight >= 750  -> 1920
+              targetHeight >= 500  -> 1280
+              targetHeight >= 400  -> 854
               else -> (targetHeight * 16) / 9
             }
             trackSelector.setParameters(
@@ -1349,9 +2214,9 @@ fun PlayerScreen(
                 .setExceedRendererCapabilitiesIfNecessary(true)
             )
             detectedResolution = when {
-              targetHeight >= 2160 -> "4K"
-              targetHeight >= 1080 -> "1080p"
-              targetHeight >= 720  -> "720p"
+              targetHeight >= 1400 -> "4K"
+              targetHeight >= 750  -> "1080p"
+              targetHeight >= 500  -> "720p"
               else                 -> "SD"
             }
           }
@@ -1406,7 +2271,10 @@ fun TrackSelectionDialog(
   options: List<String>,
   selectedIndex: Int,
   onSelect: (Int) -> Unit,
-  onDismiss: () -> Unit
+  onDismiss: () -> Unit,
+  headerSwitchLabel: String? = null,
+  headerSwitchChecked: Boolean = false,
+  onHeaderSwitchToggle: ((Boolean) -> Unit)? = null
 ) {
   Dialog(onDismissRequest = onDismiss) {
     Column(
@@ -1429,7 +2297,7 @@ fun TrackSelectionDialog(
         )
         Icon(
           imageVector = Icons.Default.Close,
-          contentDescription = "Chiudi",
+          contentDescription = stringResource(R.string.action_close),
           tint = NovaTextSecondary,
           modifier = Modifier
             .size(22.dp)
@@ -1437,7 +2305,66 @@ fun TrackSelectionDialog(
         )
       }
 
-      Spacer(modifier = Modifier.height(16.dp))
+      if (headerSwitchLabel != null && onHeaderSwitchToggle != null) {
+        Spacer(modifier = Modifier.height(14.dp))
+        TvFocusableBox(
+          shape = RoundedCornerShape(12.dp),
+          onClick = { onHeaderSwitchToggle(!headerSwitchChecked) },
+          modifier = Modifier.fillMaxWidth()
+        ) { isFocused ->
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .background(
+                if (isFocused) NovaSurfaceVariant else NovaSurface.copy(alpha = 0.6f),
+                RoundedCornerShape(12.dp)
+              )
+              .border(
+                width = 1.dp,
+                color = if (isFocused) NovaCyanBright else Color.White.copy(alpha = 0.12f),
+                shape = RoundedCornerShape(12.dp)
+              )
+              .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+              modifier = Modifier.weight(1f, fill = false)
+            ) {
+              Icon(
+                imageVector = Icons.Default.ClosedCaption,
+                contentDescription = null,
+                tint = if (headerSwitchChecked) NovaCyanBright else NovaTextSecondary,
+                modifier = Modifier.size(18.dp)
+              )
+              Text(
+                text = headerSwitchLabel,
+                color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+              )
+            }
+            Text(
+              text = if (headerSwitchChecked) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+              color = if (headerSwitchChecked) NovaGreen else NovaTextMuted,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold
+            )
+          }
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Color.White.copy(alpha = 0.08f))
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+      } else {
+        Spacer(modifier = Modifier.height(16.dp))
+      }
 
       Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         options.forEachIndexed { index, option ->
@@ -1472,7 +2399,7 @@ fun TrackSelectionDialog(
               if (isSelected) {
                 Icon(
                   imageVector = Icons.Default.Check,
-                  contentDescription = "Selezionato",
+                  contentDescription = stringResource(R.string.player_cd_selected),
                   tint = NovaCyanBright,
                   modifier = Modifier.size(18.dp)
                 )
@@ -1505,3 +2432,47 @@ private fun formatTimePair(currentMs: Long, totalMs: Long): String {
   }
   return "${fmt(curSec)} / ${fmt(totSec)}"
 }
+
+data class MediaAudioTrackOption(
+  val group: Tracks.Group,
+  val trackIndex: Int,
+  val language: String,
+  val label: String,
+  val roleFlags: Int,
+  val displayName: String,
+  val isSelected: Boolean
+)
+
+data class MediaSubtitleTrackOption(
+  val group: Tracks.Group,
+  val trackIndex: Int,
+  val language: String,
+  val label: String,
+  val roleFlags: Int,
+  val selectionFlags: Int = 0,
+  val isForced: Boolean = false,
+  val displayName: String,
+  val isSelected: Boolean
+)
+
+data class ManualSubtitleSelection(
+  val group: Tracks.Group?,
+  val trackIndex: Int
+) {
+  val isNone: Boolean get() = group == null || trackIndex < 0
+}
+
+data class ManualAudioSelection(
+  val group: Tracks.Group,
+  val trackIndex: Int
+)
+
+private fun mapPreferredAudioLanguages(code: String): List<String> = when (code.trim().lowercase()) {
+  "it" -> listOf("it", "ita")
+  "en" -> listOf("en", "eng")
+  "es" -> listOf("es", "spa")
+  "fr" -> listOf("fr", "fra")
+  "de" -> listOf("de", "deu", "ger")
+  else -> emptyList()
+}
+

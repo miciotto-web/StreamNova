@@ -30,9 +30,27 @@ interface CachedMediaDao {
   @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs WHERE id = :id")
   suspend fun updateProgress(id: String, progressMs: Long)
 
+  @Query("UPDATE cached_media_items SET lastWatchedSeason = :season, lastWatchedEpisode = :episode WHERE id = :id")
+  suspend fun updateLastWatched(id: String, season: Int, episode: Int)
+
+  @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, lastWatchedSeason = :season, lastWatchedEpisode = :episode WHERE id = :id")
+  suspend fun updateTvProgress(id: String, progressMs: Long, season: Int, episode: Int)
+
+  @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, lastWatchedAt = :lastWatchedAt WHERE id = :id")
+  suspend fun updateProgressWithTimestamp(id: String, progressMs: Long, lastWatchedAt: Long)
+
+  @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, lastWatchedSeason = :season, lastWatchedEpisode = :episode, lastWatchedAt = :lastWatchedAt WHERE id = :id")
+  suspend fun updateTvProgressWithTimestamp(id: String, progressMs: Long, season: Int, episode: Int, lastWatchedAt: Long)
+
   @Query("SELECT COUNT(*) FROM cached_media_items")
   suspend fun count(): Int
 
   @Query("DELETE FROM cached_media_items")
   suspend fun clearAll()
+
+  @Query("DELETE FROM cached_media_items WHERE id IN (:ids) OR tmdbId IN (:rawIds)")
+  suspend fun deleteByIds(ids: List<String>, rawIds: List<Int>)
+
+  @Query("DELETE FROM cached_media_items WHERE id = :id")
+  suspend fun deleteById(id: String)
 }

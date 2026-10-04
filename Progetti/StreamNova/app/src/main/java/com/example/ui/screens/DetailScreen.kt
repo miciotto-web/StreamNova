@@ -23,7 +23,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Favorite
@@ -31,7 +30,6 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
@@ -51,6 +49,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -67,9 +66,9 @@ import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.toEpisode
+import com.example.data.repository.MediaRepository
 import com.example.ui.components.ProviderBadge
 import com.example.ui.components.ProviderConstants
-import com.example.ui.components.QualityBadge
 import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvActionButton
@@ -78,16 +77,15 @@ import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
-import com.example.ui.theme.NovaGold
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 
-enum class DetailTab(val title: String) {
-  EPISODI("Episodi"),
-  CONSIGLIATI("Consigliati"),
-  DETTAGLI("Dettagli Tecnici")
+enum class DetailTab(val titleRes: Int) {
+  EPISODI(R.string.detail_tab_episodes),
+  CONSIGLIATI(R.string.detail_tab_recommended),
+  DETTAGLI(R.string.detail_tab_technical_details)
 }
 
 @Composable
@@ -125,7 +123,9 @@ fun DetailScreen(
 
   // Calculate available seasons
   val availableSeasons = remember(displayMedia, extendedDetails) {
-    val totalCount = (extendedDetails?.seasonsCount ?: displayMedia.seasonsCount ?: displayMedia.episodes.map { it.seasonNumber }.maxOrNull() ?: 1).coerceAtLeast(1)
+    val maxFromMap = extendedDetails?.seasonEpisodesCount?.keys?.filter { it > 0 }?.maxOrNull()
+      ?: displayMedia.seasonEpisodesCount.keys.filter { it > 0 }.maxOrNull()
+    val totalCount = (extendedDetails?.seasonsCount ?: displayMedia.seasonsCount ?: maxFromMap ?: displayMedia.episodes.map { it.seasonNumber }.maxOrNull() ?: 1).coerceAtLeast(1)
     (1..totalCount).toList()
   }
 
@@ -149,8 +149,11 @@ fun DetailScreen(
 
   // Filter or resolve episodes for the currently active season
   val episodesForSeason = remember(displayMedia, activeSeason, seasonEpisodesUiState) {
-    if (seasonEpisodesUiState is SeasonEpisodesUiState.Success && seasonEpisodesUiState.seasonNumber == activeSeason) {
-      seasonEpisodesUiState.season.episodes.map { it.toEpisode(displayMedia.id) }
+    val rawList = if (seasonEpisodesUiState is SeasonEpisodesUiState.Success && seasonEpisodesUiState.seasonNumber == activeSeason) {
+      seasonEpisodesUiState.season.episodes.map { epItem ->
+        val saved = MediaRepository.getEpisodeProgress(displayMedia.id, epItem.seasonNumber, epItem.episodeNumber)
+        epItem.toEpisode(displayMedia.id, saved)
+      }
     } else {
       val eps = displayMedia.episodes.filter { it.seasonNumber == activeSeason }
       if (eps.isNotEmpty()) {
@@ -171,6 +174,10 @@ fun DetailScreen(
           )
         }
       }
+    }
+    rawList.map { ep ->
+      val saved = MediaRepository.getEpisodeProgress(displayMedia.id, ep.seasonNumber, ep.episodeNumber)
+      if (saved > 0L) ep.copy(currentProgressMs = saved) else ep
     }
   }
 
@@ -254,46 +261,6 @@ fun DetailScreen(
       modifier = Modifier.fillMaxSize(),
       contentPadding = PaddingValues(top = 28.dp, bottom = 48.dp)
     ) {
-      // Back button row
-      item {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 32.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          TvFocusableBox(
-            shape = CircleShape,
-            onClick = onBackClick
-          ) { isFocused ->
-            Row(
-              modifier = Modifier
-                .background(
-                  if (isFocused) NovaCyan else Color.Black.copy(alpha = 0.5f),
-                  CircleShape
-                )
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Torna indietro",
-                tint = if (isFocused) Color.Black else Color.White,
-                modifier = Modifier.size(18.dp)
-              )
-              Spacer(modifier = Modifier.width(6.dp))
-              Text(
-                text = "Indietro",
-                color = if (isFocused) Color.Black else Color.White,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold
-              )
-            }
-          }
-        }
-        Spacer(modifier = Modifier.height(16.dp))
-      }
-
       // Loading Shimmer or Error Banner
       if (detailUiState is MediaDetailUiState.Loading) {
         item {
@@ -312,7 +279,7 @@ fun DetailScreen(
               strokeWidth = 2.dp
             )
             Text(
-              text = "Recupero dettagli estesi da TMDB...",
+              text = stringResource(R.string.detail_loading_tmdb),
               color = NovaCyanBright,
               fontSize = 12.sp,
               fontWeight = FontWeight.Medium
@@ -345,7 +312,7 @@ fun DetailScreen(
                   modifier = Modifier.size(20.dp)
                 )
                 Text(
-                  text = "Dettagli parziali: ${detailUiState.message}",
+                  text = stringResource(R.string.detail_partial_error, detailUiState.message ?: ""),
                   color = Color.White,
                   fontSize = 12.sp,
                   fontWeight = FontWeight.Medium
@@ -353,7 +320,7 @@ fun DetailScreen(
               }
               if (onRetry != null) {
                 TvActionButton(
-                  text = "Riprova",
+                  text = stringResource(R.string.action_retry),
                   icon = Icons.Default.Refresh,
                   isPrimary = true,
                   onClick = onRetry
@@ -372,50 +339,17 @@ fun DetailScreen(
             .fillMaxWidth()
             .padding(start = 32.dp, end = 260.dp)
         ) {
-          // Quality Tags & Rating Row
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-          ) {
-            val providerObj = ProviderConstants.ALL.firstOrNull { it.id == displayMedia.provider?.lowercase() }
-            if (providerObj != null) {
+          // Streaming Provider Row
+          val providerObj = ProviderConstants.ALL.firstOrNull { it.id == displayMedia.provider?.lowercase() }
+          if (providerObj != null) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
               ProviderBadge(
                 provider = providerObj,
                 onClick = if (onProviderClick != null) { { onProviderClick(providerObj) } } else null
               )
-            }
-            displayMedia.qualityTags.forEach { tag ->
-              QualityBadge(text = tag, isHighlighted = tag.contains("4K") || tag.contains("HDR"))
-            }
-
-            // TMDB Rating Badge
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              modifier = Modifier
-                .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-                .padding(horizontal = 8.dp, vertical = 3.dp)
-            ) {
-              Icon(
-                imageVector = Icons.Default.Star,
-                contentDescription = null,
-                tint = NovaGold,
-                modifier = Modifier.size(14.dp)
-              )
-              Spacer(modifier = Modifier.width(4.dp))
-              Text(
-                text = "%.1f".format(extendedDetails?.rating ?: displayMedia.rating),
-                color = Color.White,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold
-              )
-              if (extendedDetails != null && extendedDetails.voteCount > 0) {
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                  text = "(${extendedDetails.voteCount})",
-                  color = NovaTextMuted,
-                  fontSize = 11.sp
-                )
-              }
             }
           }
 
@@ -475,13 +409,17 @@ fun DetailScreen(
             val displayYear = extendedDetails?.releaseYear ?: displayMedia.year
             Text(text = displayYear.toString(), color = NovaTextSecondary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             Text(text = "•", color = NovaTextMuted)
-            Text(text = displayMedia.type.labelItalian, color = NovaTextSecondary, fontSize = 14.sp)
+            Text(text = stringResource(if (displayMedia.type == MediaType.SERIE_TV) R.string.nav_tv_series else R.string.nav_movies), color = NovaTextSecondary, fontSize = 14.sp)
             Text(text = "•", color = NovaTextMuted)
 
             val durationText = if (displayMedia.type == MediaType.SERIE_TV) {
               val sCount = extendedDetails?.seasonsCount ?: displayMedia.seasonsCount ?: 1
               val epCount = extendedDetails?.episodesCount
-              if (epCount != null && epCount > 0) "$sCount Stagioni • $epCount Ep." else "$sCount Stagioni"
+              if (epCount != null && epCount > 0) {
+                stringResource(R.string.detail_seasons_episodes_format, sCount, epCount)
+              } else {
+                stringResource(R.string.hero_seasons_count, sCount)
+              }
             } else {
               val durMins = extendedDetails?.durationMinutes?.takeIf { it > 0 } ?: displayMedia.durationMinutes
               val h = durMins / 60
@@ -536,37 +474,42 @@ fun DetailScreen(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically
           ) {
-            val hasTvProgress = displayMedia.type == MediaType.SERIE_TV && (
-              displayMedia.currentProgressMs > 0 ||
-              displayMedia.lastWatchedEpisode != null ||
-              displayMedia.episodes.any { it.currentProgressMs > 0 }
-            )
-
             val resumeEpisode = if (displayMedia.type == MediaType.SERIE_TV) {
-              if (hasTvProgress) {
-                displayMedia.episodes.find {
-                  it.seasonNumber == (displayMedia.lastWatchedSeason ?: 1) &&
-                  it.episodeNumber == (displayMedia.lastWatchedEpisode ?: 1)
-                } ?: displayMedia.episodes.firstOrNull { it.currentProgressMs > 0 }
-                  ?: episodesForSeason.firstOrNull()
-                  ?: displayMedia.episodes.firstOrNull()
-              } else {
-                episodesForSeason.firstOrNull { it.seasonNumber == 1 && it.episodeNumber == 1 }
-                  ?: episodesForSeason.firstOrNull()
-                  ?: displayMedia.episodes.firstOrNull()
-              }
+              val targetSeason = displayMedia.lastWatchedSeason ?: 1
+              val targetEpNum = displayMedia.lastWatchedEpisode ?: 1
+              val found = displayMedia.episodes.find {
+                it.seasonNumber == targetSeason && it.episodeNumber == targetEpNum
+              } ?: episodesForSeason.find {
+                it.seasonNumber == targetSeason && it.episodeNumber == targetEpNum
+              } ?: episodesForSeason.firstOrNull { it.seasonNumber == 1 && it.episodeNumber == 1 }
+                ?: episodesForSeason.firstOrNull()
+                ?: displayMedia.episodes.firstOrNull()
+                ?: Episode(
+                  id = "${displayMedia.id}_s${targetSeason}e${targetEpNum}",
+                  seasonNumber = targetSeason,
+                  episodeNumber = targetEpNum,
+                  title = "Episodio $targetEpNum",
+                  synopsis = "",
+                  durationMinutes = displayMedia.durationMinutes.takeIf { it > 0 } ?: 55,
+                  videoUrl = displayMedia.videoUrl
+                )
+              val savedProgress = MediaRepository.getEpisodeProgress(displayMedia.id, found.seasonNumber, found.episodeNumber)
+              found.copy(currentProgressMs = savedProgress)
             } else null
 
             val playButtonLabel = if (displayMedia.type == MediaType.SERIE_TV) {
-              if (hasTvProgress && resumeEpisode != null) {
-                "Riprendi S${resumeEpisode.seasonNumber}:E${resumeEpisode.episodeNumber}"
+              val ep = resumeEpisode
+              if (ep != null && ep.currentProgressMs > 0L) {
+                stringResource(R.string.detail_resume_episode_format, ep.seasonNumber, ep.episodeNumber)
+              } else if (ep != null) {
+                stringResource(R.string.detail_play_episode_format, ep.seasonNumber, ep.episodeNumber)
               } else {
-                "Riproduci"
+                stringResource(R.string.detail_play_episode_format, 1, 1)
               }
-            } else if (displayMedia.currentProgressMs > 0) {
-              "Riprendi la visione"
+            } else if (displayMedia.currentProgressMs > 0L) {
+              stringResource(R.string.home_section_continue_watching)
             } else {
-              "Riproduci"
+              stringResource(R.string.action_play)
             }
 
             TvActionButton(
@@ -577,7 +520,7 @@ fun DetailScreen(
             )
 
             TvActionButton(
-              text = if (displayMedia.isFavorite) "Rimuovi dai preferiti" else "Aggiungi a preferiti",
+              text = if (displayMedia.isFavorite) stringResource(R.string.detail_remove_favorite) else stringResource(R.string.detail_add_favorite),
               icon = if (displayMedia.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
               isPrimary = false,
               onClick = { onToggleFavorite(displayMedia.id) }
@@ -620,7 +563,7 @@ fun DetailScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
               ) {
                 Text(
-                  text = tab.title,
+                  text = stringResource(tab.titleRes),
                   color = if (isSelected || isFocused) NovaCyanBright else NovaTextSecondary,
                   fontSize = 16.sp,
                   fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium
@@ -667,7 +610,7 @@ fun DetailScreen(
                   modifier = Modifier.size(18.dp)
                 )
                 Text(
-                  text = "SELEZIONE STAGIONE",
+                  text = stringResource(R.string.detail_season_selection),
                   color = NovaTextMuted,
                   fontSize = 13.sp,
                   fontWeight = FontWeight.Bold,
@@ -682,11 +625,8 @@ fun DetailScreen(
               ) {
                 items(availableSeasons) { seasonNum ->
                   val isSeasonSelected = seasonNum == activeSeason
-                  val epCount = if (isSeasonSelected && episodesForSeason.isNotEmpty()) {
-                    episodesForSeason.size
-                  } else {
-                    displayMedia.episodes.count { it.seasonNumber == seasonNum }.takeIf { it > 0 } ?: 8
-                  }
+                  val epCount = extendedDetails?.seasonEpisodesCount?.get(seasonNum)
+                    ?: displayMedia.seasonEpisodesCount[seasonNum]
 
                   TvFocusableBox(
                     shape = RoundedCornerShape(50),
@@ -720,7 +660,7 @@ fun DetailScreen(
                         .padding(horizontal = 18.dp, vertical = 10.dp)
                     ) {
                       Text(
-                        text = "Stagione $seasonNum",
+                        text = stringResource(R.string.detail_season_format, seasonNum),
                         color = when {
                           isFocused -> NovaCyanBright
                           isSeasonSelected -> NovaCyanBright
@@ -731,6 +671,7 @@ fun DetailScreen(
                       )
 
                       // Badge with episode count
+                      val badgeText = epCount?.let { stringResource(R.string.detail_episodes_count_badge, it) } ?: "..."
                       Box(
                         modifier = Modifier
                           .background(
@@ -740,7 +681,7 @@ fun DetailScreen(
                           .padding(horizontal = 8.dp, vertical = 3.dp)
                       ) {
                         Text(
-                          text = "$epCount ep",
+                          text = badgeText,
                           color = if (isSeasonSelected || isFocused) NovaCyanBright else NovaTextMuted,
                           fontSize = 11.sp,
                           fontWeight = FontWeight.SemiBold
@@ -763,14 +704,18 @@ fun DetailScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
               ) {
+                val currentSeasonCount = extendedDetails?.seasonEpisodesCount?.get(activeSeason)
+                  ?: displayMedia.seasonEpisodesCount[activeSeason]
+                  ?: episodesForSeason.size
+
                 Text(
-                  text = "Stagione $activeSeason • ${episodesForSeason.size} Episodi",
+                  text = stringResource(R.string.detail_season_episodes_status, activeSeason, currentSeasonCount),
                   color = NovaTextPrimary,
                   fontSize = 14.sp,
                   fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                  text = "${displayMedia.resolution.badge} • Audio Italiano 5.1",
+                  text = stringResource(R.string.detail_audio_info),
                   color = NovaCyanBright,
                   fontSize = 12.sp,
                   fontWeight = FontWeight.Medium
@@ -800,7 +745,7 @@ fun DetailScreen(
                 )
                 Spacer(modifier = Modifier.width(14.dp))
                 Text(
-                  text = "Caricamento episodi Stagione $activeSeason da TMDB...",
+                  text = stringResource(R.string.detail_loading_episodes, activeSeason),
                   color = NovaCyanBright,
                   fontSize = 14.sp,
                   fontWeight = FontWeight.Medium
@@ -857,7 +802,7 @@ fun DetailScreen(
                       modifier = Modifier.size(16.dp)
                     )
                     Text(
-                      text = "Riprova",
+                      text = stringResource(R.string.action_retry),
                       color = if (isFocused) Color.Black else Color.White,
                       fontSize = 12.sp,
                       fontWeight = FontWeight.Bold
@@ -931,7 +876,7 @@ fun CastCarousel(
         modifier = Modifier.size(18.dp)
       )
       Text(
-        text = "CAST PRINCIPALE",
+        text = stringResource(R.string.detail_main_cast),
         color = NovaTextMuted,
         fontSize = 13.sp,
         fontWeight = FontWeight.Bold,
@@ -1025,7 +970,7 @@ fun CastMemberCard(
       if (member.character.isNotBlank()) {
         Spacer(modifier = Modifier.height(2.dp))
         Text(
-          text = member.character,
+          text = if (member.character == "Cast principale") stringResource(R.string.cast_main_role) else member.character,
           color = NovaTextMuted,
           fontSize = 11.sp,
           maxLines = 1,
@@ -1184,38 +1129,14 @@ fun EpisodeRowItem(
             )
           }
 
-          // Metadata Badges (Rating, Duration, Watched status)
+          // Metadata Badges (Duration, Watched status)
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
           ) {
-            // Rating if present
-            if (episode.rating != null && episode.rating > 0f) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                modifier = Modifier
-                  .background(NovaGold.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                  .padding(horizontal = 6.dp, vertical = 2.dp)
-              ) {
-                Icon(
-                  imageVector = Icons.Default.Star,
-                  contentDescription = null,
-                  tint = NovaGold,
-                  modifier = Modifier.size(13.dp)
-                )
-                Text(
-                  text = "%.1f".format(episode.rating),
-                  color = NovaGold,
-                  fontSize = 12.sp,
-                  fontWeight = FontWeight.Bold
-                )
-              }
-            }
-
             // Duration
             Text(
-              text = "${episode.durationMinutes} min",
+              text = stringResource(R.string.detail_duration_min, episode.durationMinutes),
               color = NovaTextMuted,
               fontSize = 12.sp,
               fontWeight = FontWeight.Medium
@@ -1229,20 +1150,22 @@ fun EpisodeRowItem(
                   .padding(horizontal = 6.dp, vertical = 2.dp)
               ) {
                 Text(
-                  text = "✓ Visto",
+                  text = stringResource(R.string.detail_watched_badge),
                   color = Color(0xFF10B981),
                   fontSize = 11.sp,
                   fontWeight = FontWeight.Bold
                 )
               }
             } else if (episode.currentProgressMs > 0) {
+              val remainingMs = (episode.totalDurationMs - episode.currentProgressMs).coerceAtLeast(0)
+              val remainingMins = (remainingMs / 60000).toInt()
               Box(
                 modifier = Modifier
                   .background(NovaCyan.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
                   .padding(horizontal = 6.dp, vertical = 2.dp)
               ) {
                 Text(
-                  text = episode.remainingMinutesText,
+                  text = stringResource(R.string.badge_minutes_remaining, remainingMins),
                   color = NovaCyanBright,
                   fontSize = 11.sp,
                   fontWeight = FontWeight.SemiBold
@@ -1255,7 +1178,7 @@ fun EpisodeRowItem(
         // Air date if available
         if (!episode.airDate.isNullOrBlank()) {
           Text(
-            text = "Data d'uscita: ${episode.airDate}",
+            text = stringResource(R.string.detail_air_date_format, episode.airDate),
             color = NovaTextMuted,
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium
@@ -1317,7 +1240,7 @@ fun TechnicalDetailsCard(
       verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
       Text(
-        text = "Specifiche Tecniche & Scheda",
+        text = stringResource(R.string.detail_tech_specs_title),
         color = NovaTextPrimary,
         fontSize = 18.sp,
         fontWeight = FontWeight.Bold
@@ -1326,28 +1249,25 @@ fun TechnicalDetailsCard(
       Spacer(modifier = Modifier.height(2.dp))
 
       DetailRow(
-        label = "Titolo Originale",
+        label = stringResource(R.string.detail_tech_original_title),
         value = details?.originalTitle?.takeIf { it.isNotBlank() } ?: media.originalTitle.ifBlank { media.title }
       )
       DetailRow(
-        label = "Regia / Showrunner",
-        value = details?.director?.takeIf { it.isNotBlank() } ?: media.director.ifEmpty { "Produzione Internazionale" }
+        label = stringResource(R.string.detail_tech_director),
+        value = details?.director?.takeIf { it.isNotBlank() } ?: media.director.ifEmpty { stringResource(R.string.detail_tech_international_production) }
       )
       DetailRow(
-        label = "Generi",
+        label = stringResource(R.string.detail_tech_genres),
         value = (details?.genres?.takeIf { it.isNotEmpty() } ?: media.genres).joinToString(", ")
       )
       if (!details?.tagline.isNullOrBlank()) {
-        DetailRow(label = "Tagline", value = details?.tagline ?: "")
+        DetailRow(label = stringResource(R.string.detail_tech_tagline), value = details?.tagline ?: "")
       }
       if (!details?.status.isNullOrBlank()) {
-        DetailRow(label = "Stato TMDB", value = details?.status ?: "")
+        DetailRow(label = stringResource(R.string.detail_tech_tmdb_status), value = details?.status ?: "")
       }
-      DetailRow(label = "Risoluzione video", value = "3840 x 2160 (Ultra HD 4K nativo)")
-      DetailRow(label = "Formato HDR", value = "HDR10 / Dolby Vision (Wide Color Gamut BT.2020)")
-      DetailRow(label = "Codec Audio", value = "Dolby Atmos / Dolby Digital Plus 5.1 (E-AC-3)")
-      DetailRow(label = "Lingue audio disponibili", value = "Italiano 5.1, Inglese Dolby Atmos, Italiano Stereo")
-      DetailRow(label = "Sottotitoli", value = "Italiano, Italiano Non Udenti, Inglese")
+      DetailRow(label = stringResource(R.string.detail_tech_audio_languages), value = stringResource(R.string.detail_tech_audio_languages_val))
+      DetailRow(label = stringResource(R.string.detail_tech_subtitles), value = stringResource(R.string.detail_tech_subtitles_val))
     }
   }
 }

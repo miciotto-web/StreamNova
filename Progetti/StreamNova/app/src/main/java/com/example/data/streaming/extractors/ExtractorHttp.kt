@@ -2,10 +2,42 @@ package com.example.data.streaming.extractors
 
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+
+/**
+ * Wrapper suspend cancellabile per OkHttp.
+ * Se la coroutine chiamante viene cancellata (o scade un withTimeout),
+ * la richiesta HTTP viene interrotta fisicamente tramite [Call.cancel].
+ */
+suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { continuation ->
+  continuation.invokeOnCancellation {
+    cancel()
+  }
+  enqueue(object : Callback {
+    override fun onResponse(call: Call, response: Response) {
+      if (continuation.isCancelled) {
+        response.close()
+        return
+      }
+      continuation.resume(response)
+    }
+
+    override fun onFailure(call: Call, e: IOException) {
+      if (!continuation.isCancelled) {
+        continuation.resumeWithException(e)
+      }
+    }
+  })
+}
 
 /**
  * HTTP condiviso dagli estrattori hoster: User-Agent desktop, redirect seguiti
@@ -29,7 +61,7 @@ object ExtractorHttp {
    * @return corpo della risposta.
    * @throws IOException su status non 2xx.
    */
-  fun get(url: String, referer: String? = null, extraHeaders: Map<String, String> = emptyMap()): String =
+  suspend fun get(url: String, referer: String? = null, extraHeaders: Map<String, String> = emptyMap()): String =
     getWithFinalUrl(url, referer, extraHeaders).second
 
   /** Costruisce la richiesta validando l'URL (messaggio d'errore con contesto). */
@@ -46,7 +78,7 @@ object ExtractorHttp {
    * inviato a un URL che risponde 302 verrebbe degradato in GET (OkHttp) e
    * perderebbe il body.
    */
-  fun getWithFinalUrl(
+  suspend fun getWithFinalUrl(
     url: String,
     referer: String? = null,
     extraHeaders: Map<String, String> = emptyMap()
@@ -59,16 +91,17 @@ object ExtractorHttp {
     if (!referer.isNullOrBlank()) builder.header("Referer", referer)
     extraHeaders.forEach { (k, v) -> builder.header(k, v) }
 
-    client.newCall(builder.build()).execute().use { response ->
-      val body = response.body?.string().orEmpty()
-      if (!response.isSuccessful) throw IOException("HTTP ${response.code} su $url")
-      val finalUrl = response.request.url.toString()
+    val response = client.newCall(builder.build()).awaitResponse()
+    response.use { resp ->
+      val body = resp.body?.string().orEmpty()
+      if (!resp.isSuccessful) throw IOException("HTTP ${resp.code} su $url")
+      val finalUrl = resp.request.url.toString()
       return finalUrl to body
     }
   }
 
   /** POST form-urlencoded (usato dagli shortener tipo stayonline). */
-  fun postForm(url: String, referer: String?, form: Map<String, String>, extraHeaders: Map<String, String> = emptyMap()): String {
+  suspend fun postForm(url: String, referer: String?, form: Map<String, String>, extraHeaders: Map<String, String> = emptyMap()): String {
     val body = form.entries.joinToString("&") { "${it.key}=${java.net.URLEncoder.encode(it.value, "UTF-8")}" }
     val builder = buildRequest(url)
       .header("User-Agent", USER_AGENT)
@@ -79,9 +112,10 @@ object ExtractorHttp {
     if (!referer.isNullOrBlank()) builder.header("Referer", referer)
     extraHeaders.forEach { (k, v) -> builder.header(k, v) }
 
-    client.newCall(builder.build()).execute().use { response ->
-      val respBody = response.body?.string().orEmpty()
-      if (!response.isSuccessful) throw IOException("HTTP ${response.code} su $url")
+    val response = client.newCall(builder.build()).awaitResponse()
+    response.use { resp ->
+      val respBody = resp.body?.string().orEmpty()
+      if (!resp.isSuccessful) throw IOException("HTTP ${resp.code} su $url")
       return respBody
     }
   }

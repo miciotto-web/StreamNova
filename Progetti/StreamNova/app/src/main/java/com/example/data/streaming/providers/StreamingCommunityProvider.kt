@@ -6,7 +6,10 @@ import com.example.data.streaming.StreamSource
 import com.example.data.streaming.extractors.ExtractorHttp
 import java.io.IOException
 import java.net.URI
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -43,6 +46,11 @@ class StreamingCommunityProvider : StreamProvider {
 
     val failures = mutableListOf<String>()
     for (mirror in MIRRORS) {
+      // FIX TIMEOUT: le chiamate HTTP qui sotto sono BLOCCANTI (OkHttp execute, nessun
+      // punto di sospensione), quindi withTimeout(15s) di StreamManager non interrompe
+      // il loop. ensureActive() all'inizio di ogni mirror garantisce che, dopo la
+      // cancellazione, nessun mirror aggiuntivo venga interrogato.
+      currentCoroutineContext().ensureActive()
       try {
         val sources = resolveOnMirror(mirror, query, title, isTv, season ?: 1, episode ?: 1)
         if (sources.isNotEmpty()) {
@@ -50,6 +58,11 @@ class StreamingCommunityProvider : StreamProvider {
           return@withContext sources
         }
         failures += "$mirror -> nessuna sorgente"
+      } catch (ex: CancellationException) {
+        // FIX TIMEOUT: la cancellazione (incluso TimeoutCancellationException di
+        // withTimeout) NON è un errore recuperabile: va rilanciata immediatamente,
+        // altrimenti il provider continua a iterare i mirror oltre il timeout.
+        throw ex
       } catch (ex: Exception) {
         Log.w(TAG, "mirror $mirror: ${ex.message}")
         failures += "$mirror -> ${ex.message}"
@@ -75,8 +88,13 @@ class StreamingCommunityProvider : StreamProvider {
     var pageUrl = ""
     var pageHtml = ""
     for (pattern in searchPatterns) {
+      // FIX TIMEOUT: dopo la cancellazione di withTimeout non vengono provati
+      // ulteriori pattern di ricerca.
+      currentCoroutineContext().ensureActive()
       val body = try {
         ExtractorHttp.get(pattern, referer = "$mirror/")
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         Log.i(TAG, "ricerca non disponibile: $pattern (${ex.message})")
         continue
@@ -88,7 +106,13 @@ class StreamingCommunityProvider : StreamProvider {
           .firstOrNull { it.startsWith("http") || it.startsWith("/") }
         if (url != null) {
           pageUrl = if (url.startsWith("http")) url else mirror + url
-          pageHtml = try { ExtractorHttp.get(pageUrl, referer = "$mirror/") } catch (e: Exception) { "" }
+          pageHtml = try {
+            ExtractorHttp.get(pageUrl, referer = "$mirror/")
+          } catch (ex: CancellationException) {
+            throw ex
+          } catch (e: Exception) {
+            ""
+          }
           if (pageHtml.isNotEmpty()) break
         }
         continue
@@ -96,7 +120,13 @@ class StreamingCommunityProvider : StreamProvider {
       // HTML: sceglie il risultato con il miglior punteggio sul titolo
       val candidate = pickArticle(body, title, mirror) ?: continue
       pageUrl = candidate
-      pageHtml = try { ExtractorHttp.get(candidate, referer = "$mirror/") } catch (e: Exception) { "" }
+      pageHtml = try {
+        ExtractorHttp.get(candidate, referer = "$mirror/")
+      } catch (ex: CancellationException) {
+        throw ex
+      } catch (e: Exception) {
+        ""
+      }
       if (pageHtml.isNotEmpty()) break
     }
     if (pageHtml.isEmpty()) throw IOException("nessuna pagina titolo per '$query'")
@@ -113,7 +143,7 @@ class StreamingCommunityProvider : StreamProvider {
       out.putIfAbsent(
         url,
         StreamSource(
-          url = url,
+          streamUrl = url,
           quality = if (url.contains(".m3u8", ignoreCase = true)) "Auto" else "1080p",
           serverName = SERVER_NAME,
           headers = headers
@@ -136,7 +166,7 @@ class StreamingCommunityProvider : StreamProvider {
         referer = pageUrl,
         onResolved = { resolved -> Log.i(TAG, "embed risolto: $resolved") }
       )
-      extracted.forEach { out.putIfAbsent(it.url, it) }
+      extracted.forEach { source -> source.streamUrl?.let { out.putIfAbsent(it, source) } }
     }
 
     if (out.isEmpty()) throw IOException("pagina titolo senza sorgenti leggibili")

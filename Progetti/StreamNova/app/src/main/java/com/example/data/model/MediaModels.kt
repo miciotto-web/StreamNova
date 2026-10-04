@@ -85,11 +85,23 @@ data class MediaItem(
   val totalDurationMs: Long = (durationMinutes * 60 * 1000).toLong(),
   val lastWatchedSeason: Int? = null,
   val lastWatchedEpisode: Int? = null,
+  val lastWatchedAt: Long? = null,
   val isFavorite: Boolean = false,
   val provider: String? = null,
   val isTop10: Boolean = false,
   val isTrending: Boolean = false,
   val episodes: List<Episode> = emptyList(),
+  val seasonEpisodesCount: Map<Int, Int> = emptyMap(),
+  /**
+   * Voti esterni.
+   * `null` = dato non disponibile per il titolo -> la relativa pillola NON viene mostrata.
+   * [tmdbRating] corrisponde al vote_average di TMDB (deriva da [rating] se non
+   * valorizzato esplicitamente).
+   */
+  val tmdbRating: Float? = rating.takeIf { it > 0f },
+  val mdbListScore: Int? = null,
+  val rottenTomatoesScore: Int? = null,
+  val ageRating: Int? = null
 ) {
   val progressFraction: Float
     get() = if (totalDurationMs > 0) (currentProgressMs.toFloat() / totalDurationMs.toFloat()).coerceIn(0f, 1f) else 0f
@@ -152,7 +164,9 @@ data class ExtendedMediaDetails(
   val cast: List<CastMember> = emptyList(),
   val director: String = "",
   val similarItems: List<MediaItem> = emptyList(),
-  val isTv: Boolean = false
+  val isTv: Boolean = false,
+  val seasonEpisodesCount: Map<Int, Int> = emptyMap(),
+  val ageRating: Int? = null
 )
 
 sealed interface MediaDetailUiState {
@@ -188,7 +202,7 @@ data class EpisodeItem(
     get() = "E%02d".format(episodeNumber)
 }
 
-fun EpisodeItem.toEpisode(seriesId: String): Episode {
+fun EpisodeItem.toEpisode(seriesId: String, progressMs: Long = 0L): Episode {
   return Episode(
     id = "${seriesId}_s${seasonNumber}e${episodeNumber}",
     seasonNumber = seasonNumber,
@@ -198,6 +212,7 @@ fun EpisodeItem.toEpisode(seriesId: String): Episode {
     durationMinutes = durationMinutes.coerceAtLeast(15),
     thumbnailUrl = stillUrl,
     videoUrl = videoUrl,
+    currentProgressMs = progressMs,
     rating = rating,
     airDate = airDate
   )

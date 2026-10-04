@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -202,7 +203,11 @@ fun HeroBanner(
         )
         Text(text = "•", color = NovaTextMuted, fontSize = 12.sp)
         Text(
-          text = if (currentMedia.type == MediaType.SERIE_TV) "${currentMedia.seasonsCount} Stagioni" else currentMedia.formattedDuration,
+          text = if (currentMedia.type == MediaType.SERIE_TV) {
+            stringResource(R.string.hero_seasons_count, currentMedia.seasonsCount ?: 1)
+          } else {
+            currentMedia.formattedDuration
+          },
           color = NovaTextSecondary,
           fontSize = 13.sp,
           fontWeight = FontWeight.Medium
@@ -237,13 +242,13 @@ fun HeroBanner(
         verticalAlignment = Alignment.CenterVertically
       ) {
         TvPillButton(
-          text = "Guarda Ora",
+          text = stringResource(R.string.action_watch_now),
           icon = Icons.Default.PlayArrow,
           isPrimary = true,
           onClick = { onPlayClick(currentMedia) }
         )
         TvPillButton(
-          text = "Scheda Dettagli",
+          text = stringResource(R.string.action_details),
           icon = Icons.Default.Info,
           isPrimary = false,
           onClick = { onInfoClick(currentMedia) }

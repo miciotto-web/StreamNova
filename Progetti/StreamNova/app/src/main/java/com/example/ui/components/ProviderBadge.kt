@@ -93,7 +93,39 @@ object ProviderConstants {
     logoResId = R.drawable.ic_provider_prime
   )
 
-  val ALL = listOf(NETFLIX, HBO, DISNEY, PRIME_VIDEO)
+  val APPLE_TV = StreamingProvider(
+    id = "apple",
+    name = "Apple TV+",
+    tmdbProviderId = 350,
+    tag = "APPLE ORIGINALS",
+    primaryColor = Color(0xFF2C2C2E),
+    secondaryColor = Color(0xFF141414),
+    accentColor = Color(0xFFFFFFFF),
+    logoUrl = "https://image.tmdb.org/t/p/w500/2E03UQsvMmR4qgM4856E3u9c969.png",
+    logoResId = R.drawable.ic_provider_appletv
+  )
+
+  val PARAMOUNT_PLUS = StreamingProvider(
+    id = "paramount",
+    name = "Paramount+",
+    tmdbProviderId = 531,
+    tag = "PARAMOUNT+ ORIGINALS",
+    primaryColor = Color(0xFF0064FF),
+    secondaryColor = Color(0xFF041E3D),
+    accentColor = Color(0xFF9CC7FF)
+  )
+
+  val CRUNCHYROLL = StreamingProvider(
+    id = "crunchyroll",
+    name = "Crunchyroll",
+    tmdbProviderId = 283,
+    tag = "CRUNCHYROLL ANIME",
+    primaryColor = Color(0xFFF47521),
+    secondaryColor = Color(0xFF2A1206),
+    accentColor = Color(0xFFFF9A3E)
+  )
+
+  val ALL = listOf(NETFLIX, HBO, DISNEY, PRIME_VIDEO, APPLE_TV, PARAMOUNT_PLUS, CRUNCHYROLL)
 }
 
 /**

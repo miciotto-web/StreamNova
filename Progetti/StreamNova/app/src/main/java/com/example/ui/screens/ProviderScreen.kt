@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -17,18 +18,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,21 +42,37 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.StreamingProvider
-import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextSecondary
+import com.example.ui.viewmodel.StreamNovaViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+
+enum class ProviderCatalogFilter(val labelRes: Int) {
+  ALL(R.string.filter_all),
+  MOVIES(R.string.filter_movies),
+  TV_SERIES(R.string.filter_tv_series),
+  TOP_10(R.string.filter_top_10),
+  ACTION(R.string.filter_action),
+  SCI_FI(R.string.filter_sci_fi),
+  DRAMA(R.string.filter_drama),
+  COMEDY(R.string.filter_comedy),
+  ANIMATION(R.string.filter_animation)
+}
 
 @Composable
 fun ProviderScreen(
@@ -58,34 +80,90 @@ fun ProviderScreen(
   allMedia: List<MediaItem>,
   onBackClick: () -> Unit,
   onMediaClick: (MediaItem) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  viewModel: StreamNovaViewModel? = null,
+  onLoadMore: ((isTv: Boolean) -> Unit)? = null
 ) {
   BackHandler { onBackClick() }
 
   val providerMedia = remember(allMedia, provider) {
-    allMedia.filter { it.provider?.equals(provider.id, ignoreCase = true) == true }
+    allMedia.filter { it.provider?.contains(provider.id, ignoreCase = true) == true }
   }
 
-  var selectedFilter by remember { mutableStateOf("Tutti") }
+  val gridState = rememberLazyGridState()
+  val isProviderLoading by (viewModel?.isProviderLoading ?: MutableStateFlow(false)).collectAsState()
 
-  val filters = listOf(
-    "Tutti",
-    "Film",
-    "Serie TV",
-    "Top 10",
-    "Azione",
-    "Fantascienza",
-    "Dramma",
-    "Commedia"
-  )
+  // Crunchyroll: catalogo dominato da serie TV/anime -> filtro iniziale dedicato
+  var selectedFilter by rememberSaveable(provider) {
+    mutableStateOf(if (provider.tmdbProviderId == 283) ProviderCatalogFilter.TV_SERIES else ProviderCatalogFilter.ALL)
+  }
+
+  // Reset scroll in cima quando si cambia scheda/filtro
+  LaunchedEffect(selectedFilter) {
+    if (providerMedia.isNotEmpty()) {
+      gridState.scrollToItem(0)
+    }
+  }
+
+  // Pre-caricamento pagina iniziale al cambio filtro se necessario
+  LaunchedEffect(provider, selectedFilter) {
+    when (selectedFilter) {
+      ProviderCatalogFilter.TV_SERIES -> {
+        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+        onLoadMore?.invoke(true)
+      }
+      ProviderCatalogFilter.MOVIES -> {
+        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+        onLoadMore?.invoke(false)
+      }
+      else -> {
+        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+        onLoadMore?.invoke(false)
+        onLoadMore?.invoke(true)
+      }
+    }
+  }
+
+  // Scorrimento Infinito: snapshotFlow rileva quando l'utente si avvicina alla fine dell'elenco
+  LaunchedEffect(gridState, selectedFilter, provider) {
+    snapshotFlow {
+      val layoutInfo = gridState.layoutInfo
+      val totalItems = layoutInfo.totalItemsCount
+      val lastVisibleItemIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+      totalItems to lastVisibleItemIndex
+    }.distinctUntilChanged()
+     .collect { (totalItems, lastVisibleItemIndex) ->
+       if (totalItems > 0 && lastVisibleItemIndex >= totalItems - 6) {
+         when (selectedFilter) {
+           ProviderCatalogFilter.TV_SERIES -> {
+             viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+             onLoadMore?.invoke(true)
+           }
+           ProviderCatalogFilter.MOVIES -> {
+             viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+             onLoadMore?.invoke(false)
+           }
+           else -> {
+             viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+             viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+             onLoadMore?.invoke(false)
+             onLoadMore?.invoke(true)
+           }
+         }
+       }
+     }
+  }
+
+  val filters = remember { ProviderCatalogFilter.values().toList() }
 
   val filteredItems = remember(providerMedia, selectedFilter) {
     when (selectedFilter) {
-      "Tutti" -> providerMedia
-      "Film" -> providerMedia.filter { it.type == MediaType.FILM }
-      "Serie TV" -> providerMedia.filter { it.type == MediaType.SERIE_TV }
-      "Top 10" -> providerMedia.sortedByDescending { it.rating }.take(10)
-      "Azione" -> providerMedia.filter { item ->
+      ProviderCatalogFilter.ALL -> providerMedia
+      ProviderCatalogFilter.MOVIES -> providerMedia.filter { it.type == MediaType.FILM }
+      ProviderCatalogFilter.TV_SERIES -> providerMedia.filter { it.type == MediaType.SERIE_TV }
+      ProviderCatalogFilter.TOP_10 -> providerMedia.sortedByDescending { it.rating }.take(10)
+      ProviderCatalogFilter.ACTION -> providerMedia.filter { item ->
         item.genres.any { g ->
           g.contains("Azione", ignoreCase = true) ||
           g.contains("Action", ignoreCase = true) ||
@@ -93,7 +171,7 @@ fun ProviderScreen(
           g.contains("Adventure", ignoreCase = true)
         }
       }
-      "Fantascienza" -> providerMedia.filter { item ->
+      ProviderCatalogFilter.SCI_FI -> providerMedia.filter { item ->
         item.genres.any { g ->
           g.contains("Fantascienza", ignoreCase = true) ||
           g.contains("Sci-Fi", ignoreCase = true) ||
@@ -101,20 +179,34 @@ fun ProviderScreen(
           g.contains("Fantasy", ignoreCase = true)
         }
       }
-      "Dramma" -> providerMedia.filter { item ->
+      ProviderCatalogFilter.DRAMA -> providerMedia.filter { item ->
         item.genres.any { g ->
           g.contains("Dramma", ignoreCase = true) ||
           g.contains("Drama", ignoreCase = true)
         }
       }
-      "Commedia" -> providerMedia.filter { item ->
+      ProviderCatalogFilter.COMEDY -> providerMedia.filter { item ->
         item.genres.any { g ->
           g.contains("Commedia", ignoreCase = true) ||
           g.contains("Comedy", ignoreCase = true)
         }
       }
-      else -> providerMedia.filter { it.genres.any { g -> g.contains(selectedFilter, ignoreCase = true) } }
+      ProviderCatalogFilter.ANIMATION -> providerMedia.filter { item ->
+        item.type == MediaType.FILM &&
+          item.genres.any { g ->
+            g.contains("Animazione", ignoreCase = true) ||
+            g.contains("Animation", ignoreCase = true)
+          }
+      }
     }
+  }
+
+  // Log di debug: conteggio dei poster effettivamente renderizzati
+  LaunchedEffect(filteredItems, selectedFilter) {
+    Log.d(
+      "PROVIDER_CATALOG",
+      "provider=${provider.name} filter=${selectedFilter.name} -> ${filteredItems.size} poster in griglia"
+    )
   }
 
   Column(
@@ -138,70 +230,38 @@ fun ProviderScreen(
         .padding(start = 32.dp, top = 26.dp, end = 32.dp, bottom = 12.dp)
     ) {
       Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
       ) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-          TvActionButton(
-            text = "Torna Indietro",
-            icon = Icons.AutoMirrored.Filled.ArrowBack,
-            isPrimary = false,
-            onClick = onBackClick
+        if (provider.logoResId != null) {
+          Image(
+            painter = painterResource(id = provider.logoResId),
+            contentDescription = provider.name,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+              .size(44.dp)
+              .clip(RoundedCornerShape(10.dp))
+              .border(1.dp, provider.accentColor.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
           )
-
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-          ) {
-            if (provider.logoResId != null) {
-              Image(
-                painter = painterResource(id = provider.logoResId),
-                contentDescription = provider.name,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                  .size(44.dp)
-                  .clip(RoundedCornerShape(10.dp))
-                  .border(1.dp, provider.accentColor.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
-              )
-            } else if (!provider.logoUrl.isNullOrBlank()) {
-              AsyncImage(
-                model = provider.logoUrl,
-                contentDescription = provider.name,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                  .size(44.dp)
-                  .clip(RoundedCornerShape(10.dp))
-                  .border(1.dp, provider.accentColor.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
-              )
-            }
-
-            Text(
-              text = provider.name.uppercase(),
-              color = Color.White,
-              fontSize = 28.sp,
-              fontWeight = FontWeight.Black,
-              letterSpacing = 1.sp
-            )
-          }
-        }
-
-        Box(
-          modifier = Modifier
-            .background(Color(0x33000000), RoundedCornerShape(50))
-            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(50))
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-          Text(
-            text = "${filteredItems.size} Titoli Disponibili",
-            color = provider.accentColor,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold
+        } else if (!provider.logoUrl.isNullOrBlank()) {
+          AsyncImage(
+            model = provider.logoUrl,
+            contentDescription = provider.name,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+              .size(44.dp)
+              .clip(RoundedCornerShape(10.dp))
+              .border(1.dp, provider.accentColor.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
           )
         }
+
+        Text(
+          text = provider.name.uppercase(),
+          color = Color.White,
+          fontSize = 28.sp,
+          fontWeight = FontWeight.Black,
+          letterSpacing = 1.sp
+        )
       }
     }
 
@@ -237,7 +297,7 @@ fun ProviderScreen(
               .padding(horizontal = 16.dp, vertical = 8.dp)
           ) {
             Text(
-              text = filter,
+              text = stringResource(filter.labelRes),
               color = if (isFocused) Color.Black else if (isSelected) provider.accentColor else NovaTextSecondary,
               fontSize = 13.sp,
               fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium
@@ -257,30 +317,114 @@ fun ProviderScreen(
           .padding(32.dp),
         contentAlignment = Alignment.Center
       ) {
-        Text(
-          text = "Nessun contenuto trovato per il filtro \"$selectedFilter\"",
-          color = NovaTextMuted,
-          fontSize = 16.sp
-        )
+        if (isProviderLoading) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+          ) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(28.dp),
+              color = provider.accentColor,
+              strokeWidth = 3.dp
+            )
+            Text(
+              text = stringResource(R.string.provider_loading_catalog, provider.name),
+              color = Color.White.copy(alpha = 0.85f),
+              fontSize = 15.sp,
+              fontWeight = FontWeight.Medium
+            )
+          }
+        } else {
+          Text(
+            text = if (providerMedia.isEmpty()) {
+              stringResource(R.string.provider_empty_catalog, provider.name)
+            } else {
+              stringResource(R.string.provider_empty_filter, stringResource(selectedFilter.labelRes))
+            },
+            color = NovaTextMuted,
+            fontSize = 16.sp
+          )
+        }
       }
     } else {
       TvFocusBringIntoView {
         LazyVerticalGrid(
-          columns = GridCells.Adaptive(minSize = 155.dp),
+          state = gridState,
+          columns = GridCells.Adaptive(minSize = 150.dp),
           contentPadding = PaddingValues(start = 32.dp, end = 32.dp, top = 8.dp, bottom = 48.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp),
           verticalArrangement = Arrangement.spacedBy(16.dp),
           modifier = Modifier.fillMaxSize()
         ) {
           items(filteredItems, key = { it.id }) { item ->
-            PosterMediaCard(
-              media = item,
-              onClick = { onMediaClick(item) },
-              modifier = Modifier.fillMaxWidth()
-            )
+            Box(
+              modifier = Modifier.fillMaxWidth(),
+              contentAlignment = Alignment.TopCenter
+            ) {
+              PosterMediaCard(
+                media = item,
+                onClick = { onMediaClick(item) }
+              )
+            }
+          }
+
+          if (isProviderLoading) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(vertical = 24.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(12.dp),
+                  modifier = Modifier
+                    .background(Color(0xCC141414), RoundedCornerShape(24.dp))
+                    .border(1.dp, provider.accentColor.copy(alpha = 0.4f), RoundedCornerShape(24.dp))
+                    .padding(horizontal = 20.dp, vertical = 10.dp)
+                ) {
+                  CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = provider.accentColor,
+                    strokeWidth = 2.dp
+                  )
+                  Text(
+                    text = stringResource(R.string.provider_loading_more, provider.name),
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                  )
+                }
+              }
+            }
           }
         }
       }
     }
   }
+}
+
+/**
+ * Alias per compatibilità ProviderCatalogScreen
+ */
+@Composable
+fun ProviderCatalogScreen(
+  provider: StreamingProvider,
+  allMedia: List<MediaItem>,
+  onBackClick: () -> Unit,
+  onMediaClick: (MediaItem) -> Unit,
+  modifier: Modifier = Modifier,
+  viewModel: StreamNovaViewModel? = null,
+  onLoadMore: ((isTv: Boolean) -> Unit)? = null
+) {
+  ProviderScreen(
+    provider = provider,
+    allMedia = allMedia,
+    onBackClick = onBackClick,
+    onMediaClick = onMediaClick,
+    modifier = modifier,
+    viewModel = viewModel,
+    onLoadMore = onLoadMore
+  )
 }

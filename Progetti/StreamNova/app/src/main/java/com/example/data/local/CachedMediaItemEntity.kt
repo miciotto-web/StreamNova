@@ -38,5 +38,8 @@ data class CachedMediaItemEntity(
   /** Stagione/episodio visti per ultimo: preservato nei refresh TMDB (mai azzerato). */
   val lastWatchedSeason: Int? = null,
   val lastWatchedEpisode: Int? = null,
+  /** Timestamp dell'ultima visione: usato per ordinare "Continua a guardare". */
+  val lastWatchedAt: Long? = null,
+  val ageRating: Int? = null,
   val cachedAt: Long = System.currentTimeMillis()
 )

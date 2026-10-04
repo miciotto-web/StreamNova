@@ -9,6 +9,9 @@ import com.example.data.streaming.extractors.VideoExtractor
 import java.io.IOException
 import java.net.URI
 import java.net.URLEncoder
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * Utilità condivise dai provider dei cataloghi italiani (CB01, Eurostreaming).
@@ -49,7 +52,8 @@ object HosterResolver {
    * @return l'URL risolto, oppure `null` se il link non è risolvibile in automatico
    *         (es. shortener con captcha) o non è un hoster supportato.
    */
-  fun resolveShortLink(url: String, referer: String): String? {
+  suspend fun resolveShortLink(url: String, referer: String): String? {
+    currentCoroutineContext().ensureActive()
     val stayMatch = STAYONLINE_REGEX.find(url)
     if (stayMatch != null) {
       val origin = stayMatch.groupValues[1]
@@ -73,6 +77,8 @@ object HosterResolver {
           Log.w(TAG, "shortener stayonline non risolto ($code): $message")
           null
         }
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w(TAG, "shortener stayonline fallito ($url): ${e.message}")
         null
@@ -122,6 +128,7 @@ object HosterResolver {
     val seenResolved = HashSet<String>()
 
     for ((label, rawUrl) in rawUrls) {
+      currentCoroutineContext().ensureActive()
       if (rawUrl.isBlank() || !seenRaw.add(rawUrl)) continue
       val resolved = resolveShortLink(rawUrl, referer)
       if (resolved.isNullOrBlank() || !seenResolved.add(resolved)) continue
@@ -134,6 +141,8 @@ object HosterResolver {
       }
       try {
         sources += extractor.extract(resolved)
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w(TAG, "estrazione fallita su $resolved: ${e.message}")
       }

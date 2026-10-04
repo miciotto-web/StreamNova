@@ -6,7 +6,10 @@ import com.example.data.streaming.StreamSource
 import com.example.data.streaming.extractors.ExtractorHttp
 import java.io.IOException
 import java.net.URI
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -43,6 +46,7 @@ class TwoEmbedProvider : StreamProvider {
 
     val failures = mutableListOf<String>()
     for (base in BASE_URLS) {
+      currentCoroutineContext().ensureActive()
       try {
         val sources = resolveOnBase(base, tmdbId, isTv, s, e)
         if (sources.isNotEmpty()) {
@@ -50,6 +54,8 @@ class TwoEmbedProvider : StreamProvider {
           return@withContext sources
         }
         failures += "$base -> nessuna sorgente"
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         Log.w(TAG, "fallback mirror $base: ${ex.message}")
         failures += "$base -> ${ex.message}"
@@ -58,7 +64,7 @@ class TwoEmbedProvider : StreamProvider {
     throw IOException("2Embed non risolvibile (${failures.joinToString(" | ")})")
   }
 
-  private fun resolveOnBase(base: String, tmdbId: Int, isTv: Boolean, s: Int, e: Int): List<StreamSource> {
+  private suspend fun resolveOnBase(base: String, tmdbId: Int, isTv: Boolean, s: Int, e: Int): List<StreamSource> {
     // --- 1) pagina embed (i pattern variano tra mirror) -------------------
     val embedCandidates = if (isTv) {
       listOf(
@@ -73,10 +79,13 @@ class TwoEmbedProvider : StreamProvider {
     var embedUrl = ""
     var embedHtml: String? = null
     for (candidate in embedCandidates) {
+      currentCoroutineContext().ensureActive()
       try {
         embedHtml = ExtractorHttp.get(candidate, referer = "$base/")
         embedUrl = candidate
         break
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         Log.i(TAG, "embed non disponibile: $candidate (${ex.message})")
       }
@@ -122,7 +131,7 @@ class TwoEmbedProvider : StreamProvider {
     if (direct.isEmpty()) throw IOException("iframe 2Embed senza sorgenti dirette: $playerUrl")
     return listOf(
       StreamSource(
-        url = direct.first(),
+        streamUrl = direct.first(),
         quality = "Auto",
         serverName = SERVER_NAME,
         headers = headersFor(playerUrl)
@@ -134,7 +143,7 @@ class TwoEmbedProvider : StreamProvider {
    * Catena VidSrc: `var Q` -> `pl/api.php?a=sources` -> `pl/api.php?a=play` per
    * ogni server -> URL relativo della master playlist (risolto sull'origin).
    */
-  private fun vidSrcSources(embedUrl: String, isTv: Boolean, s: Int, e: Int): List<StreamSource> {
+  private suspend fun vidSrcSources(embedUrl: String, isTv: Boolean, s: Int, e: Int): List<StreamSource> {
     val page = ExtractorHttp.get(embedUrl, referer = originOf(embedUrl) + "/")
     val qBlock = Q_REGEX.find(page)?.groupValues?.get(1)
       ?: throw IOException("variabile Q assente nella pagina VidSrc")
@@ -164,8 +173,11 @@ class TwoEmbedProvider : StreamProvider {
 
     val out = mutableListOf<StreamSource>()
     for ((ref, name) in servers) {
+      currentCoroutineContext().ensureActive()
       val playJson = try {
         ExtractorHttp.get("$origin/pl/api.php?a=play&ref=${enc(ref)}&$qs", referer = embedUrl)
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (ex: Exception) {
         Log.i(TAG, "server $name: ${ex.message}")
         continue
@@ -189,7 +201,7 @@ class TwoEmbedProvider : StreamProvider {
       }
       Log.i(TAG, "server $name OK: $quality (bandwidth ${bandwidth ?: "?"} bps) -> $url")
       out += StreamSource(
-        url = url,
+        streamUrl = url,
         quality = quality,
         serverName = "$SERVER_NAME $name",
         headers = headers
@@ -202,7 +214,7 @@ class TwoEmbedProvider : StreamProvider {
   }
 
   /** Ritorna (qualità etichettata, bandwidth max) oppure (null, null) se invalida. */
-  private fun probePlaylist(url: String, headers: Map<String, String>, playType: String): Pair<String?, Int?> {
+  private suspend fun probePlaylist(url: String, headers: Map<String, String>, playType: String): Pair<String?, Int?> {
     if (!playType.contains("hls", ignoreCase = true) && !url.contains(".m3u8", ignoreCase = true)) {
       // MP4 diretti: nessuna validazione possibile senza scaricare il file
       return "1080p" to null

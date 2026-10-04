@@ -56,7 +56,7 @@ class MaxStreamExtractor : VideoExtractor {
 
     listOf(
       StreamSource(
-        url = best,
+        streamUrl = best,
         quality = "Auto",
         serverName = SERVER_NAME,
         headers = mapOf("Referer" to REFERER, "User-Agent" to ExtractorHttp.USER_AGENT)

@@ -82,6 +82,17 @@ secrets {
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
 
+// Exclude stock Media3 modules replaced by NuvioTV forked AARs
+configurations.all {
+    exclude(group = "androidx.media3", module = "media3-exoplayer")
+    exclude(group = "androidx.media3", module = "media3-common")
+    exclude(group = "androidx.media3", module = "media3-datasource")
+    exclude(group = "androidx.media3", module = "media3-datasource-okhttp")
+    exclude(group = "androidx.media3", module = "media3-exoplayer-hls")
+    exclude(group = "androidx.media3", module = "media3-extractor")
+    exclude(group = "androidx.media3", module = "media3-ui")
+}
+
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
 dependencies {
@@ -100,7 +111,7 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
-  // implementation(libs.androidx.datastore.preferences)
+  implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -108,11 +119,33 @@ dependencies {
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)
-  implementation(libs.androidx.media3.exoplayer)
-  implementation(libs.androidx.media3.ui)
-  implementation(libs.androidx.media3.common)
-  implementation(libs.androidx.media3.exoplayer.hls)
-  implementation(libs.androidx.media3.exoplayer.dash)
+
+  // NuvioTV Media3 forked AARs (replace stock Media3)
+  implementation(files("libs/lib-common-release.aar"))
+  implementation(files("libs/lib-datasource-release.aar"))
+  implementation(files("libs/lib-datasource-okhttp-release.aar"))
+  implementation(files("libs/lib-exoplayer-release.aar"))
+  implementation(files("libs/lib-exoplayer-hls-release.aar"))
+  implementation(files("libs/lib-extractor-release.aar"))
+  implementation(files("libs/lib-nuvio-engine-android-0.1.2.aar"))
+  implementation(files("libs/lib-ui-release.aar"))
+  implementation(files("libs/lib-decoder-ffmpeg-release.aar"))
+  implementation(files("libs/lib-decoder-av1-release.aar"))
+  implementation(files("libs/lib-decoder-iamf-release.aar"))
+  implementation(files("libs/lib-decoder-mpegh-release.aar"))
+  implementation(files("libs/nextlib-mediainfo-local.aar"))
+
+  // Stock Media3 modules from Maven (coherent 1.8.0)
+  implementation(libs.androidx.media3.decoder)
+  implementation(libs.androidx.media3.database)
+  implementation(libs.androidx.media3.container)
+
+  // AndroidX RecyclerView required at runtime by Media3 UI (PlayerView)
+  implementation(libs.androidx.recyclerview)
+
+  // Transitive dependencies required by forked local AARs (not bundled in AARs)
+  implementation("com.google.guava:guava:33.3.1-android")
+  implementation("androidx.annotation:annotation-experimental:1.3.1")
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   // Uncomment to use Firestore:

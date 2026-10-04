@@ -1,7 +1,10 @@
 package com.example.data.streaming
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -9,6 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import com.example.data.streaming.extractors.awaitResponse
 
 /**
  * Estrattore del provider **VixSrc / VixCloud** (streaming HTTP diretto, no Debrid).
@@ -50,8 +54,11 @@ class VixSrcProvider(
   ): List<StreamSource> = withContext(Dispatchers.IO) {
     if (tmdbId <= 0) throw IOException("TMDB ID non valido: $tmdbId")
 
+    Log.d("THE_PITT_STREAM", "VixSrc resolving TMDB=$tmdbId isTv=$isTv season=$season episode=$episode")
+
     val failures = mutableListOf<String>()
     for (base in BASE_URLS) {
+      currentCoroutineContext().ensureActive()
       try {
         val sources = resolveOnBase(base, tmdbId, isTv, season, episode)
         if (sources.isNotEmpty()) {
@@ -59,6 +66,8 @@ class VixSrcProvider(
           return@withContext sources
         }
         failures += "$base -> nessuna sorgente"
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (e: Exception) {
         Log.w(TAG, "Fallback mirror $base: ${e.message}")
         failures += "$base -> ${e.message}"
@@ -67,7 +76,7 @@ class VixSrcProvider(
     throw IOException("Nessun mirror VixSrc disponibile (${failures.joinToString(" | ")})")
   }
 
-  private fun resolveOnBase(
+  private suspend fun resolveOnBase(
     base: String,
     tmdbId: Int,
     isTv: Boolean,
@@ -83,26 +92,62 @@ class VixSrcProvider(
     val apiUrl = if ('?' in apiPath) "$base$apiPath&canPlayFHD=1&h=1" else "$base$apiPath?canPlayFHD=1&h=1"
     Log.i(TAG, "GET API  $apiUrl")
     val apiBody = get(apiUrl, referer = "$base/")
-    val src = JSONObject(apiBody).optString("src").trim()
+    val src = JSONObject(apiBody).optString("src", "")?.trim().orEmpty()
     if (src.isEmpty()) throw IOException("Risposta API senza campo 'src': ${apiBody.take(160)}")
-    val rawEmbed = if (src.startsWith("http")) src else base + src
-    val embedUrl = buildString {
-      append(rawEmbed)
-      if (!rawEmbed.contains("canPlayFHD=")) {
-        append(if ('?' in rawEmbed) "&canPlayFHD=1" else "?canPlayFHD=1")
+
+    val embedPath = if (src.startsWith("http")) {
+      try {
+        val uri = java.net.URI(src)
+        uri.rawPath + if (uri.rawQuery != null) "?${uri.rawQuery}" else ""
+      } catch (e: Exception) {
+        "/" + src.substringAfter("://").substringAfter("/")
       }
-      if (!rawEmbed.contains("h=")) {
-        append(if ('?' in this) "&h=1" else "?h=1")
-      }
+    } else {
+      src
     }
-    Log.i(TAG, "GET EMBED $embedUrl")
 
     // --- 2) Pagina embed -> streams, params, canPlayFHD --------------------
-    val embedHtml = get(embedUrl, referer = "$base/")
-    val streamsJson = extractBlock(embedHtml, "window.streams", '[', ']')
+    // Prova prima la base corrente e, se fallisce (es. HTTP 410), tenta con lo stesso src sui mirror di fallback
+    val candidateBases = listOf(base) + BASE_URLS.filter { it != base }
+    var embedHtml: String? = null
+    var activeBase = base
+    var lastEmbedError: Exception? = null
+
+    for (candidateBase in candidateBases) {
+      currentCoroutineContext().ensureActive()
+      val rawEmbed = if (embedPath.startsWith("/")) "$candidateBase$embedPath" else "$candidateBase/$embedPath"
+      val embedUrl = buildString {
+        append(rawEmbed)
+        if (!rawEmbed.contains("canPlayFHD=")) {
+          append(if ('?' in rawEmbed) "&canPlayFHD=1" else "?canPlayFHD=1")
+        }
+        if (!rawEmbed.contains("h=")) {
+          append(if ('?' in this) "&h=1" else "?h=1")
+        }
+      }
+      Log.i(TAG, "GET EMBED $embedUrl")
+      try {
+        val html = get(embedUrl, referer = "$candidateBase/")
+        if (html.contains("window.streams")) {
+          embedHtml = html
+          activeBase = candidateBase
+          break
+        } else {
+          Log.w(TAG, "Embed su $candidateBase senza window.streams")
+        }
+      } catch (ex: CancellationException) {
+        throw ex
+      } catch (e: Exception) {
+        Log.w(TAG, "Fallback embed mirror $candidateBase: ${e.message}")
+        lastEmbedError = e
+      }
+    }
+
+    val page = embedHtml ?: throw (lastEmbedError ?: IOException("Nessun mirror embed valido per $src"))
+    val streamsJson = extractBlock(page, "window.streams", '[', ']')
       ?: throw IOException("window.streams non trovato nell'embed")
     val streamsArray = JSONArray(streamsJson)
-    val masterBlock = extractBlock(embedHtml, "window.masterPlaylist", '{', ';')
+    val masterBlock = extractBlock(page, "window.masterPlaylist", '{', ';')
       ?: throw IOException("window.masterPlaylist non trovato nell'embed")
 
     val masterUrl = Regex("""url\s*:\s*'([^']+)'""").find(masterBlock)?.groupValues?.get(1)
@@ -113,13 +158,14 @@ class VixSrcProvider(
     val params = PAIR_REGEX.findAll(paramsBlock)
       .associate { it.groupValues[1] to it.groupValues[2] }
 
-    val canPlayFhd = Regex("""canPlayFHD\s*=\s*(true|false)""").find(embedHtml)
+    val canPlayFhd = Regex("""canPlayFHD\s*=\s*(true|false)""").find(page)
       ?.groupValues?.get(1) != "false"
     Log.i(TAG, "masterPlaylist=$masterUrl params=$params canPlayFHD=$canPlayFhd")
 
     // --- 3) Costruzione URL playlist per ogni server (Priorità 1080p FHD) ---
+    val effectiveReferer = "$activeBase/"
     val headers = mapOf(
-      "Referer" to REFERER,
+      "Referer" to effectiveReferer,
       "User-Agent" to USER_AGENT
     )
     val sources = mutableListOf<StreamSource>()
@@ -151,13 +197,15 @@ class VixSrcProvider(
       // Tentativo primario Full HD (h=1), con fallback su standard
       var chosenUrl = playlistUrlFhd
       var playlistBody = try {
-        get(chosenUrl, referer = REFERER)
+        get(chosenUrl, referer = effectiveReferer)
+      } catch (ex: CancellationException) {
+        throw ex
       } catch (e: Exception) {
         null
       }
       if (playlistBody == null || !playlistBody.startsWith("#EXTM3U")) {
         chosenUrl = playlistUrlStandard
-        playlistBody = get(chosenUrl, referer = REFERER)
+        playlistBody = get(chosenUrl, referer = effectiveReferer)
       }
       if (!playlistBody.startsWith("#EXTM3U")) {
         throw IOException("Playlist non HLS su $serverName: ${playlistBody.take(120)}")
@@ -179,7 +227,7 @@ class VixSrcProvider(
       Log.i(TAG, "OK $serverName (declared=$declared, verifiedHeight=$verifiedHeight, renditions=$renditions) url=$chosenUrl")
 
       sources += StreamSource(
-        url = chosenUrl,
+        streamUrl = chosenUrl,
         quality = detectedQuality,
         serverName = serverName,
         headers = headers,
@@ -192,7 +240,7 @@ class VixSrcProvider(
   }
 
   /** GET con header da browser; lancia [IOException] su status non 2xx. */
-  private fun get(url: String, referer: String?): String {
+  private suspend fun get(url: String, referer: String?): String {
     val request = Request.Builder()
       .url(url)
       .header("User-Agent", USER_AGENT)
@@ -201,10 +249,11 @@ class VixSrcProvider(
       .get()
     if (!referer.isNullOrBlank()) request.header("Referer", referer)
 
-    http.newCall(request.build()).execute().use { response ->
-      val body = response.body?.string().orEmpty()
-      if (!response.isSuccessful) {
-        throw IOException("HTTP ${response.code} su $url")
+    val response = http.newCall(request.build()).awaitResponse()
+    response.use { resp ->
+      val body = resp.body?.string().orEmpty()
+      if (!resp.isSuccessful) {
+        throw IOException("HTTP ${resp.code} su $url")
       }
       return body
     }
@@ -259,9 +308,9 @@ class VixSrcProvider(
     /** Endpoint primario + mirror di fallback (in ordine di tentativo). */
     private val BASE_URLS = listOf(
       "https://vixsrc.to",
+      "https://vixcloud.co",
       "https://vixcloud.to",
-      "https://vixcloud.cc",
-      "https://vixcloud.co"
+      "https://vixcloud.cc"
     )
   }
 }
