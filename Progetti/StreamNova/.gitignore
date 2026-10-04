@@ -24,3 +24,8 @@ local.properties
 
 # --- Keystore di firma (non versionare) ---
 debug.keystore
+
+SnakeNeon/
+.claude/
+**/SnakeNeon/**
+**/.claude/**
