@@ -15,6 +15,12 @@ import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
 import com.example.data.model.VideoResolution
+import android.content.Context
+import com.example.data.local.StreamNovaDatabase
+import com.example.data.prefs.BackBufferOption
+import com.example.data.prefs.DecoderFallbackMode
+import com.example.data.prefs.InitialBufferOption
+import com.example.data.prefs.TargetBufferOption
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.PlaybackSettings
 import com.example.data.prefs.PreferredResolution
@@ -315,6 +321,65 @@ class StreamNovaViewModel : ViewModel() {
 
   fun setSubtitlePosition(position: SubtitlePosition) =
     SettingsRepository.setSubtitlePosition(position)
+
+  // ── IMPOSTAZIONI AVANZATE RIPRODUZIONE ─────────────────────────────
+
+  fun setTargetBuffer(option: TargetBufferOption) =
+    SettingsRepository.setTargetBuffer(option)
+
+  fun setInitialBuffer(option: InitialBufferOption) =
+    SettingsRepository.setInitialBuffer(option)
+
+  fun setBackBuffer(option: BackBufferOption) =
+    SettingsRepository.setBackBuffer(option)
+
+  fun setAudioPassthroughEnabled(enabled: Boolean) =
+    SettingsRepository.setAudioPassthroughEnabled(enabled)
+
+  fun setAudioTunnelingEnabled(enabled: Boolean) =
+    SettingsRepository.setAudioTunnelingEnabled(enabled)
+
+  fun setDecoderFallbackMode(mode: DecoderFallbackMode) =
+    SettingsRepository.setDecoderFallbackMode(mode)
+
+  fun setAutoFrameRateMatching(enabled: Boolean) =
+    SettingsRepository.setAutoFrameRateMatching(enabled)
+
+  fun setDolbyVisionFallbackEnabled(enabled: Boolean) =
+    SettingsRepository.setDolbyVisionFallbackEnabled(enabled)
+
+  fun setDebugOverlayEnabled(enabled: Boolean) =
+    SettingsRepository.setDebugOverlayEnabled(enabled)
+
+  @OptIn(coil.annotation.ExperimentalCoilApi::class)
+  fun clearAppCache(context: Context, onComplete: (Boolean) -> Unit) {
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        // 1. Svuota la cache immagini Coil (memoria e disco)
+        coil.Coil.imageLoader(context).apply {
+          memoryCache?.clear()
+          diskCache?.clear()
+        }
+        // 2. Svuota il database locale TMDB preservando preferiti e progressi
+        val db = StreamNovaDatabase.getInstance(context)
+        db?.tmdbResponseCacheDao()?.clearAll()
+        db?.cachedMediaDao()?.clearNonFavorites()
+
+        // 3. Svuota la directory cache applicativa
+        context.cacheDir?.deleteRecursively()
+        context.externalCacheDir?.deleteRecursively()
+
+        withContext(Dispatchers.Main) {
+          onComplete(true)
+        }
+      } catch (e: Exception) {
+        Log.e("StreamNovaViewModel", "Clear cache error: ${e.message}", e)
+        withContext(Dispatchers.Main) {
+          onComplete(false)
+        }
+      }
+    }
+  }
 
   // ── DEBRID / TORBOX ───────────────────────────────────────────────
 

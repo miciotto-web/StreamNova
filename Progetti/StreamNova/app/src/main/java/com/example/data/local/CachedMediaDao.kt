@@ -53,4 +53,7 @@ interface CachedMediaDao {
 
   @Query("DELETE FROM cached_media_items WHERE id = :id")
   suspend fun deleteById(id: String)
+
+  @Query("DELETE FROM cached_media_items WHERE isFavorite = 0 AND (currentProgressMs IS NULL OR currentProgressMs <= 0)")
+  suspend fun clearNonFavorites()
 }

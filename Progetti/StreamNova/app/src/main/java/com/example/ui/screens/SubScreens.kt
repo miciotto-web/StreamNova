@@ -47,17 +47,26 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.HdrOn
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.SyncAlt
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wallpaper
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -103,12 +112,16 @@ import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.model.SearchTypeFilter
 import com.example.data.prefs.AppSettingsRepository
+import com.example.data.prefs.BackBufferOption
+import com.example.data.prefs.DecoderFallbackMode
+import com.example.data.prefs.InitialBufferOption
 import com.example.data.prefs.PlaybackSettings
 import com.example.data.prefs.PreferredResolution
+import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
-import com.example.data.prefs.StreamingEngineMode
+import com.example.data.prefs.TargetBufferOption
 import com.example.ui.components.ContinueWatchingCard
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.StandardMediaCard
@@ -1181,6 +1194,7 @@ fun SettingsScreen(
   viewModel: StreamNovaViewModel? = null,
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
   val isRefreshing = viewModel?.isRefreshing?.collectAsState()?.value ?: false
   val appVersion = BuildConfig.VERSION_NAME
   val playbackSettings = viewModel?.playbackSettings?.collectAsState()?.value ?: PlaybackSettings()
@@ -1207,6 +1221,11 @@ fun SettingsScreen(
   var parentalPinErrorMessage by remember { mutableStateOf<String?>(null) }
   var showParentalManageDialog by remember { mutableStateOf(false) }
   var showParentalLevelDialog by remember { mutableStateOf(false) }
+  var showTargetBufferDialog by remember { mutableStateOf(false) }
+  var showInitialBufferDialog by remember { mutableStateOf(false) }
+  var showBackBufferDialog by remember { mutableStateOf(false) }
+  var showDecoderFallbackDialog by remember { mutableStateOf(false) }
+  var isClearingCache by remember { mutableStateOf(false) }
 
   // Verifica automatica (una sola volta) della chiave salvata: all'ingresso in
   // Impostazioni l'indicatore diventa verde "Collegato" se la chiave è valida.
@@ -1433,15 +1452,103 @@ fun SettingsScreen(
       // ── AVANZATO ────────────────────────────────────────────────────────
       item {
         SettingsSection(title = stringResource(R.string.settings_sec_advanced)) {
-          SettingsRow(icon = Icons.Default.BugReport, title = stringResource(R.string.settings_bug_reports))
-          SettingsRow(icon = Icons.Default.PrivacyTip, title = stringResource(R.string.settings_privacy_data))
+          // 1. Target Buffer
+          SettingsRow(
+            icon = Icons.Default.Memory,
+            title = stringResource(R.string.settings_adv_target_buffer),
+            value = targetBufferLabel(playbackSettings.targetBuffer),
+            onClick = { showTargetBufferDialog = true }
+          )
+
+          // 2. Initial Buffer
+          SettingsRow(
+            icon = Icons.Default.Speed,
+            title = stringResource(R.string.settings_adv_initial_buffer),
+            value = initialBufferLabel(playbackSettings.initialBuffer),
+            onClick = { showInitialBufferDialog = true }
+          )
+
+          // 3. Back Buffer
+          SettingsRow(
+            icon = Icons.Default.Replay,
+            title = stringResource(R.string.settings_adv_back_buffer),
+            value = backBufferLabel(playbackSettings.backBuffer),
+            onClick = { showBackBufferDialog = true }
+          )
+
+          // 4. Audio Passthrough
+          SettingsRow(
+            icon = Icons.AutoMirrored.Filled.VolumeUp,
+            title = stringResource(R.string.settings_adv_audio_passthrough),
+            value = if (playbackSettings.audioPassthroughEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+            valueColor = if (playbackSettings.audioPassthroughEnabled) NovaGreen else NovaTextMuted,
+            onClick = { viewModel?.setAudioPassthroughEnabled(!playbackSettings.audioPassthroughEnabled) }
+          )
+
+          // 5. Audio Tunneling
+          SettingsRow(
+            icon = Icons.Default.SyncAlt,
+            title = stringResource(R.string.settings_adv_audio_tunneling),
+            value = if (playbackSettings.audioTunnelingEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+            valueColor = if (playbackSettings.audioTunnelingEnabled) NovaGreen else NovaTextMuted,
+            onClick = { viewModel?.setAudioTunnelingEnabled(!playbackSettings.audioTunnelingEnabled) }
+          )
+
+          // 6. Decoder Fallback (FFmpeg)
+          SettingsRow(
+            icon = Icons.Default.Extension,
+            title = stringResource(R.string.settings_adv_decoder_fallback),
+            value = decoderFallbackLabel(playbackSettings.decoderFallbackMode),
+            onClick = { showDecoderFallbackDialog = true }
+          )
+
+          // 7. Auto Frame Rate Matching (AFR)
+          SettingsRow(
+            icon = Icons.Default.Tv,
+            title = stringResource(R.string.settings_adv_afr),
+            value = if (playbackSettings.autoFrameRateMatching) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+            valueColor = if (playbackSettings.autoFrameRateMatching) NovaGreen else NovaTextMuted,
+            onClick = { viewModel?.setAutoFrameRateMatching(!playbackSettings.autoFrameRateMatching) }
+          )
+
+          // 8. Dolby Vision Fallback
+          SettingsRow(
+            icon = Icons.Default.HdrOn,
+            title = stringResource(R.string.settings_adv_dolby_vision_fallback),
+            value = if (playbackSettings.dolbyVisionFallbackEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+            valueColor = if (playbackSettings.dolbyVisionFallbackEnabled) NovaGreen else NovaTextMuted,
+            onClick = { viewModel?.setDolbyVisionFallbackEnabled(!playbackSettings.dolbyVisionFallbackEnabled) }
+          )
+
+          // 9. Stats for Nerds / Debug Info Overlay
+          SettingsRow(
+            icon = Icons.Default.Assessment,
+            title = stringResource(R.string.settings_adv_stats_overlay),
+            value = if (playbackSettings.debugOverlayEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+            valueColor = if (playbackSettings.debugOverlayEnabled) NovaGreen else NovaTextMuted,
+            onClick = { viewModel?.setDebugOverlayEnabled(!playbackSettings.debugOverlayEnabled) }
+          )
+
+          // 10. Clear Cache
           SettingsRow(
             icon = Icons.Default.DeleteSweep,
-            title = stringResource(R.string.settings_clear_cache),
-            onClick = { viewModel?.clearCacheAndRefresh() }
+            title = stringResource(R.string.settings_adv_clear_cache_title),
+            value = if (isClearingCache) stringResource(R.string.settings_in_progress) else null,
+            onClick = {
+              if (!isClearingCache && viewModel != null) {
+                isClearingCache = true
+                viewModel.clearAppCache(context) { success ->
+                  isClearingCache = false
+                  val msg = if (success) {
+                    context.getString(R.string.settings_adv_cache_cleared)
+                  } else {
+                    context.getString(R.string.settings_adv_cache_clear_error)
+                  }
+                  Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                }
+              }
+            }
           )
-          SettingsRow(icon = Icons.Default.Restore, title = stringResource(R.string.settings_restore_defaults))
-          SettingsRow(icon = Icons.Default.Gavel, title = stringResource(R.string.settings_legal_info))
         }
       }
     }
@@ -1696,6 +1803,66 @@ fun SettingsScreen(
       onDismiss = { showParentalLevelDialog = false }
     )
   }
+
+  if (showTargetBufferDialog) {
+    val targetOptions = TargetBufferOption.entries
+    val targetLabels = targetOptions.map { targetBufferLabel(it) }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_adv_target_buffer),
+      options = targetLabels,
+      selectedIndex = targetOptions.indexOf(playbackSettings.targetBuffer).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setTargetBuffer(targetOptions[idx])
+        showTargetBufferDialog = false
+      },
+      onDismiss = { showTargetBufferDialog = false }
+    )
+  }
+
+  if (showInitialBufferDialog) {
+    val initialOptions = InitialBufferOption.entries
+    val initialLabels = initialOptions.map { initialBufferLabel(it) }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_adv_initial_buffer),
+      options = initialLabels,
+      selectedIndex = initialOptions.indexOf(playbackSettings.initialBuffer).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setInitialBuffer(initialOptions[idx])
+        showInitialBufferDialog = false
+      },
+      onDismiss = { showInitialBufferDialog = false }
+    )
+  }
+
+  if (showBackBufferDialog) {
+    val backOptions = BackBufferOption.entries
+    val backLabels = backOptions.map { backBufferLabel(it) }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_adv_back_buffer),
+      options = backLabels,
+      selectedIndex = backOptions.indexOf(playbackSettings.backBuffer).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setBackBuffer(backOptions[idx])
+        showBackBufferDialog = false
+      },
+      onDismiss = { showBackBufferDialog = false }
+    )
+  }
+
+  if (showDecoderFallbackDialog) {
+    val decoderOptions = DecoderFallbackMode.entries
+    val decoderLabels = decoderOptions.map { decoderFallbackLabel(it) }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_adv_decoder_fallback),
+      options = decoderLabels,
+      selectedIndex = decoderOptions.indexOf(playbackSettings.decoderFallbackMode).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setDecoderFallbackMode(decoderOptions[idx])
+        showDecoderFallbackDialog = false
+      },
+      onDismiss = { showDecoderFallbackDialog = false }
+    )
+  }
 }
 
 /** Passi del flusso di inserimento/verifica PIN per il controllo genitori. */
@@ -1781,6 +1948,37 @@ private fun subtitlePositionLabel(pos: SubtitlePosition): String = when (pos) {
   SubtitlePosition.BOTTOM -> stringResource(R.string.sub_pos_bottom)
   SubtitlePosition.CENTER -> stringResource(R.string.sub_pos_center)
   SubtitlePosition.TOP -> stringResource(R.string.sub_pos_top)
+}
+
+@Composable
+private fun targetBufferLabel(option: TargetBufferOption): String = when (option) {
+  TargetBufferOption.DEFAULT -> stringResource(R.string.buffer_target_default)
+  TargetBufferOption.MINIMUM -> stringResource(R.string.buffer_target_min)
+  TargetBufferOption.BALANCED -> stringResource(R.string.buffer_target_balanced)
+  TargetBufferOption.EXTENDED -> stringResource(R.string.buffer_target_extended)
+}
+
+@Composable
+private fun initialBufferLabel(option: InitialBufferOption): String = when (option) {
+  InitialBufferOption.FAST -> stringResource(R.string.buffer_initial_fast)
+  InitialBufferOption.STANDARD -> stringResource(R.string.buffer_initial_standard)
+  InitialBufferOption.STABLE -> stringResource(R.string.buffer_initial_stable)
+}
+
+@Composable
+private fun backBufferLabel(option: BackBufferOption): String = when (option) {
+  BackBufferOption.OFF -> stringResource(R.string.buffer_back_off)
+  BackBufferOption.SHORT -> stringResource(R.string.buffer_back_10s)
+  BackBufferOption.STANDARD -> stringResource(R.string.buffer_back_15s)
+  BackBufferOption.EXTENDED -> stringResource(R.string.buffer_back_30s)
+  BackBufferOption.MAXIMUM -> stringResource(R.string.buffer_back_60s)
+}
+
+@Composable
+private fun decoderFallbackLabel(mode: DecoderFallbackMode): String = when (mode) {
+  DecoderFallbackMode.OFF -> stringResource(R.string.decoder_mode_off)
+  DecoderFallbackMode.ON -> stringResource(R.string.decoder_mode_on)
+  DecoderFallbackMode.PREFER -> stringResource(R.string.decoder_mode_prefer)
 }
 
 /**

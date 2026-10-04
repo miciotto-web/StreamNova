@@ -6,6 +6,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.audio.AudioCapabilities
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
@@ -25,14 +26,17 @@ class NuvioRenderersFactory(
     private val playbackSpeedProvider: () -> Float = { 1.0f },
     private val initialForcePcm: Boolean = false,
     private val preferSoftwareAudioOnly: Boolean = false,
+    private val audioPassthroughEnabled: Boolean = false,
+    private val extensionRendererModePreference: Int = EXTENSION_RENDERER_MODE_ON,
+    private val dolbyVisionFallbackEnabled: Boolean = true,
     private val onPlaybackSpeedAwareAudioSinkCreated: ((PlaybackSpeedAwareAudioSink) -> Unit)? = null,
     private val onFfmpegAudioRendererChanged: ((FfmpegAudioRenderer?) -> Unit)? = null
 ) : DefaultRenderersFactory(context) {
 
     init {
-        setExtensionRendererMode(EXTENSION_RENDERER_MODE_ON)
+        setExtensionRendererMode(extensionRendererModePreference)
         setEnableDecoderFallback(true)
-        applyMapDv7ToHevcIfSupported(true)
+        applyMapDv7ToHevcIfSupported(dolbyVisionFallbackEnabled)
     }
 
     override fun buildVideoRenderers(
@@ -67,12 +71,13 @@ class NuvioRenderersFactory(
         enableFloatOutput: Boolean,
         enableAudioTrackPlaybackParams: Boolean
     ): AudioSink {
-        val builder = if (bluetoothForcePcm) {
-            DefaultAudioSink.Builder(context)
-                .setAudioCapabilities(AudioOutputRouteDetector.bluetoothPcmOnlyCapabilities())
-        } else {
-            DefaultAudioSink.Builder(context)
+        val audioCaps = when {
+            bluetoothForcePcm -> AudioOutputRouteDetector.bluetoothPcmOnlyCapabilities()
+            audioPassthroughEnabled -> AudioCapabilities.getCapabilities(context)
+            else -> AudioOutputRouteDetector.bluetoothPcmOnlyCapabilities()
         }
+        val builder = DefaultAudioSink.Builder(context)
+            .setAudioCapabilities(audioCaps)
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
 

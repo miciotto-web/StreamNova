@@ -193,4 +193,79 @@ object FrameRateUtils {
             try { extractor.release() } catch (_: Exception) {}
         }
     }
+
+    /**
+     * Matches the display refresh rate (AFR) on Android TV (API 23+) according to the video FPS.
+     * Selects the mode with the same physical resolution and nearest matching refresh rate (e.g. 23.976Hz, 24Hz, 50Hz, 60Hz).
+     */
+    fun switchDisplayModeForFrameRate(activity: Activity?, targetFps: Float): Boolean {
+        if (activity == null || targetFps <= 0f) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+        try {
+            val window = activity.window ?: return false
+            val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                activity.display
+            } else {
+                @Suppress("DEPRECATION")
+                activity.windowManager?.defaultDisplay
+            } ?: return false
+
+            val supportedModes = display.supportedModes ?: return false
+            val snappedTargetFps = snapToStandardRate(targetFps)
+
+            val currentMode = display.mode
+            val currentWidth = currentMode.physicalWidth
+            val currentHeight = currentMode.physicalHeight
+
+            var bestMode: Display.Mode? = null
+            var bestDiff = Float.MAX_VALUE
+
+            for (mode in supportedModes) {
+                val modeFps = mode.refreshRate
+                val diff = abs(modeFps - snappedTargetFps)
+                val sameResolution = mode.physicalWidth == currentWidth && mode.physicalHeight == currentHeight
+                val isMultiple = (modeFps % snappedTargetFps < 0.05f) || (abs(modeFps - (snappedTargetFps * 2)) < 0.1f)
+                val effectiveDiff = if (diff < 0.08f) diff else if (isMultiple) 0.07f else diff
+
+                if (effectiveDiff < 0.15f) {
+                    if (sameResolution) {
+                        bestMode = mode
+                        break
+                    } else if (effectiveDiff < bestDiff) {
+                        bestDiff = effectiveDiff
+                        bestMode = mode
+                    }
+                }
+            }
+
+            if (bestMode != null && bestMode.modeId != currentMode.modeId) {
+                Log.i(TAG, "AFR: Imposto display mode ${bestMode.physicalWidth}x${bestMode.physicalHeight} @ ${bestMode.refreshRate}Hz (modeId=${bestMode.modeId}) per video FPS $targetFps")
+                val params = window.attributes
+                params.preferredDisplayModeId = bestMode.modeId
+                window.attributes = params
+                return true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "AFR: Errore cambio frequenza display: ${e.message}", e)
+        }
+        return false
+    }
+
+    /**
+     * Resets the display mode back to default (preferredDisplayModeId = 0) on playback exit.
+     */
+    fun resetDisplayMode(activity: Activity?) {
+        if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        try {
+            val window = activity.window ?: return
+            val params = window.attributes
+            if (params.preferredDisplayModeId != 0) {
+                Log.i(TAG, "AFR: Reset preferredDisplayModeId a 0 (default di sistema)")
+                params.preferredDisplayModeId = 0
+                window.attributes = params
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "AFR: Errore reset display mode: ${e.message}", e)
+        }
+    }
 }

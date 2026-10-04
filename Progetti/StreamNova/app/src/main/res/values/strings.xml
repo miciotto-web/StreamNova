@@ -192,6 +192,40 @@
     <string name="settings_subtitle_color">Colore dei sottotitoli</string>
     <string name="settings_forced_subtitles">Sottotitoli Forced se presenti nel video</string>
     <string name="settings_sec_advanced">Avanzato</string>
+    <string name="settings_adv_target_buffer">Dimensione Target Buffer</string>
+    <string name="settings_adv_initial_buffer">Buffer Iniziale (Avvio)</string>
+    <string name="settings_adv_back_buffer">Back Buffer (Seek istantaneo)</string>
+    <string name="settings_adv_audio_passthrough">Audio Passthrough / Bitstream</string>
+    <string name="settings_adv_audio_tunneling">Audio Tunneling</string>
+    <string name="settings_adv_decoder_fallback">Decoder Fallback (FFmpeg)</string>
+    <string name="settings_adv_afr">Auto Frame Rate Matching (AFR)</string>
+    <string name="settings_adv_dolby_vision_fallback">Dolby Vision Fallback</string>
+    <string name="settings_adv_stats_overlay">Statistiche Avanzate (Stats for Nerds)</string>
+    <string name="settings_adv_clear_cache_title">Cancella Cache e Dati Temporanei</string>
+    <string name="settings_adv_cache_cleared">Cache svuotata con successo</string>
+    <string name="settings_adv_cache_clear_error">Errore durante lo svuotamento della cache</string>
+
+    <!-- Buffer options -->
+    <string name="buffer_target_default">Predefinito (175 MB)</string>
+    <string name="buffer_target_min">Minimo (150 MB)</string>
+    <string name="buffer_target_balanced">Bilanciato (300 MB)</string>
+    <string name="buffer_target_extended">Esteso (500 MB+ / 4K)</string>
+
+    <string name="buffer_initial_fast">Avvio rapido (1.5s)</string>
+    <string name="buffer_initial_standard">Standard (2.5s)</string>
+    <string name="buffer_initial_stable">Stabilità massima (3.5s)</string>
+
+    <string name="buffer_back_off">Disattivato (0s)</string>
+    <string name="buffer_back_10s">10 secondi</string>
+    <string name="buffer_back_15s">Predefinito (15 secondi)</string>
+    <string name="buffer_back_30s">30 secondi</string>
+    <string name="buffer_back_60s">60 secondi</string>
+
+    <!-- Decoder Fallback options -->
+    <string name="decoder_mode_off">Disattivato (Solo Hardware)</string>
+    <string name="decoder_mode_on">Attivo (Fallback Software)</string>
+    <string name="decoder_mode_prefer">Preferisci Software (FFmpeg)</string>
+
     <string name="settings_bug_reports">Segnalazioni di Bug</string>
     <string name="settings_privacy_data">Privacy e dati</string>
     <string name="settings_clear_cache">Cancella cache</string>

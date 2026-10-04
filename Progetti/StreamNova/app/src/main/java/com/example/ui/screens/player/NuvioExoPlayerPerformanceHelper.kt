@@ -93,9 +93,19 @@ object NuvioExoPlayerPerformanceHelper {
      * Builds a [DefaultLoadControl] tuned for Nuvio performance when enabled,
      * or a standard ExoPlayer [DefaultLoadControl] when disabled.
      */
-    fun buildLoadControl(context: Context? = null, chunkOverheadMb: Int = 0): DefaultLoadControl {
+    fun buildLoadControl(
+        context: Context? = null,
+        chunkOverheadMb: Int = 0,
+        targetBufferSizeMbOverride: Int? = null,
+        bufferForPlaybackMsOverride: Int? = null,
+        backBufferMsOverride: Int? = null
+    ): DefaultLoadControl {
+        val effectiveTargetMb = targetBufferSizeMbOverride ?: targetBufferSizeMb
+        val effectiveBufferForPlaybackMs = bufferForPlaybackMsOverride ?: bufferForPlaybackMs
+        val effectiveBackMs = backBufferMsOverride ?: backBufferMs
+
         return if (enabled) {
-            val effectiveTargetBufferMb = (targetBufferSizeMb - chunkOverheadMb)
+            val effectiveTargetBufferMb = (effectiveTargetMb - chunkOverheadMb)
                 .coerceAtLeast(MIN_BUFFER_MB)
             val targetBufferBytes = (effectiveTargetBufferMb.toLong() * 1024L * 1024L)
                 .coerceAtMost(Int.MAX_VALUE.toLong())
@@ -109,9 +119,15 @@ object NuvioExoPlayerPerformanceHelper {
             }
             val allocator = DefaultAllocator(true, DEFAULT_NUVIO_ALLOCATOR_SEGMENT_SIZE, 64, enabled)
             liveAllocator = allocator
+
+            val backBufferToUse = if (effectiveBackMs <= 0) 0 else {
+                val ceiling = (minBufferMs.toLong() * BACK_BUFFER_TARGET_SHARE_NUM / BACK_BUFFER_TARGET_SHARE_DEN).toInt()
+                effectiveBackMs.coerceAtMost(ceiling)
+            }
+
             android.util.Log.i(
                 "ExoPerformance",
-                "buildLoadControl: targetBufferSizeMb=$targetBufferSizeMb, chunkOverheadMb=$chunkOverheadMb, effectiveTargetBufferMb=$effectiveTargetBufferMb, targetBytes=$targetBufferBytes, backBufferMs=${effectiveBackBufferMs()} (set=$backBufferMs)"
+                "buildLoadControl: targetBufferSizeMb=$effectiveTargetMb, chunkOverheadMb=$chunkOverheadMb, targetBytes=$targetBufferBytes, initialBufferMs=$effectiveBufferForPlaybackMs, backBufferMs=$backBufferToUse"
             )
             DefaultLoadControl.Builder()
                 .setAllocator(allocator)
@@ -119,21 +135,23 @@ object NuvioExoPlayerPerformanceHelper {
                 .setBufferDurationsMs(
                     minBufferMs,
                     maxBufferMs,
-                    bufferForPlaybackMs,
+                    effectiveBufferForPlaybackMs,
                     bufferForPlaybackAfterRebufferMs
                 )
                 .setPrioritizeTimeOverSizeThresholds(false)
-                .setBackBuffer(effectiveBackBufferMs(), true)
+                .setBackBuffer(backBufferToUse, true)
                 .build()
         } else {
+            val targetBytes = (effectiveTargetMb.toLong() * 1024L * 1024L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             DefaultLoadControl.Builder()
-                .setTargetBufferBytes(100 * 1024 * 1024)
+                .setTargetBufferBytes(targetBytes)
                 .setBufferDurationsMs(
                     DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
                     70_000,
-                    DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+                    effectiveBufferForPlaybackMs,
                     5_000
                 )
+                .setBackBuffer(effectiveBackMs.coerceAtLeast(0), true)
                 .build()
         }
     }

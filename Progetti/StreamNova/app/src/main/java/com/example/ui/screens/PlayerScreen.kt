@@ -1,8 +1,10 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import com.example.data.prefs.DecoderFallbackMode
 import com.example.ui.screens.player.*
 import android.view.KeyEvent
 import android.view.ViewGroup
@@ -378,12 +380,32 @@ fun PlayerScreen(
   }
 
   // Nuvio TrackSelector e ExoPlayer configurati con NuvioRenderersFactory, BitrateAwareLoadControl e Decoder Fallback
-  val (trackSelector, exoPlayer) = remember(playbackMediaSourceFactory, bandwidthMeter, playbackSettings.preferredResolution) {
+  val (trackSelector, exoPlayer) = remember(
+    playbackMediaSourceFactory,
+    bandwidthMeter,
+    playbackSettings.preferredResolution,
+    playbackSettings.targetBuffer,
+    playbackSettings.initialBuffer,
+    playbackSettings.backBuffer,
+    playbackSettings.audioPassthroughEnabled,
+    playbackSettings.audioTunnelingEnabled,
+    playbackSettings.decoderFallbackMode,
+    playbackSettings.dolbyVisionFallbackEnabled,
+    playbackSettings.autoFrameRateMatching
+  ) {
     val isBluetooth = AudioOutputRouteDetector.isBluetoothMediaOutput(context)
+    val extMode = when (playbackSettings.decoderFallbackMode) {
+      DecoderFallbackMode.OFF -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+      DecoderFallbackMode.ON -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+      DecoderFallbackMode.PREFER -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+    }
     val renderersFactory = NuvioRenderersFactory(
       context = context,
       bluetoothForcePcm = isBluetooth,
-      playbackSpeedProvider = { currentSpeed }
+      playbackSpeedProvider = { currentSpeed },
+      audioPassthroughEnabled = playbackSettings.audioPassthroughEnabled,
+      extensionRendererModePreference = extMode,
+      dolbyVisionFallbackEnabled = playbackSettings.dolbyVisionFallbackEnabled
     )
     val maxHeight = playbackSettings.preferredResolution.targetHeight
     val preferredAudioLangs = mapPreferredAudioLanguages(playbackSettings.preferredAudioLanguage)
@@ -391,7 +413,7 @@ fun PlayerScreen(
       context = context,
       streamUrlProvider = { videoUrl },
       streamNameProvider = { media.title },
-      tunnelingEnabled = false,
+      tunnelingEnabled = playbackSettings.audioTunnelingEnabled,
       safeAudioMode = false,
       preferredAudioLanguages = preferredAudioLangs,
       subtitlesEnabled = playbackSettings.subtitlesEnabled,
@@ -408,13 +430,23 @@ fun PlayerScreen(
         setParameters(buildUponParameters().setMaxVideoSize(maxWidth, maxHeight))
       }
     }
-    val loadControl = NuvioExoPlayerPerformanceHelper.buildLoadControl(context)
+    val loadControl = NuvioExoPlayerPerformanceHelper.buildLoadControl(
+      context = context,
+      targetBufferSizeMbOverride = playbackSettings.targetBuffer.sizeMb,
+      bufferForPlaybackMsOverride = playbackSettings.initialBuffer.durationMs,
+      backBufferMsOverride = playbackSettings.backBuffer.durationMs
+    )
+    val frameRateStrategy = if (playbackSettings.autoFrameRateMatching) {
+      C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
+    } else {
+      C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
+    }
     val player = ExoPlayer.Builder(context, renderersFactory)
       .setTrackSelector(trackSelector)
       .setMediaSourceFactory(playbackMediaSourceFactory)
       .setBandwidthMeter(bandwidthMeter)
       .setLoadControl(loadControl)
-      .setVideoChangeFrameRateStrategy(C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF)
+      .setVideoChangeFrameRateStrategy(frameRateStrategy)
       .build().apply {
         if (videoUrl != null) {
           Log.i("PlayerScreen", "Avvio riproduzione NuvioEngine: url=$videoUrl")
@@ -1105,6 +1137,10 @@ fun PlayerScreen(
           val h = vf?.height ?: vs.height
           val w = vf?.width ?: vs.width
           updateResolutionFromHeight(h, w)
+          if (playbackSettings.autoFrameRateMatching && vf != null && vf.frameRate > 0f) {
+            val act = context as? Activity
+            FrameRateUtils.switchDisplayModeForFrameRate(act, vf.frameRate)
+          }
           playerReady = true
         } else if (state == Player.STATE_ENDED) {
           isBuffering = false
@@ -1221,6 +1257,10 @@ fun PlayerScreen(
     exoPlayer.addListener(listener)
 
     onDispose {
+      if (playbackSettings.autoFrameRateMatching) {
+        val act = context as? Activity
+        FrameRateUtils.resetDisplayMode(act)
+      }
       val finalPos = exoPlayer.currentPosition
       viewModel.updatePlaybackPosition(finalPos, exoPlayer.duration, exoPlayer.bufferedPosition)
       if (finalPos > 0) {
@@ -1231,6 +1271,17 @@ fun PlayerScreen(
       exoPlayer.stop()
       exoPlayer.clearMediaItems()
       exoPlayer.release()
+    }
+  }
+
+  // Auto Frame Rate Matching (AFR): probing del container video se il formato non espone fps
+  LaunchedEffect(exoPlayer, videoUrl, playbackSettings.autoFrameRateMatching) {
+    if (playbackSettings.autoFrameRateMatching && videoUrl != null) {
+      val detection = FrameRateUtils.probeVideoFrameRate(context, videoUrl, filename = media.title)
+      if (detection != null && detection.snapped > 0f) {
+        val act = context as? Activity
+        FrameRateUtils.switchDisplayModeForFrameRate(act, detection.snapped)
+      }
     }
   }
 
@@ -2223,6 +2274,111 @@ fun PlayerScreen(
           showQualityModal = false
         },
         onDismiss = { showQualityModal = false }
+      )
+    }
+
+    // Stats for Nerds / Debug Info Overlay (non focalizzabile da D-pad)
+    if (playbackSettings.debugOverlayEnabled) {
+      StatsForNerdsOverlay(
+        player = exoPlayer,
+        modifier = Modifier.align(Alignment.TopStart)
+      )
+    }
+  }
+}
+
+/**
+ * Overlay diagnostico avanzato (Stats for Nerds) con metriche in tempo reale:
+ * Risoluzione, Bitrate, Codec Audio/Video, Buffer rimanente e Frame persi.
+ */
+@Composable
+fun StatsForNerdsOverlay(
+  player: ExoPlayer,
+  modifier: Modifier = Modifier
+) {
+  var tick by remember { mutableIntStateOf(0) }
+  LaunchedEffect(player) {
+    while (true) {
+      kotlinx.coroutines.delay(500)
+      tick++
+    }
+  }
+
+  val videoFormat = player.videoFormat
+  val audioFormat = player.audioFormat
+  val videoSize = player.videoSize
+  val width = if ((videoFormat?.width ?: 0) > 0) videoFormat?.width else videoSize.width.takeIf { it > 0 }
+  val height = if ((videoFormat?.height ?: 0) > 0) videoFormat?.height else videoSize.height.takeIf { it > 0 }
+  val fps = videoFormat?.frameRate?.takeIf { it > 0f }
+  val videoBitrate = videoFormat?.bitrate?.takeIf { it > 0 }
+    ?: player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+      .flatMap { (0 until it.length).map { i -> it to i } }
+      .firstOrNull { (g, i) -> g.isTrackSelected(i) }
+      ?.let { (g, i) -> g.getTrackFormat(i).bitrate.takeIf { it > 0 } }
+  val videoCodec = videoFormat?.sampleMimeType ?: "N/A"
+  val videoCodecsDetail = videoFormat?.codecs ?: ""
+  val audioCodec = audioFormat?.sampleMimeType ?: "N/A"
+  val audioChannels = audioFormat?.channelCount ?: -1
+  val audioSampleRate = audioFormat?.sampleRate ?: -1
+  val droppedFrames = player.videoDecoderCounters?.droppedBufferCount ?: 0
+  val bufferRemainingSec = ((player.bufferedPosition - player.currentPosition).coerceAtLeast(0L)) / 1000f
+
+  Box(
+    modifier = modifier
+      .padding(start = 28.dp, top = 28.dp)
+      .clip(RoundedCornerShape(8.dp))
+      .background(Color(0xE60D131F))
+      .border(1.dp, NovaCyanBright.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+      .padding(horizontal = 14.dp, vertical = 10.dp)
+  ) {
+    Column(
+      verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+          modifier = Modifier
+            .size(8.dp)
+            .background(NovaCyanBright, CircleShape)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+          text = "STATS FOR NERDS",
+          color = NovaCyanBright,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.Bold,
+          letterSpacing = 0.8.sp
+        )
+      }
+      Spacer(modifier = Modifier.height(2.dp))
+      Text(
+        text = "Risoluzione: ${width ?: "N/A"}x${height ?: "N/A"} ${if (fps != null) "@ ${String.format(java.util.Locale.ROOT, "%.2f", fps)} fps" else ""}",
+        color = Color.White,
+        fontSize = 11.sp,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+      )
+      Text(
+        text = "Bitrate Video: ${if (videoBitrate != null && videoBitrate > 0) "${videoBitrate / 1000} kbps" else "N/A"}",
+        color = Color(0xFFDDDDDD),
+        fontSize = 11.sp,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+      )
+      Text(
+        text = "Codec Video: $videoCodec ${if (videoCodecsDetail.isNotBlank()) "($videoCodecsDetail)" else ""}",
+        color = Color(0xFFB0B0B0),
+        fontSize = 11.sp,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+      )
+      Text(
+        text = "Codec Audio: $audioCodec ${if (audioChannels > 0) "($audioChannels ch, ${audioSampleRate}Hz)" else ""}",
+        color = Color(0xFFB0B0B0),
+        fontSize = 11.sp,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+      )
+      Text(
+        text = "Buffer: ${String.format(java.util.Locale.ROOT, "%.1f", bufferRemainingSec)}s | Frame persi: $droppedFrames",
+        color = if (droppedFrames > 0) Color(0xFFFFB74D) else NovaGreen,
+        fontSize = 11.sp,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
       )
     }
   }

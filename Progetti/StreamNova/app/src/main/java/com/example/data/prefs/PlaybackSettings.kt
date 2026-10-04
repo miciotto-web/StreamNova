@@ -61,7 +61,38 @@ enum class SubtitlePosition(val label: String, val bottomPaddingFraction: Float)
   TOP("Alto", 0.9f)
 }
 
-/** Impostazioni della sezione RIPRODUZIONE, con i default richiesti alla prima apertura. */
+/** Dimensione target del buffer memoria ExoPlayer. */
+enum class TargetBufferOption(val label: String, val sizeMb: Int) {
+  DEFAULT("Predefinito (175 MB)", 175),
+  MINIMUM("Minimo (150 MB)", 150),
+  BALANCED("Bilanciato (300 MB)", 300),
+  EXTENDED("Esteso (500 MB)", 500)
+}
+
+/** Buffer iniziale prima di avviare la riproduzione (Avvio rapido vs Stabilità). */
+enum class InitialBufferOption(val label: String, val durationMs: Int) {
+  FAST("Avvio Rapido (1.5s)", 1500),
+  STANDARD("Standard (2.5s)", 2500),
+  STABLE("Stabile (3.5s)", 3500)
+}
+
+/** Durata del back buffer mantenuto per seek istantaneo all'indietro. */
+enum class BackBufferOption(val label: String, val durationMs: Int) {
+  OFF("Disattivato", 0),
+  SHORT("10 secondi", 10_000),
+  STANDARD("15 secondi (Default)", 15_000),
+  EXTENDED("30 secondi", 30_000),
+  MAXIMUM("60 secondi", 60_000)
+}
+
+/** Modalità del fallback software per i codec (FFmpeg). */
+enum class DecoderFallbackMode(val label: String, val mode: Int) {
+  OFF("Disattivato (Solo Hardware)", 0),
+  ON("Hardware con Fallback Software", 1),
+  PREFER("Preferisci Software (FFmpeg)", 2)
+}
+
+/** Impostazioni della sezione RIPRODUZIONE e AVANZATE. */
 data class PlaybackSettings(
   val preferredResolution: PreferredResolution = PreferredResolution.AUTO,
   val autoPlayNextEpisode: Boolean = true,
@@ -85,7 +116,18 @@ data class PlaybackSettings(
   /** Sfondo dietro il testo dei sottotitoli nel player (default SEMI_TRANSPARENT). */
   val subtitleBackground: SubtitleBackground = SubtitleBackground.SEMI_TRANSPARENT,
   /** Posizione verticale dei sottotitoli nel player (default BOTTOM). */
-  val subtitlePosition: SubtitlePosition = SubtitlePosition.BOTTOM
+  val subtitlePosition: SubtitlePosition = SubtitlePosition.BOTTOM,
+
+  // ── IMPOSTAZIONI AVANZATE ───────────────────────────────────────────
+  val targetBuffer: TargetBufferOption = TargetBufferOption.DEFAULT,
+  val initialBuffer: InitialBufferOption = InitialBufferOption.STANDARD,
+  val backBuffer: BackBufferOption = BackBufferOption.STANDARD,
+  val audioPassthroughEnabled: Boolean = false,
+  val audioTunnelingEnabled: Boolean = false,
+  val decoderFallbackMode: DecoderFallbackMode = DecoderFallbackMode.ON,
+  val autoFrameRateMatching: Boolean = false,
+  val dolbyVisionFallbackEnabled: Boolean = true,
+  val debugOverlayEnabled: Boolean = false
 )
 
 private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(
@@ -93,7 +135,7 @@ private val Context.settingsDataStore: DataStore<Preferences> by preferencesData
 )
 
 /**
- * Persistenza delle impostazioni RIPRODUZIONE su DataStore Preferences.
+ * Persistenza delle impostazioni RIPRODUZIONE e AVANZATE su DataStore Preferences.
  *
  * Singleton inizializzato una sola volta dall'Application (stesso pattern di
  * [com.example.data.repository.MediaRepository.init]). Le scritture sono
@@ -111,6 +153,17 @@ object SettingsRepository {
   private val KEY_SUBTITLE_SIZE = stringPreferencesKey("subtitle_size")
   private val KEY_SUBTITLE_BACKGROUND = stringPreferencesKey("subtitle_background")
   private val KEY_SUBTITLE_POSITION = stringPreferencesKey("subtitle_position")
+
+  // Avanzate
+  private val KEY_TARGET_BUFFER = stringPreferencesKey("adv_target_buffer")
+  private val KEY_INITIAL_BUFFER = stringPreferencesKey("adv_initial_buffer")
+  private val KEY_BACK_BUFFER = stringPreferencesKey("adv_back_buffer")
+  private val KEY_AUDIO_PASSTHROUGH = booleanPreferencesKey("adv_audio_passthrough")
+  private val KEY_AUDIO_TUNNELING = booleanPreferencesKey("adv_audio_tunneling")
+  private val KEY_DECODER_FALLBACK = stringPreferencesKey("adv_decoder_fallback")
+  private val KEY_AUTO_FRAME_RATE = booleanPreferencesKey("adv_auto_frame_rate")
+  private val KEY_DOLBY_VISION_FALLBACK = booleanPreferencesKey("adv_dv_fallback")
+  private val KEY_DEBUG_OVERLAY = booleanPreferencesKey("adv_debug_overlay")
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -143,7 +196,26 @@ object SettingsRepository {
             ?: SubtitleBackground.SEMI_TRANSPARENT,
           subtitlePosition = prefs[KEY_SUBTITLE_POSITION]
             ?.let { name -> SubtitlePosition.entries.firstOrNull { it.name == name } }
-            ?: SubtitlePosition.BOTTOM
+            ?: SubtitlePosition.BOTTOM,
+
+          // Avanzate
+          targetBuffer = prefs[KEY_TARGET_BUFFER]
+            ?.let { name -> TargetBufferOption.entries.firstOrNull { it.name == name } }
+            ?: TargetBufferOption.DEFAULT,
+          initialBuffer = prefs[KEY_INITIAL_BUFFER]
+            ?.let { name -> InitialBufferOption.entries.firstOrNull { it.name == name } }
+            ?: InitialBufferOption.STANDARD,
+          backBuffer = prefs[KEY_BACK_BUFFER]
+            ?.let { name -> BackBufferOption.entries.firstOrNull { it.name == name } }
+            ?: BackBufferOption.STANDARD,
+          audioPassthroughEnabled = prefs[KEY_AUDIO_PASSTHROUGH] ?: false,
+          audioTunnelingEnabled = prefs[KEY_AUDIO_TUNNELING] ?: false,
+          decoderFallbackMode = prefs[KEY_DECODER_FALLBACK]
+            ?.let { name -> DecoderFallbackMode.entries.firstOrNull { it.name == name } }
+            ?: DecoderFallbackMode.ON,
+          autoFrameRateMatching = prefs[KEY_AUTO_FRAME_RATE] ?: false,
+          dolbyVisionFallbackEnabled = prefs[KEY_DOLBY_VISION_FALLBACK] ?: true,
+          debugOverlayEnabled = prefs[KEY_DEBUG_OVERLAY] ?: false
         )
       }
     }
@@ -187,5 +259,41 @@ object SettingsRepository {
 
   fun setSubtitlePosition(value: SubtitlePosition) {
     scope.launch { dataStore?.edit { it[KEY_SUBTITLE_POSITION] = value.name } }
+  }
+
+  fun setTargetBuffer(value: TargetBufferOption) {
+    scope.launch { dataStore?.edit { it[KEY_TARGET_BUFFER] = value.name } }
+  }
+
+  fun setInitialBuffer(value: InitialBufferOption) {
+    scope.launch { dataStore?.edit { it[KEY_INITIAL_BUFFER] = value.name } }
+  }
+
+  fun setBackBuffer(value: BackBufferOption) {
+    scope.launch { dataStore?.edit { it[KEY_BACK_BUFFER] = value.name } }
+  }
+
+  fun setAudioPassthroughEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_AUDIO_PASSTHROUGH] = value } }
+  }
+
+  fun setAudioTunnelingEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_AUDIO_TUNNELING] = value } }
+  }
+
+  fun setDecoderFallbackMode(value: DecoderFallbackMode) {
+    scope.launch { dataStore?.edit { it[KEY_DECODER_FALLBACK] = value.name } }
+  }
+
+  fun setAutoFrameRateMatching(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_AUTO_FRAME_RATE] = value } }
+  }
+
+  fun setDolbyVisionFallbackEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_DOLBY_VISION_FALLBACK] = value } }
+  }
+
+  fun setDebugOverlayEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_DEBUG_OVERLAY] = value } }
   }
 }
