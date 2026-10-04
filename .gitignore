@@ -1,0 +1,34 @@
+# --- Build / cache Gradle ---
+.gradle/
+build/
+app/build/
+.kotlin/
+.externalNativeBuild
+.cxx
+/captures
+
+# --- IDE / file locali della macchina ---
+.idea/
+*.iml
+local.properties
+.vscode/
+
+# --- Tooling / agent ---
+.kilo/
+
+# --- Segreti e ambienti ---
+.env
+
+# --- Sistema / OS ---
+.DS_Store
+
+# --- Keystore di firma (non versionare) ---
+debug.keystore
+
+# --- Artefatti locali / scratch ---
+scratch/
+androidx/
+
+# --- Artefatti locali / scratch ---
+scratch/
+androidx/

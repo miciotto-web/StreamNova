@@ -1,0 +1,351 @@
+<resources>
+    <string name="app_name">StreamNova</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_movies">Film</string>
+    <string name="nav_tv_series">Serie TV</string>
+    <string name="nav_favorites">Preferiti</string>
+    <string name="nav_search">Cerca</string>
+    <string name="nav_addons">Addon</string>
+    <string name="nav_settings">Impostazioni</string>
+
+    <!-- Common Actions & Dialogs -->
+    <string name="action_close">Chiudi</string>
+    <string name="action_cancel">Annulla</string>
+    <string name="action_save">Salva</string>
+    <string name="action_confirm">Conferma</string>
+    <string name="action_retry">Riprova</string>
+    <string name="action_play">Riproduci</string>
+    <string name="action_clear">Cancella</string>
+    <string name="action_remove">Rimuovi</string>
+
+    <!-- Home & Categories -->
+    <string name="category_all_movies">Tutti i film</string>
+    <string name="category_all_tv_series">Tutte le serie TV</string>
+    <string name="home_section_streaming_platforms">Piattaforme di Streaming</string>
+    <string name="home_badge_select_provider">Seleziona Provider</string>
+    <string name="home_section_continue_watching">Continua a guardare</string>
+    <string name="home_badge_in_progress">%d titoli in corso</string>
+    <string name="home_section_top_10_movies">Top 10 Film di Oggi</string>
+    <string name="home_badge_tmdb_ranking_italy">Classifica TMDB Italia</string>
+    <string name="home_section_top_10_series">Top 10 Serie TV di Oggi</string>
+    <string name="home_badge_most_watched_tmdb">Più Viste su TMDB</string>
+    <string name="home_section_trending_movies">Trending Film</string>
+    <string name="home_badge_trending_week">In Tendenza questa settimana</string>
+    <string name="home_section_trending_series">Trending Serie TV</string>
+    <string name="home_badge_trending_phenomena">Fenomeni del momento</string>
+    <string name="home_section_for_you_movies">For You: Film scelti per te</string>
+    <string name="home_badge_based_on_preferences">In base alle tue preferenze</string>
+    <string name="home_section_for_you_series">For You: Serie TV da non perdere</string>
+    <string name="home_badge_suggested_for_you">Suggerite per te</string>
+    <string name="home_section_popular_movies">Popolari Film</string>
+    <string name="home_badge_most_watched_cinema">I più visti del cinema</string>
+    <string name="home_section_popular_series">Popolari Serie</string>
+    <string name="home_badge_most_discussed_series">Le serie più discusse</string>
+
+    <!-- Provider Catalog Filters & States -->
+    <string name="filter_all">Tutti</string>
+    <string name="filter_movies">Film</string>
+    <string name="filter_tv_series">Serie TV</string>
+    <string name="filter_top_10">Top 10</string>
+    <string name="filter_action">Azione</string>
+    <string name="filter_sci_fi">Fantascienza</string>
+    <string name="filter_drama">Dramma</string>
+    <string name="filter_comedy">Commedia</string>
+    <string name="filter_animation">Animazione</string>
+    <string name="provider_loading_catalog">Caricamento catalogo %s…</string>
+    <string name="provider_empty_catalog">Nessun titolo disponibile su %s</string>
+    <string name="provider_empty_filter">Nessun contenuto trovato per il filtro \"%s\"</string>
+    <string name="provider_loading_more">Caricamento altri titoli %s…</string>
+
+    <!-- HeroBanner -->
+    <string name="action_watch_now">Guarda Ora</string>
+    <string name="action_details">Scheda Dettagli</string>
+    <string name="hero_seasons_count">%d Stagioni</string>
+
+    <!-- Media Cards -->
+    <string name="badge_minutes_remaining">%dm rimanenti</string>
+    <string name="media_card_seasons_abbr">%d Stag.</string>
+
+    <!-- Source Selection Dialog -->
+    <string name="source_dialog_title">Seleziona sorgente (%d)</string>
+    <string name="source_dialog_hints">↑↓ naviga  •  INVIO seleziona  •  🡄 🡆 filtra</string>
+    <string name="source_dialog_filter_all">Tutto</string>
+
+    <!-- Context Menu -->
+    <string name="context_resume">Riprendi visione</string>
+    <string name="context_details">Vai ai dettagli</string>
+    <string name="context_remove_continue_watching">Rimuovi da Continua a guardare</string>
+
+    <!-- Detail Screen -->
+    <string name="detail_tab_episodes">Episodi</string>
+    <string name="detail_tab_recommended">Consigliati</string>
+    <string name="detail_tab_technical_details">Dettagli Tecnici</string>
+    <string name="detail_loading_tmdb">Recupero dettagli estesi da TMDB…</string>
+    <string name="detail_partial_error">Dettagli parziali: %s</string>
+    <string name="detail_seasons_episodes_format">%1$d Stagioni • %2$d Ep.</string>
+    <string name="detail_resume_episode_format">Riprendi S%1$d: E%2$d</string>
+    <string name="detail_play_episode_format">Riproduci S%1$d: E%2$d</string>
+    <string name="detail_remove_favorite">Rimuovi dai preferiti</string>
+    <string name="detail_add_favorite">Aggiungi a preferiti</string>
+    <string name="detail_season_selection">SELEZIONE STAGIONE</string>
+    <string name="detail_season_format">Stagione %d</string>
+    <string name="detail_episodes_count_badge">%d ep</string>
+    <string name="detail_season_episodes_status">Stagione %1$d • %2$d Episodi</string>
+    <string name="detail_audio_info">Audio Italiano 5.1</string>
+    <string name="detail_loading_episodes">Caricamento episodi Stagione %d da TMDB…</string>
+    <string name="detail_main_cast">CAST PRINCIPALE</string>
+    <string name="cast_main_role">Cast principale</string>
+    <string name="detail_duration_min">%d min</string>
+    <string name="detail_watched_badge">✓ Visto</string>
+    <string name="detail_air_date_format">Data d\'uscita: %s</string>
+    <string name="detail_tech_specs_title">Specifiche Tecniche &amp; Scheda</string>
+    <string name="detail_tech_original_title">Titolo Originale</string>
+    <string name="detail_tech_director">Regia / Showrunner</string>
+    <string name="detail_tech_genres">Generi</string>
+    <string name="detail_tech_tagline">Tagline</string>
+    <string name="detail_tech_tmdb_status">Stato TMDB</string>
+    <string name="detail_tech_audio_languages">Lingue audio disponibili</string>
+    <string name="detail_tech_subtitles">Sottotitoli</string>
+    <string name="detail_tech_international_production">Produzione Internazionale</string>
+    <string name="detail_tech_audio_languages_val">Italiano 5.1, Inglese, Italiano Stereo</string>
+    <string name="detail_tech_subtitles_val">Italiano, Italiano Non Udenti, Inglese</string>
+
+    <!-- Favorites -->
+    <string name="favorites_title">Preferiti</string>
+    <string name="favorites_subtitle">I tuoi film e serie TV salvati nella tua lista personale</string>
+    <string name="favorites_count_zero">0 Titoli Salvati</string>
+    <string name="favorites_count_format">%d Titoli Salvati</string>
+    <string name="favorites_empty_title">Nessun titolo salvato nei Preferiti</string>
+    <string name="favorites_empty_desc">Tocca l\'icona del cuore o \'Aggiungi a preferiti\' nella scheda di dettaglio di qualsiasi film o serie.</string>
+
+    <!-- Search Screen -->
+    <string name="search_input_placeholder">Scrivi il titolo, attore o regista e premi Invio per cercare…</string>
+    <string name="search_screen_title">Cerca su StreamNova</string>
+    <string name="search_screen_subtitle">Cerca per testo o seleziona una categoria per esplorare tutti i contenuti</string>
+    <string name="search_back_to_categories">Torna alle Categorie</string>
+    <string name="search_category_desc">Tutti i contenuti dedicati al genere (TMDB Discover)</string>
+    <string name="search_titles_available">%d Titoli Disponibili</string>
+    <string name="search_no_content_for_category">Nessun contenuto trovato per %s</string>
+    <string name="search_results_found">Risultati trovati per \"%1$s\" (%2$d)</string>
+    <string name="search_no_results">Nessun risultato trovato per \"%s\"</string>
+    <string name="search_global_title">RICERCA GLOBALE PER CATEGORIA</string>
+    <string name="search_global_subtitle">Seleziona un badge per aprire la sezione dedicata ed esplorare l\'intero catalogo</string>
+
+    <!-- Search Categories -->
+    <string name="search_cat_action_adventure">Action &amp; Adventure</string>
+    <string name="search_cat_adventure">Avventura</string>
+    <string name="search_cat_crime">Crime</string>
+    <string name="search_cat_documentary">Documentario</string>
+    <string name="search_cat_family">Famiglia</string>
+    <string name="search_cat_fantasy">Fantasy</string>
+    <string name="search_cat_war">Guerra</string>
+    <string name="search_cat_horror">Horror</string>
+    <string name="search_cat_kids">Kids</string>
+    <string name="search_cat_mystery">Mistero</string>
+    <string name="search_cat_music">Musica</string>
+    <string name="search_cat_news">News</string>
+    <string name="search_cat_reality">Reality</string>
+    <string name="search_cat_romance">Romance</string>
+    <string name="search_cat_sci_fi_fantasy">Sci-Fi &amp; Fantasy</string>
+    <string name="search_cat_history">Storia</string>
+    <string name="search_cat_thriller">Thriller</string>
+    <string name="search_cat_western">Western</string>
+    <string name="search_cat_tv_movie">Televisione film</string>
+
+    <!-- Settings Screen -->
+    <string name="settings_title">Impostazioni</string>
+    <string name="settings_subtitle">Configura l\'esperienza StreamNova sul tuo televisore</string>
+    <string name="settings_sec_general">Generale</string>
+    <string name="settings_app_language">Lingua dell\'app</string>
+    <string name="settings_parental_control">Controllo genitori</string>
+    <string name="settings_check_updates">Controlla aggiornamenti</string>
+    <string name="settings_in_progress">In corso…</string>
+    <string name="settings_app_version">Versione dell\'app</string>
+    <string name="settings_sec_playback_engine">Motore di Riproduzione</string>
+    <string name="settings_playback_mode">Modalità di riproduzione</string>
+    <string name="settings_mode_debrid">Debrid TorBox (1080p / 4K Ultra HD)</string>
+    <string name="settings_mode_web_scraper">Web Streaming Gratuito (HTTP Scraper)</string>
+    <string name="settings_torbox_api_key">Chiave API TorBox</string>
+    <string name="settings_torbox_key_hint">Incolla la chiave API da torbox.app (Account -> API)</string>
+    <string name="settings_not_configured">Non configurata</string>
+    <string name="settings_key_not_configured">Chiave non configurata</string>
+    <string name="settings_account_status">Stato account</string>
+    <string name="settings_status_checking">Verifica in corso…</string>
+    <string name="settings_status_connected">Collegato</string>
+    <string name="settings_status_verify_account">Verifica Account</string>
+    <string name="settings_use_torbox_instant">Usa TorBox Instant Debrid</string>
+    <string name="settings_value_on">ON</string>
+    <string name="settings_value_off">OFF</string>
+    <string name="settings_http_desc">In modalità Web Streaming i siti di streaming web sono completamente disattivati per garantire solo flussi ad altissima qualità.</string>
+    <string name="settings_sec_playback">Riproduzione</string>
+    <string name="settings_autoplay">Avvio automatico (Autoplay)</string>
+    <string name="settings_preferred_resolution">Risoluzione preferita</string>
+    <string name="settings_preferred_audio_language">Lingua audio preferita</string>
+    <string name="settings_autoplay_next_episode">Riproduci automaticamente il prossimo episodio</string>
+    <string name="settings_auto_resume">Riprendi automaticamente la riproduzione</string>
+    <string name="settings_sec_subtitles">Sottotitoli</string>
+    <string name="settings_auto_subtitles">Abilita automaticamente i sottotitoli</string>
+    <string name="settings_preferred_subtitle_lang">Lingua preferita</string>
+    <string name="settings_subtitle_size">Dimensione sottotitoli</string>
+    <string name="settings_subtitle_background">Sfondo dei sottotitoli</string>
+    <string name="settings_subtitle_position">Posizione dei sottotitoli</string>
+    <string name="settings_subtitle_color">Colore dei sottotitoli</string>
+    <string name="settings_forced_subtitles">Sottotitoli Forced se presenti nel video</string>
+    <string name="settings_sec_advanced">Avanzato</string>
+    <string name="settings_adv_target_buffer">Dimensione Target Buffer</string>
+    <string name="settings_adv_initial_buffer">Buffer Iniziale (Avvio)</string>
+    <string name="settings_adv_back_buffer">Back Buffer (Seek istantaneo)</string>
+    <string name="settings_adv_audio_passthrough">Audio Passthrough / Bitstream</string>
+    <string name="settings_adv_audio_tunneling">Audio Tunneling</string>
+    <string name="settings_adv_decoder_fallback">Decoder Fallback (FFmpeg)</string>
+    <string name="settings_adv_afr">Auto Frame Rate Matching (AFR)</string>
+    <string name="settings_adv_dolby_vision_fallback">Dolby Vision Fallback</string>
+    <string name="settings_adv_stats_overlay">Statistiche Avanzate (Stats for Nerds)</string>
+    <string name="settings_adv_clear_cache_title">Cancella Cache e Dati Temporanei</string>
+    <string name="settings_adv_cache_cleared">Cache svuotata con successo</string>
+    <string name="settings_adv_cache_clear_error">Errore durante lo svuotamento della cache</string>
+
+    <!-- Buffer options -->
+    <string name="buffer_target_default">Predefinito (175 MB)</string>
+    <string name="buffer_target_min">Minimo (150 MB)</string>
+    <string name="buffer_target_balanced">Bilanciato (300 MB)</string>
+    <string name="buffer_target_extended">Esteso (500 MB+ / 4K)</string>
+
+    <string name="buffer_initial_fast">Avvio rapido (1.5s)</string>
+    <string name="buffer_initial_standard">Standard (2.5s)</string>
+    <string name="buffer_initial_stable">Stabilità massima (3.5s)</string>
+
+    <string name="buffer_back_off">Disattivato (0s)</string>
+    <string name="buffer_back_10s">10 secondi</string>
+    <string name="buffer_back_15s">Predefinito (15 secondi)</string>
+    <string name="buffer_back_30s">30 secondi</string>
+    <string name="buffer_back_60s">60 secondi</string>
+
+    <!-- Decoder Fallback options -->
+    <string name="decoder_mode_off">Disattivato (Solo Hardware)</string>
+    <string name="decoder_mode_on">Attivo (Fallback Software)</string>
+    <string name="decoder_mode_prefer">Preferisci Software (FFmpeg)</string>
+
+    <string name="settings_bug_reports">Segnalazioni di Bug</string>
+    <string name="settings_privacy_data">Privacy e dati</string>
+    <string name="settings_clear_cache">Cancella cache</string>
+    <string name="settings_restore_defaults">Ripristina impostazioni</string>
+    <string name="settings_legal_info">Informazioni legali</string>
+
+    <!-- Language Labels -->
+    <string name="lang_italian">Italiano</string>
+    <string name="lang_english">Inglese</string>
+    <string name="lang_spanish">Spagnolo</string>
+    <string name="lang_french">Francese</string>
+    <string name="lang_german">Tedesco</string>
+    <string name="lang_original_any">Originale / Qualsiasi</string>
+    <string name="lang_sub_italian">Italiano (it)</string>
+    <string name="lang_sub_english">Inglese (en)</string>
+    <string name="lang_sub_spanish">Spagnolo (es)</string>
+    <string name="lang_sub_french">Francese (fr)</string>
+    <string name="lang_sub_german">Tedesco (de)</string>
+    <string name="lang_sub_portuguese">Portoghese (pt)</string>
+
+    <!-- Subtitle & Resolution Options -->
+    <string name="res_auto">Auto</string>
+    <string name="sub_size_small">Piccola</string>
+    <string name="sub_size_medium">Media</string>
+    <string name="sub_size_large">Grande</string>
+    <string name="sub_size_very_large">Molto grande</string>
+    <string name="sub_bg_none">Nessuno</string>
+    <string name="sub_bg_black">Nero</string>
+    <string name="sub_bg_semi_transparent">Nero semi-trasparente</string>
+    <string name="sub_pos_bottom">Basso</string>
+    <string name="sub_pos_center">Centro</string>
+    <string name="sub_pos_top">Alto</string>
+
+    <!-- Addons Screen -->
+    <string name="addons_title">Addon Stremio</string>
+    <string name="addons_subtitle">Installa addon compatibili con il protocollo Stremio (es. istanze Torrentio) per aggiungere sorgenti in alta definizione 1080p/4K</string>
+    <string name="addons_add_button">Aggiungi Addon</string>
+    <string name="addons_installing">Installazione in corso…</string>
+    <string name="addons_empty_title">Nessun addon installato</string>
+    <string name="addons_empty_desc">Seleziona \"Aggiungi Addon\" e incolla l\'URL del manifest (es. https://torrentio.strem.fun/manifest.json)</string>
+    <string name="addons_dialog_title">Aggiungi Addon Stremio</string>
+    <string name="addons_dialog_install">Installa</string>
+    <string name="addons_switch_active">Attivo</string>
+    <string name="addons_switch_inactive">Disattivo</string>
+
+    <!-- Player & Stream Status (FASE 5) -->
+    <string name="press_back_again_to_exit">Premi ancora Indietro per uscire</string>
+    <string name="stream_status_searching_sources">Ricerca sorgenti in corso…</string>
+    <string name="stream_status_torbox_stremio">TorBox • Stremio Addons</string>
+    <string name="stream_status_vixsrc_http">VixSrc • Streaming HTTP diretto</string>
+
+    <string name="player_format_label">Formato: %s</string>
+    <string name="player_loading_stream">Caricamento Stream…</string>
+    <string name="player_playback_error_title">Errore di Riproduzione</string>
+    <string name="player_playback_error_message">Errore playback: %s</string>
+    <string name="player_cd_playback_error">Errore Riproduzione</string>
+    <string name="player_back_to_catalog">Torna al Catalogo</string>
+    <string name="player_skip_intro">SALTA INTRO</string>
+    <string name="player_cd_skip_intro">Salta Intro</string>
+    <string name="player_cd_pause">Pausa</string>
+    <string name="player_cd_play">Riproduci</string>
+    <string name="player_cd_next_episode">Prossimo Episodio</string>
+    <string name="player_cd_aspect_ratio">Adatta Aspetto Video</string>
+    <string name="player_cd_video_quality">Qualità Video</string>
+    <string name="player_cd_playback_speed">Velocità di Riproduzione</string>
+    <string name="player_cd_subtitles">Sottotitoli</string>
+    <string name="player_cd_audio_tracks">Tracce Audio</string>
+    <string name="player_cd_selected">Selezionato</string>
+
+    <string name="player_audio_dialog_title">Seleziona Traccia Audio</string>
+    <string name="player_audio_default">Audio Predefinito</string>
+    <string name="player_audio_fallback">Audio</string>
+    <string name="player_subtitles_dialog_title">Seleziona Sottotitoli</string>
+    <string name="player_subtitles_none">Nessuno</string>
+    <string name="player_subtitles_unknown">Sconosciuta</string>
+    <string name="player_speed_dialog_title">Velocità di Riproduzione</string>
+    <string name="player_speed_normal">1.0x (Normale)</string>
+    <string name="player_quality_dialog_title">Seleziona Risoluzione Video</string>
+
+    <string name="player_resize_fit">Adatta allo schermo</string>
+    <string name="player_resize_fill">Allunga (Stretch)</string>
+    <string name="player_resize_fixed_width">Larghezza fissa</string>
+    <string name="player_resize_fixed_height">Altezza fissa</string>
+    <string name="player_resize_zoom">Ritaglia e riempi (Zoom)</string>
+
+    <string name="player_http_expired">Stream scaduto (401/410)</string>
+    <string name="player_http_not_found">Stream non trovato / rimosso (404)</string>
+    <string name="player_http_rate_limit">Troppe richieste (Rate limit 429)</string>
+    <string name="player_http_server_unavailable">Server stream non disponibile (%d)</string>
+    <string name="player_http_access_blocked">Accesso allo stream bloccato (%d)</string>
+
+    <string name="track_lang_portuguese">Portoghese</string>
+    <string name="track_lang_japanese">Giapponese</string>
+    <string name="track_lang_korean">Coreano</string>
+    <string name="track_lang_chinese">Cinese</string>
+    <string name="track_lang_russian">Russo</string>
+    <string name="track_lang_arabic">Arabo</string>
+    <string name="track_lang_hindi">Hindi</string>
+    <string name="track_lang_polish">Polacco</string>
+    <string name="track_flag_sdh">non udenti</string>
+    <string name="track_flag_audio_desc">audiodescrizione</string>
+    <string name="track_flag_commentary">commento</string>
+    <string name="track_flag_forced">Forzati</string>
+
+    <!-- Controllo Genitori -->
+    <string name="parental_control_off">Disattivato</string>
+    <string name="parental_control_on_level">Attivo (%s)</string>
+    <string name="parental_dialog_enter_pin_title">Controllo genitori</string>
+    <string name="parental_dialog_enter_current_pin">Inserisci il PIN attuale</string>
+    <string name="parental_dialog_create_pin">Crea un PIN di 4 cifre</string>
+    <string name="parental_dialog_confirm_pin">Conferma il nuovo PIN</string>
+    <string name="parental_dialog_pin_mismatch">I PIN non coincidono. Riprova.</string>
+    <string name="parental_dialog_wrong_pin">PIN errato. Riprova.</string>
+    <string name="parental_dialog_manage_title">Controllo genitori</string>
+    <string name="parental_option_level">Soglia di protezione: %s</string>
+    <string name="parental_option_change_pin">Modifica PIN</string>
+    <string name="parental_option_disable">Disattiva controllo genitori</string>
+    <string name="parental_select_level_title">Seleziona Soglia di Età</string>
+    <string name="parental_pin_delete">Cancella</string>
+    <string name="parental_playback_restricted_title">Contenuto protetto</string>
+    <string name="parental_playback_restricted_subtitle">Inserisci il PIN per continuare</string>
+    <string name="parental_playback_pin_incorrect">PIN errato</string>
+</resources>
