@@ -161,6 +161,26 @@
      <string name="settings_check_updates">Check for Updates</string>
      <string name="settings_in_progress">In progress…</string>
      <string name="settings_app_version">App Version</string>
+     <string name="settings_update_checking">Checking for updates…</string>
+     <string name="settings_update_installed_version">Installed version: %1$s</string>
+     <string name="settings_update_upto_date">The app is up to date</string>
+     <string name="settings_update_available">New version available: %1$s</string>
+     <string name="settings_update_error">Couldn\'t check for updates</string>
+     <string name="settings_update_error_short">Error</string>
+     <string name="settings_update_download">Download Update</string>
+     <string name="settings_update_downloading">Downloading…</string>
+     <string name="settings_update_download_complete">Download complete</string>
+     <string name="settings_update_install">Install</string>
+     <string name="settings_update_install_permission_needed">To install the update, allow StreamNova to install apps from this source in the Android settings.</string>
+     <string name="settings_update_install_permission_button">Allow installs</string>
+     <string name="settings_update_dl_error_no_apk">No APK file in this release</string>
+     <string name="settings_update_dl_error_network">No connection or connection lost</string>
+     <string name="settings_update_dl_error_timeout">Timed out during download</string>
+     <string name="settings_update_dl_error_http">Server error during download</string>
+     <string name="settings_update_dl_error_interrupted">Download interrupted</string>
+     <string name="settings_update_dl_error_file">APK file missing or empty</string>
+     <string name="settings_update_dl_error_space">Not enough storage space</string>
+     <string name="settings_update_dl_error_generic">Error during download</string>
      <string name="settings_sec_playback_engine">Playback Engine</string>
      <string name="settings_playback_mode">Playback Mode</string>
      <string name="settings_mode_debrid">Debrid TorBox (1080p / 4K Ultra HD)</string>
@@ -189,7 +209,7 @@
      <string name="settings_subtitle_size">Subtitle Size</string>
      <string name="settings_subtitle_background">Subtitle Background</string>
      <string name="settings_subtitle_position">Subtitle Position</string>
-     <string name="settings_subtitle_color">Subtitle Color</string>
+
      <string name="settings_forced_subtitles">Forced subtitles when available</string>
      <string name="settings_sec_advanced">Advanced</string>
      <string name="settings_bug_reports">Bug Reports</string>

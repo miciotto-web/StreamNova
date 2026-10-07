@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "bindings": [
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "movie",
+      "catalogId": "streaming_apple_movies",
+      "providerId": "apple"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "streaming_apple_series",
+      "providerId": "apple"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "streaming_apple_originals_series",
+      "providerId": "apple"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "movie",
+      "catalogId": "snoak_apple_top10_movies",
+      "providerId": "apple"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "snoak_apple_top10_series",
+      "providerId": "apple"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "movie",
+      "catalogId": "streaming_disney_movies",
+      "providerId": "disney"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "streaming_disney_series",
+      "providerId": "disney"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "streaming_disney_originals_series",
+      "providerId": "disney"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "movie",
+      "catalogId": "snoak_disney_top10_movies",
+      "providerId": "disney"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "snoak_disney_top10_series",
+      "providerId": "disney"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "movie",
+      "catalogId": "streaming_hbo_movies",
+      "providerId": "hbo"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "streaming_hbo_series",
+      "providerId": "hbo"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "streaming_hbo_originals_series",
+      "providerId": "hbo"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "movie",
+      "catalogId": "snoak_hbo_top10_movies",
+      "providerId": "hbo"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "snoak_hbo_top10_series",
+      "providerId": "hbo"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "movie",
+      "catalogId": "snoak_netflix_top10_movies",
+      "providerId": "netflix"
+    },
+    {
+      "addonManifestId": "app.xperience.60613fcd-0780-420d-a736-59c46cfa7ff9",
+      "type": "series",
+      "catalogId": "snoak_netflix_top10_series",
+      "providerId": "netflix"
+    }
+  ]
+}

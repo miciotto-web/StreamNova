@@ -10,7 +10,9 @@ data class Subtitle(
     val addonName: String,
     val addonLogo: String? = null,
     val isStreamProvided: Boolean = false,
-    val headers: Map<String, String>? = null
+    val headers: Map<String, String>? = null,
+    /** Etichetta mostrata all'utente quando l'addon la dichiara (es. "Forzato"). */
+    val label: String? = null
 ) {
     fun getDisplayLanguage(): String = languageCodeToName(lang)
 

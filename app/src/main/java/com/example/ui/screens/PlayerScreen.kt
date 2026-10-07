@@ -6,6 +6,7 @@ import android.net.Uri
 import android.util.Log
 import com.example.data.prefs.DecoderFallbackMode
 import com.example.ui.screens.player.*
+import androidx.media3.datasource.HttpDataSource
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -93,7 +94,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import com.example.R
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.PlaybackException as ExoPlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
@@ -138,6 +138,13 @@ import kotlinx.coroutines.launch
 
 /** Auto-hide dei controlli del player dopo N ms di inattività con il telecomando. */
 private const val CONTROLS_HIDE_DELAY_MS = 5_000L
+
+/**
+ * Tentativi massimi di ripresa dopo un errore di una traccia sottotitoli esterna.
+ * Un errore sottotitoli non è mai un errore video: si riprende senza quella traccia,
+ * senza toccare `maxVideoSize` e senza escludere la traccia video.
+ */
+private const val MAX_SUBTITLE_ERROR_RECOVERIES = 2
 
 /**
  * FASE 3.4 "Sfondo dei sottotitoli": costruisce il CaptionStyleCompat da applicare al
@@ -335,6 +342,11 @@ fun PlayerScreen(
     factory
   }
 
+  // Sottotitoli esterni della sorgente attiva: vengono solo allegati al Media3
+  // MediaItem, senza toccare la factory video (che resta l'unica DataSource.Factory
+  // e quindi serve anche alle sidecar, come già avviene per le altre app Media3).
+  val stremioSubtitles = playbackState.subtitles
+
   val mediaSourceFactory = remember(httpDataSourceFactory) {
     DefaultMediaSourceFactory(context)
       .setDataSourceFactory(httpDataSourceFactory)
@@ -428,6 +440,15 @@ fun PlayerScreen(
           else -> (maxHeight * 16) / 9
         }
         setParameters(buildUponParameters().setMaxVideoSize(maxWidth, maxHeight))
+        StreamNova4KDiag.line(
+          "VINCOLO INIZIALE maxVideoSize=${maxWidth}x$maxHeight " +
+            "(preferredResolution=${playbackSettings.preferredResolution.label})"
+        )
+      } else {
+        StreamNova4KDiag.line(
+          "VINCOLO INIZIALE maxVideoSize=nessuno " +
+            "(preferredResolution=${playbackSettings.preferredResolution.label})"
+        )
       }
     }
     val loadControl = NuvioExoPlayerPerformanceHelper.buildLoadControl(
@@ -452,7 +473,7 @@ fun PlayerScreen(
           Log.i("PlayerScreen", "Avvio riproduzione NuvioEngine: url=$videoUrl")
           stop()
           clearMediaItems()
-          val exoMediaItem = ExoMediaItem.fromUri(Uri.parse(videoUrl))
+          val exoMediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles)
           setMediaItem(exoMediaItem)
           prepare()
           if (playbackState.currentPositionMs > 0) {
@@ -779,6 +800,11 @@ fun PlayerScreen(
     }
     Log.i("[StreamNova-Video-Debug]", "applyPreferredResolution: pref=${pref.label} (${pref.targetHeight}p), tracce video disponibili=$heights -> target=${target}p")
     Log.i("PlayerScreen", "Risoluzione preferita ${pref.label}: tracce disponibili=$heights -> target=${target}p")
+    StreamNova4KDiag.line(
+      "VINCOLO applyPreferredResolution pref=${pref.label} -> minVideoSize=${targetWidth}x$target " +
+        "maxVideoSize=${targetWidth}x$target viewport=MAXxMAX forceHighestSupportedBitrate=true " +
+        "exceedVideoConstraints=true exceedRendererCapabilities=true | tracce=$heights"
+    )
     trackSelector.setParameters(
       trackSelector.buildUponParameters()
         .setMinVideoSize(targetWidth, target)
@@ -1030,7 +1056,7 @@ fun PlayerScreen(
       exoPlayer.stop()
       exoPlayer.clearMediaItems()
 
-      val item = ExoMediaItem.fromUri(Uri.parse(url))
+      val item = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, stremioSubtitles)
       exoPlayer.setMediaItem(item)
       exoPlayer.prepare()
       if (targetPos > 0) {
@@ -1117,6 +1143,7 @@ fun PlayerScreen(
 
   // Release player on dispose & handle events
   DisposableEffect(exoPlayer) {
+    var subtitleErrorRecoveries = 0
     val listener = object : Player.Listener {
       override fun onPlaybackStateChanged(state: Int) {
         isBuffering = state == Player.STATE_BUFFERING
@@ -1133,6 +1160,13 @@ fun PlayerScreen(
           Log.i(
             "[StreamNova-Video-Debug]",
             "Player STATE_READY -> activeTrack: ${activeTrack?.width}x${activeTrack?.height} @ ${activeTrack?.bitrate}bps mime=${activeTrack?.sampleMimeType} codecs=${activeTrack?.codecs} fps=${activeTrack?.frameRate} | videoFormat: ${vf?.width}x${vf?.height} @ ${vf?.bitrate}bps mime=${vf?.sampleMimeType} codecs=${vf?.codecs} fps=${vf?.frameRate} | videoSize: ${vs.width}x${vs.height} par=${vs.pixelWidthHeightRatio}"
+          )
+          // --- DIAGNOSTICA 4K (solo log) ---
+          StreamNova4KDiag.logPlayerState(
+            videoFormat = vf,
+            audioFormat = exoPlayer.audioFormat,
+            tracks = exoPlayer.currentTracks,
+            params = trackSelector.parameters
           )
           val h = vf?.height ?: vs.height
           val w = vf?.width ?: vs.width
@@ -1175,6 +1209,14 @@ fun PlayerScreen(
                 "onTracksChanged -> video track index=$videoTrackIndex (groupIndex=$i), width=${format.width}, height=${format.height}, bitrate=${format.bitrate}, mimeType=${format.sampleMimeType}, codecs=${format.codecs}, frameRate=${format.frameRate}, isSelected=$selected"
               )
               Log.i("StreamNovaDiag", "Traccia #$i: ${format.width}x${format.height} @ $kbps kbps | Selezionata: $selected | Supportata: $supported")
+              // --- DIAGNOSTICA 4K (solo log): format reale + supporto di questa traccia ---
+              val diagSupport = group.getTrackSupport(i)
+              StreamNova4KDiag.line(
+                "TRACKS video #$videoTrackIndex groupIndex=$i trackIndex=$i selected=$selected supported=$supported " +
+                  "raw=$diagSupport ${StreamNova4KDiag.supportLabel(diagSupport)} " +
+                  "selezionabile=${StreamNova4KDiag.isTrackSelectable(diagSupport)} | " +
+                  StreamNova4KDiag.formatDetails(format)
+              )
               videoTrackIndex++
             }
           } else if (group.type == C.TRACK_TYPE_TEXT) {
@@ -1216,24 +1258,64 @@ fun PlayerScreen(
       override fun onPlayerError(error: ExoPlaybackException) {
         val displayMsg = PlayerRuntimeControllerErrorRecovery.toDisplayMessage(error, context)
         Log.e("THE_PITT_PLAYER", "Playback Error: ${error.errorCodeName} (${error.errorCode}) - $displayMsg", error)
+        // --- DIAGNOSTICA 4K (solo log): errore decoder/renderer + catena cause ---
+        StreamNova4KDiag.logPlaybackError(error)
         Log.e("THE_PITT_PLAYER", "Error cause: ${error.cause?.javaClass?.simpleName ?: "null"} - ${error.cause?.message ?: "no cause"}")
         Log.d("THE_PITT_PLAYER", "ExoPlayer attempting to play URL: ${playbackState.streamUrl}")
         Log.d("THE_PITT_PLAYER", "Player state: isPlaying=$isPlaying, isBuffering=$isBuffering, position=${exoPlayer.currentPosition}, duration=${exoPlayer.duration}")
         val currentAudioFormat = exoPlayer.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }.firstOrNull { it.isTrackSelected(0) }?.getTrackFormat(0)
         Log.e("THE_PITT_PLAYER", "Current audio track - mimeType=${currentAudioFormat?.sampleMimeType ?: "N/A"} sampleRate=${currentAudioFormat?.sampleRate ?: "N/A"} channels=${currentAudioFormat?.channelCount ?: "N/A"} bitrate=${currentAudioFormat?.bitrate ?: "N/A"} codecs=${currentAudioFormat?.codecs ?: "N/A"}")
 
-        val isCodecError = error.cause is android.media.MediaCodec.CodecException ||
-                error.errorCode == ExoPlaybackException.ERROR_CODE_DECODING_FAILED ||
-                error.errorCode == ExoPlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
-                PlayerRuntimeControllerErrorRecovery.isDolbyVisionDecoderFailure(error) ||
-                Vc1VideoFormatHeuristics.isVc1PlaybackFailure(error, false, media.title)
+        val httpException = generateSequence<Throwable>(error) { it.cause }
+            .filterIsInstance<HttpDataSource.HttpDataSourceException>()
+            .firstOrNull()
+        val failingUri = httpException?.dataSpec?.uri?.toString()
+        val failedSubtitle = stremioSubtitles.firstOrNull { sub ->
+            sub.url.isNotBlank() && (
+                sub.url == failingUri ||
+                error.message?.contains(sub.url) == true ||
+                error.cause?.message?.contains(sub.url) == true
+            )
+        }
+        // Un errore di una traccia sottotitoli esterna (di caricamento O di decodifica)
+        // non deve mai interrompere il video: si riprende senza quella traccia e senza
+        // modificare maxVideoSize (che altrimenti escluderebbe il video 1080p/4K).
+        val isSubtitleError = PlayerCodecErrorClassifier.isSubtitleTrackError(error)
+        if (!playbackFailed && (failedSubtitle != null || isSubtitleError)) {
+          val remaining = if (failedSubtitle != null) {
+            stremioSubtitles.filter { it.url != failedSubtitle.url }
+          } else {
+            // Errore sottotitoli senza URL identificabile: si escludono solo le tracce
+            // esterne, mentre gli sottotitoli embedded Stremio restano attivi.
+            stremioSubtitles.filter { it.isStreamProvided }
+          }
+          val canDropSubtitleTrack = remaining.size < stremioSubtitles.size
+          if (!canDropSubtitleTrack && subtitleErrorRecoveries >= MAX_SUBTITLE_ERROR_RECOVERIES) {
+            Log.w("THE_PITT_PLAYER", "Errore sottotitoli senza traccia rimovibile (${error.errorCodeName}): nessun ulteriore tentativo di ripresa.")
+          } else {
+            subtitleErrorRecoveries++
+            Log.w("THE_PITT_PLAYER", "Errore traccia sottotitoli (${failedSubtitle?.url ?: error.errorCodeName}): ripresa riproduzione senza la traccia problematica (maxVideoSize invariato).")
+            val currentPos = exoPlayer.currentPosition
+            val wasPlaying = exoPlayer.playWhenReady
+            val newItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl ?: "", remaining)
+            exoPlayer.setMediaItem(newItem)
+            if (currentPos > 0) exoPlayer.seekTo(currentPos)
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = wasPlaying
+            return
+          }
+        }
 
-        if (isCodecError && !playbackFailed) {
+        // Fallback codec 720p: attivato SOLO per errori codec effettivamente associati al
+        // renderer VIDEO. Un errore sottotitoli/text non modifica mai maxVideoSize.
+        val fallbackMaxVideoSize = PlayerCodecErrorClassifier.fallbackMaxVideoSize(error, media.title)
+
+        if (fallbackMaxVideoSize != null && !playbackFailed) {
           Log.w("THE_PITT_PLAYER", "Codec/Format error detected ($displayMsg). Attempting 720p fallback...")
           try {
             trackSelector.setParameters(
               trackSelector.buildUponParameters()
-                .setMaxVideoSize(1280, 720)
+                .setMaxVideoSize(fallbackMaxVideoSize.first, fallbackMaxVideoSize.second)
                 .setExceedRendererCapabilitiesIfNecessary(false)
             )
             isBuffering = true
@@ -1255,6 +1337,9 @@ fun PlayerScreen(
       }
     }
     exoPlayer.addListener(listener)
+    // --- DIAGNOSTICA 4K (solo log): decoder video, input format, codec error, primo frame ---
+    val diagAnalyticsListener = StreamNova4KDiag.createAnalyticsListener()
+    exoPlayer.addAnalyticsListener(diagAnalyticsListener)
 
     onDispose {
       if (playbackSettings.autoFrameRateMatching) {
@@ -1268,6 +1353,7 @@ fun PlayerScreen(
       }
       viewModel.resetStreamState()
       exoPlayer.removeListener(listener)
+      exoPlayer.removeAnalyticsListener(diagAnalyticsListener)
       exoPlayer.stop()
       exoPlayer.clearMediaItems()
       exoPlayer.release()
@@ -1658,7 +1744,9 @@ fun PlayerScreen(
                 onClick = {
                   playbackErrorMessage = null
                   isBuffering = true
-                  exoPlayer.setMediaItem(ExoMediaItem.fromUri(Uri.parse(videoUrl)))
+                  exoPlayer.setMediaItem(
+                    PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles)
+                  )
                   exoPlayer.prepare()
                   exoPlayer.playWhenReady = true
                 }
@@ -2631,4 +2719,3 @@ private fun mapPreferredAudioLanguages(code: String): List<String> = when (code.
   "de" -> listOf("de", "deu", "ger")
   else -> emptyList()
 }
-

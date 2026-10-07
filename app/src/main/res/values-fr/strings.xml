@@ -161,6 +161,26 @@
      <string name="settings_check_updates">Vérifier les mises à jour</string>
      <string name="settings_in_progress">En cours…</string>
      <string name="settings_app_version">Version de l\'application</string>
+     <string name="settings_update_checking">Vérification des mises à jour…</string>
+     <string name="settings_update_installed_version">Version installée : %1$s</string>
+     <string name="settings_update_upto_date">L\'application est à jour</string>
+     <string name="settings_update_available">Nouvelle version disponible : %1$s</string>
+     <string name="settings_update_error">Impossible de vérifier les mises à jour</string>
+     <string name="settings_update_error_short">Erreur</string>
+     <string name="settings_update_download">Télécharger la mise à jour</string>
+     <string name="settings_update_downloading">Téléchargement en cours…</string>
+     <string name="settings_update_download_complete">Téléchargement terminé</string>
+     <string name="settings_update_install">Installer</string>
+     <string name="settings_update_install_permission_needed">Pour installer la mise à jour, autorisez StreamNova à installer des apps depuis cette source dans les paramètres Android.</string>
+     <string name="settings_update_install_permission_button">Autoriser l\'installation</string>
+     <string name="settings_update_dl_error_no_apk">Aucun fichier APK dans cette release</string>
+     <string name="settings_update_dl_error_network">Pas de connexion ou connexion interrompue</string>
+     <string name="settings_update_dl_error_timeout">Délai dépassé pendant le téléchargement</string>
+     <string name="settings_update_dl_error_http">Erreur du serveur pendant le téléchargement</string>
+     <string name="settings_update_dl_error_interrupted">Téléchargement interrompu</string>
+     <string name="settings_update_dl_error_file">Fichier APK manquant ou vide</string>
+     <string name="settings_update_dl_error_space">Espace de stockage insuffisant</string>
+     <string name="settings_update_dl_error_generic">Erreur pendant le téléchargement</string>
      <string name="settings_sec_playback_engine">Moteur de Lecture</string>
      <string name="settings_playback_mode">Mode de lecture</string>
      <string name="settings_mode_debrid">Debrid TorBox (1080p / 4K Ultra HD)</string>
@@ -189,7 +209,7 @@
      <string name="settings_subtitle_size">Taille des sous-titres</string>
      <string name="settings_subtitle_background">Arrière-plan des sous-titres</string>
      <string name="settings_subtitle_position">Position des sous-titres</string>
-     <string name="settings_subtitle_color">Couleur des sous-titres</string>
+
      <string name="settings_forced_subtitles">Sous-titres Forcés si présents</string>
      <string name="settings_sec_advanced">Avancé</string>
      <string name="settings_bug_reports">Rapports de bugs</string>

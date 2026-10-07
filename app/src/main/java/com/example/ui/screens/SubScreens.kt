@@ -45,7 +45,6 @@ import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Assessment
@@ -101,8 +100,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.snapshotFlow
 import androidx.annotation.StringRes
 import androidx.compose.ui.res.stringResource
@@ -122,6 +123,10 @@ import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.TargetBufferOption
+import com.example.data.update.ApkInstaller
+import com.example.data.update.DownloadErrorReason
+import com.example.data.update.UpdateCheckState
+import com.example.data.update.UpdateDownloadState
 import com.example.ui.components.ContinueWatchingCard
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.StandardMediaCard
@@ -145,6 +150,7 @@ import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import com.example.ui.viewmodel.StreamNovaViewModel
 import com.example.ui.viewmodel.TorBoxAccountState
+import java.io.File
 
 enum class CategoryCatalogFilter(
   val id: String,
@@ -1195,7 +1201,6 @@ fun SettingsScreen(
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
-  val isRefreshing = viewModel?.isRefreshing?.collectAsState()?.value ?: false
   val appVersion = BuildConfig.VERSION_NAME
   val playbackSettings = viewModel?.playbackSettings?.collectAsState()?.value ?: PlaybackSettings()
   // ── Debrid / TorBox ─────────────────────────────────────────────────
@@ -1207,6 +1212,8 @@ fun SettingsScreen(
   val appLanguage = viewModel?.appLanguage?.collectAsState()?.value ?: "it"
   val parentalControlEnabled = viewModel?.parentalControlEnabled?.collectAsState()?.value ?: false
   val parentalControlLevel = viewModel?.parentalControlLevel?.collectAsState()?.value ?: "18"
+  val updateCheckState = viewModel?.updateCheckState?.collectAsState()?.value ?: UpdateCheckState.Idle
+  val updateDownloadState = viewModel?.updateDownloadState?.collectAsState()?.value ?: UpdateDownloadState.Idle
   var showTorBoxKeyDialog by remember { mutableStateOf(false) }
   var showResolutionDialog by remember { mutableStateOf(false) }
   var showSubtitleLanguageDialog by remember { mutableStateOf(false) }
@@ -1226,12 +1233,23 @@ fun SettingsScreen(
   var showBackBufferDialog by remember { mutableStateOf(false) }
   var showDecoderFallbackDialog by remember { mutableStateOf(false) }
   var isClearingCache by remember { mutableStateOf(false) }
+  var showUpdateResultDialog by remember { mutableStateOf(false) }
 
   // Verifica automatica (una sola volta) della chiave salvata: all'ingresso in
   // Impostazioni l'indicatore diventa verde "Collegato" se la chiave è valida.
   LaunchedEffect(torBoxApiKey) {
     if (!torBoxApiKey.isNullOrBlank() && torBoxState is TorBoxAccountState.Unknown) {
       viewModel?.verifyTorBoxAccount()
+    }
+  }
+
+  // Mostra il feedback del controllo aggiornamenti non appena il check termina.
+  LaunchedEffect(updateCheckState) {
+    showUpdateResultDialog = when (updateCheckState) {
+      is UpdateCheckState.UpToDate,
+      is UpdateCheckState.UpdateAvailable,
+      UpdateCheckState.Error -> true
+      else -> false
     }
   }
 
@@ -1290,8 +1308,18 @@ fun SettingsScreen(
           SettingsRow(
             icon = Icons.Default.Refresh,
             title = stringResource(R.string.settings_check_updates),
-            value = if (isRefreshing) stringResource(R.string.settings_in_progress) else null,
-            onClick = { viewModel?.refreshCatalog() }
+            value = when (updateCheckState) {
+              UpdateCheckState.Checking -> stringResource(R.string.settings_update_checking)
+              is UpdateCheckState.UpdateAvailable -> updateCheckState.newVersion
+              UpdateCheckState.Error -> stringResource(R.string.settings_update_error_short)
+              else -> null
+            },
+            valueColor = when (updateCheckState) {
+              is UpdateCheckState.UpdateAvailable -> NovaGreen
+              UpdateCheckState.Error -> NovaRed
+              else -> NovaCyanBright
+            },
+            onClick = { viewModel?.checkForAppUpdates() }
           )
           SettingsRow(
             icon = Icons.Default.Info,
@@ -1438,7 +1466,6 @@ fun SettingsScreen(
             value = subtitlePositionLabel(playbackSettings.subtitlePosition),
             onClick = { showSubtitlePositionDialog = true }
           )
-          SettingsRow(icon = Icons.Default.Palette, title = stringResource(R.string.settings_subtitle_color))
           SettingsRow(
             icon = Icons.Default.ClosedCaption,
             title = stringResource(R.string.settings_forced_subtitles),
@@ -1552,6 +1579,18 @@ fun SettingsScreen(
         }
       }
     }
+  }
+
+  if (showUpdateResultDialog) {
+    UpdateResultDialog(
+      state = updateCheckState,
+      downloadState = updateDownloadState,
+      onDownload = { viewModel?.downloadUpdate(context) },
+      onDismiss = {
+        showUpdateResultDialog = false
+        viewModel?.dismissUpdateCheckResult()
+      }
+    )
   }
 
   if (showTorBoxKeyDialog) {
@@ -1979,6 +2018,228 @@ private fun decoderFallbackLabel(mode: DecoderFallbackMode): String = when (mode
   DecoderFallbackMode.OFF -> stringResource(R.string.decoder_mode_off)
   DecoderFallbackMode.ON -> stringResource(R.string.decoder_mode_on)
   DecoderFallbackMode.PREFER -> stringResource(R.string.decoder_mode_prefer)
+}
+
+/**
+ * Dialog con l'esito del controllo aggiornamenti e, quando disponibile, il
+ * flusso download APK + avvio installer (FASE C).
+ */
+@Composable
+private fun UpdateResultDialog(
+  state: UpdateCheckState,
+  downloadState: UpdateDownloadState,
+  onDownload: () -> Unit,
+  onDismiss: () -> Unit
+) {
+  val context = LocalContext.current
+  val canInstall = ApkInstaller.canInstall(context)
+  var launchedApkPath by remember { mutableStateOf<String?>(null) }
+
+  // Avvia l'installer non appena il download è completo (una sola volta per file).
+  LaunchedEffect(downloadState, canInstall) {
+    val path = (downloadState as? UpdateDownloadState.Completed)?.apkPath
+    if (path != null && canInstall && launchedApkPath != path) {
+      launchedApkPath = path
+      ApkInstaller.launch(context, File(path))
+    }
+  }
+
+  Dialog(onDismissRequest = onDismiss) {
+    Column(
+      modifier = Modifier
+        .width(380.dp)
+        .background(NovaSurface, RoundedCornerShape(20.dp))
+        .border(1.5.dp, NovaCyan, RoundedCornerShape(20.dp))
+        .padding(24.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = stringResource(R.string.settings_check_updates),
+          color = NovaTextPrimary,
+          fontSize = 18.sp,
+          fontWeight = FontWeight.Bold
+        )
+        Icon(
+          imageVector = Icons.Default.Close,
+          contentDescription = stringResource(R.string.action_close),
+          tint = NovaTextSecondary,
+          modifier = Modifier
+            .size(22.dp)
+            .clickable { onDismiss() }
+        )
+      }
+
+      Spacer(modifier = Modifier.height(16.dp))
+
+      when (state) {
+        is UpdateCheckState.UpToDate -> {
+          Text(
+            text = stringResource(
+              R.string.settings_update_installed_version,
+              state.currentVersion
+            ),
+            color = NovaTextSecondary,
+            fontSize = 14.sp
+          )
+          Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            text = stringResource(R.string.settings_update_upto_date),
+            color = NovaGreen,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold
+          )
+        }
+        is UpdateCheckState.UpdateAvailable -> {
+          Text(
+            text = stringResource(
+              R.string.settings_update_installed_version,
+              state.currentVersion
+            ),
+            color = NovaTextSecondary,
+            fontSize = 14.sp
+          )
+          Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            text = stringResource(R.string.settings_update_available, state.newVersion),
+            color = NovaCyanBright,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold
+          )
+
+          Spacer(modifier = Modifier.height(14.dp))
+
+          when (downloadState) {
+            UpdateDownloadState.Idle -> UpdateDialogButton(
+              text = stringResource(R.string.settings_update_download),
+              onClick = onDownload
+            )
+            is UpdateDownloadState.Downloading -> {
+              val percent = downloadState.percent
+              if (percent != null) {
+                LinearProgressIndicator(
+                  progress = { percent / 100f },
+                  modifier = Modifier.fillMaxWidth()
+                )
+              } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+              }
+              Spacer(modifier = Modifier.height(8.dp))
+              Text(
+                text = stringResource(R.string.settings_update_downloading) +
+                  if (percent != null) " $percent%" else "",
+                color = NovaTextSecondary,
+                fontSize = 13.sp
+              )
+            }
+            is UpdateDownloadState.Completed -> {
+              Text(
+                text = stringResource(R.string.settings_update_download_complete),
+                color = NovaGreen,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
+              )
+              Spacer(modifier = Modifier.height(10.dp))
+              if (canInstall) {
+                UpdateDialogButton(
+                  text = stringResource(R.string.settings_update_install),
+                  onClick = { ApkInstaller.launch(context, File(downloadState.apkPath)) }
+                )
+              } else {
+                Text(
+                  text = stringResource(R.string.settings_update_install_permission_needed),
+                  color = NovaTextSecondary,
+                  fontSize = 13.sp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                UpdateDialogButton(
+                  text = stringResource(R.string.settings_update_install_permission_button),
+                  onClick = { ApkInstaller.openInstallPermissionSettings(context) }
+                )
+              }
+            }
+            is UpdateDownloadState.Error -> {
+              Text(
+                text = downloadErrorText(downloadState.reason),
+                color = NovaRed,
+                fontSize = 14.sp
+              )
+              Spacer(modifier = Modifier.height(10.dp))
+              UpdateDialogButton(
+                text = stringResource(R.string.settings_update_download),
+                onClick = onDownload
+              )
+            }
+          }
+        }
+        UpdateCheckState.Error -> {
+          Text(
+            text = stringResource(R.string.settings_update_error),
+            color = NovaRed,
+            fontSize = 14.sp
+          )
+        }
+        else -> Unit
+      }
+
+      Spacer(modifier = Modifier.height(20.dp))
+
+      UpdateDialogButton(text = stringResource(R.string.action_close), onClick = onDismiss)
+    }
+  }
+}
+
+/** Pulsante standard dei dialog: evidenziato ciano quando è in focus (D-pad). */
+@Composable
+private fun UpdateDialogButton(text: String, onClick: () -> Unit) {
+  TvFocusableBox(
+    shape = RoundedCornerShape(12.dp),
+    focusedScale = 1.02f,
+    onClick = onClick,
+    modifier = Modifier.fillMaxWidth()
+  ) { isFocused ->
+    Box(
+      modifier = Modifier
+        .fillMaxWidth()
+        .background(
+          if (isFocused) NovaCyanBright else NovaSurfaceVariant,
+          RoundedCornerShape(12.dp)
+        )
+        .padding(vertical = 10.dp),
+      contentAlignment = Alignment.Center
+    ) {
+      Text(
+        text = text,
+        color = if (isFocused) NovaBackground else NovaTextPrimary,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Bold
+      )
+    }
+  }
+}
+
+/** Messaggio localizzato del motivo di errore del download. */
+@Composable
+private fun downloadErrorText(reason: DownloadErrorReason): String = when (reason) {
+  DownloadErrorReason.NO_APK_IN_RELEASE ->
+    stringResource(R.string.settings_update_dl_error_no_apk)
+  DownloadErrorReason.NO_NETWORK ->
+    stringResource(R.string.settings_update_dl_error_network)
+  DownloadErrorReason.TIMEOUT ->
+    stringResource(R.string.settings_update_dl_error_timeout)
+  DownloadErrorReason.HTTP_ERROR ->
+    stringResource(R.string.settings_update_dl_error_http)
+  DownloadErrorReason.INTERRUPTED ->
+    stringResource(R.string.settings_update_dl_error_interrupted)
+  DownloadErrorReason.FILE_MISSING ->
+    stringResource(R.string.settings_update_dl_error_file)
+  DownloadErrorReason.INSUFFICIENT_SPACE ->
+    stringResource(R.string.settings_update_dl_error_space)
+  DownloadErrorReason.UNKNOWN ->
+    stringResource(R.string.settings_update_dl_error_generic)
 }
 
 /**

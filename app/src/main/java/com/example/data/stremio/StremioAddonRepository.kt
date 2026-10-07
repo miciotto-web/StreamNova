@@ -112,6 +112,7 @@ object StremioAddonRepository {
   private const val CACHE_TTL_MS = 60_000L
   private const val CONNECT_TIMEOUT_S = 10L
   private const val READ_TIMEOUT_S = 15L
+  private const val SUBTITLES_TIMEOUT_MS = 15_000L
 
   private val moshi: Moshi = Moshi.Builder()
     .add(KotlinJsonAdapterFactory())
@@ -122,6 +123,7 @@ object StremioAddonRepository {
   )
   private val manifestAdapter = moshi.adapter(StremioManifest::class.java)
   private val streamResponseAdapter = moshi.adapter(StremioStreamResponse::class.java)
+  private val catalogResponseAdapter = moshi.adapter(StremioCatalogResponse::class.java)
 
   private val httpClient: OkHttpClient = OkHttpClient.Builder()
     .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
@@ -311,9 +313,9 @@ object StremioAddonRepository {
     season: Int? = null,
     episode: Int? = null
   ): List<StremioStreamCandidate> {
-    val type = if (isTv) "series" else "movie"
+    val type = if (isTv) TYPE_SERIES else TYPE_MOVIE
     val active = _addons.value.filter {
-      it.isEnabled && it.manifest.supportsStream() && it.manifest.supportsType(type)
+      it.isEnabled && it.manifest.supportsStreamForType(type)
     }
     if (active.isEmpty() || tmdbId <= 0) return emptyList()
 
@@ -326,7 +328,7 @@ object StremioAddonRepository {
           if (id == null) {
             Log.d(
               TAG,
-              "Addon ${addon.manifest.displayTitle}: nessun id compatibile (prefix=${addon.manifest.idPrefixes})"
+              "Addon ${addon.manifest.displayTitle}: nessun id compatibile (prefix=${addon.manifest.idPrefixesForResource(RESOURCE_STREAM)})"
             )
             return@async emptyList()
           }
@@ -362,7 +364,7 @@ object StremioAddonRepository {
    *  - "tmdb" → `tmdb:12345`
    */
   private fun stremioIdFor(addon: InstalledAddon, tmdbId: Int, imdbId: String?): String? {
-    val prefixes = addon.manifest.idPrefixes
+    val prefixes = addon.manifest.idPrefixesForResource(RESOURCE_STREAM)
       ?.filter { it.isNotBlank() }
       ?.map { it.lowercase() }
     return when {
@@ -420,6 +422,205 @@ object StremioAddonRepository {
     }
     imdbCache[key] = imdb ?: ""
     return imdb
+  }
+
+  // ── Cataloghi ──────────────────────────────────────────────────────────
+
+  /**
+   * Costruisce il path relativo del catalogo secondo il protocollo Stremio:
+   *  - Senza parametri extra: `catalog/$type/$id.json`
+   *  - Con parametri extra: `catalog/$type/$id/$extraArgs.json`
+   *    dove extraArgs è una sequenza di `key=value` separati da `&`.
+   *
+   * @param type tipo del contenuto ("movie", "series", ecc.)
+   * @param id identificativo del catalogo dichiarato nel manifest
+   * @param extra parametri extra opzionali (search, genre, skip...)
+   * @param isAddonCatalog true se si tratta di un addonCatalog (path `addon-catalog/...`)
+   */
+  fun buildCatalogPath(
+    type: String,
+    id: String,
+    extra: Map<String, String> = emptyMap(),
+    isAddonCatalog: Boolean = false
+  ): String {
+    val root = if (isAddonCatalog) "addon-catalog" else "catalog"
+    val cleanType = type.trim()
+    val cleanId = id.trim()
+    val validExtras = extra.entries
+      .filter { it.key.isNotBlank() && it.value.isNotBlank() }
+      .sortedBy { it.key }
+
+    if (validExtras.isEmpty()) {
+      return "$root/$cleanType/$cleanId.json"
+    }
+
+    val extraFormatted = validExtras.joinToString("&") { (k, v) ->
+      val encoded = java.net.URLEncoder.encode(v.trim(), "UTF-8")
+        .replace("+", "%20")
+      "${k.trim()}=$encoded"
+    }
+    return "$root/$cleanType/$cleanId/$extraFormatted.json"
+  }
+
+  /**
+   * Costruisce l'URL assoluto completo dell'endpoint catalogo per un addon.
+   */
+  fun buildCatalogUrl(
+    baseUrl: String,
+    type: String,
+    id: String,
+    extra: Map<String, String> = emptyMap(),
+    isAddonCatalog: Boolean = false
+  ): String {
+    val cleanBase = baseUrl.trimEnd('/')
+    val path = buildCatalogPath(type, id, extra, isAddonCatalog)
+    return "$cleanBase/$path"
+  }
+
+  /**
+   * Restituisce tutti i cataloghi esposti dagli addon attivi per un dato [type] ("movie", "series", ecc.),
+   * rispettando sia la dichiarazione del catalogo che i vincoli resource-level.
+   */
+  fun getActiveCatalogsForType(type: String): List<Pair<InstalledAddon, StremioCatalogDefinition>> {
+    return getActiveAddons().flatMap { addon ->
+      if (!addon.manifest.supportsCatalogForType(type)) return@flatMap emptyList()
+      addon.manifest.catalogsForType(type).map { catalog -> addon to catalog }
+    }
+  }
+
+  /**
+   * Scarica gli elementi di un catalogo da un addon.
+   */
+  suspend fun fetchCatalog(
+    addon: InstalledAddon,
+    type: String,
+    id: String,
+    extra: Map<String, String> = emptyMap(),
+    isAddonCatalog: Boolean = false
+  ): List<StremioMetaItem> = withContext(Dispatchers.IO) {
+    val path = buildCatalogPath(type, id, extra, isAddonCatalog)
+    val baseUrl = addon.baseUrl.trimEnd('/')
+    val url = "$baseUrl/$path"
+    val request = Request.Builder().url(url).header("Accept", "application/json").build()
+    try {
+      withTimeout(15_000L) {
+        httpClient.newCall(request).execute().use { response ->
+          if (!response.isSuccessful) {
+            Log.w(TAG, "Catalogo $url fallito: HTTP ${response.code}")
+            return@withTimeout emptyList()
+          }
+          val body = response.body?.string() ?: return@withTimeout emptyList()
+          val parsed = catalogResponseAdapter.fromJson(body)
+          parsed?.metas.orEmpty()
+        }
+      }
+    } catch (e: Exception) {
+      Log.w(TAG, "Errore caricamento catalogo $url: ${e.message}")
+      emptyList()
+    }
+  }
+
+  /**
+   * Overload per scaricare un catalogo passando direttamente [StremioCatalogDefinition].
+   */
+  suspend fun fetchCatalog(
+    addon: InstalledAddon,
+    catalog: StremioCatalogDefinition,
+    extra: Map<String, String> = emptyMap()
+  ): List<StremioMetaItem> {
+    val type = catalog.type ?: return emptyList()
+    val id = catalog.id ?: return emptyList()
+    return fetchCatalog(addon, type, id, extra)
+  }
+
+  /**
+   * Costruisce il path relativo dell'endpoint sottotitoli secondo il protocollo Stremio:
+   *  - Senza parametri extra: `subtitles/$type/$id.json`
+   *  - Con parametri extra: `subtitles/$type/$id/$extraArgs.json`, dove `extraArgs` e'
+   *    una sequenza di `key=value` separati da `&` (chiavi ordinate: output stabile).
+   *
+   * @param type tipo del contenuto ("movie", "series")
+   * @param id id Stremio del contenuto (`tt...`, `tt...:S:E` oppure `tmdb:...`)
+   * @param extra parametri extra opzionali (videoHash, videoSize, filename)
+   */
+  fun buildSubtitlesPath(
+    type: String,
+    id: String,
+    extra: Map<String, String> = emptyMap()
+  ): String {
+    val cleanType = type.trim()
+    val cleanId = id.trim()
+    val validExtras = extra.entries
+      .filter { it.key.isNotBlank() && it.value.isNotBlank() }
+      .sortedBy { it.key }
+
+    if (validExtras.isEmpty()) {
+      return "subtitles/$cleanType/$cleanId.json"
+    }
+
+    val extraFormatted = validExtras.joinToString("&") { (k, v) ->
+      val encoded = java.net.URLEncoder.encode(v.trim(), "UTF-8")
+        .replace("+", "%20")
+      "${k.trim()}=$encoded"
+    }
+    return "subtitles/$cleanType/$cleanId/$extraFormatted.json"
+  }
+
+  /** Costruisce l'URL assoluto dell'endpoint sottotitoli di un addon. */
+  fun buildSubtitlesUrl(
+    baseUrl: String,
+    type: String,
+    id: String,
+    extra: Map<String, String> = emptyMap()
+  ): String {
+    val cleanBase = baseUrl.trimEnd('/')
+    return "$cleanBase/${buildSubtitlesPath(type, id, extra)}"
+  }
+
+  /**
+   * Scarica i sottotitoli esterni per un contenuto da un addon che espone la risorsa
+   * `subtitles`.
+   *
+   * @param addon addon da interrogare.
+   * @param type tipo del contenuto ("movie", "series").
+   * @param id id Stremio (`tt...`, `tt...:S:E` oppure `tmdb:...`).
+   * @param options parametri extra ufficiali disponibili (videoHash, videoSize, filename).
+   *
+   * @return lista di sottotitoli utilizzabili; **lista vuota** se l'addon non dichiara
+   *         la risorsa per quel tipo, se la risposta HTTP fallisce, se il JSON non e'
+   *         valido o se gli elementi sono incompleti. Nessuna eccezione propagata.
+   */
+  suspend fun fetchSubtitles(
+    addon: InstalledAddon,
+    type: String,
+    id: String,
+    options: StremioSubtitleOptions = StremioSubtitleOptions()
+  ): List<StremioSubtitle> = withContext(Dispatchers.IO) {
+    val cleanType = type.trim()
+    val cleanId = id.trim()
+    if (cleanType.isEmpty() || cleanId.isEmpty()) return@withContext emptyList()
+    if (!addon.manifest.supportsSubtitlesForType(cleanType)) {
+      Log.d(TAG, "Addon ${addon.manifest.displayTitle}: risorsa subtitles non supportata per $cleanType")
+      return@withContext emptyList()
+    }
+
+    val url = buildSubtitlesUrl(addon.baseUrl, cleanType, cleanId, options.toExtra())
+    try {
+      withTimeout(SUBTITLES_TIMEOUT_MS) {
+        val request = Request.Builder().url(url).header("Accept", "application/json").build()
+        httpClient.newCall(request).execute().use { response ->
+          if (!response.isSuccessful) {
+            Log.w(TAG, "Sottotitoli $url falliti: HTTP ${response.code}")
+            return@withTimeout emptyList()
+          }
+          StremioSubtitleParser.parse(response.body?.string())
+        }
+      }
+    } catch (e: Exception) {
+      // Errore di rete o timeout: lista vuota, il chiamante non deve fallire.
+      Log.w(TAG, "Errore caricamento sottotitoli $url: ${e.message}")
+      emptyList()
+    }
   }
 
   /** Svuota le cache in memoria (test / cambio account). */

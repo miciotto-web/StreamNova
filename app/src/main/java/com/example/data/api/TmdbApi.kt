@@ -102,6 +102,15 @@ data class TmdbExternalIdsDto(
   @Json(name = "tvdb_id") val tvdbId: Int? = null
 )
 
+data class TmdbFindItemDto(
+  val id: Int
+)
+
+data class TmdbFindResultDto(
+  @Json(name = "movie_results") val movieResults: List<TmdbFindItemDto>? = emptyList(),
+  @Json(name = "tv_results") val tvResults: List<TmdbFindItemDto>? = emptyList()
+)
+
 data class TmdbCastDto(
   val id: Int,
   val name: String,
@@ -247,6 +256,13 @@ interface TmdbApiService {
     @Path("tv_id") tvId: Int,
     @Query("api_key") apiKey: String
   ): TmdbExternalIdsDto
+
+  @GET("find/{external_id}")
+  suspend fun findByExternalId(
+    @Path("external_id") externalId: String,
+    @Query("api_key") apiKey: String,
+    @Query("external_source") externalSource: String = "imdb_id"
+  ): TmdbFindResultDto
 
   @GET("tv/{series_id}/season/{season_number}")
   suspend fun getSeasonDetails(

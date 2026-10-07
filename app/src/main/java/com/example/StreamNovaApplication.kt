@@ -6,6 +6,7 @@ import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.SettingsRepository
 import com.example.data.repository.MediaRepository
 import com.example.data.stremio.StremioAddonRepository
+import com.example.data.stremio.provider.ProviderCatalogResolvers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +30,10 @@ class StreamNovaApplication : Application() {
     // Preferenze Debrid/TorBox + lista addon Stremio installati (DataStore)
     AppSettingsRepository.init(this)
     StremioAddonRepository.init()
+    // Contesto per il resolver catalogo -> provider: senza questo la sorgente
+    // REGISTRY (res/raw/stremio_provider_bindings.json) resterebbe sempre vuota,
+    // mentre i binding USER letti da DataStore funzionerebbero lo stesso.
+    ProviderCatalogResolvers.init(this)
 
     // Preload cached media immediately on background thread
     appScope.launch {

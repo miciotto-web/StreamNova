@@ -100,7 +100,7 @@ class MainActivity : ComponentActivity() {
         androidx.compose.ui.platform.LocalConfiguration provides localizedConfiguration
       ) {
         MyApplicationTheme {
-          StreamNovaApp(viewModel = viewModel)
+          StreamNovaApp(viewModel = viewModel, activity = this@MainActivity)
         }
       }
     }
@@ -110,6 +110,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun StreamNovaApp(
   viewModel: StreamNovaViewModel,
+  activity: Activity,
   navController: NavHostController = rememberNavController()
 ) {
   val context = LocalContext.current
@@ -183,7 +184,11 @@ fun StreamNovaApp(
         ) {
           val now = SystemClock.elapsedRealtime()
           if (now - lastExitRequestAt < EXIT_CONFIRM_WINDOW_MS) {
-            (context as? Activity)?.finish()
+            // Uscita regolare dell'Activity (il processo resta vivo).
+            // NOTA: qui `context` è il contesto localizzato creato con
+            // createConfigurationContext e NON è un'Activity, quindi si usa
+            // l'Activity passata da MainActivity.
+            activity.finishAndRemoveTask()
           } else {
             lastExitRequestAt = now
             Toast.makeText(context, context.getString(R.string.press_back_again_to_exit), Toast.LENGTH_SHORT).show()

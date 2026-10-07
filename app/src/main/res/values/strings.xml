@@ -161,6 +161,26 @@
     <string name="settings_check_updates">Controlla aggiornamenti</string>
     <string name="settings_in_progress">In corso…</string>
     <string name="settings_app_version">Versione dell\'app</string>
+    <string name="settings_update_checking">Controllo in corso…</string>
+    <string name="settings_update_installed_version">Versione installata: %1$s</string>
+    <string name="settings_update_upto_date">L\'app è aggiornata</string>
+    <string name="settings_update_available">Nuova versione disponibile: %1$s</string>
+    <string name="settings_update_error">Impossibile controllare gli aggiornamenti</string>
+    <string name="settings_update_error_short">Errore</string>
+    <string name="settings_update_download">Scarica aggiornamento</string>
+    <string name="settings_update_downloading">Download in corso…</string>
+    <string name="settings_update_download_complete">Download completato</string>
+    <string name="settings_update_install">Installa</string>
+    <string name="settings_update_install_permission_needed">Per installare l\'aggiornamento, consenti a StreamNova di installare app da questa sorgente nelle impostazioni di Android.</string>
+    <string name="settings_update_install_permission_button">Consenti installazioni</string>
+    <string name="settings_update_dl_error_no_apk">Nessun file APK nella release</string>
+    <string name="settings_update_dl_error_network">Connessione assente o interrotta</string>
+    <string name="settings_update_dl_error_timeout">Tempo scaduto durante il download</string>
+    <string name="settings_update_dl_error_http">Errore del server durante il download</string>
+    <string name="settings_update_dl_error_interrupted">Download interrotto</string>
+    <string name="settings_update_dl_error_file">File APK mancante o vuoto</string>
+    <string name="settings_update_dl_error_space">Spazio di archiviazione insufficiente</string>
+    <string name="settings_update_dl_error_generic">Errore durante il download</string>
     <string name="settings_sec_playback_engine">Motore di Riproduzione</string>
     <string name="settings_playback_mode">Modalità di riproduzione</string>
     <string name="settings_mode_debrid">Debrid TorBox (1080p / 4K Ultra HD)</string>
@@ -189,7 +209,7 @@
     <string name="settings_subtitle_size">Dimensione sottotitoli</string>
     <string name="settings_subtitle_background">Sfondo dei sottotitoli</string>
     <string name="settings_subtitle_position">Posizione dei sottotitoli</string>
-    <string name="settings_subtitle_color">Colore dei sottotitoli</string>
+
     <string name="settings_forced_subtitles">Sottotitoli Forced se presenti nel video</string>
     <string name="settings_sec_advanced">Avanzato</string>
     <string name="settings_adv_target_buffer">Dimensione Target Buffer</string>
@@ -272,7 +292,7 @@
     <string name="addons_switch_inactive">Disattivo</string>
 
     <!-- Player & Stream Status (FASE 5) -->
-    <string name="press_back_again_to_exit">Premi ancora Indietro per uscire</string>
+    <string name="press_back_again_to_exit">Premi ancora indietro per uscire</string>
     <string name="stream_status_searching_sources">Ricerca sorgenti in corso…</string>
     <string name="stream_status_torbox_stremio">TorBox • Stremio Addons</string>
     <string name="stream_status_vixsrc_http">VixSrc • Streaming HTTP diretto</string>

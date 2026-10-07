@@ -54,8 +54,10 @@ private val Context.appSettingsDataStore: DataStore<Preferences> by preferencesD
 object AppSettingsRepository {
 
   private val KEY_TORBOX_API_KEY = stringPreferencesKey("torbox_api_key")
+  private val KEY_OPENSUBTITLES_API_KEY = stringPreferencesKey("opensubtitles_api_key")
   private val KEY_TORBOX_INSTANT_DEBRID = booleanPreferencesKey("torbox_instant_debrid_enabled")
   private val KEY_INSTALLED_ADDONS_JSON = stringPreferencesKey("installed_addons_json")
+  private val KEY_USER_PROVIDER_BINDINGS_JSON = stringPreferencesKey("user_provider_bindings_json")
   private val KEY_STREAMING_ENGINE_MODE = stringPreferencesKey("streaming_engine_mode")
   private val KEY_AUTOPLAY_ENABLED = booleanPreferencesKey("autoplay_enabled")
   private val KEY_APP_LANGUAGE = stringPreferencesKey("app_language")
@@ -69,6 +71,10 @@ object AppSettingsRepository {
   /** Chiave API TorBox corrente (null = nessuna chiave salvata). */
   val torBoxApiKey: StateFlow<String?> = _torBoxApiKey.asStateFlow()
 
+  private val _openSubtitlesApiKey = MutableStateFlow<String?>(null)
+  /** Chiave API OpenSubtitles corrente (null = nessuna chiave salvata). */
+  val openSubtitlesApiKey: StateFlow<String?> = _openSubtitlesApiKey.asStateFlow()
+
   private val _torBoxInstantDebridEnabled = MutableStateFlow(true)
   /** Toggle "Usa TorBox Instant Debrid" (default ON: ha effetto solo con chiave valida). */
   val torBoxInstantDebridEnabled: StateFlow<Boolean> = _torBoxInstantDebridEnabled.asStateFlow()
@@ -76,6 +82,14 @@ object AppSettingsRepository {
   private val _installedAddonsJson = MutableStateFlow("[]")
   /** Lista addon Stremio installata serializzata in JSON (fonte di verità persistita). */
   val installedAddonsJson: StateFlow<String> = _installedAddonsJson.asStateFlow()
+
+  private val _userProviderBindingsJson = MutableStateFlow("[]")
+  /**
+   * Associazioni catalogo Stremio → provider dichiarate dall'utente, serializzate in JSON.
+   * Sono la sorgente con precedenza massima nel resolver: nessuna euristica li produce.
+   * Formato: lista di `{addonManifestId, type, catalogId, providerId}`.
+   */
+  val userProviderBindingsJson: StateFlow<String> = _userProviderBindingsJson.asStateFlow()
 
   private val _streamingEngineMode = MutableStateFlow<StreamingEngineMode>(StreamingEngineMode.HTTP_WEB)
   /** Modalità del motore di streaming. */
@@ -110,8 +124,10 @@ object AppSettingsRepository {
   // dopo l'edit asincrono) NON devono mai sovrascrivere un valore già aggiornato
   // in memoria dall'utente: la scrittura locale ha sempre precedenza.
   @Volatile private var apiKeyLocalWrite = false
+  @Volatile private var openSubtitlesApiKeyLocalWrite = false
   @Volatile private var debridLocalWrite = false
   @Volatile private var addonsLocalWrite = false
+  @Volatile private var userBindingsLocalWrite = false
   @Volatile private var streamingModeLocalWrite = false
   @Volatile private var autoplayLocalWrite = false
   @Volatile private var languageLocalWrite = false
@@ -128,11 +144,17 @@ object AppSettingsRepository {
         if (!apiKeyLocalWrite) {
           _torBoxApiKey.value = prefs[KEY_TORBOX_API_KEY]?.takeIf { it.isNotBlank() }
         }
+        if (!openSubtitlesApiKeyLocalWrite) {
+          _openSubtitlesApiKey.value = prefs[KEY_OPENSUBTITLES_API_KEY]?.takeIf { it.isNotBlank() }
+        }
         if (!debridLocalWrite) {
           _torBoxInstantDebridEnabled.value = prefs[KEY_TORBOX_INSTANT_DEBRID] ?: true
         }
         if (!addonsLocalWrite) {
           _installedAddonsJson.value = prefs[KEY_INSTALLED_ADDONS_JSON] ?: "[]"
+        }
+        if (!userBindingsLocalWrite) {
+          _userProviderBindingsJson.value = prefs[KEY_USER_PROVIDER_BINDINGS_JSON] ?: "[]"
         }
         if (!streamingModeLocalWrite) {
           val modeString = prefs[KEY_STREAMING_ENGINE_MODE]
@@ -194,6 +216,22 @@ object AppSettingsRepository {
     }
   }
 
+  /**
+   * Salva (o rimuove, con null/blank) la chiave API OpenSubtitles.
+   * La scrittura è asincrona: lo [StateFlow] viene aggiornato subito per la UI.
+   */
+  fun setOpenSubtitlesApiKey(value: String?) {
+    val normalized = value?.trim()?.takeIf { it.isNotBlank() }
+    openSubtitlesApiKeyLocalWrite = true
+    _openSubtitlesApiKey.value = normalized
+    scope.launch {
+      dataStore?.edit { prefs ->
+        if (normalized == null) prefs.remove(KEY_OPENSUBTITLES_API_KEY)
+        else prefs[KEY_OPENSUBTITLES_API_KEY] = normalized
+      }
+    }
+  }
+
   fun setTorBoxInstantDebridEnabled(enabled: Boolean) {
     debridLocalWrite = true
     _torBoxInstantDebridEnabled.value = enabled
@@ -205,6 +243,13 @@ object AppSettingsRepository {
     addonsLocalWrite = true
     _installedAddonsJson.value = json.ifBlank { "[]" }
     scope.launch { dataStore?.edit { it[KEY_INSTALLED_ADDONS_JSON] = json.ifBlank { "[]" } } }
+  }
+
+  /** Salva le associazioni catalogo → provider dichiarate dall'utente. */
+  fun setUserProviderBindingsJson(json: String) {
+    userBindingsLocalWrite = true
+    _userProviderBindingsJson.value = json.ifBlank { "[]" }
+    scope.launch { dataStore?.edit { it[KEY_USER_PROVIDER_BINDINGS_JSON] = json.ifBlank { "[]" } } }
   }
 
   /**

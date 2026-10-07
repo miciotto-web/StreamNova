@@ -1,5 +1,7 @@
 package com.example.data.streaming
 
+import com.example.domain.model.Subtitle
+
 /**
  * Sorgente video singola per streaming Debrid (TorBox Instant).
  *
@@ -15,6 +17,7 @@ package com.example.data.streaming
  * @param isItalian true se la sorgente e' in italiano.
  * @param codec codec video ("H264", "HEVC", "AV1").
  * @param streamUrl URL diretto NULL fino al click dell'utente! Sbloccato on-demand.
+ * @param subtitles sottotitoli esterni gia' risolti dal bridge per questa sorgente.
  */
 data class StreamSource(
   val streamUrl: String? = null,
@@ -34,6 +37,8 @@ data class StreamSource(
   val codec: String? = null,
   val isCached: Boolean = false,
   val releaseType: String? = null,
+  /** Sottotitoli esterni associati a questa sorgente (addon Stremio). */
+  val subtitles: List<Subtitle> = emptyList(),
 ) {
   val effectiveHeight: Int
     get() = verifiedHeight ?: when {

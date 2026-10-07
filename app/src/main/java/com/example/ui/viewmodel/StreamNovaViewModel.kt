@@ -3,6 +3,7 @@ package com.example.ui.viewmodel
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.R
 import com.example.data.api.TmdbApiService
 import com.example.data.model.AudioTrack
@@ -30,19 +31,30 @@ import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.repository.MediaRepository
+import com.example.data.repository.HomeCatalogs
+import com.example.data.repository.ProviderCoverage
+import com.example.data.repository.StremioCatalogRepository
 import com.example.data.stremio.InstalledAddon
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.torbox.TorBoxRepository
+import com.example.data.update.UpdateCheckState
+import com.example.data.update.UpdateDownloadState
+import com.example.data.update.UpdateRepository
 import com.example.data.streaming.StreamManager
 import com.example.data.streaming.StreamResult
 import com.example.data.streaming.StreamSource
+import com.example.data.opensubtitles.OpenSubtitlesSubtitleAdapter
+import com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider
+import com.example.domain.model.Subtitle
 import com.example.ui.components.StreamingProvider
+import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -118,6 +130,11 @@ data class PlayerPlaybackState(
    * Debrid CDN), `false` = playlist HLS, `null` = inferire dall'estensione URL.
    */
   val streamProgressive: Boolean? = null,
+  /**
+   * Sottotitoli esterni della sorgente attiva, gia' convertiti nel modello interno.
+   * Il player li legge per allegare le `SubtitleConfiguration` al Media3 `MediaItem`.
+   */
+  val subtitles: List<Subtitle> = emptyList(),
 )
 
 /**
@@ -226,7 +243,8 @@ class StreamNovaViewModel : ViewModel() {
   // Interrogazione parallela dei provider di streaming HTTP diretto:
   // 1) VixSrc/VixCloud (istantaneo via TMDB ID), 2) CB01 e 3) Eurostreaming
   // (cataloghi italiani, ricerca per titolo/anno) con timeout per ciascuno.
-  private val streamManager = StreamManager()
+  internal var streamManager = StreamManager()
+  internal var openSubtitlesProvider = OpenSubtitlesSubtitleProvider()
 
   private val _isLoading = MutableStateFlow(false)
   val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -236,6 +254,39 @@ class StreamNovaViewModel : ViewModel() {
 
   private val _isRefreshing = MutableStateFlow(false)
   val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
+  val allMedia: StateFlow<List<MediaItem>> = MediaRepository.mediaList
+
+  private val _homeCatalogs = MutableStateFlow(
+    StremioCatalogRepository.buildTmdbHomeCatalogs(MediaRepository.mediaList.value)
+  )
+  val homeCatalogs: StateFlow<HomeCatalogs> = _homeCatalogs.asStateFlow()
+
+  private val _stremioProviderMedia = MutableStateFlow<Map<String, List<MediaItem>>>(emptyMap())
+  val stremioProviderMedia: StateFlow<Map<String, List<MediaItem>>> = _stremioProviderMedia.asStateFlow()
+
+  /** Stato del catalogo Stremio per provider: decide la fonte dati della schermata Provider. */
+  data class StremioProviderCatalogState(
+    val hasConfirmedBindings: Boolean = false,
+    val itemCount: Int = 0,
+    val confirmedCatalogs: Int = 0,
+    /** Copertura del catalogo provider: NONE = TMDB, PARTIAL = merge, FULL = solo Stremio. */
+    val coverage: ProviderCoverage = ProviderCoverage.NONE
+  )
+
+  private val _stremioProviderStates = MutableStateFlow<Map<String, StremioProviderCatalogState>>(emptyMap())
+  val stremioProviderStates: StateFlow<Map<String, StremioProviderCatalogState>> = _stremioProviderStates.asStateFlow()
+
+  fun refreshHomeCatalogs(mediaList: List<MediaItem> = allMedia.value) {
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val resolved = StremioCatalogRepository.resolveHomeCatalogs(mediaList)
+        _homeCatalogs.value = resolved
+      } catch (e: Exception) {
+        Log.w(TAG, "Risoluzione cataloghi Home fallita: ${e.message}")
+      }
+    }
+  }
 
   init {
     viewModelScope.launch {
@@ -250,6 +301,19 @@ class StreamNovaViewModel : ViewModel() {
     viewModelScope.launch {
       _screenState.collect { state ->
         Log.d("BACK_TRACE", "STREAMNOVAVM: modifica _screenState a $state")
+      }
+    }
+    viewModelScope.launch {
+      allMedia.collect { list ->
+        refreshHomeCatalogs(list)
+      }
+    }
+    viewModelScope.launch {
+      StremioAddonRepository.addons.collect {
+        _stremioProviderMedia.value = emptyMap()
+        _stremioProviderStates.value = emptyMap()
+        StremioCatalogRepository.resetProviderPaging()
+        refreshHomeCatalogs(allMedia.value)
       }
     }
   }
@@ -286,8 +350,6 @@ class StreamNovaViewModel : ViewModel() {
   fun setSearchFilter(filter: SearchTypeFilter) {
     _searchFilter.value = filter
   }
-
-  val allMedia: StateFlow<List<MediaItem>> = MediaRepository.mediaList
 
   // Impostazioni RIPRODUZIONE persistenti (DataStore Preferences).
   val playbackSettings: StateFlow<PlaybackSettings> = SettingsRepository.settings
@@ -350,6 +412,24 @@ class StreamNovaViewModel : ViewModel() {
 
   fun setDebugOverlayEnabled(enabled: Boolean) =
     SettingsRepository.setDebugOverlayEnabled(enabled)
+
+  // ── CONTROLLO AGGIORNAMENTI (GitHub Releases) ─────────────────────
+
+  val updateCheckState: StateFlow<UpdateCheckState> = UpdateRepository.state
+
+  val updateDownloadState: StateFlow<UpdateDownloadState> = UpdateRepository.downloadState
+
+  fun checkForAppUpdates() {
+    UpdateRepository.checkForUpdates(BuildConfig.VERSION_NAME)
+  }
+
+  fun downloadUpdate(context: Context) {
+    UpdateRepository.downloadUpdate(context)
+  }
+
+  fun dismissUpdateCheckResult() {
+    UpdateRepository.reset()
+  }
 
   @OptIn(coil.annotation.ExperimentalCoilApi::class)
   fun clearAppCache(context: Context, onComplete: (Boolean) -> Unit) {
@@ -655,8 +735,17 @@ class StreamNovaViewModel : ViewModel() {
     isLoadingMoreMovies = true
     viewModelScope.launch {
       try {
-        currentMoviePage++
-        MediaRepository.loadMoreMovies(currentMoviePage)
+        if (_homeCatalogs.value.isMoviesFromStremio) {
+          val currentList = _homeCatalogs.value.allMovies
+          val more = StremioCatalogRepository.paginateMovies(currentList.size)
+          if (more.isNotEmpty()) {
+            val combined = StremioCatalogRepository.deduplicateCrossSource(currentList + more)
+            _homeCatalogs.update { it.copy(allMovies = combined) }
+          }
+        } else {
+          currentMoviePage++
+          MediaRepository.loadMoreMovies(currentMoviePage)
+        }
       } catch (e: Exception) {
         Log.w(TAG, "Errore paginazione film: ${e.message}")
       } finally {
@@ -670,8 +759,17 @@ class StreamNovaViewModel : ViewModel() {
     isLoadingMoreTv = true
     viewModelScope.launch {
       try {
-        currentTvPage++
-        MediaRepository.loadMoreTv(currentTvPage)
+        if (_homeCatalogs.value.isSeriesFromStremio) {
+          val currentList = _homeCatalogs.value.allSeries
+          val more = StremioCatalogRepository.paginateSeries(currentList.size)
+          if (more.isNotEmpty()) {
+            val combined = StremioCatalogRepository.deduplicateCrossSource(currentList + more)
+            _homeCatalogs.update { it.copy(allSeries = combined) }
+          }
+        } else {
+          currentTvPage++
+          MediaRepository.loadMoreTv(currentTvPage)
+        }
       } catch (e: Exception) {
         Log.w(TAG, "Errore paginazione serie TV: ${e.message}")
       } finally {
@@ -686,12 +784,17 @@ class StreamNovaViewModel : ViewModel() {
   }
 
   fun loadDetails(tmdbId: Int, isTv: Boolean, baseMedia: MediaItem? = null) {
+    if (tmdbId <= 0) return
     viewModelScope.launch {
       MediaRepository.loadMediaDetails(tmdbId, isTv, baseMedia)
     }
   }
 
   fun selectSeason(seriesTmdbId: Int, seasonNumber: Int, fallbackSeries: MediaItem? = null) {
+    if (seriesTmdbId <= 0) {
+      _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+      return
+    }
     _selectedSeasonNumber.value = seasonNumber
     _seasonEpisodesUiState.value = SeasonEpisodesUiState.Loading(seasonNumber)
     viewModelScope.launch {
@@ -710,25 +813,51 @@ class StreamNovaViewModel : ViewModel() {
   fun openDetail(media: MediaItem) {
     _selectedMedia.value = media
     _screenState.value = ScreenState.DETAIL
-    val tmdbId = media.tmdbId ?: 0
     val isTv = media.type == MediaType.SERIE_TV
-    loadDetails(tmdbId, isTv, media)
-    if (isTv && tmdbId > 0) {
-      val initialSeason = media.lastWatchedSeason ?: 1
-      selectSeason(tmdbId, initialSeason, media)
+
+    val currentTmdbId = media.tmdbId
+    if (currentTmdbId != null && currentTmdbId > 0) {
+      loadDetails(currentTmdbId, isTv, media)
+      if (isTv) {
+        val initialSeason = media.lastWatchedSeason ?: 1
+        selectSeason(currentTmdbId, initialSeason, media)
+      } else {
+        _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+      }
+    } else if (media.id.startsWith("tt", ignoreCase = true)) {
+      MediaRepository.setDetailLoading(media)
+      viewModelScope.launch {
+        val resolvedId = MediaRepository.resolveImdbToTmdbId(media.id, isTv)
+        if (resolvedId != null && resolvedId > 0) {
+          val mediaWithTmdb = media.copy(tmdbId = resolvedId)
+          _selectedMedia.value = mediaWithTmdb
+          loadDetails(resolvedId, isTv, mediaWithTmdb)
+          if (isTv) {
+            val initialSeason = mediaWithTmdb.lastWatchedSeason ?: 1
+            selectSeason(resolvedId, initialSeason, mediaWithTmdb)
+          } else {
+            _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+          }
+        } else {
+          MediaRepository.setDetailError(
+            media,
+            "Titolo non trovato su TMDB per l'identificatore ${media.id}"
+          )
+          _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+        }
+      }
     } else {
+      MediaRepository.setDetailError(
+        media,
+        "Identificatore TMDB non disponibile per questo contenuto"
+      )
       _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
     }
   }
 
   fun retryLoadDetail() {
     val media = _selectedMedia.value ?: return
-    val tmdbId = media.tmdbId ?: 0
-    val isTv = media.type == MediaType.SERIE_TV
-    loadDetails(tmdbId, isTv, media)
-    if (isTv && tmdbId > 0) {
-      selectSeason(tmdbId, _selectedSeasonNumber.value, media)
-    }
+    openDetail(media)
   }
 
   fun openPlayer(media: MediaItem, episode: Episode? = null, source: StreamSource? = null) {
@@ -788,8 +917,25 @@ class StreamNovaViewModel : ViewModel() {
       streamHeaders = source?.headers ?: emptyMap(),
       streamQuality = source?.quality,
       streamServer = source?.serverName,
-      streamProgressive = source?.isProgressive
+      streamProgressive = source?.isProgressive,
+      subtitles = source?.subtitles ?: emptyList()
     )
+    val initialSubtitles = source?.subtitles ?: emptyList()
+    if (initialSubtitles.none { it.addonName == OpenSubtitlesSubtitleAdapter.PROVIDER_NAME }) {
+      viewModelScope.launch(Dispatchers.IO) {
+        val external = openSubtitlesProvider.fetchSubtitles(
+          mediaItem = media,
+          episode = effectiveEpisode,
+          preferredLanguage = SettingsRepository.settings.value.preferredSubtitleLanguage
+        )
+        if (external.isNotEmpty()) {
+          _playbackState.update { current ->
+            val merged = (current.subtitles + external).distinctBy { it.id.ifBlank { it.url } }
+            current.copy(subtitles = merged)
+          }
+        }
+      }
+    }
     // Memorizza l'origine reale (DETAIL / PROVIDER / BROWSING) per un ritorno corretto al BACK.
     screenBeforePlayer = _screenState.value
     sectionBeforePlayer = _currentSection.value
@@ -892,37 +1038,107 @@ class StreamNovaViewModel : ViewModel() {
     val currentJobGeneration = loadStreamGeneration
     streamJob = viewModelScope.launch(Dispatchers.IO) {
       val mode = AppSettingsRepository.streamingEngineMode.value
-      val result = withTimeoutOrNull(7000L) {
-        streamManager.resolveBestStream(mediaItem, effectiveEpisode, mode)
+      val resolvedMediaItem = if (mediaItem.tmdbId == null && mediaItem.id.startsWith("tt", ignoreCase = true)) {
+        val resolvedId = MediaRepository.resolveImdbToTmdbId(mediaItem.id, isTv)
+        if (resolvedId != null && resolvedId > 0) mediaItem.copy(tmdbId = resolvedId) else mediaItem
+      } else {
+        mediaItem
       }
+      val tmdbId = resolvedMediaItem.tmdbId
+      if (tmdbId == null || tmdbId <= 0) {
+        withContext(Dispatchers.Main) {
+          if (currentJobGeneration != loadStreamGeneration) return@withContext
+          _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
+          _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
+        }
+        return@launch
+      }
+
+      val openSubtitlesDeferred = async(Dispatchers.IO) {
+        openSubtitlesProvider.fetchSubtitles(
+          mediaItem = resolvedMediaItem,
+          episode = effectiveEpisode,
+          preferredLanguage = SettingsRepository.settings.value.preferredSubtitleLanguage
+        )
+      }
+
+      val season = if (isTv) (effectiveEpisode?.seasonNumber ?: resolvedMediaItem.lastWatchedSeason ?: 1) else null
+      val epNumber = if (isTv) (effectiveEpisode?.episodeNumber ?: resolvedMediaItem.lastWatchedEpisode ?: 1) else null
+      val searchTitle = resolvedMediaItem.title.ifBlank { resolvedMediaItem.originalTitle }
+
+      val rawSources = withTimeoutOrNull(7000L) {
+        val collected = mutableListOf<List<StreamSource>>()
+        streamManager.resolveFlow(
+          tmdbId = tmdbId,
+          isTv = isTv,
+          season = season,
+          episode = epNumber,
+          title = searchTitle,
+          year = resolvedMediaItem.year,
+          originalTitle = resolvedMediaItem.originalTitle.takeIf { it.isNotBlank() },
+          providerTag = resolvedMediaItem.provider,
+          genres = resolvedMediaItem.genres,
+          streamingEngineMode = mode
+        ).collect { emission ->
+          collected.add(emission)
+        }
+        collected.lastOrNull() ?: emptyList()
+      } ?: emptyList()
+
+      val externalSubs = try {
+        openSubtitlesDeferred.await()
+      } catch (e: Exception) {
+        emptyList()
+      }
+
+      val finalSources = rawSources.map { s ->
+        val merged = (s.subtitles + externalSubs).distinctBy { it.id.ifBlank { it.url } }
+        s.copy(subtitles = merged)
+      }
+
       withContext(Dispatchers.Main) {
         if (currentJobGeneration != loadStreamGeneration) {
           Log.d(TAG, "Job ignorato perché una nuova ricerca o cancellazione è avvenuta")
           return@withContext
         }
-        if (result != null && !result.streamUrl.isNullOrBlank()) {
-          _streamResolutionState.value = StreamResolutionState.Success(
-            streamUrl = result.url,
-            mediaItem = mediaItem,
-            episode = effectiveEpisode,
-            streamHeaders = result.headers,
-            quality = result.quality,
-            serverName = result.serverName,
-            isProgressive = result.isProgressive
-          )
-          _streamResult.value = StreamResult.Success(listOf(result))
-
+        if (finalSources.isNotEmpty()) {
           val shouldShowDialog = mode == StreamingEngineMode.DEBRID_TORBOX && !AppSettingsRepository.autoplayEnabled.value
           if (shouldShowDialog) {
-            _availableSources.value = listOf(result)
-            pendingMediaForSourceSelection = mediaItem
+            _availableSources.value = finalSources
+            pendingMediaForSourceSelection = resolvedMediaItem
             pendingEpisodeForSourceSelection = effectiveEpisode
             _showSourceDialog.value = true
             _streamResolutionState.value = StreamResolutionState.Idle
+            _streamResult.value = StreamResult.Idle
             return@withContext
           }
 
-          openPlayer(mediaItem, effectiveEpisode, result)
+          val best = finalSources.first()
+          val resolvedBest = if (best.infoHash != null && best.streamUrl == null) {
+            TorBoxRepository.setRequestMetadata(season, epNumber)
+            val directUrl = TorBoxRepository.resolveInfoHash(best.infoHash, best.fileIdx)
+            if (directUrl != null) best.copy(streamUrl = directUrl) else null
+          } else {
+            best
+          }
+
+          if (resolvedBest != null && !resolvedBest.streamUrl.isNullOrBlank()) {
+            _streamResolutionState.value = StreamResolutionState.Success(
+              streamUrl = resolvedBest.url,
+              mediaItem = resolvedMediaItem,
+              episode = effectiveEpisode,
+              streamHeaders = resolvedBest.headers,
+              quality = resolvedBest.quality,
+              serverName = resolvedBest.serverName,
+              isProgressive = resolvedBest.isProgressive
+            )
+            _streamResult.value = StreamResult.Success(listOf(resolvedBest))
+            _availableSources.value = finalSources
+            openPlayer(resolvedMediaItem, effectiveEpisode, resolvedBest)
+          } else {
+            _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
+            _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
+          }
         } else {
           _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
           _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
@@ -944,7 +1160,8 @@ class StreamNovaViewModel : ViewModel() {
       streamHeaders = source.headers,
       streamQuality = source.quality,
       streamServer = source.serverName,
-      streamProgressive = source.isProgressive
+      streamProgressive = source.isProgressive,
+      subtitles = (source.subtitles + current.subtitles).distinctBy { it.id.ifBlank { it.url } }
     )
   }
 
@@ -987,6 +1204,16 @@ class StreamNovaViewModel : ViewModel() {
 
       Log.i(TAG, "Source selection: ${resolvedSource.serverName} (${resolvedSource.quality})")
       Log.d("BACK_TRACE", "STREAMNOVAVM: chiamata a openPlayer()")
+      _streamResolutionState.value = StreamResolutionState.Success(
+        streamUrl = resolvedSource.url,
+        mediaItem = media,
+        episode = episode,
+        streamHeaders = resolvedSource.headers,
+        quality = resolvedSource.quality,
+        serverName = resolvedSource.serverName,
+        isProgressive = resolvedSource.isProgressive
+      )
+      _streamResult.value = StreamResult.Success(listOf(resolvedSource))
       openPlayer(media, episode, resolvedSource)
     }
   }
@@ -1071,6 +1298,13 @@ class StreamNovaViewModel : ViewModel() {
   private val providerPages = mutableMapOf<Pair<Int, Boolean>, Int>()
   private val loadingProviderKeys = mutableSetOf<Pair<Int, Boolean>>()
 
+  /**
+   * Caricamento iniziale del catalogo Stremio del provider aperto. La paginazione lo
+   * attende: senza questo ordinamento la pagina successiva, lanciata subito dopo
+   * [openProvider], puo' completare per prima e sovrascrivere la prima pagina.
+   */
+  private var providerInitialLoad: Job? = null
+
   /** Interrogazione puntuale dello stato hasMore della singola coppia (provider, tipo). */
   fun hasMoreProviderPages(providerId: Int, isTv: Boolean): Boolean =
     _providerHasMorePages.value[Pair(providerId, isTv)] ?: true
@@ -1086,6 +1320,43 @@ class StreamNovaViewModel : ViewModel() {
   }
 
   fun loadNextProviderPage(providerId: Int, isTv: Boolean) {
+    val currentProvider = _selectedProvider.value
+    if (currentProvider != null && currentProvider.tmdbProviderId == providerId) {
+      val stremioState = _stremioProviderStates.value[currentProvider.id]
+      // Copertura del provider: il ramo Stremio esiste solo se NON è NONE.
+      // Ogni catalogo mantiene il proprio offset: niente più skip condiviso.
+      val coverage = stremioState?.coverage
+        ?: StremioCatalogRepository.providerCoverage(currentProvider)
+      if (coverage != ProviderCoverage.NONE) {
+        val mediaType = if (isTv) MediaType.SERIE_TV else MediaType.FILM
+        viewModelScope.launch {
+          try {
+            // Attende la prima pagina del provider: la paginazione non deve sovrascriverla.
+            providerInitialLoad?.join()
+            val stremioItems = _stremioProviderMedia.value[currentProvider.id].orEmpty()
+            val more = StremioCatalogRepository.paginateProviderCatalog(currentProvider, mediaType)
+            if (more.isNotEmpty()) {
+              val combined = StremioCatalogRepository.deduplicateCrossSource(stremioItems + more)
+              _stremioProviderMedia.update { it + (currentProvider.id to combined) }
+              _stremioProviderStates.update {
+                val base = it[currentProvider.id] ?: StremioProviderCatalogState()
+                it + (currentProvider.id to base.copy(
+                  hasConfirmedBindings = true,
+                  itemCount = combined.size,
+                  coverage = coverage
+                ))
+              }
+            }
+          } catch (e: Exception) {
+            Log.w(TAG, "Errore paginazione provider Stremio: ${e.message}")
+          }
+        }
+        // FULL: solo Stremio (return). PARTIAL: nessun return anticipato, la
+        // paginazione TMDB prosegue sotto come completamento del catalogo.
+        if (coverage == ProviderCoverage.FULL) return
+      }
+    }
+
     val key = Pair(providerId, isTv)
     if (loadingProviderKeys.contains(key)) return
     if (!hasMoreProviderPages(providerId, isTv)) return
@@ -1137,6 +1408,59 @@ class StreamNovaViewModel : ViewModel() {
     _selectedProvider.value = provider
     _screenState.value = ScreenState.PROVIDER
     resetProviderPagination(provider.tmdbProviderId)
+    // Ogni apertura riparte dalla prima pagina di ogni catalogo Stremio.
+    StremioCatalogRepository.resetProviderPaging()
+
+    val initialLoad = viewModelScope.launch {
+      try {
+        val page = StremioCatalogRepository.loadProviderCatalogForProvider(provider)
+        val planned = StremioCatalogRepository.providerCoverage(provider)
+        // FULL vale SOLO se il fetch effettivo produce item: senza titoli la
+        // copertura degrada a PARTIAL e il catalogo TMDB resta disponibile.
+        val coverage = when {
+          planned == ProviderCoverage.NONE -> ProviderCoverage.NONE
+          page.items.isEmpty() -> ProviderCoverage.PARTIAL
+          else -> planned
+        }
+        if (coverage != ProviderCoverage.NONE) {
+          // Copertura Stremio attiva: Stremio è la fonte primaria del provider.
+          _stremioProviderMedia.update { it + (provider.id to page.items) }
+          _stremioProviderStates.update {
+            it + (provider.id to StremioProviderCatalogState(
+              hasConfirmedBindings = page.hasConfirmedBindings,
+              itemCount = page.items.size,
+              confirmedCatalogs = page.targets.size,
+              coverage = coverage
+            ))
+          }
+          Log.d(
+            "PROVIDER_CATALOG",
+            "Stremio provider=${provider.id}: coverage=$coverage, " +
+              "${page.targets.size} cataloghi confermati, ${page.items.size} titoli"
+          )
+        } else {
+          // Nessun binding confermato: si mantiene il catalogo nativo TMDB.
+          _stremioProviderMedia.update { it - provider.id }
+          _stremioProviderStates.update { it - provider.id }
+          Log.d(
+            "PROVIDER_CATALOG",
+            "Nessun binding Stremio confermato per ${provider.id}: coverage=NONE, usa catalogo TMDB"
+          )
+        }
+      } catch (e: Exception) {
+        Log.w(TAG, "Stremio provider catalog error: ${e.message}")
+        // Fetch fallito con binding dichiarati: non si può considerare FULL,
+        // la schermata deve poter completare con il catalogo TMDB.
+        if (StremioCatalogRepository.providerCoverage(provider) != ProviderCoverage.NONE) {
+          _stremioProviderStates.update {
+            it + (provider.id to StremioProviderCatalogState(coverage = ProviderCoverage.PARTIAL))
+          }
+        }
+      }
+    }
+    providerInitialLoad = initialLoad
+    initialLoad.invokeOnCompletion { if (providerInitialLoad === initialLoad) providerInitialLoad = null }
+
     // Crunchyroll (283): catalogo primariamente TV/anime -> prima le serie TV
     if (provider.tmdbProviderId == 283) {
       loadNextProviderPage(provider.tmdbProviderId, isTv = true)
@@ -1144,6 +1468,12 @@ class StreamNovaViewModel : ViewModel() {
     } else {
       loadNextProviderPage(provider.tmdbProviderId, isTv = false)
       loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+    }
+  }
+
+  fun ensureProviderLoaded(provider: StreamingProvider) {
+    if (_selectedProvider.value?.id != provider.id) {
+      openProvider(provider)
     }
   }
 

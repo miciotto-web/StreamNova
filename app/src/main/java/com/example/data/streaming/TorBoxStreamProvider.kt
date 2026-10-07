@@ -3,6 +3,8 @@ package com.example.data.streaming
 import android.util.Log
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.StremioStreamCandidate
+import com.example.data.stremio.StremioSubtitleAdapter
+import com.example.data.stremio.StremioSubtitleBridge
 import com.example.data.torbox.TorBoxGateway
 import com.example.data.torbox.TorBoxRepository
 
@@ -34,7 +36,7 @@ data class TorrentCandidate(
  * `cached = true` vengono restituiti con i relativi metadati (nome file, dimensione,
  * codec, tipo rilascio) per la selezione nell'interfaccia utente.
  */
-class TorBoxStreamProvider(
+open class TorBoxStreamProvider(
   private val torBox: TorBoxGateway = TorBoxRepository,
   private val addonRepository: StremioAddonRepository = StremioAddonRepository,
   /**
@@ -44,7 +46,7 @@ class TorBoxStreamProvider(
   private val extraCandidates: (suspend (tmdbId: Int, isTv: Boolean, season: Int?, episode: Int?, title: String?, year: Int?) -> List<TorrentCandidate>)? = null
 ) : StreamProvider {
 
-  override suspend fun getStreams(
+  open override suspend fun getStreams(
     tmdbId: Int,
     isTv: Boolean,
     season: Int?,
@@ -127,6 +129,13 @@ class TorBoxStreamProvider(
       val codec = candidate.codec
       val releaseType = candidate.releaseType
       val isItalian = StreamSource.isItalianSource(addonName)
+      // Sottotitoli dichiarati dallo stream (`stream.subtitles[]`): gia' allineati alla
+      // release riprodotta, quindi hanno precedenza. Il bridge non esegue alcuna
+      // richiesta di rete, quindi qui non viene introdotto alcun lavoro di rete.
+      val subtitles = StremioSubtitleAdapter.toSubtitles(
+        StremioSubtitleBridge.fromStream(candidate.item),
+        addonName = addonName
+      )
 
       Log.i(TAG, "TorBox: in cache ($quality) da $addonName - $releaseTitle")
       Log.i(
@@ -150,7 +159,8 @@ class TorBoxStreamProvider(
           fileIdx = candidate.item.fileIdx,
           codec = codec,
           isCached = true,
-          releaseType = releaseType
+          releaseType = releaseType,
+          subtitles = subtitles
         )
       )
     }

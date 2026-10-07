@@ -50,6 +50,8 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.repository.ProviderCoverage
+import com.example.data.repository.StremioCatalogRepository
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvFocusBringIntoView
@@ -86,8 +88,33 @@ fun ProviderScreen(
 ) {
   BackHandler { onBackClick() }
 
-  val providerMedia = remember(allMedia, provider) {
+  val stremioProviderMap by (viewModel?.stremioProviderMedia ?: MutableStateFlow(emptyMap())).collectAsState()
+  val stremioItems = stremioProviderMap[provider.id].orEmpty()
+
+  // La fonte dati dipende dalla COVERAGE del provider, non più da un flag binario:
+  //   NONE    -> solo TMDB nativo,
+  //   FULL    -> solo Stremio,
+  //   PARTIAL -> Stremio primario + TMDB come completamento (merge/dedup).
+  val stremioStateMap by (viewModel?.stremioProviderStates ?: MutableStateFlow(emptyMap())).collectAsState()
+  val coverage = stremioStateMap[provider.id]?.coverage
+    ?: remember(provider) { StremioCatalogRepository.providerCoverage(provider) }
+
+  val nativeProviderMedia = remember(allMedia, provider) {
     allMedia.filter { it.provider?.contains(provider.id, ignoreCase = true) == true }
+  }
+
+  val providerMedia = remember(stremioItems, nativeProviderMedia, coverage) {
+    when (coverage) {
+      ProviderCoverage.FULL -> stremioItems
+      // Stremio resta davanti, TMDB completa; dedup cross-source obbligatorio.
+      ProviderCoverage.PARTIAL ->
+        StremioCatalogRepository.deduplicateCrossSource(stremioItems + nativeProviderMedia)
+      ProviderCoverage.NONE -> nativeProviderMedia
+    }
+  }
+
+  LaunchedEffect(provider) {
+    viewModel?.ensureProviderLoaded(provider)
   }
 
   val gridState = rememberLazyGridState()
@@ -105,8 +132,10 @@ fun ProviderScreen(
     }
   }
 
-  // Pre-caricamento pagina iniziale al cambio filtro se necessario
-  LaunchedEffect(provider, selectedFilter) {
+  // Pre-caricamento pagina iniziale al cambio filtro se necessario:
+  // consentito per NONE e per PARTIAL (completamento TMDB), non per FULL.
+  LaunchedEffect(provider, selectedFilter, coverage) {
+    if (coverage != ProviderCoverage.FULL) {
     when (selectedFilter) {
       ProviderCatalogFilter.TV_SERIES -> {
         viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
@@ -122,6 +151,7 @@ fun ProviderScreen(
         onLoadMore?.invoke(false)
         onLoadMore?.invoke(true)
       }
+    }
     }
   }
 

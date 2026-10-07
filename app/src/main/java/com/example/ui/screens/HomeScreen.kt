@@ -41,6 +41,7 @@ import androidx.compose.ui.res.stringResource
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.repository.HomeCatalogs
 import com.example.data.repository.MediaRepository
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -72,12 +73,14 @@ fun HomeScreen(
 ) {
   val currentSection by viewModel.currentSection.collectAsState()
   val allMedia by viewModel.allMedia.collectAsState()
+  val homeCatalogs by viewModel.homeCatalogs.collectAsState()
   val handleMediaClick: (MediaItem) -> Unit = onMediaClick ?: { viewModel.openDetail(it) }
 
   when (currentSection) {
     SidebarSection.HOME -> {
       HomeMainBrowsingContent(
         allMedia = allMedia,
+        homeCatalogs = homeCatalogs,
         onMediaClick = handleMediaClick,
         onPlayClick = { viewModel.openStreamForMedia(it) },
         onRemoveFromContinueWatching = { viewModel.removeFromContinueWatching(it) },
@@ -86,18 +89,32 @@ fun HomeScreen(
       )
     }
     SidebarSection.FILM -> {
+      val moviesItems = remember(homeCatalogs, allMedia) {
+        if (homeCatalogs.isMoviesFromStremio && homeCatalogs.allMovies.isNotEmpty()) {
+          homeCatalogs.allMovies
+        } else {
+          allMedia.filter { it.type == MediaType.FILM }
+        }
+      }
       CategoryBrowsingScreen(
         title = stringResource(R.string.category_all_movies),
-        items = allMedia.filter { it.type == MediaType.FILM },
+        items = moviesItems,
         onMediaClick = handleMediaClick,
         onLoadMore = { viewModel.loadNextMoviesPage() },
         modifier = modifier
       )
     }
     SidebarSection.SERIE_TV -> {
+      val seriesItems = remember(homeCatalogs, allMedia) {
+        if (homeCatalogs.isSeriesFromStremio && homeCatalogs.allSeries.isNotEmpty()) {
+          homeCatalogs.allSeries
+        } else {
+          allMedia.filter { it.type == MediaType.SERIE_TV }
+        }
+      }
       CategoryBrowsingScreen(
         title = stringResource(R.string.category_all_tv_series),
-        items = allMedia.filter { it.type == MediaType.SERIE_TV },
+        items = seriesItems,
         onMediaClick = handleMediaClick,
         onLoadMore = { viewModel.loadNextTvPage() },
         modifier = modifier
@@ -136,6 +153,7 @@ fun HomeScreen(
 @Composable
 fun HomeMainBrowsingContent(
   allMedia: List<MediaItem>,
+  homeCatalogs: HomeCatalogs? = null,
   onMediaClick: (MediaItem) -> Unit,
   onPlayClick: (MediaItem) -> Unit,
   onRemoveFromContinueWatching: (String) -> Unit,
@@ -150,30 +168,50 @@ fun HomeMainBrowsingContent(
   }
   var contextMenuMedia by remember { mutableStateOf<MediaItem?>(null) }
 
-  val top10Movies = remember(allMedia) { MediaRepository.getTop10Movies() }
-  val top10Series = remember(allMedia) { MediaRepository.getTop10Series() }
-  val trendingMovies = remember(allMedia) { MediaRepository.getTrendingMovies() }
-  val trendingSeries = remember(allMedia) { MediaRepository.getTrendingSeries() }
-  val forYouMovies = remember(allMedia) { MediaRepository.getForYouMovies() }
-  val forYouSeries = remember(allMedia) { MediaRepository.getForYouSeries() }
-  val popularMovies = remember(allMedia) { MediaRepository.getPopularMovies() }
-  val popularSeries = remember(allMedia) { MediaRepository.getPopularSeries() }
+  val top10Movies = remember(homeCatalogs, allMedia) {
+    homeCatalogs?.top10Movies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTop10Movies()
+  }
+  val top10Series = remember(homeCatalogs, allMedia) {
+    homeCatalogs?.top10Series?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTop10Series()
+  }
+  val trendingMovies = remember(homeCatalogs, allMedia) {
+    homeCatalogs?.trendingMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTrendingMovies()
+  }
+  val trendingSeries = remember(homeCatalogs, allMedia) {
+    homeCatalogs?.trendingSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTrendingSeries()
+  }
+  val forYouMovies = remember(homeCatalogs, allMedia) {
+    homeCatalogs?.forYouMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getForYouMovies()
+  }
+  val forYouSeries = remember(homeCatalogs, allMedia) {
+    homeCatalogs?.forYouSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getForYouSeries()
+  }
+  val popularMovies = remember(homeCatalogs, allMedia) {
+    homeCatalogs?.popularMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getPopularMovies()
+  }
+  val popularSeries = remember(homeCatalogs, allMedia) {
+    homeCatalogs?.popularSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getPopularSeries()
+  }
 
-  // Hero Banner Dinamico: selezione di massimo 9 titoli alternati tra Film e Serie TV TMDB
-  val dynamicHeroItems = remember(allMedia) {
-    val movies = allMedia.filter { it.type == MediaType.FILM && (!it.backdropUrl.isNullOrBlank() || it.backdropRes != null) }
-    val series = allMedia.filter { it.type == MediaType.SERIE_TV && (!it.backdropUrl.isNullOrBlank() || it.backdropRes != null) }
-    val combined = mutableListOf<MediaItem>()
-    val maxLen = maxOf(movies.size, series.size)
-    for (i in 0 until maxLen) {
-      if (i < movies.size && combined.size < 9 && !combined.any { it.id == movies[i].id }) {
-        combined.add(movies[i])
+  // Hero Banner Dinamico: selezione di massimo 9 titoli alternati tra Film e Serie TV
+  val dynamicHeroItems = remember(homeCatalogs, allMedia) {
+    if (homeCatalogs != null && homeCatalogs.heroItems.isNotEmpty()) {
+      homeCatalogs.heroItems
+    } else {
+      val movies = allMedia.filter { it.type == MediaType.FILM && (!it.backdropUrl.isNullOrBlank() || it.backdropRes != null) }
+      val series = allMedia.filter { it.type == MediaType.SERIE_TV && (!it.backdropUrl.isNullOrBlank() || it.backdropRes != null) }
+      val combined = mutableListOf<MediaItem>()
+      val maxLen = maxOf(movies.size, series.size)
+      for (i in 0 until maxLen) {
+        if (i < movies.size && combined.size < 9 && !combined.any { it.id == movies[i].id }) {
+          combined.add(movies[i])
+        }
+        if (i < series.size && combined.size < 9 && !combined.any { it.id == series[i].id }) {
+          combined.add(series[i])
+        }
       }
-      if (i < series.size && combined.size < 9 && !combined.any { it.id == series[i].id }) {
-        combined.add(series[i])
-      }
+      if (combined.isEmpty()) allMedia.take(9) else combined.take(9)
     }
-    if (combined.isEmpty()) allMedia.take(9) else combined.take(9)
   }
 
   val listState = rememberLazyListState()
@@ -281,7 +319,7 @@ fun HomeMainBrowsingContent(
       item(key = "section_top_10_film") {
         CarouselHeader(
           title = stringResource(R.string.home_section_top_10_movies),
-          badge = stringResource(R.string.home_badge_tmdb_ranking_italy)
+          badge = if (homeCatalogs?.isMoviesFromStremio == true) "Stremio" else stringResource(R.string.home_badge_tmdb_ranking_italy)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -304,7 +342,7 @@ fun HomeMainBrowsingContent(
       item(key = "section_top_10_serie") {
         CarouselHeader(
           title = stringResource(R.string.home_section_top_10_series),
-          badge = stringResource(R.string.home_badge_most_watched_tmdb)
+          badge = if (homeCatalogs?.isSeriesFromStremio == true) "Stremio" else stringResource(R.string.home_badge_most_watched_tmdb)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -451,6 +489,30 @@ fun HomeMainBrowsingContent(
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
+      }
+    }
+
+    // Sezioni aggiuntive da addon Stremio (se presenti)
+    homeCatalogs?.extraSections?.forEach { extraSec ->
+      if (extraSec.items.isNotEmpty()) {
+        item(key = "section_${extraSec.id}") {
+          CarouselHeader(
+            title = extraSec.title,
+            badge = extraSec.addonName
+          )
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+          ) {
+            items(extraSec.items, key = { "extra_${extraSec.id}_${it.id}" }) { item ->
+              PosterMediaCard(
+                media = item,
+                onClick = { onMediaClick(item) }
+              )
+            }
+          }
+          Spacer(modifier = Modifier.height(20.dp))
+        }
       }
     }
   }

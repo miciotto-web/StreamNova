@@ -1230,10 +1230,75 @@ object MediaRepository {
     }
   }
 
+  private val imdbToTmdbCache = ConcurrentHashMap<String, Int>()
+
+  /**
+   * Risolve un IMDb ID (formato "tt...") nel corrispondente TMDB ID.
+   *
+   * Comportamento:
+   * - Se l'ID non inizia con "tt", non tenta la risoluzione IMDb e restituisce null.
+   * - Interroga l'endpoint TMDB /find/{imdbId}?external_source=imdb_id.
+   * - Cerca prima il risultato coerente con il tipo richiesto (movie o tv).
+   * - Restituisce null se non esiste alcun risultato.
+   * - Non lancia eccezioni per un IMDb non risolvibile.
+   */
+  suspend fun resolveImdbToTmdbId(imdbId: String?, isTv: Boolean): Int? = withContext(Dispatchers.IO) {
+    val cleanId = imdbId?.trim().orEmpty().substringBefore(":")
+    if (!cleanId.startsWith("tt", ignoreCase = true)) {
+      return@withContext null
+    }
+
+    val cacheKey = "$cleanId:${if (isTv) "tv" else "movie"}"
+    imdbToTmdbCache[cacheKey]?.let { return@withContext it }
+
+    try {
+      val apiKey = getEffectiveApiKey()
+      val findResult = TmdbApiClient.service.findByExternalId(
+        externalId = cleanId,
+        apiKey = apiKey,
+        externalSource = "imdb_id"
+      )
+      val movies = findResult.movieResults.orEmpty()
+      val tvs = findResult.tvResults.orEmpty()
+
+      val resolvedId = if (isTv) {
+        tvs.firstOrNull()?.id ?: movies.firstOrNull()?.id
+      } else {
+        movies.firstOrNull()?.id ?: tvs.firstOrNull()?.id
+      }
+
+      if (resolvedId != null && resolvedId > 0) {
+        imdbToTmdbCache[cacheKey] = resolvedId
+        return@withContext resolvedId
+      }
+      null
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Risoluzione IMDb ID ($cleanId) fallita: ${e.message}")
+      null
+    }
+  }
+
+  fun setDetailLoading(baseMedia: MediaItem?) {
+    _detailUiState.value = MediaDetailUiState.Loading(baseMedia)
+  }
+
+  fun setDetailError(baseMedia: MediaItem?, message: String) {
+    _detailUiState.value = MediaDetailUiState.Error(baseMedia, message)
+  }
+
   suspend fun loadMediaDetails(tmdbId: Int, isTv: Boolean, baseMedia: MediaItem? = null) {
     // Match tipizzato: un ID film e un ID serie TMDB coincidenti non si confondono.
     val wantedType = if (isTv) MediaType.SERIE_TV else MediaType.FILM
     val existingBase = baseMedia ?: _mediaList.value.find { it.tmdbId == tmdbId && it.type == wantedType }
+
+    if (tmdbId <= 0) {
+      _detailUiState.value = MediaDetailUiState.Error(
+        baseMedia = existingBase,
+        message = "Identificatore TMDB non disponibile per questo contenuto"
+      )
+      return
+    }
+
     _detailUiState.value = MediaDetailUiState.Loading(existingBase)
 
     try {

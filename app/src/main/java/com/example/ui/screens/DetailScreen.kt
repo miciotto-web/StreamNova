@@ -1,8 +1,12 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,7 +22,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,15 +43,26 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -88,6 +105,7 @@ enum class DetailTab(val titleRes: Int) {
   DETTAGLI(R.string.detail_tab_technical_details)
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun DetailScreen(
   media: MediaItem,
@@ -256,11 +274,57 @@ fun DetailScreen(
         )
     )
 
-    // Main Scrollable Content
-    LazyColumn(
-      modifier = Modifier.fillMaxSize(),
-      contentPadding = PaddingValues(top = 28.dp, bottom = 48.dp)
-    ) {
+   // Main Scrollable Content
+   val listState = rememberLazyListState()
+
+   val initialFocusRequester = remember { FocusRequester() }
+   val playButtonRequester = remember { FocusRequester() }
+   val hasFocusableProviderBadge = displayMedia.provider != null && onProviderClick != null
+   val headerFocusModifier = Modifier
+     .focusRequester(initialFocusRequester)
+     .focusProperties {
+       down = playButtonRequester
+       up = if (hasFocusableProviderBadge) FocusRequester.Default else FocusRequester.Cancel
+     }
+     .focusable()
+
+   var isBringIntoViewAllowed by remember { mutableStateOf(false) }
+   val ambientBringIntoViewSpec = LocalBringIntoViewSpec.current
+   val guardedBringIntoViewSpec = remember(ambientBringIntoViewSpec) {
+     object : BringIntoViewSpec {
+       override fun calculateScrollDistance(
+         offset: Float,
+         size: Float,
+         containerSize: Float
+       ): Float {
+         if (!isBringIntoViewAllowed) return 0f
+         return ambientBringIntoViewSpec.calculateScrollDistance(offset, size, containerSize)
+       }
+     }
+   }
+
+   LaunchedEffect(displayMedia.id) {
+     repeat(6) {
+       withFrameNanos { }
+       try {
+         initialFocusRequester.requestFocus()
+         return@LaunchedEffect
+       } catch (_: IllegalStateException) {
+       }
+     }
+   }
+
+   CompositionLocalProvider(LocalBringIntoViewSpec provides guardedBringIntoViewSpec) {
+   LazyColumn(
+     state = listState,
+     modifier = Modifier
+       .fillMaxSize()
+       .onPreviewKeyEvent {
+         if (it.type == KeyEventType.KeyDown) isBringIntoViewAllowed = true
+         false
+       },
+     contentPadding = PaddingValues(top = 28.dp, bottom = 48.dp)
+   ) {
       // Loading Shimmer or Error Banner
       if (detailUiState is MediaDetailUiState.Loading) {
         item {
@@ -365,7 +429,7 @@ fun DetailScreen(
               contentDescription = displayMedia.title,
               contentScale = ContentScale.Fit,
               alignment = Alignment.CenterStart,
-              modifier = Modifier
+              modifier = headerFocusModifier
                 .heightIn(min = 46.dp, max = 84.dp)
                 .widthIn(max = 440.dp),
               error = {
@@ -381,6 +445,7 @@ fun DetailScreen(
           } else {
             Text(
               text = displayMedia.title,
+              modifier = headerFocusModifier,
               color = NovaTextPrimary,
               fontSize = 36.sp,
               fontWeight = FontWeight.Black,
@@ -516,6 +581,7 @@ fun DetailScreen(
               text = playButtonLabel,
               icon = Icons.Default.PlayArrow,
               isPrimary = true,
+              modifier = Modifier.focusRequester(playButtonRequester),
               onClick = { onPlayClick(displayMedia, resumeEpisode) }
             )
 
@@ -854,6 +920,7 @@ fun DetailScreen(
           }
         }
       }
+    }
     }
   }
 }

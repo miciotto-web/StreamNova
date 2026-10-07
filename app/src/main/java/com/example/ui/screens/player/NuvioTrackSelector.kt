@@ -3,7 +3,6 @@ package com.example.ui.screens.player
 import android.content.Context
 import android.util.Log
 import androidx.media3.common.C
-import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
@@ -47,44 +46,29 @@ object NuvioTrackSelector {
                 rendererMixedMimeTypeAdaptationSupports: IntArray,
                 params: Parameters
             ): Array<ExoTrackSelection.Definition?> {
-                val streamMime = streamMimeTypeProvider()
-                val isHls = streamMime != null && (
-                    streamMime.equals(MimeTypes.APPLICATION_M3U8, ignoreCase = true) ||
-                    streamMime.lowercase().contains("mpegurl") ||
-                    streamMime.lowercase().contains("m3u8")
-                )
+                // --- DIAGNOSTICA 4K (solo log, nessun cambio di comportamento) ---
+                StreamNova4KDiag.logParams("selectAllTracks", params)
+                StreamNova4KDiag.logVideoCandidates(mappedTrackInfo, rendererFormatSupports)
 
-                if (isHls) {
-                    for (rendererIndex in 0 until mappedTrackInfo.rendererCount) {
-                        if (mappedTrackInfo.getRendererType(rendererIndex) == C.TRACK_TYPE_VIDEO) {
-                            val trackGroups = mappedTrackInfo.getTrackGroups(rendererIndex)
-                            for (groupIndex in 0 until trackGroups.length) {
-                                val group = trackGroups[groupIndex]
-                                for (trackIndex in 0 until group.length) {
-                                    val format = group.getFormat(trackIndex)
-                                    val support = rendererFormatSupports[rendererIndex][groupIndex][trackIndex]
-                                    val formatSupport = RendererCapabilities.getFormatSupport(support)
-                                    if (formatSupport == C.FORMAT_EXCEEDS_CAPABILITIES) {
-                                        val mime = format.sampleMimeType
-                                        val isAvcOrHevc = mime == MimeTypes.VIDEO_H264 || mime == MimeTypes.VIDEO_H265
-                                        val isAtMost1080p = format.width <= 1920 && format.height <= 1080
-                                        val codecs = format.codecs?.lowercase() ?: ""
-                                        val is10Bit = codecs.contains("main10") || codecs.contains("hevc.2") || codecs.contains("hev2")
-                                        val isHdr = format.colorInfo?.colorTransfer == C.COLOR_TRANSFER_ST2084
-                                        val isStandard8Bit = !is10Bit && !isHdr
-
-                                        if (isAvcOrHevc && isAtMost1080p && isStandard8Bit) {
-                                            Log.i(TAG, "Upgraded track support to FORMAT_HANDLED for id=${format.id}")
-                                            rendererFormatSupports[rendererIndex][groupIndex][trackIndex] =
-                                                RendererCapabilities.create(
-                                                    C.FORMAT_HANDLED,
-                                                    RendererCapabilities.ADAPTIVE_SEAMLESS,
-                                                    RendererCapabilities.getTunnelingSupport(support),
-                                                    RendererCapabilities.getHardwareAccelerationSupport(support),
-                                                    RendererCapabilities.getDecoderSupport(support)
-                                                )
-                                        }
-                                    }
+                for (rendererIndex in 0 until mappedTrackInfo.rendererCount) {
+                    if (mappedTrackInfo.getRendererType(rendererIndex) == C.TRACK_TYPE_VIDEO) {
+                        val trackGroups = mappedTrackInfo.getTrackGroups(rendererIndex)
+                        for (groupIndex in 0 until trackGroups.length) {
+                            val group = trackGroups[groupIndex]
+                            for (trackIndex in 0 until group.length) {
+                                val format = group.getFormat(trackIndex)
+                                val support = rendererFormatSupports[rendererIndex][groupIndex][trackIndex]
+                                val formatSupport = RendererCapabilities.getFormatSupport(support)
+                                if (formatSupport == C.FORMAT_EXCEEDS_CAPABILITIES) {
+                                    Log.i(TAG, "Upgraded track support to FORMAT_HANDLED for id=${format.id}")
+                                    rendererFormatSupports[rendererIndex][groupIndex][trackIndex] =
+                                        RendererCapabilities.create(
+                                            C.FORMAT_HANDLED,
+                                            RendererCapabilities.ADAPTIVE_SEAMLESS,
+                                            RendererCapabilities.getTunnelingSupport(support),
+                                            RendererCapabilities.getHardwareAccelerationSupport(support),
+                                            RendererCapabilities.getDecoderSupport(support)
+                                        )
                                 }
                             }
                         }
@@ -132,16 +116,24 @@ object NuvioTrackSelector {
                     params
                 }
 
-                return super.selectAllTracks(
+                if (forceVc1VideoSelection) {
+                    StreamNova4KDiag.logParams("selectAllTracks/override-VC1", selectionParams)
+                }
+
+                val definitions = super.selectAllTracks(
                     mappedTrackInfo,
                     rendererFormatSupports,
                     rendererMixedMimeTypeAdaptationSupports,
                     selectionParams
                 )
+                // --- DIAGNOSTICA 4K (solo log): esito della selezione ---
+                StreamNova4KDiag.logSelection(mappedTrackInfo, definitions)
+                return definitions
             }
         }.apply {
             val builder = buildUponParameters()
                 .setAllowInvalidateSelectionsOnRendererCapabilitiesChange(true)
+                .setExceedRendererCapabilitiesIfNecessary(true)
 
             if (tunnelingEnabled && !safeAudioMode) {
                 builder.setTunnelingEnabled(true)
@@ -172,6 +164,8 @@ object NuvioTrackSelector {
             }
 
             setParameters(builder)
+            // --- DIAGNOSTICA 4K (solo log): parametri effettivi dopo la configurazione iniziale ---
+            StreamNova4KDiag.logParams("NuvioTrackSelector.create", parameters)
         }
     }
 }
