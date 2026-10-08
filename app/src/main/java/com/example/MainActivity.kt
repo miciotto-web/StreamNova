@@ -48,8 +48,7 @@ import com.example.data.streaming.StreamResult
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.TvPinDialog
 import com.example.ui.components.SidebarNavigation
-import com.example.ui.components.SourceItem
-import com.example.ui.components.SourceSelectionDialog
+import com.example.ui.components.TorBoxSourceSelectionScreen
 import com.example.ui.components.StreamStatusOverlay
 import com.example.ui.components.StreamingProvider
 import com.example.ui.navigation.DetailNavArgs
@@ -451,24 +450,13 @@ fun StreamNovaApp(
 
     val showSourceDialog by viewModel.showSourceDialog.collectAsState()
     val availableSources by viewModel.availableSources.collectAsState()
+    val sourceSelectionTarget by viewModel.sourceSelectionTarget.collectAsState()
     if (showSourceDialog && availableSources.isNotEmpty()) {
-      val sourceItems = availableSources.map { source ->
-        SourceItem(
-          source = source,
-          isItalian = source.isItalian,
-          resolutionBadge = source.quality,
-          sourceName = source.serverName,
-          codecBadge = source.codec,
-          addonName = source.addonName,
-          instantTag = source.instantTag,
-          releaseTitle = source.releaseTitle,
-          details = source.details,
-          releaseType = source.releaseType
-        )
-      }
-      SourceSelectionDialog(
-        sources = sourceItems,
-        onSelect = { item -> viewModel.selectSource(item.source) },
+      TorBoxSourceSelectionScreen(
+        sources = availableSources,
+        media = sourceSelectionTarget?.media,
+        episode = sourceSelectionTarget?.episode,
+        onSelect = { source -> viewModel.selectSource(source) },
         onDismiss = { viewModel.dismissSourceDialog() }
       )
     }

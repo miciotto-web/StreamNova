@@ -239,6 +239,16 @@ sealed interface StreamResolutionState {
   data class Error(val message: String) : StreamResolutionState
 }
 
+/**
+ * Bersaglio della selezione sorgente TorBox: il media e l'episodio (se serie TV)
+ * per cui sono state risolte le [StreamSource]. Serve solo alla UI della schermata
+ * di selezione, che ricava poster/backdrop/logo da [media] senza nuove richieste.
+ */
+data class SourceSelectionTarget(
+  val media: MediaItem,
+  val episode: Episode? = null
+)
+
 class StreamNovaViewModel : ViewModel() {
 
   private val _currentSection = MutableStateFlow(SidebarSection.HOME)
@@ -300,8 +310,13 @@ class StreamNovaViewModel : ViewModel() {
   private val _availableSources = MutableStateFlow<List<StreamSource>>(emptyList())
   val availableSources: StateFlow<List<StreamSource>> = _availableSources.asStateFlow()
 
-  private var pendingMediaForSourceSelection: MediaItem? = null
-  private var pendingEpisodeForSourceSelection: Episode? = null
+  /**
+   * Media/episodio per cui è in corso la selezione sorgente TorBox. Esposto alla UI
+   * per comporre la schermata di selezione (poster, backdrop, logo, SxEx) senza
+   * introdurre nuove chiamate di rete: sono gli stessi dati già risolti dal flow.
+   */
+  private val _sourceSelectionTarget = MutableStateFlow<SourceSelectionTarget?>(null)
+  val sourceSelectionTarget: StateFlow<SourceSelectionTarget?> = _sourceSelectionTarget.asStateFlow()
   private var loadStreamJob: Job? = null
 
   /**
@@ -1495,8 +1510,7 @@ class StreamNovaViewModel : ViewModel() {
             val shouldShowDialog = mode == StreamingEngineMode.DEBRID_TORBOX && !AppSettingsRepository.autoplayEnabled.value
             if (shouldShowDialog) {
               _availableSources.value = finalSources
-              pendingMediaForSourceSelection = resolvedMediaItem
-              pendingEpisodeForSourceSelection = effectiveEpisode
+              _sourceSelectionTarget.value = SourceSelectionTarget(resolvedMediaItem, effectiveEpisode)
               _showSourceDialog.value = true
               _streamResolutionState.value = StreamResolutionState.Idle
               _streamResult.value = StreamResult.Idle
@@ -1573,8 +1587,9 @@ class StreamNovaViewModel : ViewModel() {
     loadStreamJob?.cancel()
     loadStreamJob = null
     viewModelScope.launch {
-      val media = pendingMediaForSourceSelection ?: return@launch
-      val episode = pendingEpisodeForSourceSelection
+      val target = _sourceSelectionTarget.value ?: return@launch
+      val media = target.media
+      val episode = target.episode
 
       _isLoading.value = true
       _errorMessage.value = null
@@ -1602,8 +1617,7 @@ class StreamNovaViewModel : ViewModel() {
 
       _showSourceDialog.value = false
       _availableSources.value = emptyList()
-      pendingMediaForSourceSelection = null
-      pendingEpisodeForSourceSelection = null
+      _sourceSelectionTarget.value = null
       _isLoading.value = false
 
       Log.i(TAG, "Source selection: ${resolvedSource.serverName} (${resolvedSource.quality})")
@@ -1626,8 +1640,7 @@ class StreamNovaViewModel : ViewModel() {
     resetStreamState()
     _showSourceDialog.value = false
     _availableSources.value = emptyList()
-    pendingMediaForSourceSelection = null
-    pendingEpisodeForSourceSelection = null
+    _sourceSelectionTarget.value = null
   }
 
   fun closePlayer() {
