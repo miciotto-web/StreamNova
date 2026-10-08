@@ -1,0 +1,152 @@
+{
+  "metas": [
+    {
+      "id": "tt11378946",
+      "type": "movie",
+      "name": "Michael",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt11378946.jpg",
+      "background": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/background/movie/tt11378946.jpg?tmdb=936075",
+      "description": "La storia di Michael Jackson oltre la musica, il suo viaggio dalla scoperta del suo straordinario talento come protagonista dei Jackson Five all'artista precursore la cui ambizione creativa ha alimentato un'incessante ricerca per diventare il più grande intrattenitore del mondo. Seguendo la sua vita fuori dal palco e alcune delle performance più iconiche degli inizi della sua carriera da solista,…",
+      "releaseInfo": "2026",
+      "released": "2026-04-22T12:00:00Z",
+      "imdb_id": "tt11378946",
+      "status": "Released",
+      "runtime": "128 min",
+      "trailers": [
+        {
+          "source": "k-YAcjaLuSI",
+          "type": "Trailer",
+          "name": "Final Trailer",
+          "ytId": "k-YAcjaLuSI"
+        }
+      ],
+      "genres": [
+        "Musica",
+        "Dramma"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/xUjMqG7GH6md8qX5e3MyLAzAYSZ.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt11378946.png?tmdb=936075",
+      "imdbRating": "7.3"
+    },
+    {
+      "id": "tt2380307",
+      "type": "movie",
+      "name": "Coco",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt2380307.jpg",
+      "background": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/background/movie/tt2380307.jpg?tmdb=354912",
+      "description": "Nonostante il divieto di musica che dura da generazioni nella sua famiglia, Miguel sogna di diventare un musicista affermato come il suo idolo, Ernesto de la Cruz. Disperato di dimostrare il suo talento, Miguel si ritrova nella splendida e colorata Terra dei Morti, seguendo una misteriosa catena di eventi. Lungo il cammino incontra il fascinante imbroglione Hector e insieme partono per un viaggio…",
+      "releaseInfo": "2017",
+      "released": "2017-10-27T12:00:00Z",
+      "imdb_id": "tt2380307",
+      "status": "Released",
+      "runtime": "105 min",
+      "trailers": [
+        {
+          "source": "Rvr68u6k5sI",
+          "type": "Trailer",
+          "name": "Official Final Trailer",
+          "ytId": "Rvr68u6k5sI"
+        }
+      ],
+      "genres": [
+        "Famiglia",
+        "Animazione",
+        "Musica",
+        "Avventura"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/l5qUox5uroubMi8sihD9RGPbcwO.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt2380307.png?tmdb=354912",
+      "imdbRating": "8.4"
+    },
+    {
+      "id": "tt2582802",
+      "type": "movie",
+      "name": "Whiplash",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt2582802.jpg",
+      "background": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/background/movie/tt2582802.jpg?tmdb=244786",
+      "description": "Andrew studia batteria jazz nella più prestigiosa ed importante scuola di musica di New York, è al suo primo anno e già viene notato da Terence Fletcher, temutissimo e inflessibile insegnante che a sorpresa lo vuole nella propria band. Il ragazzo è eccitato dalla possibilità ma non sa che in realtà sarà un inferno di prove, esercizi e umiliazioni come non pensava fosse possibile. Gli standard…",
+      "releaseInfo": "2014",
+      "released": "2014-10-10T12:00:00Z",
+      "imdb_id": "tt2582802",
+      "status": "Released",
+      "runtime": "107 min",
+      "trailers": [
+        {
+          "source": "Q7kZy3T6vRM",
+          "type": "Trailer",
+          "name": "10th Anniversary Rerelease Official Trailer",
+          "ytId": "Q7kZy3T6vRM"
+        }
+      ],
+      "genres": [
+        "Dramma",
+        "Musica",
+        "Thriller"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/jQwkXN38AGrK2s3LJqxZow1Ic7z.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt2582802.png?tmdb=244786",
+      "imdbRating": "8.5"
+    },
+    {
+      "id": "tt14205554",
+      "type": "movie",
+      "name": "KPop Demon Hunters",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt14205554.jpg",
+      "background": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/background/movie/tt14205554.jpg?tmdb=803796",
+      "description": "Quando non fanno il tutto esaurito negli stadi, le superstar del K-pop Rumi, Mira e Zoey usano i loro poteri segreti per proteggere i fan da minacce soprannaturali.",
+      "releaseInfo": "2025",
+      "released": "2025-06-20T12:00:00Z",
+      "imdb_id": "tt14205554",
+      "status": "Released",
+      "runtime": "96 min",
+      "trailers": [
+        {
+          "source": "AzCAwdp1uIQ",
+          "type": "Trailer",
+          "name": "Official Trailer",
+          "ytId": "AzCAwdp1uIQ"
+        }
+      ],
+      "genres": [
+        "Fantasy",
+        "Musica",
+        "Commedia",
+        "Animazione"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/uPkg9Wz1WEWQZoHkNNe3Dc49z0t.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt14205554.png?tmdb=803796",
+      "imdbRating": "7.4"
+    },
+    {
+      "id": "tt2948372",
+      "type": "movie",
+      "name": "Soul",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt2948372.jpg",
+      "background": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/background/movie/tt2948372.jpg?tmdb=508442",
+      "description": "Joe Gardner, direttore di una banda musicale delle scuole medie e appassionato di jazz, sogna da sempre di suonare all’Half Note, un prestigioso locale di New York. Dopo 20 anni di tentativi, finalmente riesce a ottenere una serata. Tuttavia, a seguito di un incidente, la sua anima finisce nell’aldilà, dove fa amicizia con 22, un'anima convinta terrorizzata dalla Terra, sulla quale non vuole…",
+      "releaseInfo": "2020",
+      "released": "2020-12-25T12:00:00Z",
+      "imdb_id": "tt2948372",
+      "status": "Released",
+      "runtime": "101 min",
+      "trailers": [
+        {
+          "source": "Gs--6c7Hn_A",
+          "type": "Trailer",
+          "name": "Official Trailer 2",
+          "ytId": "Gs--6c7Hn_A"
+        }
+      ],
+      "genres": [
+        "Animazione",
+        "Famiglia",
+        "Dramma",
+        "Musica",
+        "Fantasy"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/jrEPxF3YZvYa8f0H0Lp3Ph6z4xK.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt2948372.png?tmdb=508442",
+      "imdbRating": "8.0"
+    }
+  ]
+}

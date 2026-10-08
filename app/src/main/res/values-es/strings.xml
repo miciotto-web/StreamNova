@@ -123,7 +123,8 @@
      <string name="search_screen_title">Buscar en StreamNova</string>
      <string name="search_screen_subtitle">Busca por texto o elige una categoría para explorar todo el catálogo</string>
      <string name="search_back_to_categories">Volver a Categorías</string>
-     <string name="search_category_desc">Todo el contenido dedicado al género (TMDB Discover)</string>
+     <string name="search_category_desc_addon">Catálogo del addon: %1$s</string>
+     <string name="search_category_desc_fallback">Respaldo TMDB Discover — catálogo del addon no cargado</string>
      <string name="search_titles_available">%d Títulos disponibles</string>
      <string name="search_no_content_for_category">No se encontró contenido para %s</string>
      <string name="search_results_found">Resultados para \"%1$s\" (%2$d)</string>

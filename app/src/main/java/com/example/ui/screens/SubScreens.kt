@@ -142,12 +142,14 @@ import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaDivider
 import com.example.ui.theme.NovaGreen
+import com.example.ui.theme.NovaOrange
 import com.example.ui.theme.NovaRed
 import com.example.ui.theme.NovaSurface
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import com.example.ui.viewmodel.SearchCategorySource
 import com.example.ui.viewmodel.StreamNovaViewModel
 import com.example.ui.viewmodel.TorBoxAccountState
 import java.io.File
@@ -666,10 +668,10 @@ fun SearchScreen(
 ) {
   val query by viewModel.searchQuery.collectAsState()
   val results by viewModel.filteredSearchResults.collectAsState()
-  val allMedia by viewModel.allMedia.collectAsState()
   val searchFilter by viewModel.searchFilter.collectAsState()
   val categoryItems by viewModel.categoryItems.collectAsState()
   val isCategoryLoading by viewModel.isCategoryLoading.collectAsState()
+  val categoryState by viewModel.categoryState.collectAsState()
 
   val savedCategoryId by viewModel.selectedSearchCategoryId.collectAsState()
   var selectedCategory by remember {
@@ -910,7 +912,9 @@ fun SearchScreen(
     when {
       selectedCategory != null -> {
         val cat = selectedCategory!!
-         val rawCategoryMedia = if (categoryItems.isNotEmpty()) categoryItems else allMedia
+        // Solo i contenuti caricati per QUESTA categoria: nessun seed da allMedia,
+        // così una categoria nuova non mostra mai i poster di quella precedente.
+        val rawCategoryMedia = categoryItems
         val displayedCategoryMedia = remember(rawCategoryMedia, searchFilter) {
           when (searchFilter) {
             SearchTypeFilter.ALL -> rawCategoryMedia
@@ -963,8 +967,21 @@ fun SearchScreen(
               )
             }
             Text(
-              text = stringResource(R.string.search_category_desc),
-              color = NovaTextSecondary,
+              // Sottotitolo secondo la sorgente REALE dei poster: l'etichetta
+              // TMDB Discover appare solo quando il fallback TMDB è attivo.
+              text = when (categoryState.source) {
+                SearchCategorySource.ADDON -> stringResource(
+                  R.string.search_category_desc_addon,
+                  categoryState.addonLabel.orEmpty()
+                )
+                SearchCategorySource.TMDB_FALLBACK -> stringResource(R.string.search_category_desc_fallback)
+                null -> ""
+              },
+              color = if (categoryState.source == SearchCategorySource.TMDB_FALLBACK) {
+                NovaOrange
+              } else {
+                NovaTextSecondary
+              },
               fontSize = 13.sp
             )
           }
@@ -996,6 +1013,17 @@ fun SearchScreen(
           }
         }
 
+        // Avviso esplicito: errore del catalogo addon oppure motivo del fallback
+        // TMDB Discover: non viene mai mascherato come caricamento riuscito.
+        categoryState.statusMessage?.let { message ->
+          Text(
+            text = message,
+            color = if (categoryState.source == SearchCategorySource.ADDON) NovaOrange else NovaTextMuted,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+          )
+        }
+
         if (displayedCategoryMedia.isEmpty() && !isCategoryLoading) {
           Box(
             modifier = Modifier
@@ -1019,7 +1047,9 @@ fun SearchScreen(
               verticalArrangement = Arrangement.spacedBy(16.dp),
               modifier = Modifier.fillMaxSize()
             ) {
-              itemsIndexed(displayedCategoryMedia, key = { _, item -> "cat_${cat.id}_${item.id}" }) { index, item ->
+              // La key include il tipo: film e serie possono condividere lo stesso
+              // id grezzo senza collidere (una key duplicata crasherebbe la griglia).
+              itemsIndexed(displayedCategoryMedia, key = { _, item -> "cat_${cat.id}_${item.type}_${item.id}" }) { index, item ->
                 Box(
                   modifier = Modifier
                     .fillMaxWidth()
@@ -1150,9 +1180,15 @@ fun SearchScreen(
                     activeFilterRequester.requestFocus()
                   } catch (_: Exception) {}
                   viewModel.setSelectedSearchCategoryId(cat.id)
-                  // Passa tutti i media locali come fallback iniziale; la visualizzazione 
-                  // mostrerà questi elementi mentre TMDB carica i risultati specifici per genere
-                  viewModel.initCategory(cat.movieGenreId, cat.tvGenreId, allMedia)
+                  // La categoria viene caricata SOLO dai cataloghi degli addon
+                  // (Xperience/Stremio) dichiarati nei manifest; nessun seed da
+                  // allMedia/TMDB Discover. Keywords = etichette della categoria.
+                  viewModel.initCategory(
+                    categoryId = cat.id,
+                    keywords = cat.keywords,
+                    movieGenreId = cat.movieGenreId,
+                    tvGenreId = cat.tvGenreId
+                  )
                   selectedCategory = cat
                   isSearchSubmitted = false
                 }

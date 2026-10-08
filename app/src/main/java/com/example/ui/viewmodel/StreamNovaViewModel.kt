@@ -54,7 +54,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -71,7 +73,89 @@ import kotlinx.coroutines.flow.update
 /** Tag di log del ViewModel (ricerca sorgenti + playback). */
 private const val TAG = "StreamNovaVM"
 private const val HTTP_TRACE = "HTTP_TRACE"
+/** Timeout per l'interrogazione dei cataloghi Stremio durante la ricerca testuale. */
+private const val STREMIO_SEARCH_TIMEOUT_MS = 8_000L
 private var contentIdCounter = 0
+
+/**
+ * Mappatura deterministica TMDB genre ID → nome genere canonico TMDB (elenco ufficiale
+ * dei generi TMDB per i film).
+ *
+ * I nomi NON vengono inventati: sono quelli dichiarati da TMDB. Un valore di questa
+ * tabella viene usato come extra `genre` SOLO se un catalogo Stremio attivo dichiara
+ * esattamente la stessa opzione nel proprio manifest (cfr.
+ * `StreamNovaViewModel.resolveStremioGenre`), altrimenti resta il percorso TMDB.
+ */
+internal val TMDB_MOVIE_GENRE_NAMES: Map<Int, String> = mapOf(
+  28 to "Action",
+  12 to "Adventure",
+  16 to "Animation",
+  35 to "Comedy",
+  80 to "Crime",
+  99 to "Documentary",
+  18 to "Drama",
+  10751 to "Family",
+  14 to "Fantasy",
+  36 to "History",
+  27 to "Horror",
+  10402 to "Music",
+  9648 to "Mystery",
+  10749 to "Romance",
+  878 to "Science Fiction",
+  10770 to "TV Movie",
+  53 to "Thriller",
+  10752 to "War",
+  37 to "Western"
+)
+
+/**
+ * Mappatura deterministica TMDB genre ID → nome genere canonico TMDB per le serie TV.
+ * Stesse regole di [TMDB_MOVIE_GENRE_NAMES].
+ */
+internal val TMDB_TV_GENRE_NAMES: Map<Int, String> = mapOf(
+  10759 to "Action & Adventure",
+  16 to "Animation",
+  35 to "Comedy",
+  80 to "Crime",
+  99 to "Documentary",
+  18 to "Drama",
+  10751 to "Family",
+  10765 to "Sci-Fi & Fantasy",
+  10762 to "Kids",
+  10763 to "News",
+  10764 to "Reality",
+  10768 to "War & Politics",
+  9648 to "Mystery"
+)
+
+/**
+ * Origine dei contenuti mostrati in una categoria della sezione Ricerca.
+ */
+enum class SearchCategorySource {
+  /** Contenuti restituiti dai cataloghi degli addon (Xperience/Stremio). */
+  ADDON,
+
+  /**
+   * Fallback ESPPLICITO a TMDB Discover: il catalogo addon non è stato caricato
+   * (assente nel manifest, errore o risposta vuota). La UI deve mostrarlo come
+   * fallback, mai come caricamento addon riuscito.
+   */
+  TMDB_FALLBACK
+}
+
+/**
+ * Stato del caricamento della categoria attiva della sezione Ricerca.
+ *
+ * @param source null finché il primo caricamento non è terminato (solo spinner).
+ * @param addonLabel etichetta del catalogo addon caricato ("catalogo • addon").
+ * @param statusMessage motivo del fallback oppure errore riscontrato sugli addon:
+ *        mostrato in UI per non mascherare un catalogo non caricato.
+ */
+data class SearchCategoryState(
+  val source: SearchCategorySource? = null,
+  val addonLabel: String? = null,
+  val statusMessage: String? = null
+)
 
 enum class SidebarSection(val title: String) {
   HOME("Home"),
@@ -239,7 +323,13 @@ class StreamNovaViewModel : ViewModel() {
     fun setSelectedSearchCategoryId(categoryId: String?) {
       _selectedSearchCategoryId.value = categoryId
       if (categoryId == null) {
+        // Uscita dalla categoria: invalida eventuali caricamenti ancora in volo
+        // e azzera stato, origine e risultati.
+        categoryLoadGeneration++
+        activeSearchCategoryId = null
+        activeCategoryEntries = emptyList()
         _categoryItems.value = emptyList()
+        _categoryState.value = SearchCategoryState()
         _isCategoryLoading.value = false
       }
     }
@@ -650,32 +740,322 @@ class StreamNovaViewModel : ViewModel() {
     .debounce { (query, _) -> if (query.isBlank()) 0L else 400L }
     .distinctUntilChanged()
     .flatMapLatest { (query, filter) ->
-      MediaRepository.searchTmdb(query, filter)
+      combine(
+        MediaRepository.searchTmdb(query, filter),
+        stremioSearchFlow(query, filter)
+      ) { tmdbResults, stremioResults ->
+        // Xperience/Stremio disponibile → risultati Stremio in testa; senza risultati
+        // Stremio la lista TMDB resta esattamente quella precedente.
+        if (stremioResults.isEmpty()) {
+          tmdbResults
+        } else {
+          StremioCatalogRepository.deduplicateCrossSource(stremioResults + tmdbResults)
+        }
+      }
     }
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-  // Paginazione remota generi / categorie
+  /**
+   * Ricerca testuale sui cataloghi Stremio/Xperience attivi tramite l'extra `search`.
+   *
+   * Usa esclusivamente il percorso già adottato dalla Home:
+   * `StremioCatalogRepository.searchAddonCatalogs(query, type)` →
+   * `StremioCatalogEngine.searchCatalogs` (solo addon attivi, solo cataloghi che
+   * dichiarano `search` nel manifest, con rispetto di type e catalogId).
+   *
+   * Emette subito una lista vuota così i risultati TMDB non vengono ritardati;
+   * se l'interrogazione Stremio fallisce o supera il timeout, la ricerca TMDB
+   * prosegue invariata.
+   */
+  private fun stremioSearchFlow(query: String, filter: SearchTypeFilter): Flow<List<MediaItem>> = flow {
+    val cleanQuery = query.trim()
+    val mediaType = when (filter) {
+      SearchTypeFilter.FILM -> MediaType.FILM
+      SearchTypeFilter.SERIE_TV -> MediaType.SERIE_TV
+      SearchTypeFilter.ALL -> null
+    }
+    // Stessa soglia minima della ricerca TMDB remota.
+    if (cleanQuery.length < 2) {
+      emit(emptyList())
+      return@flow
+    }
+    emit(emptyList())
+    val results = try {
+      withTimeoutOrNull(STREMIO_SEARCH_TIMEOUT_MS) {
+        StremioCatalogRepository.searchAddonCatalogs(cleanQuery, mediaType)
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Ricerca cataloghi Stremio fallita per \"$cleanQuery\": ${e.message}")
+      null
+    }
+    if (!results.isNullOrEmpty()) {
+      emit(results)
+    }
+  }
+
+  // ── CATEGORIE SEZIONE RICERCA ─────────────────────────────────────
   private val _categoryItems = MutableStateFlow<List<MediaItem>>(emptyList())
   val categoryItems: StateFlow<List<MediaItem>> = _categoryItems.asStateFlow()
 
   private val _isCategoryLoading = MutableStateFlow(false)
   val isCategoryLoading: StateFlow<Boolean> = _isCategoryLoading.asStateFlow()
 
+  private val _categoryState = MutableStateFlow(SearchCategoryState())
+  /** Origine e stato del caricamento della categoria attiva (vedi [SearchCategoryState]). */
+  val categoryState: StateFlow<SearchCategoryState> = _categoryState.asStateFlow()
+
+  /** ID della categoria attualmente caricata in memoria (null se nessuna). */
+  var activeSearchCategoryId: String? = null
+    private set
+
+  /** Keyword (etichette categoria + nomi canonici TMDB) della categoria attiva. */
+  private var activeCategoryKeywords: List<String> = emptyList()
   private var activeCategoryMovieGenreId: Int? = null
   private var activeCategoryTvGenreId: Int? = null
+  /** Sezioni addon caricate per la categoria attiva (per la paginazione `skip`). */
+  private var activeCategoryEntries: List<StremioCatalogRepository.CategoryCatalogEntry> = emptyList()
+  /** Contatore generazione: scarta le risposte riferite a una categoria già chiusa. */
+  private var categoryLoadGeneration = 0
   private var currentCategoryPage = 1
   private var isCategoryLoadingMore = false
 
-  fun initCategory(movieGenreId: Int?, tvGenreId: Int?, initialLocalItems: List<MediaItem>) {
+  /**
+   * Apre una categoria della sezione Ricerca.
+   *
+   * I cataloghi degli addon (Xperience/Stremio) NON vengono indicizzati per id
+   * codificato in app: [keywords] (etichette della categoria più nomi canonici
+   * TMDB del genere) vengono confrontate con id, titoli ed extra `genre`
+   * REALMENTE dichiarati dai manifest installati, tramite
+   * [StremioCatalogRepository.findCategoryRequests] →
+   * [StremioCatalogRepository.loadCategoryCatalogs] (stesso percorso della Home).
+   *
+   * Prima di ogni nuovo caricamento i risultati della categoria precedente vengono
+   * azzerati e non esiste alcun seed da `allMedia`: la categoria mostra solo ciò
+   * che l'addon ha restituito oppure un fallback TMDB EXPLICITAMENTE dichiarato in
+   * [SearchCategoryState].
+   *
+   * @param categoryId id della categoria (per diagnostica e test).
+   * @param keywords etichette/descrizioni della categoria dalla quale cercare i cataloghi.
+   * @param movieGenreId id genere TMDB film (fallback TMDB Discover esplicito).
+   * @param tvGenreId id genere TMDB serie (fallback TMDB Discover esplicito).
+   */
+  fun initCategory(
+    categoryId: String,
+    keywords: List<String>,
+    movieGenreId: Int?,
+    tvGenreId: Int?
+  ) {
+    activeSearchCategoryId = categoryId
+    activeCategoryKeywords = keywords +
+      listOfNotNull(movieGenreId?.let { TMDB_MOVIE_GENRE_NAMES[it] }) +
+      listOfNotNull(tvGenreId?.let { TMDB_TV_GENRE_NAMES[it] })
     activeCategoryMovieGenreId = movieGenreId
     activeCategoryTvGenreId = tvGenreId
+    activeCategoryEntries = emptyList()
     currentCategoryPage = 1
-    _categoryItems.value = initialLocalItems
-    loadCategoryPage(page = 1, isInitial = true)
+    // Generazione nuova: le risposte della categoria precedente vengono ignorate.
+    categoryLoadGeneration++
+    // I poster della categoria precedente spariscono subito: durante il caricamento
+    // la griglia resta vuota con lo spinner attivo.
+    _categoryItems.value = emptyList()
+    _categoryState.value = SearchCategoryState()
+    _isCategoryLoading.value = true
+    loadInitialCategoryPage(categoryLoadGeneration)
   }
 
+  /**
+   * Prima pagina della categoria: prima i cataloghi addon, poi (solo se l'addon non
+   * ha prodotto contenuti) il fallback TMDB Discover dichiarato nello stato.
+   */
+  private fun loadInitialCategoryPage(generation: Int) {
+    viewModelScope.launch {
+      try {
+        val addonLoad = try {
+          StremioCatalogRepository.loadCategoryCatalogs(activeCategoryKeywords)
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          Log.w(TAG, "Caricamento cataloghi categoria fallito: ${e.message}")
+          null
+        }
+        if (generation != categoryLoadGeneration) return@launch
+
+        if (addonLoad != null && addonLoad.items.isNotEmpty()) {
+          // Sorgente primaria: SOLO i contenuti restituiti dai cataloghi dell'addon.
+          activeCategoryEntries = addonLoad.entries
+          _categoryItems.value = addonLoad.items
+          _categoryState.value = SearchCategoryState(
+            source = SearchCategorySource.ADDON,
+            addonLabel = addonLoad.entries
+              .firstOrNull { it.section.items.isNotEmpty() }
+              ?.section
+              ?.title,
+            statusMessage = listOfNotNull(
+              addonLoad.errors.takeIf { it.isNotEmpty() }?.joinToString("\n"),
+              missingCatalogTypeNotice(addonLoad),
+              emptyCatalogTypeNotice(addonLoad)
+            ).joinToString("\n").takeIf { it.isNotBlank() }
+          )
+          return@launch
+        }
+
+        // Nessun contenuto addon: il fallback è dichiarato in modo distinguibile,
+        // così la UI non può presentarlo come un caricamento addon riuscito.
+        _categoryState.value = SearchCategoryState(
+          source = SearchCategorySource.TMDB_FALLBACK,
+          statusMessage = listOfNotNull(
+            addonFallbackMessage(addonLoad),
+            missingCatalogTypeNotice(addonLoad)
+          ).joinToString("\n")
+        )
+        val tmdbItems = try {
+          MediaRepository.loadCategoryPage(
+            activeCategoryMovieGenreId,
+            activeCategoryTvGenreId,
+            1
+          )
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          Log.w(TAG, "Fallback TMDB Discover categoria fallito: ${e.message}")
+          emptyList()
+        }
+        if (generation != categoryLoadGeneration) return@launch
+        currentCategoryPage = 1
+        _categoryItems.value = tmdbItems
+      } finally {
+        if (generation == categoryLoadGeneration) {
+          _isCategoryLoading.value = false
+        }
+      }
+    }
+  }
+
+  /** Motivo esplicito del fallback TMDB, mostrato dalla UI come avviso. */
+  private fun addonFallbackMessage(
+    load: StremioCatalogRepository.CategoryCatalogLoad?
+  ): String {
+    val reason = when {
+      load == null -> "catalogo non interrogabile"
+      load.matchedTargets == 0 -> "nessun catalogo dichiarato nel manifest per questa categoria"
+      load.errors.isNotEmpty() -> load.errors.joinToString("\n")
+      else -> "catalogo vuoto"
+    }
+    return "Addon Xperience/Stremio non caricato: $reason — fallback TMDB Discover"
+  }
+
+  /**
+   * Avviso quando la categoria prevede un tipo di contenuto (dal genere TMDB
+   * dichiarato per film/serie) ma per quel tipo NON viene richiesto alcun
+   * catalogo.
+   *
+   * I due motivi sono distinti:
+   *  - il manifest dichiara cataloghi di quel tipo ma nessuno ha un genere
+   *    corrispondente alla categoria → "categoria non supportata per le serie";
+   *  - il manifest non dichiara alcun catalogo di quel tipo → "nessun catalogo".
+   *
+   * La mancanza è dell'addon e non viene camuffata come errore dell'app né
+   * compensata con contenuti inventati. Se mancano ENTRAMBI i tipi non serve
+   * alcun avviso perché [addonFallbackMessage] dichiara già l'assenza totale.
+   */
+  private fun missingCatalogTypeNotice(
+    load: StremioCatalogRepository.CategoryCatalogLoad?
+  ): String? {
+    if (load == null || load.matchedTargets == 0) return null
+    val notices = buildList {
+      if (activeCategoryMovieGenreId != null && load.matchedMovieTargets == 0) {
+        add(
+          if (load.availableMovieCatalogs > 0) {
+            "Categoria non supportata per i film: il manifest non dichiara un genere corrispondente"
+          } else {
+            "Nessun catalogo film dichiarato nel manifest"
+          }
+        )
+      }
+      if (activeCategoryTvGenreId != null && load.matchedSeriesTargets == 0) {
+        add(
+          if (load.availableSeriesCatalogs > 0) {
+            "Categoria non supportata per le serie: il manifest non dichiara un genere corrispondente"
+          } else {
+            "Nessun catalogo serie dichiarato nel manifest"
+          }
+        )
+      }
+    }
+    return notices.joinToString("\n").takeIf { it.isNotBlank() }
+  }
+
+  /**
+   * Avviso quando il catalogo di un tipo è stato REALMENTE interrogato ma ha
+   * restituito zero contenuti mentre altre sezioni della categoria hanno
+   * risultati: distinto dall'assenza del catalogo ([missingCatalogTypeNotice]).
+   */
+  private fun emptyCatalogTypeNotice(
+    load: StremioCatalogRepository.CategoryCatalogLoad?
+  ): String? {
+    if (load == null) return null
+    val sections = load.entries.map { it.section }
+    if (sections.isEmpty() || sections.none { it.items.isNotEmpty() }) return null
+    val emptyTypes = buildList {
+      if (activeCategoryTvGenreId != null) {
+        val series = sections.filter { it.mediaType == MediaType.SERIE_TV }
+        if (series.isNotEmpty() && series.all { it.items.isEmpty() }) add("serie TV")
+      }
+      if (activeCategoryMovieGenreId != null) {
+        val movies = sections.filter { it.mediaType == MediaType.FILM }
+        if (movies.isNotEmpty() && movies.all { it.items.isEmpty() }) add("film")
+      }
+    }
+    if (emptyTypes.isEmpty()) return null
+    return "Catalogo ${emptyTypes.joinToString(" e ")} interrogato ma senza risultati"
+  }
+
+  /**
+   * Paginazione della categoria attiva: `skip` sui cataloghi addon quando la
+   * sorgente è l'addon, TMDB Discover solo quando è dichiarato il fallback.
+   */
   fun loadNextCategoryPage() {
     if (isCategoryLoadingMore || _isCategoryLoading.value) return
+    when (_categoryState.value.source) {
+      SearchCategorySource.ADDON -> loadNextCategoryAddonPage()
+      SearchCategorySource.TMDB_FALLBACK -> loadNextCategoryTmdbPage()
+      null -> Unit
+    }
+  }
+
+  /** Pagina i cataloghi addon della categoria con l'extra `skip` (se dichiarato). */
+  private fun loadNextCategoryAddonPage() {
+    val generation = categoryLoadGeneration
+    val previous = activeCategoryEntries
+    if (previous.none { it.section.supportsSkip && it.section.items.isNotEmpty() }) return
+    isCategoryLoadingMore = true
+    viewModelScope.launch {
+      try {
+        val updated = StremioCatalogRepository.paginateCategoryCatalogs(previous)
+        if (generation != categoryLoadGeneration) return@launch
+        val fresh = mutableListOf<MediaItem>()
+        updated.forEachIndexed { index, entry ->
+          fresh += entry.section.items.drop(previous[index].section.items.size)
+        }
+        activeCategoryEntries = updated
+        if (fresh.isNotEmpty()) {
+          _categoryItems.value =
+            StremioCatalogRepository.deduplicateCrossSource(_categoryItems.value + fresh)
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore paginazione categoria addon: ${e.message}")
+      } finally {
+        isCategoryLoadingMore = false
+      }
+    }
+  }
+
+  /** Pagina successiva del fallback TMDB Discover (visibile solo se dichiarato). */
+  private fun loadNextCategoryTmdbPage() {
     isCategoryLoadingMore = true
     viewModelScope.launch {
       val nextPage = currentCategoryPage + 1
@@ -699,32 +1079,6 @@ class StreamNovaViewModel : ViewModel() {
         Log.w(TAG, "Errore paginazione categoria pagina $nextPage: ${e.message}")
       } finally {
         isCategoryLoadingMore = false
-      }
-    }
-  }
-
-  private fun loadCategoryPage(page: Int, isInitial: Boolean) {
-    viewModelScope.launch {
-      if (isInitial) _isCategoryLoading.value = true
-      try {
-        val newItems = MediaRepository.loadCategoryPage(
-          activeCategoryMovieGenreId,
-          activeCategoryTvGenreId,
-          page
-        )
-        if (newItems.isNotEmpty()) {
-          val current = _categoryItems.value.toMutableList()
-          newItems.forEach { item ->
-            if (current.none { it.id == item.id }) {
-              current.add(item)
-            }
-          }
-          _categoryItems.value = current
-        }
-      } catch (e: Exception) {
-        Log.w(TAG, "Errore caricamento iniziale categoria: ${e.message}")
-      } finally {
-        if (isInitial) _isCategoryLoading.value = false
       }
     }
   }

@@ -1,0 +1,144 @@
+{
+  "metas": [
+    {
+      "id": "tt32393988",
+      "type": "movie",
+      "name": "Insidious - Fuori dall’Altrove",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt32393988.jpg",
+      "background": "https://image.tmdb.org/t/p/original/p40lmrdI4blcAPZQMTPaiy5v5Ym.jpg",
+      "description": "Gemma, una giovane madre che cresce la figlia nella casa in cui è nata, scopre di poter viaggiare nell'Altrove, il regno-purgatorio delle anime perdute. Quando un'entità malvagia inizia a darle la caccia, Gemma scopre un'abilità che cambia ogni cosa: non si limita solo a entrare nell'Altrove ma può portare ciò che vive lì nel mondo reale. Una volta che i demoni comprendono il suo potere, il…",
+      "releaseInfo": "2026",
+      "released": "2026-08-19T12:00:00Z",
+      "imdb_id": "tt32393988",
+      "status": "Released",
+      "runtime": "106 min",
+      "trailers": [
+        {
+          "source": "gXjurDkYnEM",
+          "type": "Trailer",
+          "name": "Final Trailer",
+          "ytId": "gXjurDkYnEM"
+        }
+      ],
+      "genres": [
+        "Horror",
+        "Thriller"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/eszahdPOeElmK3DSNXW44Qb0aNh.jpg",
+      "logo": "https://image.tmdb.org/t/p/original/iGjbP4jYzzbINDtd9kScypQOlmw.png",
+      "imdbRating": "6.1"
+    },
+    {
+      "id": "tt9601292",
+      "type": "movie",
+      "name": "The Fix",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt9601292.jpg",
+      "background": "https://image.tmdb.org/t/p/original/dJTWIecL2vxsCRl5G0lRhPsfrhc.jpg",
+      "description": "Disillusioned by the end of the war in Afghanistan, a group of disgraced, war-torn ex-CIA operatives set out to Tehran to take down a life-changing score.",
+      "releaseInfo": "2026",
+      "released": "2026-09-10T12:00:00Z",
+      "imdb_id": "tt9601292",
+      "status": "Released",
+      "runtime": "142 min",
+      "trailers": [
+        {
+          "source": "l5Luvr9TRRc",
+          "type": "Trailer",
+          "name": "Final Trailer",
+          "ytId": "l5Luvr9TRRc"
+        }
+      ],
+      "genres": [
+        "Azione",
+        "Thriller"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/yopXjun3ICFfJci2ukcEzceZjUs.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt9601292.png?tmdb=1228834",
+      "imdbRating": "4.7"
+    },
+    {
+      "id": "tt31192372",
+      "type": "movie",
+      "name": "Fall 2: Deadpoint",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt31192372.jpg",
+      "background": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/background/movie/tt31192372.jpg?tmdb=1101412",
+      "description": "Durante una pericolosa scalata sul monte Kwan in Thailandia, due alpinisti rimangono intrappolati a migliaia di piedi dal suolo, dove altezze che inducono vertigini, pura esposizione e probabilità impossibili trasformano ogni momento in una lotta per la sopravvivenza.",
+      "releaseInfo": "2026",
+      "released": "2026-09-01T12:00:00Z",
+      "imdb_id": "tt31192372",
+      "status": "Released",
+      "runtime": "98 min",
+      "trailers": [
+        {
+          "source": "Krs0VDIjhmE",
+          "type": "Trailer",
+          "name": "Official Trailer 2",
+          "ytId": "Krs0VDIjhmE"
+        }
+      ],
+      "genres": [
+        "Thriller"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/fgSm5ylwiXbIHn8UbUXDjk9RRu4.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt31192372.png?tmdb=1101412",
+      "imdbRating": "5.5"
+    },
+    {
+      "id": "tt27165187",
+      "type": "movie",
+      "name": "La fine di Oak Street",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt27165187.jpg",
+      "background": "https://image.tmdb.org/t/p/original/b9q9VmbXDvJmTziRqkwdEmFdwhr.jpg",
+      "description": "Quando un misterioso evento cosmico strappa Oak Street dalla periferia e trasporta l’intero quartiere in un luogo sconosciuto, la famiglia Platt si rende presto conto che la propria sopravvivenza dipende dalla capacità di restare uniti cercando di orientarsi in un ambiente ormai irriconoscibile.",
+      "releaseInfo": "2026",
+      "released": "2026-08-12T12:00:00Z",
+      "imdb_id": "tt27165187",
+      "status": "Released",
+      "runtime": "100 min",
+      "trailers": [
+        {
+          "source": "u4tgctWuHc0",
+          "type": "Trailer",
+          "name": "Tickets now on sale",
+          "ytId": "u4tgctWuHc0"
+        }
+      ],
+      "genres": [
+        "Fantascienza",
+        "Mistero",
+        "Thriller"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/vTmPpJdnOAbypjL00URNJr771bl.jpg",
+      "logo": "https://image.tmdb.org/t/p/original/mUMLt8CMDqjysedZgcm9l1H8vqa.png",
+      "imdbRating": "6.2"
+    },
+    {
+      "id": "tt37287335",
+      "type": "movie",
+      "name": "Obsession",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt37287335.jpg",
+      "background": "https://image.tmdb.org/t/p/original/5lTZyuBTNOfawsfPT8Q0cIg6qAF.jpg",
+      "description": "Dopo aver spezzato il misterioso bastoncino del desiderio per conquistare il cuore della ragazza che ama un romantico senza speranza ottiene esattamente ciò che ha chiesto ma presto scopre che alcuni desideri hanno un prezzo sinistro e pericoloso.",
+      "releaseInfo": "2026",
+      "released": "2026-05-13T12:00:00Z",
+      "imdb_id": "tt37287335",
+      "status": "Released",
+      "runtime": "109 min",
+      "trailers": [
+        {
+          "source": "gMC8kkwbIQQ",
+          "type": "Trailer",
+          "name": "Official Trailer",
+          "ytId": "gMC8kkwbIQQ"
+        }
+      ],
+      "genres": [
+        "Horror",
+        "Thriller"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/kwprCwsIV4LvAqJC1dmiTAdZDJ1.jpg",
+      "logo": "https://image.tmdb.org/t/p/original/2y6qVk9YIPxTzO43anxUQ9iTuh4.png",
+      "imdbRating": "7.8"
+    }
+  ]
+}

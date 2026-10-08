@@ -1,0 +1,147 @@
+{
+  "metas": [
+    {
+      "id": "tt22084616",
+      "type": "movie",
+      "name": "Spider-Man: Brand New Day",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt22084616.jpg",
+      "background": "https://image.tmdb.org/t/p/original/qeQJx07rK2xm8SD2sJxFKhE7gs0.jpg",
+      "description": "Sono trascorsi quattro anni dagli eventi di No Way Home e Peter è ormai un adulto che vive completamente da solo, essendosi volontariamente cancellato dalla vita e dai ricordi di coloro che ama. Combattendo il crimine in una New York che non conosce più il suo nome, si è dedicato interamente alla protezione della sua città. Uno Spider-Man a tempo pieno. Ma con l'intensificarsi delle richieste, la…",
+      "releaseInfo": "2026",
+      "released": "2026-07-29T12:00:00Z",
+      "imdb_id": "tt22084616",
+      "status": "Released",
+      "runtime": "145 min",
+      "trailers": [
+        {
+          "source": "P3uI5sLosKU",
+          "type": "Trailer",
+          "name": "Final Trailer (Peter’s Journey)",
+          "ytId": "P3uI5sLosKU"
+        }
+      ],
+      "genres": [
+        "Fantascienza",
+        "Azione",
+        "Avventura"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/vKHjwe9tSPWSkiv3m8Iq1nVedOT.jpg",
+      "logo": "https://image.tmdb.org/t/p/original/vbZcDHC5IFylYuRnp3eyOs5rTV1.png",
+      "imdbRating": "8.0"
+    },
+    {
+      "id": "tt33764258",
+      "type": "movie",
+      "name": "Odissea",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt33764258.jpg",
+      "background": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/background/movie/tt33764258.jpg?tmdb=1368337",
+      "description": "Ogni leggenda ha un prezzo. Ogni ritorno richiede un sacrificio. Mentre il mare diventa il suo più grande nemico, Ulisse affronta un cammino fatto di illusioni, battaglie e prove impossibili. Un'epica odissea che mette alla prova il coraggio di un uomo contro il volere degli dèi.",
+      "releaseInfo": "2026",
+      "released": "2026-07-15T12:00:00Z",
+      "imdb_id": "tt33764258",
+      "status": "Released",
+      "runtime": "173 min",
+      "trailers": [
+        {
+          "source": "AyIZ9tiiN8I",
+          "type": "Trailer",
+          "name": "Official Countdown Trailer",
+          "ytId": "AyIZ9tiiN8I"
+        }
+      ],
+      "genres": [
+        "Avventura",
+        "Azione",
+        "Fantasy"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/qQhInj9fw3S2bMbiEujVldthgKe.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt33764258.png?tmdb=1368337",
+      "imdbRating": "8.4"
+    },
+    {
+      "id": "tt9601292",
+      "type": "movie",
+      "name": "The Fix",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt9601292.jpg",
+      "background": "https://image.tmdb.org/t/p/original/dJTWIecL2vxsCRl5G0lRhPsfrhc.jpg",
+      "description": "Disillusioned by the end of the war in Afghanistan, a group of disgraced, war-torn ex-CIA operatives set out to Tehran to take down a life-changing score.",
+      "releaseInfo": "2026",
+      "released": "2026-09-10T12:00:00Z",
+      "imdb_id": "tt9601292",
+      "status": "Released",
+      "runtime": "142 min",
+      "trailers": [
+        {
+          "source": "l5Luvr9TRRc",
+          "type": "Trailer",
+          "name": "Final Trailer",
+          "ytId": "l5Luvr9TRRc"
+        }
+      ],
+      "genres": [
+        "Azione",
+        "Thriller"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/yopXjun3ICFfJci2ukcEzceZjUs.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt9601292.png?tmdb=1228834",
+      "imdbRating": "4.7"
+    },
+    {
+      "id": "tt31349844",
+      "type": "movie",
+      "name": "The Rush - Corsa contro il tempo",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt31349844.jpg",
+      "background": "https://image.tmdb.org/t/p/original/2c9zNZJL0ZdagD6JbmU3hH4hovs.jpg",
+      "description": "Mentre sono impegnati in una corsa contro il tempo per portare a termine la consegna dell'unica speranza per salvare la vita di una bambina in pericolo, un ex soldato e il suo improbabile partner diventano il bersaglio di uno spietato cartello che tenta di ucciderli in tutti i modi.",
+      "releaseInfo": "2026",
+      "released": "2026-09-07T12:00:00Z",
+      "imdb_id": "tt31349844",
+      "status": "Released",
+      "runtime": "97 min",
+      "trailers": [
+        {
+          "source": "B6Z9MM1LhEA",
+          "type": "Trailer",
+          "name": "UK Trailer",
+          "ytId": "B6Z9MM1LhEA"
+        }
+      ],
+      "genres": [
+        "Azione",
+        "Commedia"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/y2JldODg7WqeAZC9MRKshA2hSmq.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt31349844.png?tmdb=1377237",
+      "imdbRating": "6.3"
+    },
+    {
+      "id": "tt6920084",
+      "type": "movie",
+      "name": "Resident Evil: Welcome to Raccoon City",
+      "poster": "https://api.ratingposterdb.com/t0-free-rpdb-rounded-blocks/imdb/poster-default/tt6920084.jpg",
+      "background": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/background/movie/tt6920084.jpg?tmdb=460458",
+      "description": "Un tempo fiorente casa del colosso farmaceutico Umbrella Corporation, Raccoon City, è ora una morente città del Midwest americano. L’esodo della compagnia ha trasformato la città in una landa desolata… dove un enorme male cova sotto alla superficie. E quando questo male si scatena, i cittadini cambiano… per sempre. E un piccolo manipolo di sopravvissuti dovrà lavorare insieme per smascherare la…",
+      "releaseInfo": "2021",
+      "released": "2021-11-24T12:00:00Z",
+      "imdb_id": "tt6920084",
+      "status": "Released",
+      "runtime": "107 min",
+      "trailers": [
+        {
+          "source": "IQqqAWMIIAQ",
+          "type": "Trailer",
+          "name": "Nightmare Trailer",
+          "ytId": "IQqqAWMIIAQ"
+        }
+      ],
+      "genres": [
+        "Azione",
+        "Horror",
+        "Fantascienza"
+      ],
+      "posterFallback": "https://image.tmdb.org/t/p/w500/Ag2C8cklZV7BjllxZ6QF4ZfOvEz.jpg",
+      "logo": "https://xperience-app.com/manifest/60613fcd-0780-420d-a736-59c46cfa7ff9/eyJhbGciOiJIUzI1NiJ9.eyJwaWQiOiI2MDYxM2ZjZC0wNzgwLTQyMGQtYTczNi01OWM0NmNmYTdmZjkiLCJraWQiOiI5NGNkN2ZmOS0wNDc0LTQ5ZTEtODE3MS04NWQ2NTlhMDQzYzUiLCJzY29wZSI6Im1hbmlmZXN0Iiwic3ViIjoiNjFkMTlkZmYtNjQyZS00MDI1LTg5ODUtNDc5NjdiOGU2YjBjIiwiaWF0IjowfQ.-MYhFdrO_9R_U6IOLgSnmzMVKR1ORI2in9dEIMlfch4/art/logo/movie/tt6920084.png?tmdb=460458",
+      "imdbRating": "5.2"
+    }
+  ]
+}

@@ -14,14 +14,25 @@ object StremioCatalogMapper {
    *
    * @param meta elemento grezzo restituito dal catalogo Stremio.
    * @param addonName nome display dell'addon di provenienza (usato per il campo provider).
+   * @param fallbackType tipo dichiarato dal CATALOGO che ha restituito il meta:
+   *        usato solo quando il metas non dichiara `type`, così un item di un
+   *        catalogo serie non viene mai presentato come film.
    */
-  fun toMediaItem(meta: StremioMetaItem, addonName: String? = null): MediaItem {
+  fun toMediaItem(
+    meta: StremioMetaItem,
+    addonName: String? = null,
+    fallbackType: MediaType? = null
+  ): MediaItem {
     val rawId = meta.id?.trim().orEmpty()
     val tmdbId = when {
       rawId.startsWith("tmdb:", ignoreCase = true) -> rawId.removePrefix("tmdb:").toIntOrNull()
       else -> null
     }
-    val isTv = meta.isSeries
+    val isTv = when {
+      meta.isSeries -> true
+      meta.isMovie -> false
+      else -> fallbackType == MediaType.SERIE_TV
+    }
     val ratingVal = meta.ratingFloat ?: 0f
 
     return MediaItem(
@@ -46,7 +57,11 @@ object StremioCatalogMapper {
   /**
    * Converte una lista di [StremioMetaItem] in una lista di [MediaItem].
    */
-  fun toMediaItemList(items: List<StremioMetaItem>, addonName: String? = null): List<MediaItem> {
-    return items.map { toMediaItem(it, addonName) }
+  fun toMediaItemList(
+    items: List<StremioMetaItem>,
+    addonName: String? = null,
+    fallbackType: MediaType? = null
+  ): List<MediaItem> {
+    return items.map { toMediaItem(it, addonName, fallbackType) }
   }
 }
