@@ -186,6 +186,12 @@ fun HomeMainBrowsingContent(
   val forYouSeries = remember(homeCatalogs, allMedia) {
     homeCatalogs?.forYouSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getForYouSeries()
   }
+
+  // Presenza catalogo XPERIENCE / addon per tipo: se disponibile, la sezione locale "For You" corrispondente viene nascosta
+  val hasXperienceMovies = homeCatalogs?.isMoviesFromStremio == true ||
+    (homeCatalogs?.extraSections?.any { it.mediaType == MediaType.FILM && it.items.isNotEmpty() } == true)
+  val hasXperienceSeries = homeCatalogs?.isSeriesFromStremio == true ||
+    (homeCatalogs?.extraSections?.any { it.mediaType == MediaType.SERIE_TV && it.items.isNotEmpty() } == true)
   val popularMovies = remember(homeCatalogs, allMedia) {
     homeCatalogs?.popularMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getPopularMovies()
   }
@@ -404,8 +410,8 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 8. FOR YOU FILM (Consigliati per te - Film)
-    if (forYouMovies.isNotEmpty()) {
+    // 8. FOR YOU FILM (Consigliati per te - Film) - fallback locale se XPERIENCE non fornisce catalogo Film
+    if (!hasXperienceMovies && forYouMovies.isNotEmpty()) {
       item(key = "section_for_you_film") {
         CarouselHeader(
           title = stringResource(R.string.home_section_for_you_movies),
@@ -426,8 +432,8 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 9. FOR YOU SERIE (Consigliate per te - Serie TV)
-    if (forYouSeries.isNotEmpty()) {
+    // 9. FOR YOU SERIE (Consigliate per te - Serie TV) - fallback locale se XPERIENCE non fornisce catalogo Serie
+    if (!hasXperienceSeries && forYouSeries.isNotEmpty()) {
       item(key = "section_for_you_serie") {
         CarouselHeader(
           title = stringResource(R.string.home_section_for_you_series),
