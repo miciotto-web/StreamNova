@@ -41,6 +41,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaType
 import com.example.data.repository.MediaRepository
 import com.example.data.streaming.StreamResult
@@ -343,6 +344,20 @@ fun StreamNovaApp(
         }
 
         if (baseMedia != null) {
+          val currentMedia = when (val state = detailUiState) {
+            is MediaDetailUiState.Success -> {
+              val candidate = state.media
+              if (candidate.tmdbId == baseMedia.tmdbId || (baseMedia.id.isNotBlank() && candidate.id.equals(baseMedia.id, ignoreCase = true))) {
+                candidate
+              } else {
+                baseMedia
+              }
+            }
+            is MediaDetailUiState.Loading -> state.baseMedia ?: baseMedia
+            is MediaDetailUiState.Error -> state.baseMedia ?: baseMedia
+            else -> baseMedia
+          }
+
           DetailScreen(
             media = baseMedia,
             allMedia = allMedia,
@@ -370,7 +385,7 @@ fun StreamNovaApp(
               viewModel.selectSeason(baseMedia.tmdbId ?: 0, seasonNum, baseMedia)
             },
             onEpisodeClick = { episode ->
-              viewModel.openStreamForMedia(baseMedia, episode)
+              viewModel.openStreamForMedia(currentMedia, episode)
             },
             onRetry = { viewModel.retryLoadDetail() }
           )

@@ -3,6 +3,8 @@ package com.example.data.streaming
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.stremio.StremioAddonRepository
+import com.example.data.stremio.StremioStreamCandidate
+import com.example.data.stremio.StremioStreamItem
 import com.example.data.torbox.TorBoxGateway
 import com.example.data.stremio.StremioManifest
 import com.example.data.stremio.StremioStreamResponse
@@ -212,7 +214,7 @@ class StremioTorBoxTest {
         delay(delayMs)
         return listOf(
           StreamSource(
-            url = "https://cdn.example/$name.m3u8",
+            streamUrl = "https://cdn.example/$name.m3u8",
             quality = quality,
             serverName = name
           )
@@ -287,24 +289,30 @@ class StremioTorBoxTest {
     override suspend fun unlockCached(
       infoHash: String,
       fileIdx: Int?,
-      entry: TorBoxRepository.TorBoxCacheEntry
+      entry: TorBoxRepository.TorBoxCacheEntry,
+      season: Int?,
+      episode: Int?
     ): String? {
       unlocked += normalizeHash(infoHash)
       return if (entry.cached) "https://cdn.example.org/best.mkv" else null
     }
   }
 
-  private fun fifteenCandidates(): List<TorrentCandidate> = (1..15).map { i ->
-    TorrentCandidate(
-      infoHash = "hash" + i.toString().padStart(2, '0'),
-      fileIdx = i,
-      label = when (i) {
-        7 -> "Torrentio 4K HDR"
-        3 -> "Torrentio 1080p"
-        12 -> "Torrentio 720p"
-        else -> "Torrentio 480p"
-      },
-      sourceName = "Torrentio"
+  private fun fifteenCandidates(): List<StremioStreamCandidate> = (1..15).map { i ->
+    StremioStreamCandidate(
+      addonName = "Torrentio",
+      baseUrl = "https://torrentio.strem.fun",
+      item = StremioStreamItem(
+        infoHash = "hash" + i.toString().padStart(2, '0'),
+        fileIdx = i,
+        title = when (i) {
+          7 -> "Torrentio 4K HDR"
+          3 -> "Torrentio 1080p"
+          12 -> "Torrentio 720p"
+          else -> "Torrentio 480p"
+        },
+        name = "Torrentio"
+      )
     )
   }
 
@@ -320,7 +328,7 @@ class StremioTorBoxTest {
     // 1) UN SOLO checkcached per tutti gli hash (non uno per hash)
     assertEquals("deve partire un solo batch", 1, fake.checkedBatches.size)
     assertEquals("tutti gli hash nel batch", 15, fake.checkedBatches[0].size)
-    assertTrue(fake.checkedBatches[0].containsAll(candidates.map { it.infoHash }))
+    assertTrue(fake.checkedBatches[0].containsAll(candidates.mapNotNull { it.item.infoHash }))
 
     // 2) requestdl solo sul candidato migliore in cache (4K > 1080p > 720p)
     assertEquals(listOf("hash07"), fake.unlocked)
@@ -342,10 +350,24 @@ class StremioTorBoxTest {
     assertTrue("nessun requestdl se niente è in cache", fake.unlocked.isEmpty())
   }
 
+  private fun fifteenTorrentCandidates(): List<TorrentCandidate> = (1..15).map { i ->
+    TorrentCandidate(
+      infoHash = "hash" + i.toString().padStart(2, '0'),
+      fileIdx = i,
+      label = when (i) {
+        7 -> "Torrentio 4K HDR"
+        3 -> "Torrentio 1080p"
+        12 -> "Torrentio 720p"
+        else -> "Torrentio 480p"
+      },
+      sourceName = "Torrentio"
+    )
+  }
+
   @Test
   fun selectBestCachedOrdinaPerQualitaDecrescente() {
     val ordered = TorBoxStreamProvider.selectBestCached(
-      fifteenCandidates(),
+      fifteenTorrentCandidates(),
       setOf("hash07", "hash03", "hash12")
     )
     assertEquals(listOf("hash07", "hash03", "hash12"), ordered.map { it.infoHash })

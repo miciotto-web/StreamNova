@@ -460,6 +460,12 @@ val GLOBAL_SEARCH_CATEGORIES = listOf(
 
 /**
  * Barra di ricerca TV.
+ *
+ * STRUTTURA STABILE: il contenitore focusable ([TvFocusableBox]) resta in composizione
+ * sia a riposo sia in modalità editing e non viene mai sostituito dal [BasicTextField].
+ * Sostituirlo farebbe perdere a Compose il nodo focusable attivo, che al detach cancella
+ * il focus di tutta la gerarchia (e con esso la possibilità di usare il D-pad).
+ *
  * Comportamento D-pad: la barra è focusabile e mostra il testo, ma la tastiera (IME)
  * NON si apre automaticamente quando riceve il focus. La tastiera viene attivata solo
  * premendo ENTER/OK sulla barra, entrando in modalità editing.
@@ -474,63 +480,55 @@ private fun SearchInputBar(
 ) {
   var isEditing by remember { mutableStateOf(false) }
   val fieldFocusRequester = remember { FocusRequester() }
+  val boxFocusRequester = remember { FocusRequester() }
   val focusManager = LocalFocusManager.current
+  // true SOLO dopo che il campo di testo ha realmente acquisito il focus.
+  // Serve a ignorare l'evento onFocusChanged(false) iniziale che Compose emette appena
+  // il nuovo FocusEventNode viene agganciato: senza questa guardia isEditing verrebbe
+  // annullato nello stesso ciclo che ha aperto la modalità editing e la tastiera
+  // non potrebbe mai aprirsi.
+  var hasReceivedFocus by remember { mutableStateOf(false) }
 
-  // Se l'utente preme Back durante l'editing, chiude la modalità editing tornando allo stato di riposo
+  // Se l'utente preme Back durante l'editing, esce dalla modalità editing tornando allo
+  // stato di riposo. Il focus viene riportato sul contenitore stabile PRIMA di smontare
+  // il campo, così Compose non cancella il focus della gerarchia e il D-pad resta vivo.
   BackHandler(enabled = isEditing) {
     isEditing = false
+    boxFocusRequester.requestFocus()
   }
 
   // All'attivazione esplicita (solo con ENTER/OK) porta il focus sull'input e apre la tastiera.
   LaunchedEffect(isEditing) {
     if (isEditing) {
+      hasReceivedFocus = false
       withFrameNanos { }
-      fieldFocusRequester.requestFocus()
+      if (isEditing) {
+        try {
+          fieldFocusRequester.requestFocus()
+        } catch (_: Exception) {
+        }
+      }
     }
   }
 
-  if (!isEditing) {
-    // STATO DI RIPOSO: navigabile col D-pad senza mai aprire la tastiera.
-    // La tastiera si apre SOLO premendo ENTER/tasto centrale del telecomando.
-    TvFocusableBox(
-      modifier = modifier.fillMaxWidth(),
-      shape = RoundedCornerShape(50),
-      focusedScale = 1f,
-      onClick = {
-        isEditing = true
-      }
-    ) { isFocused ->
-      SearchBarRow(
-        borderWidth = if (isFocused) 2.dp else 1.dp,
-        borderColor = if (isFocused) NovaCyanBright else NovaCyan.copy(alpha = 0.4f),
-        trailing = {
-          if (query.isNotEmpty()) {
-            Icon(
-              imageVector = Icons.Default.Close,
-              contentDescription = stringResource(R.string.action_clear),
-              tint = NovaTextSecondary,
-              modifier = Modifier
-                .size(20.dp)
-                .clickable { onClear() }
-            )
-          }
-        }
-      ) {
-        Text(
-          text = query.ifBlank { stringResource(R.string.search_input_placeholder) },
-          color = if (query.isBlank()) NovaTextMuted else NovaTextPrimary,
-          fontSize = if (query.isBlank()) 14.sp else 16.sp,
-          fontWeight = FontWeight.Medium,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.weight(1f)
-        )
-      }
+  // Contenitore focusabile STABILE: non cambia struttura quando si entra in editing.
+  TvFocusableBox(
+    modifier = modifier
+      .fillMaxWidth()
+      .focusRequester(boxFocusRequester),
+    shape = RoundedCornerShape(50),
+    focusedScale = 1f,
+    // Nessun requestFocus qui: il passaggio a editing è solo uno stato di composizione,
+    // il focus sull'input viene richiesto dal LaunchedEffect sopra, a transizione avvenuta.
+    onClick = {
+      hasReceivedFocus = false
+      isEditing = true
     }
-  } else {
+  ) { isFocused ->
+    val isActive = isFocused || isEditing
     SearchBarRow(
-      borderWidth = 1.5.dp,
-      borderColor = NovaCyanBright,
+      borderWidth = if (isActive) 2.dp else 1.dp,
+      borderColor = if (isActive) NovaCyanBright else NovaCyan.copy(alpha = 0.4f),
       trailing = {
         if (query.isNotEmpty()) {
           Icon(
@@ -544,67 +542,90 @@ private fun SearchInputBar(
         }
       }
     ) {
-      BasicTextField(
-        value = query,
-        onValueChange = onQueryChange,
-        singleLine = true,
-        maxLines = 1,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-        keyboardActions = KeyboardActions(
-          onSearch = {
-            isEditing = false
-            onSubmit()
-          }
-        ),
-        textStyle = TextStyle(
-          color = NovaTextPrimary,
-          fontSize = 16.sp,
-          fontWeight = FontWeight.Medium
-        ),
-        cursorBrush = SolidColor(NovaCyanBright),
-        modifier = Modifier
-          .weight(1f)
-          .focusRequester(fieldFocusRequester)
-          .onFocusChanged {
-            if (!it.isFocused) {
+      if (isEditing) {
+        BasicTextField(
+          value = query,
+          onValueChange = onQueryChange,
+          singleLine = true,
+          maxLines = 1,
+          keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+          keyboardActions = KeyboardActions(
+            onSearch = {
               isEditing = false
+              boxFocusRequester.requestFocus()
+              onSubmit()
             }
-          }
-          // SU/GIÙ escono dalla barra verso i contenuti, chiudendo l'editing.
-          .onPreviewKeyEvent { event ->
-            if (event.type == KeyEventType.KeyDown &&
-              (event.key == Key.DirectionDown || event.key == Key.DirectionUp)
-            ) {
-              isEditing = false
-              val direction = if (event.key == Key.DirectionDown) FocusDirection.Down else FocusDirection.Up
-              focusManager.moveFocus(direction)
-            } else {
-              false
-            }
-          }
-          // ENTER/OK invia la ricerca e chiude l'editing.
-          .onKeyEvent { event ->
-            if (event.key == Key.Enter || event.key == Key.NumPadEnter || event.key == Key.DirectionCenter) {
-              if (event.type == KeyEventType.KeyUp) {
+          ),
+          textStyle = TextStyle(
+            color = NovaTextPrimary,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium
+          ),
+          cursorBrush = SolidColor(NovaCyanBright),
+          modifier = Modifier
+            .weight(1f)
+            .focusRequester(fieldFocusRequester)
+            .onFocusChanged { state ->
+              if (state.isFocused) {
+                hasReceivedFocus = true
+              } else if (hasReceivedFocus) {
+                // Il focus è uscito DAVVERO dal campo: solo allora si chiude l'editing.
+                // L'evento Inactive emesso alla prima agganciata del nodo viene ignorato.
                 isEditing = false
-                onSubmit()
               }
-              true
-            } else {
-              false
             }
-          },
-        decorationBox = { innerTextField ->
-          if (query.isEmpty()) {
-            Text(
-              text = stringResource(R.string.search_input_placeholder),
-              color = NovaTextMuted,
-              fontSize = 14.sp
-            )
+            // SU/GIÙ escono dalla barra verso i contenuti, chiudendo l'editing.
+            .onPreviewKeyEvent { event ->
+              if (event.type == KeyEventType.KeyDown &&
+                (event.key == Key.DirectionDown || event.key == Key.DirectionUp)
+              ) {
+                val direction = if (event.key == Key.DirectionDown) FocusDirection.Down else FocusDirection.Up
+                isEditing = false
+                // Se non c'è nulla in quella direzione, si torna sul contenitore stabile
+                // invece di lasciare il focus un nodo che sta per essere rimosso.
+                if (!focusManager.moveFocus(direction)) {
+                  boxFocusRequester.requestFocus()
+                }
+                true
+              } else {
+                false
+              }
+            }
+            // ENTER/OK invia la ricerca e chiude l'editing riportando il focus sulla barra.
+            .onKeyEvent { event ->
+              if (isEditing && (event.key == Key.Enter || event.key == Key.NumPadEnter || event.key == Key.DirectionCenter)) {
+                if (event.type == KeyEventType.KeyUp) {
+                  isEditing = false
+                  boxFocusRequester.requestFocus()
+                  onSubmit()
+                }
+                true
+              } else {
+                false
+              }
+            },
+          decorationBox = { innerTextField ->
+            if (query.isEmpty()) {
+              Text(
+                text = stringResource(R.string.search_input_placeholder),
+                color = NovaTextMuted,
+                fontSize = 14.sp
+              )
+            }
+            innerTextField()
           }
-          innerTextField()
-        }
-      )
+        )
+      } else {
+        Text(
+          text = query.ifBlank { stringResource(R.string.search_input_placeholder) },
+          color = if (query.isBlank()) NovaTextMuted else NovaTextPrimary,
+          fontSize = if (query.isBlank()) 14.sp else 16.sp,
+          fontWeight = FontWeight.Medium,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.weight(1f)
+        )
+      }
     }
   }
 }
@@ -720,21 +741,7 @@ fun SearchScreen(
     }
   }
 
-  // Media filtrati per la categoria selezionata
-  val categoryMedia = remember(selectedCategory, allMedia) {
-    if (selectedCategory == null) emptyList()
-    else {
-      allMedia.filter { item ->
-        selectedCategory!!.keywords.any { kw ->
-          item.genres.any { g -> g.contains(kw, ignoreCase = true) } ||
-          item.title.contains(kw, ignoreCase = true) ||
-          item.synopsis.contains(kw, ignoreCase = true)
-        }
-      }
-    }
-  }
-
-  // Gestione pulsante Indietro del telecomando
+   // Gestione pulsante Indietro del telecomando
   if (selectedCategory != null) {
     BackHandler {
       viewModel.setSelectedSearchCategoryId(null)
@@ -903,7 +910,7 @@ fun SearchScreen(
     when {
       selectedCategory != null -> {
         val cat = selectedCategory!!
-        val rawCategoryMedia = if (categoryItems.isNotEmpty()) categoryItems else categoryMedia
+         val rawCategoryMedia = if (categoryItems.isNotEmpty()) categoryItems else allMedia
         val displayedCategoryMedia = remember(rawCategoryMedia, searchFilter) {
           when (searchFilter) {
             SearchTypeFilter.ALL -> rawCategoryMedia
@@ -1143,16 +1150,11 @@ fun SearchScreen(
                     activeFilterRequester.requestFocus()
                   } catch (_: Exception) {}
                   viewModel.setSelectedSearchCategoryId(cat.id)
+                  // Passa tutti i media locali come fallback iniziale; la visualizzazione 
+                  // mostrerà questi elementi mentre TMDB carica i risultati specifici per genere
+                  viewModel.initCategory(cat.movieGenreId, cat.tvGenreId, allMedia)
                   selectedCategory = cat
                   isSearchSubmitted = false
-                  val localMatches = allMedia.filter { item ->
-                    cat.keywords.any { kw ->
-                      item.genres.any { g -> g.contains(kw, ignoreCase = true) } ||
-                      item.title.contains(kw, ignoreCase = true) ||
-                      item.synopsis.contains(kw, ignoreCase = true)
-                    }
-                  }
-                  viewModel.initCategory(cat.movieGenreId, cat.tvGenreId, localMatches)
                 }
               ) { isFocused ->
                 Box(

@@ -431,23 +431,26 @@ fun PlayerScreen(
       subtitlesEnabled = playbackSettings.subtitlesEnabled,
       forcedSubtitlesEnabled = playbackSettings.forcedSubtitlesEnabled
     ).apply {
-      if (maxHeight > 0) {
-        val maxWidth = when {
-          maxHeight >= 2160 -> 3840
-          maxHeight >= 1080 -> 1920
-          maxHeight >= 720 -> 1280
-          maxHeight >= 480 -> 854
-          else -> (maxHeight * 16) / 9
-        }
+      val preferredRes = playbackSettings.preferredResolution
+      val maxHeight = preferredRes.targetHeight
+      val maxWidth = when {
+        maxHeight >= 2160 -> 3840
+        maxHeight >= 1080 -> 1920
+        maxHeight >= 720 -> 1280
+        maxHeight >= 480 -> 854
+        else -> (maxHeight * 16) / 9
+      }
+      // Non applicare maxVideoSize per UHD_4K: lasciamo che ExoPlayer selecti le tracce 4K senza restrizioni
+      if (maxHeight > 0 && preferredRes != PreferredResolution.UHD_4K) {
         setParameters(buildUponParameters().setMaxVideoSize(maxWidth, maxHeight))
         StreamNova4KDiag.line(
           "VINCOLO INIZIALE maxVideoSize=${maxWidth}x$maxHeight " +
-            "(preferredResolution=${playbackSettings.preferredResolution.label})"
+            "(preferredResolution=${preferredRes.label})"
         )
       } else {
         StreamNova4KDiag.line(
           "VINCOLO INIZIALE maxVideoSize=nessuno " +
-            "(preferredResolution=${playbackSettings.preferredResolution.label})"
+            "(preferredResolution=${preferredRes.label})"
         )
       }
     }
@@ -788,6 +791,22 @@ fun PlayerScreen(
   fun applyPreferredResolution(pref: PreferredResolution) {
     if (pref == PreferredResolution.AUTO) return
     val heights = videoTrackHeights()
+    
+    // Per UHD_4K: non impostare vincoli che blocchino le tracce 4K
+    if (pref == PreferredResolution.UHD_4K) {
+      Log.i("[StreamNova-Video-Debug]", "applyPreferredResolution: pref=${pref.label} -> nessun vincolo maxVideoSize per 4K")
+      trackSelector.setParameters(
+        trackSelector.buildUponParameters()
+          .clearVideoSizeConstraints()
+          .setViewportSize(Int.MAX_VALUE, Int.MAX_VALUE, false)
+          .setForceHighestSupportedBitrate(true)
+          .setExceedVideoConstraintsIfNecessary(true)
+          .setExceedRendererCapabilitiesIfNecessary(true)
+      )
+      selectedQualityLabel = "4K (UHD)"
+      return
+    }
+    
     val target = heights.filter { it <= pref.targetHeight }.maxOrNull()
       ?: heights.minOrNull()
       ?: pref.targetHeight

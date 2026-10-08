@@ -187,6 +187,16 @@ class StreamManager(
     } else {
       orderedProviders.filter { it is TorBoxStreamProvider }
     }
+
+    orderedProviders.forEach { p ->
+      val pName = p.javaClass.simpleName
+      val active = filteredProviders.contains(p)
+      if (active) {
+        Log.i(TAG, "Provider $pName [ATTIVO] per modalità $streamingEngineMode (tmdbId=$tmdbId isTv=$isTv S=$season E=$episode)")
+      } else {
+        Log.d(TAG, "Provider $pName [SALTATO] per modalità $streamingEngineMode (escluso dalla configurazione)")
+      }
+    }
     
     if (isAnime) {
       Log.d(
@@ -245,6 +255,7 @@ class StreamManager(
           if (isPittDebug) {
             Log.d("THE_PITT_STREAM", "[StreamManager] $name resolving TMDB=$tmdbId isTv=$isTv season=$season episode=$episode")
           }
+          val startTime = System.currentTimeMillis()
           try {
             Log.i(HTTP_TRACE, "[SM] Provider source START name=$name searchId=$flowId tmdbId=$tmdbId")
             val sources = withTimeout(timeoutMs) {
@@ -254,21 +265,26 @@ class StreamManager(
                 provider.getStreams(tmdbId, isTv, season, episode, title, year)
               }
             }
-            Log.i(HTTP_TRACE, "[SM] Provider source END name=$name searchId=$flowId sources=${sources?.size ?: 0}")
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.i(HTTP_TRACE, "[SM] Provider source END name=$name searchId=$flowId duration=${elapsed}ms sources=${sources?.size ?: 0}")
             if (sources.isNotEmpty()) {
-              Log.i(TAG, "$name -> ${sources.size} sorgente/i trovate")
+              Log.i(TAG, "$name -> ${sources.size} sorgente/i trovate in ${elapsed}ms")
               if (isPittDebug) {
                 Log.d("THE_PITT_STREAM", "[StreamManager] $name SUCCESS: ${sources.size} sources, first URL: ${sources.first().streamUrl}")
               }
               mergeSources(name, sources)
+            } else {
+              Log.d(TAG, "$name -> nessuna sorgente prodotta in ${elapsed}ms")
             }
           } catch (e: TimeoutCancellationException) {
-            Log.w(TAG, "$name -> timeout dopo ${timeoutMs}ms")
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.w(TAG, "$name -> timeout dopo ${elapsed}ms")
             if (tmdbId == 318508 && isTv) {
-              Log.d("THE_PITT_STREAM", "[StreamManager] $name TIMEOUT after ${timeoutMs}ms")
+              Log.d("THE_PITT_STREAM", "[StreamManager] $name TIMEOUT after ${elapsed}ms")
             }
           } catch (e: Exception) {
-            Log.w(TAG, "$name -> ${e.message}")
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.w(TAG, "$name -> eccezione dopo ${elapsed}ms: ${e.message}")
             if (tmdbId == 318508 && isTv) {
               Log.d("THE_PITT_STREAM", "[StreamManager] $name ERROR: ${e.message}")
             }

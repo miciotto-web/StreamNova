@@ -54,7 +54,7 @@ class VixSrcProvider(
   ): List<StreamSource> = withContext(Dispatchers.IO) {
     if (tmdbId <= 0) throw IOException("TMDB ID non valido: $tmdbId")
 
-    Log.d("THE_PITT_STREAM", "VixSrc resolving TMDB=$tmdbId isTv=$isTv season=$season episode=$episode")
+    Log.i(TAG, "VixSrc invocato per ${if (isTv) "Serie TV" else "Film"} (TMDB=$tmdbId, S=$season, E=$episode, titolo='$title', anno=$year)")
 
     val failures = mutableListOf<String>()
     for (base in BASE_URLS) {
@@ -62,14 +62,14 @@ class VixSrcProvider(
       try {
         val sources = resolveOnBase(base, tmdbId, isTv, season, episode)
         if (sources.isNotEmpty()) {
-          Log.i(TAG, "Estrazione riuscita su $base: ${sources.size} sorgente/i")
+          Log.i(TAG, "Estrazione riuscita su $base: ${sources.size} sorgente/i prodotte e consegnate alla pipeline")
           return@withContext sources
         }
-        failures += "$base -> nessuna sorgente"
+        failures += "$base -> nessuna sorgente prodotta"
       } catch (ex: CancellationException) {
         throw ex
       } catch (e: Exception) {
-        Log.w(TAG, "Fallback mirror $base: ${e.message}")
+        Log.w(TAG, "Fallback mirror $base fallito: ${e.message}")
         failures += "$base -> ${e.message}"
       }
     }
@@ -90,7 +90,7 @@ class VixSrcProvider(
       "/api/movie/$tmdbId"
     }
     val apiUrl = if ('?' in apiPath) "$base$apiPath&canPlayFHD=1&h=1" else "$base$apiPath?canPlayFHD=1&h=1"
-    Log.i(TAG, "GET API  $apiUrl")
+    Log.i(TAG, "GET API  ${sanitizeForLog(apiUrl)}")
     val apiBody = get(apiUrl, referer = "$base/")
     val src = JSONObject(apiBody).optString("src", "")?.trim().orEmpty()
     if (src.isEmpty()) throw IOException("Risposta API senza campo 'src': ${apiBody.take(160)}")
@@ -125,7 +125,7 @@ class VixSrcProvider(
           append(if ('?' in this) "&h=1" else "?h=1")
         }
       }
-      Log.i(TAG, "GET EMBED $embedUrl")
+      Log.i(TAG, "GET EMBED ${sanitizeForLog(embedUrl)}")
       try {
         val html = get(embedUrl, referer = "$candidateBase/")
         if (html.contains("window.streams")) {
@@ -147,20 +147,19 @@ class VixSrcProvider(
     val streamsJson = extractBlock(page, "window.streams", '[', ']')
       ?: throw IOException("window.streams non trovato nell'embed")
     val streamsArray = JSONArray(streamsJson)
-    val masterBlock = extractBlock(page, "window.masterPlaylist", '{', ';')
+    val masterBlock = extractBlockBalanced(page, "window.masterPlaylist")
+      ?: extractBlock(page, "window.masterPlaylist", '{', ';')
       ?: throw IOException("window.masterPlaylist non trovato nell'embed")
 
-    val masterUrl = Regex("""url\s*:\s*'([^']+)'""").find(masterBlock)?.groupValues?.get(1)
+    val masterUrl = Regex("""url\s*:\s*['"]([^'"]+)['"]""").find(masterBlock)?.groupValues?.get(1)
       ?: throw IOException("masterPlaylist.url non trovato")
-    // NOTA: niente regex con graffe (Android/ICU rigetta `\{`): si estrae il
-    // blocco params con le posizioni e si parsano le singole coppie.
     val paramsBlock = substringBetween(masterBlock, "params", '{', '}')
     val params = PAIR_REGEX.findAll(paramsBlock)
       .associate { it.groupValues[1] to it.groupValues[2] }
 
     val canPlayFhd = Regex("""canPlayFHD\s*=\s*(true|false)""").find(page)
       ?.groupValues?.get(1) != "false"
-    Log.i(TAG, "masterPlaylist=$masterUrl params=$params canPlayFHD=$canPlayFhd")
+    Log.i(TAG, "masterPlaylist=${sanitizeForLog(masterUrl)} params=${params.keys} canPlayFHD=$canPlayFhd")
 
     // --- 3) Costruzione URL playlist per ogni server (Priorità 1080p FHD) ---
     val effectiveReferer = "$activeBase/"
@@ -170,17 +169,19 @@ class VixSrcProvider(
     )
     val sources = mutableListOf<StreamSource>()
     for (i in 0 until streamsArray.length()) {
-      val entry = streamsArray.getJSONObject(i)
+      val entry = streamsArray.optJSONObject(i) ?: continue
       if (!entry.optBoolean("active", true)) continue
-      val rawUrl = entry.optString("url").trim()
+      val rawUrl = entry.optString("url", "").trim()
       if (rawUrl.isEmpty()) continue
       val serverName = if (i == 0) SERVER_NAME else "$SERVER_NAME ${entry.optString("name", "Mirror")}"
 
       val playlistUrlFhd = buildString {
         append(rawUrl)
         params.forEach { (key, value) ->
-          if (value.isNotEmpty()) append(if ('?' in rawUrl || '?' in this) '&' else '?')
-            .append(key).append('=').append(value)
+          if (value.isNotEmpty()) {
+            append(if ('?' in rawUrl || '?' in this) '&' else '?')
+            append(key).append('=').append(value)
+          }
         }
         append(if ('?' in rawUrl || '?' in this) '&' else '?').append("h=1")
         append("&canPlayFHD=1")
@@ -189,8 +190,10 @@ class VixSrcProvider(
       val playlistUrlStandard = buildString {
         append(rawUrl)
         params.forEach { (key, value) ->
-          if (value.isNotEmpty()) append(if ('?' in rawUrl || '?' in this) '&' else '?')
-            .append(key).append('=').append(value)
+          if (value.isNotEmpty()) {
+            append(if ('?' in rawUrl || '?' in this) '&' else '?')
+            append(key).append('=').append(value)
+          }
         }
       }
 
@@ -201,14 +204,23 @@ class VixSrcProvider(
       } catch (ex: CancellationException) {
         throw ex
       } catch (e: Exception) {
+        Log.d(TAG, "Tentativo playlist FHD non riuscito su $serverName: ${e.message}")
         null
       }
       if (playlistBody == null || !playlistBody.startsWith("#EXTM3U")) {
         chosenUrl = playlistUrlStandard
-        playlistBody = get(chosenUrl, referer = effectiveReferer)
+        playlistBody = try {
+          get(chosenUrl, referer = effectiveReferer)
+        } catch (ex: CancellationException) {
+          throw ex
+        } catch (e: Exception) {
+          Log.d(TAG, "Tentativo playlist standard non riuscito su $serverName: ${e.message}")
+          null
+        }
       }
-      if (!playlistBody.startsWith("#EXTM3U")) {
-        throw IOException("Playlist non HLS su $serverName: ${playlistBody.take(120)}")
+      if (playlistBody == null || !playlistBody.startsWith("#EXTM3U")) {
+        Log.w(TAG, "Playlist non HLS o non valida su $serverName (scartata): ${playlistBody?.take(80)}")
+        continue
       }
       val renditions = parseRenditions(playlistBody)
       val verifiedHeight = when {
@@ -224,7 +236,7 @@ class VixSrcProvider(
         else -> "Auto"
       }
       val declared = if (chosenUrl.contains("h=1")) "1080p" else "Auto"
-      Log.i(TAG, "OK $serverName (declared=$declared, verifiedHeight=$verifiedHeight, renditions=$renditions) url=$chosenUrl")
+      Log.i(TAG, "OK $serverName (declared=$declared, verifiedHeight=$verifiedHeight, renditions=$renditions) url=${sanitizeForLog(chosenUrl)}")
 
       sources += StreamSource(
         streamUrl = chosenUrl,
@@ -235,12 +247,13 @@ class VixSrcProvider(
         verifiedHeight = verifiedHeight
       )
     }
-    if (sources.isEmpty()) throw IOException("Nessun server attivo nell'embed")
+    if (sources.isEmpty()) throw IOException("Nessun server attivo nell'embed per $base")
     return sources
   }
 
   /** GET con header da browser; lancia [IOException] su status non 2xx. */
   private suspend fun get(url: String, referer: String?): String {
+    val startMs = System.currentTimeMillis()
     val request = Request.Builder()
       .url(url)
       .header("User-Agent", USER_AGENT)
@@ -251,12 +264,49 @@ class VixSrcProvider(
 
     val response = http.newCall(request.build()).awaitResponse()
     response.use { resp ->
+      val durationMs = System.currentTimeMillis() - startMs
       val body = resp.body?.string().orEmpty()
+      Log.d(TAG, "HTTP ${resp.code} in ${durationMs}ms per ${sanitizeForLog(url)}")
       if (!resp.isSuccessful) {
-        throw IOException("HTTP ${resp.code} su $url")
+        throw IOException("HTTP ${resp.code} su ${sanitizeForLog(url)}")
       }
       return body
     }
+  }
+
+  /**
+   * Estrae il blocco JSON/JS bilanciando le parentesi graffe a partire da [marker].
+   * Evita di dipendere dalla presenza accidentale di un punto e virgola ';' a fine istruzione.
+   */
+  private fun extractBlockBalanced(html: String, marker: String): String? {
+    val markerIndex = html.indexOf(marker).takeIf { it >= 0 } ?: return null
+    val openIndex = html.indexOf('{', markerIndex + marker.length).takeIf { it >= 0 } ?: return null
+    var depth = 0
+    var inString = false
+    var quoteChar = ' '
+    for (i in openIndex until html.length) {
+      val c = html[i]
+      if (inString) {
+        if (c == quoteChar && html.getOrNull(i - 1) != '\\') {
+          inString = false
+        }
+      } else {
+        when (c) {
+          '\'', '"' -> {
+            inString = true
+            quoteChar = c
+          }
+          '{' -> depth++
+          '}' -> {
+            depth--
+            if (depth == 0) {
+              return html.substring(openIndex, i + 1)
+            }
+          }
+        }
+      }
+    }
+    return null
   }
 
   /**
@@ -293,8 +343,14 @@ class VixSrcProvider(
   companion object {
     private const val TAG = "VixSrcProvider"
 
-    /** Coppie `'chiave': 'valore'` del blocco `params` della master playlist. */
-    private val PAIR_REGEX = Regex("""['"]([^'"]+)['"]\s*:\s*['"]([^'"]*)['"]""")
+    /**
+     * Redige parametri sensibili (es. token) negli URL prima della registrazione nei log.
+     */
+    fun sanitizeForLog(url: String): String =
+      url.replace(Regex("""(?i)(token=)[^&]+"""), "$1REDACTED")
+
+    /** Coppie `'chiave': 'valore'` del blocco `params` della master playlist (con o senza apici per valori numerici). */
+    private val PAIR_REGEX = Regex("""['"]?([a-zA-Z0-9_-]+)['"]?\s*:\s*['"]?([^'",\s}]+)['"]?""")
 
     /** User-Agent desktop coerente tra estrazione e riproduzione. */
     const val USER_AGENT =

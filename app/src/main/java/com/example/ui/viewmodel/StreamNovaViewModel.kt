@@ -236,9 +236,13 @@ class StreamNovaViewModel : ViewModel() {
   private val _selectedSearchCategoryId = MutableStateFlow<String?>(null)
   val selectedSearchCategoryId: StateFlow<String?> = _selectedSearchCategoryId.asStateFlow()
 
-  fun setSelectedSearchCategoryId(categoryId: String?) {
-    _selectedSearchCategoryId.value = categoryId
-  }
+    fun setSelectedSearchCategoryId(categoryId: String?) {
+      _selectedSearchCategoryId.value = categoryId
+      if (categoryId == null) {
+        _categoryItems.value = emptyList()
+        _isCategoryLoading.value = false
+      }
+    }
 
   // Interrogazione parallela dei provider di streaming HTTP diretto:
   // 1) VixSrc/VixCloud (istantaneo via TMDB ID), 2) CB01 e 3) Eurostreaming
@@ -1025,12 +1029,38 @@ class StreamNovaViewModel : ViewModel() {
     _streamResolutionState.value = StreamResolutionState.Loading
     _streamResult.value = StreamResult.Loading("Ricerca sorgenti in corso...")
 
-    val isTv = mediaItem.type == MediaType.SERIE_TV
+    val currentDetail = detailUiState.value
+    val enrichedMedia = if (currentDetail is MediaDetailUiState.Success) {
+      val candidate = currentDetail.media
+      val matches = (mediaItem.tmdbId != null && candidate.tmdbId == mediaItem.tmdbId) ||
+        (mediaItem.id.isNotBlank() && (candidate.id == mediaItem.id || candidate.id.equals(mediaItem.id, ignoreCase = true)))
+      if (matches) candidate else null
+    } else null
+
+    val baseForResolution = if (enrichedMedia != null) {
+      mediaItem.copy(
+        id = mediaItem.id.ifBlank { enrichedMedia.id },
+        title = mediaItem.title.ifBlank { enrichedMedia.title },
+        originalTitle = mediaItem.originalTitle.ifBlank { enrichedMedia.originalTitle },
+        synopsis = mediaItem.synopsis.ifBlank { enrichedMedia.synopsis },
+        tmdbId = mediaItem.tmdbId ?: enrichedMedia.tmdbId,
+        year = if (mediaItem.year > 0) mediaItem.year else enrichedMedia.year,
+        provider = mediaItem.provider ?: enrichedMedia.provider,
+        genres = if (mediaItem.genres.isNotEmpty()) mediaItem.genres else enrichedMedia.genres,
+        episodes = if (mediaItem.episodes.isNotEmpty()) mediaItem.episodes else enrichedMedia.episodes,
+        lastWatchedSeason = mediaItem.lastWatchedSeason ?: enrichedMedia.lastWatchedSeason,
+        lastWatchedEpisode = mediaItem.lastWatchedEpisode ?: enrichedMedia.lastWatchedEpisode
+      )
+    } else {
+      mediaItem
+    }
+
+    val isTv = baseForResolution.type == MediaType.SERIE_TV
     val effectiveEpisode = if (isTv && episode == null) {
-      val s = mediaItem.lastWatchedSeason ?: 1
-      val e = mediaItem.lastWatchedEpisode ?: 1
-      mediaItem.episodes.find { it.seasonNumber == s && it.episodeNumber == e }
-        ?: mediaItem.episodes.firstOrNull()
+      val s = baseForResolution.lastWatchedSeason ?: 1
+      val e = baseForResolution.lastWatchedEpisode ?: 1
+      baseForResolution.episodes.find { it.seasonNumber == s && it.episodeNumber == e }
+        ?: baseForResolution.episodes.firstOrNull()
     } else {
       episode
     }
@@ -1038,11 +1068,11 @@ class StreamNovaViewModel : ViewModel() {
     val currentJobGeneration = loadStreamGeneration
     streamJob = viewModelScope.launch(Dispatchers.IO) {
       val mode = AppSettingsRepository.streamingEngineMode.value
-      val resolvedMediaItem = if (mediaItem.tmdbId == null && mediaItem.id.startsWith("tt", ignoreCase = true)) {
-        val resolvedId = MediaRepository.resolveImdbToTmdbId(mediaItem.id, isTv)
-        if (resolvedId != null && resolvedId > 0) mediaItem.copy(tmdbId = resolvedId) else mediaItem
+      val resolvedMediaItem = if (baseForResolution.tmdbId == null && baseForResolution.id.startsWith("tt", ignoreCase = true)) {
+        val resolvedId = MediaRepository.resolveImdbToTmdbId(baseForResolution.id, isTv)
+        if (resolvedId != null && resolvedId > 0) baseForResolution.copy(tmdbId = resolvedId) else baseForResolution
       } else {
-        mediaItem
+        baseForResolution
       }
       val tmdbId = resolvedMediaItem.tmdbId
       if (tmdbId == null || tmdbId <= 0) {
@@ -1066,8 +1096,11 @@ class StreamNovaViewModel : ViewModel() {
       val epNumber = if (isTv) (effectiveEpisode?.episodeNumber ?: resolvedMediaItem.lastWatchedEpisode ?: 1) else null
       val searchTitle = resolvedMediaItem.title.ifBlank { resolvedMediaItem.originalTitle }
 
-      val rawSources = withTimeoutOrNull(7000L) {
-        val collected = mutableListOf<List<StreamSource>>()
+      var hasEmittedAny = false
+      var hasOpenedPlayer = false
+      var currentBestUrl: String? = null
+
+      try {
         streamManager.resolveFlow(
           tmdbId = tmdbId,
           isTv = isTv,
@@ -1079,67 +1112,84 @@ class StreamNovaViewModel : ViewModel() {
           providerTag = resolvedMediaItem.provider,
           genres = resolvedMediaItem.genres,
           streamingEngineMode = mode
-        ).collect { emission ->
-          collected.add(emission)
+        ).collect { rawSources ->
+          if (rawSources.isEmpty()) return@collect
+          hasEmittedAny = true
+
+          @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+          val externalSubs = if (openSubtitlesDeferred.isCompleted) {
+            try {
+              openSubtitlesDeferred.getCompleted()
+            } catch (e: Exception) {
+              emptyList()
+            }
+          } else {
+            emptyList()
+          }
+
+          val finalSources = rawSources.map { s ->
+            val merged = (s.subtitles + externalSubs).distinctBy { it.id.ifBlank { it.url } }
+            s.copy(subtitles = merged)
+          }
+
+          withContext(Dispatchers.Main) {
+            if (currentJobGeneration != loadStreamGeneration) {
+              Log.d(TAG, "Job ignorato perché una nuova ricerca o cancellazione è avvenuta")
+              return@withContext
+            }
+
+            val shouldShowDialog = mode == StreamingEngineMode.DEBRID_TORBOX && !AppSettingsRepository.autoplayEnabled.value
+            if (shouldShowDialog) {
+              _availableSources.value = finalSources
+              pendingMediaForSourceSelection = resolvedMediaItem
+              pendingEpisodeForSourceSelection = effectiveEpisode
+              _showSourceDialog.value = true
+              _streamResolutionState.value = StreamResolutionState.Idle
+              _streamResult.value = StreamResult.Idle
+              return@withContext
+            }
+
+            val best = finalSources.first()
+            val resolvedBest = if (best.infoHash != null && best.streamUrl == null) {
+              TorBoxRepository.setRequestMetadata(season, epNumber)
+              val directUrl = TorBoxRepository.resolveInfoHash(best.infoHash, best.fileIdx)
+              if (directUrl != null) best.copy(streamUrl = directUrl) else null
+            } else {
+              best
+            }
+
+            if (resolvedBest != null && !resolvedBest.streamUrl.isNullOrBlank()) {
+              _availableSources.value = finalSources
+              if (!hasOpenedPlayer) {
+                hasOpenedPlayer = true
+                currentBestUrl = resolvedBest.streamUrl
+                _streamResolutionState.value = StreamResolutionState.Success(
+                  streamUrl = resolvedBest.streamUrl ?: "",
+                  mediaItem = resolvedMediaItem,
+                  episode = effectiveEpisode,
+                  streamHeaders = resolvedBest.headers,
+                  quality = resolvedBest.quality,
+                  serverName = resolvedBest.serverName,
+                  isProgressive = resolvedBest.isProgressive
+                )
+                _streamResult.value = StreamResult.Success(listOf(resolvedBest))
+                openPlayer(resolvedMediaItem, effectiveEpisode, resolvedBest)
+              } else if (resolvedBest.streamUrl != currentBestUrl) {
+                currentBestUrl = resolvedBest.streamUrl
+                upgradeStreamSource(resolvedBest)
+              }
+            }
+          }
         }
-        collected.lastOrNull() ?: emptyList()
-      } ?: emptyList()
-
-      val externalSubs = try {
-        openSubtitlesDeferred.await()
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Exception) {
-        emptyList()
-      }
-
-      val finalSources = rawSources.map { s ->
-        val merged = (s.subtitles + externalSubs).distinctBy { it.id.ifBlank { it.url } }
-        s.copy(subtitles = merged)
+        Log.w(TAG, "Errore durante la risoluzione streaming: ${e.message}")
       }
 
       withContext(Dispatchers.Main) {
-        if (currentJobGeneration != loadStreamGeneration) {
-          Log.d(TAG, "Job ignorato perché una nuova ricerca o cancellazione è avvenuta")
-          return@withContext
-        }
-        if (finalSources.isNotEmpty()) {
-          val shouldShowDialog = mode == StreamingEngineMode.DEBRID_TORBOX && !AppSettingsRepository.autoplayEnabled.value
-          if (shouldShowDialog) {
-            _availableSources.value = finalSources
-            pendingMediaForSourceSelection = resolvedMediaItem
-            pendingEpisodeForSourceSelection = effectiveEpisode
-            _showSourceDialog.value = true
-            _streamResolutionState.value = StreamResolutionState.Idle
-            _streamResult.value = StreamResult.Idle
-            return@withContext
-          }
-
-          val best = finalSources.first()
-          val resolvedBest = if (best.infoHash != null && best.streamUrl == null) {
-            TorBoxRepository.setRequestMetadata(season, epNumber)
-            val directUrl = TorBoxRepository.resolveInfoHash(best.infoHash, best.fileIdx)
-            if (directUrl != null) best.copy(streamUrl = directUrl) else null
-          } else {
-            best
-          }
-
-          if (resolvedBest != null && !resolvedBest.streamUrl.isNullOrBlank()) {
-            _streamResolutionState.value = StreamResolutionState.Success(
-              streamUrl = resolvedBest.url,
-              mediaItem = resolvedMediaItem,
-              episode = effectiveEpisode,
-              streamHeaders = resolvedBest.headers,
-              quality = resolvedBest.quality,
-              serverName = resolvedBest.serverName,
-              isProgressive = resolvedBest.isProgressive
-            )
-            _streamResult.value = StreamResult.Success(listOf(resolvedBest))
-            _availableSources.value = finalSources
-            openPlayer(resolvedMediaItem, effectiveEpisode, resolvedBest)
-          } else {
-            _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
-            _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
-          }
-        } else {
+        if (currentJobGeneration != loadStreamGeneration) return@withContext
+        if (!hasEmittedAny) {
           _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
           _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
         }

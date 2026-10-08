@@ -70,6 +70,19 @@ class StreamPriorityTest {
   }
 
   @Test
+  fun testVixSrcResolvesMovie(): Unit = runBlocking {
+    val provider = VixSrcProvider()
+    val sources = provider.getStreams(
+      tmdbId = 550, // Fight Club
+      isTv = false
+    )
+    assertTrue("VixSrc deve trovare almeno una sorgente per Fight Club", sources.isNotEmpty())
+    val first = sources.first()
+    assertTrue("URL deve iniziare per http", first.url.startsWith("http"))
+    assertTrue("Header Referer presente", first.headers.containsKey("Referer"))
+  }
+
+  @Test
   fun testStreamManagerPrioritizes1080pOver720p(): Unit = runBlocking {
     val mock720pProvider = object : StreamProvider {
       override suspend fun getStreams(
@@ -78,7 +91,7 @@ class StreamPriorityTest {
         delay(50) // risponde veloce (50ms)
         return listOf(
           StreamSource(
-            url = "https://example.com/stream_720p.m3u8",
+            streamUrl = "https://example.com/stream_720p.m3u8",
             quality = "720p",
             serverName = "MockServer 720p"
           )
@@ -93,7 +106,7 @@ class StreamPriorityTest {
         delay(200) // risponde dopo 200ms
         return listOf(
           StreamSource(
-            url = "https://example.com/stream_1080p.m3u8",
+            streamUrl = "https://example.com/stream_1080p.m3u8",
             quality = "1080p",
             serverName = "MockServer 1080p"
           )
@@ -135,7 +148,7 @@ class StreamPriorityTest {
         delay(80)
         return listOf(
           StreamSource(
-            url = "https://vixcloud.co/playlist/real_vix.m3u8",
+            streamUrl = "https://vixcloud.co/playlist/real_vix.m3u8",
             quality = "720p",
             serverName = "VixCloud"
           )
