@@ -30,6 +30,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -50,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
 import com.example.R
 import com.example.data.prefs.AppSettingsRepository
+import com.example.data.stremio.AddonSyncServer
 import com.example.data.stremio.InstalledAddon
 import com.example.data.stremio.RESOURCE_CATALOG
 import com.example.data.stremio.StremioCatalogDefinition
@@ -63,6 +65,7 @@ import com.example.data.stremio.provider.ProviderCatalogResolver
 import com.example.data.stremio.provider.UserProviderBindingStore
 import com.example.data.repository.StremioCatalogRepository
 import com.example.ui.components.ProviderConstants
+import com.example.ui.components.QrCodeInfoCard
 import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.components.TextInputDialog
@@ -104,6 +107,16 @@ fun AddonsScreen(
   val message by viewModel.addonMessage.collectAsState()
 
   var showAddDialog by remember { mutableStateOf(false) }
+
+  // ── Micro-server locale per la configurazione da smartphone ─────────────
+  // Il server resta in ascolto finché la schermata è attiva: il QR Code
+  // punta a http://<IP_LOCALE>:8080. Le installazioni arrivate dal telefono
+  // passano da StremioAddonRepository.addons, quindi la lista qui sotto si
+  // aggiorna in modo reattivo senza refresh manuali.
+  val serverState by AddonSyncServer.serverState.collectAsState()
+  val serverUrl by AddonSyncServer.serverUrl.collectAsState()
+  LaunchedEffect(Unit) { AddonSyncServer.start() }
+  DisposableEffect(Unit) { onDispose { AddonSyncServer.stop() } }
 
   // ── Binding catalogo -> provider ───────────────────────────────────────────
   // L'euristica PROPONE, l'utente CONFERMA: nessuna associazione nasce senza un
@@ -250,6 +263,15 @@ fun AddonsScreen(
             )
           }
         }
+      }
+
+      // ── Configurazione remota via QR (micro-server locale) ───────────
+      item(key = "addons_remote_setup") {
+        QrCodeInfoCard(
+          url = serverUrl,
+          fallbackMessage = (serverState as? AddonSyncServer.ServerState.Error)?.message,
+          modifier = Modifier.fillMaxWidth()
+        )
       }
 
       // ── Stato vuoto ───────────────────────────────────────────────────

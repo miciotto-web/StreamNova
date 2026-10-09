@@ -207,6 +207,7 @@
     <string name="settings_autoplay">Avvio automatico (Autoplay)</string>
     <string name="settings_preferred_resolution">Risoluzione preferita</string>
     <string name="settings_preferred_audio_language">Lingua audio preferita</string>
+    <string name="settings_prioritize_italian_audio">Privilegia tracce italiane</string>
     <string name="settings_autoplay_next_episode">Riproduci automaticamente il prossimo episodio</string>
     <string name="settings_auto_resume">Riprendi automaticamente la riproduzione</string>
     <string name="settings_sec_subtitles">Sottotitoli</string>
@@ -296,6 +297,10 @@
     <string name="addons_dialog_install">Installa</string>
     <string name="addons_switch_active">Attivo</string>
     <string name="addons_switch_inactive">Disattivo</string>
+    <string name="addons_remote_title">Configurazione Remota</string>
+    <string name="addons_remote_desc">Scansiona il QR Code con il tuo smartphone per installare nuovi addon senza dover digitare l\'URL dal telecomando.</string>
+    <string name="addons_remote_hint">Collegati a %1$s dal browser per aggiungere addon comodamente</string>
+    <string name="addons_remote_offline">Nessuna connessione di rete: QR non disponibile</string>
 
     <!-- Player & Stream Status (FASE 5) -->
     <string name="press_back_again_to_exit">Premi ancora indietro per uscire</string>

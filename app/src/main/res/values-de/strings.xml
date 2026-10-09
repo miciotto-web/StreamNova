@@ -261,7 +261,11 @@
      <string name="addons_dialog_title">Stremio-Addon hinzufügen</string>
      <string name="addons_dialog_install">Installieren</string>
      <string name="addons_switch_active">Aktiv</string>
-     <string name="addons_switch_inactive">Inaktiv</string>
+      <string name="addons_switch_inactive">Inaktiv</string>
+      <string name="addons_remote_title">Remote-Konfiguration</string>
+      <string name="addons_remote_desc">Scanne den QR-Code mit dem Smartphone, um neue Addons zu installieren, ohne die URL mit der Fernbedienung einzugeben.</string>
+      <string name="addons_remote_hint">Öffne %1$s im Browser, um Addons bequem hinzuzufügen</string>
+      <string name="addons_remote_offline">Keine Netzwerkverbindung: QR-Code nicht verfügbar</string>
 
      <!-- Player & Stream Status (FASE 5) -->
      <string name="press_back_again_to_exit">Nochmals Zurück drücken zum Beenden</string>

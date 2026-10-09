@@ -158,6 +158,8 @@ dependencies {
   // Transitive dependencies required by forked local AARs (not bundled in AARs)
   implementation("com.google.guava:guava:33.3.1-android")
   implementation("androidx.annotation:annotation-experimental:1.3.1")
+  // Generazione QR Code per la configurazione addon remota (AddonSyncServer)
+  implementation("com.google.zxing:core:3.5.3")
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   // Uncomment to use Firestore:
