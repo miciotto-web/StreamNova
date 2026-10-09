@@ -125,4 +125,26 @@ class StreamManagerDirectSourceTest {
     assertEquals("https://ref.example/", source.headers["Referer"])
     assertFalse(source.headers.isEmpty())
   }
+
+  @Test
+  fun cometConDescriptionEFilenameDiventaCardConTitoloFileReale() {
+    val source = StreamManager.directStreamSource(
+      StremioStreamCandidate(
+        addonName = "Comet | ElfHosted",
+        baseUrl = "https://comet.elfhosted.com/eyJjb25maWcifQ",
+        item = StremioStreamItem(
+          name = "[RD⚡] Comet 2160p",
+          description = "📄 Movie.Name.2021.2160p.WEB-DL.mkv\n📹 HEVC | 👤 50 💾 16.4 GB",
+          url = "https://comet.elfhosted.com/eyJjb25maWcifQ/playback/hash/0/n/n/n",
+          behaviorHints = StremioStreamBehaviorHints(filename = "Movie.Name.2021.2160p.WEB-DL.mkv")
+        )
+      )
+    )!!
+
+    assertEquals("Movie.Name.2021.2160p.WEB-DL.mkv", source.releaseTitle)
+    assertEquals("4K", source.quality)
+    assertEquals(CacheState.Cached, source.cacheState)
+    assertEquals("Comet | ElfHosted", source.addonName)
+    assertTrue(source.streamUrl!!.contains("/playback/"))
+  }
 }

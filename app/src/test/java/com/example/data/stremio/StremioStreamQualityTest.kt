@@ -1,6 +1,7 @@
 package com.example.data.stremio
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -55,5 +56,36 @@ class StremioStreamQualityTest {
   fun ilRegexNonScattaSuSempliciSottostringheNumericheNelTitle() {
     // "7200" non è un token di risoluzione: niente falsi positivi.
     assertEquals("Auto", candidate("Torrentio 🇮🇹", "Documentario.7200.mkv").quality)
+  }
+
+  @Test
+  fun cometUsaBehaviorHintsFilenameEComeTitoloEIlNamePerLaQualita() {
+    val c = StremioStreamCandidate(
+      addonName = "Comet | ElfHosted",
+      baseUrl = "https://comet.elfhosted.com/eyJjb25maWcifQ",
+      item = StremioStreamItem(
+        name = "[RD⚡] Comet 2160p",
+        description = "📄 Movie.Name.2021.2160p.WEB-DL.mkv\n📹 HEVC | 🔊 DDP5.1 | 👤 50 💾 16.4 GB",
+        url = "https://comet.elfhosted.com/eyJjb25maWcifQ/playback/hash/0/n/n/n",
+        behaviorHints = StremioStreamBehaviorHints(filename = "Movie.Name.2021.2160p.WEB-DL.mkv")
+      )
+    )
+    assertEquals("Movie.Name.2021.2160p.WEB-DL.mkv", c.releaseTitle)
+    assertEquals("4K", c.quality)
+    assertTrue("i dettagli devono venire dalla description", c.sizeAndPeers.contains("16.4 GB"))
+  }
+
+  @Test
+  fun cometSenzaFilenameUsaLaPrimaRigaDellaDescriptionPulitaDalleEmoji() {
+    val c = StremioStreamCandidate(
+      addonName = "Comet | ElfHosted",
+      baseUrl = "https://comet.elfhosted.com/x",
+      item = StremioStreamItem(
+        name = "Comet",
+        description = "📄 Movie.Name.2020.1080p.mkv\n👤 12 💾 2.0 GB"
+      )
+    )
+    assertEquals("Movie.Name.2020.1080p.mkv", c.releaseTitle)
+    assertEquals("1080p", c.quality)
   }
 }

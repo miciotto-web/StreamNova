@@ -47,11 +47,32 @@ data class StremioStreamCandidate(
   val instantTag: String
     get() = item.name?.lines()?.getOrNull(1)?.trim() ?: ""
 
+  /**
+   * Nome del file/rilascio mostrato sulla card.
+   *
+   * Ordine di priorità (nessun campo inventato):
+   *  1. `behaviorHints.filename`: nome torrent grezzo dichiarato dall'addon
+   *     (es. Comet lo usa per il file reale, senza emoji);
+   *  2. prima riga di `title` (convenzione Stremio);
+   *  3. prima riga di `description` ripulita dai prefissi emoji (es. "📄 ");
+   *  4. stringa vuota: il chiamante fa fallback sul nome addon.
+   */
   val releaseTitle: String
-    get() = item.title?.lines()?.firstOrNull()?.trim() ?: ""
+    get() = item.behaviorHints?.filename?.lines()?.firstOrNull()?.trim()?.takeIf { it.isNotBlank() }
+      ?: item.title?.lines()?.firstOrNull()?.trim()?.takeIf { it.isNotBlank() }
+      ?: stripLeadingIcons(item.description?.lines()?.firstOrNull())
+      ?: ""
 
+  /**
+   * Dettagli (size, peer, codec...) mostrati sotto il titolo. Usa le righe
+   * successive di `title` e, in loro assenza (es. Comet), di `description`.
+   */
   val sizeAndPeers: String
-    get() = item.title?.lines()?.drop(1)?.joinToString(" " )?.trim() ?: ""
+    get() {
+      val fromTitle = item.title?.lines()?.drop(1)?.joinToString(" ")?.trim().orEmpty()
+      if (fromTitle.isNotBlank()) return fromTitle
+      return item.description?.lines()?.drop(1)?.joinToString(" ")?.trim().orEmpty()
+    }
 
   /**
    * Qualità rilevata dallo stream.
@@ -68,11 +89,13 @@ data class StremioStreamCandidate(
   val quality: String
     get() = resolutionFromName(item.name)
       ?: resolutionFromText(item.title)
+      ?: resolutionFromText(item.description)
+      ?: resolutionFromText(item.behaviorHints?.filename)
       ?: "Auto"
 
   val codec: String?
     get() {
-      val text = "${item.name} ${item.title}".lowercase()
+      val text = item.descriptiveText.lowercase()
       return when {
         text.contains("hevc") || text.contains("x265") || text.contains("hvc1") || text.contains("hdr10") || text.contains("hdr") -> "HEVC"
         text.contains("av1") || text.contains("vp9") -> "AV1/VP9"
@@ -83,7 +106,7 @@ data class StremioStreamCandidate(
 
   val releaseType: String?
     get() {
-      val text = "${item.name} ${item.title}".lowercase()
+      val text = item.descriptiveText.lowercase()
       return when {
         text.contains("web-dl") || text.contains("webdl") || text.contains("web rip") -> "WEB-DL"
         text.contains("bluray") || text.contains("blu-ray") || text.contains("bdrip") -> "BluRay"
@@ -93,6 +116,17 @@ data class StremioStreamCandidate(
       }
   }
 }
+
+/**
+ * Rimuove i prefissi icona/emoji da una riga di descrizione degli addon
+ * (es. Comet formatta il titolo come "📄 Movie.2021.2160p..."). Viene rimosso
+ * solo il prefisso iniziale non alfanumerico: il resto torna intatto.
+ */
+private fun stripLeadingIcons(line: String?): String? =
+  line?.trim()
+    ?.replace(Regex("^[^\\p{L}\\p{N}]+"), "")
+    ?.trim()
+    ?.takeIf { it.isNotBlank() }
 
 /**
  * Risoluzione riconosciuta nel campo `name` di uno stream (ricerca per
@@ -151,6 +185,8 @@ object StremioAddonRepository {
   private const val TAG = "StremioAddonRepo"
   // DIAG TEMPORANEO (solo logging): tag dedicato per filtrare i conteggi diagnostici.
   private const val DIAG_TAG = "COMET_DIAG"
+  /** Tag dedicato al dump dei singoli stream ricevuti da addon Debrid (es. Comet). */
+  private const val COMET_DEBUG_TAG = "CometDebug"
   private const val CACHE_TTL_MS = 60_000L
   private const val CONNECT_TIMEOUT_S = 10L
   private const val READ_TIMEOUT_S = 15L
@@ -351,6 +387,27 @@ object StremioAddonRepository {
     return "${addon.manifest.displayTitle}[$id@$host]"
   }
 
+  /** true se l'addon è Comet (per nome o host), a cui è dedicato il dump stream. */
+  private fun isCometLike(addon: InstalledAddon): Boolean {
+    val name = addon.manifest.displayTitle.lowercase()
+    val host = addon.baseUrl.toHttpUrlOrNull()?.host?.lowercase().orEmpty()
+    return name.contains("comet") || name.contains("elfhosted") ||
+      host.contains("comet") || host.contains("elfhosted")
+  }
+
+  /**
+   * URL di stream reso sicuro per i log: conserva schema/host e indica se è un
+   * endpoint `/playback/...`, ma **non** il path completo. Negli addon Debrid
+   * (es. Comet) il path contiene la config Base64 con le chiavi dei servizi:
+   * loggarla per intero sarebbe una fuga di credenziali.
+   */
+  private fun redactUrl(url: String?): String {
+    if (url.isNullOrBlank()) return "<assente>"
+    val http = url.toHttpUrlOrNull() ?: return "<non-http:${url.take(20)}...>"
+    val endpoint = if (http.encodedPath.contains("/playback/")) "/playback/..." else "/..."
+    return "${http.scheme}://${http.host}$endpoint (len=${url.length})"
+  }
+
   // ── Manifest ───────────────────────────────────────────────────────────
 
   /** Scarica e valida `$baseUrl/manifest.json`. */
@@ -423,6 +480,26 @@ object StremioAddonRepository {
                   addonName = addon.manifest.displayTitle,
                   baseUrl = addon.baseUrl,
                   item = item
+                )
+              }
+            }
+            // DUMP DIAGNOSTICO: campi grezzi degli stream ricevuti dagli addon
+            // Debrid (es. Comet | ElfHosted) per capire dove finiscono titolo,
+            // qualità e link. L'URL è redatto: il path di Comet contiene la
+            // config Base64 con le chiavi Debrid, che non deve finire nei log.
+            if (isCometLike(addon)) {
+              mapped.forEachIndexed { index, candidate ->
+                Log.d(COMET_DEBUG_TAG, "STREAM RICEVUTO DA COMET (${index + 1}/${mapped.size}):")
+                Log.d(COMET_DEBUG_TAG, "  name = '${candidate.item.name}'")
+                Log.d(COMET_DEBUG_TAG, "  title = '${candidate.item.title}'")
+                Log.d(COMET_DEBUG_TAG, "  description = '${candidate.item.description}'")
+                Log.d(COMET_DEBUG_TAG, "  behaviorHints.filename = '${candidate.item.behaviorHints?.filename}'")
+                Log.d(COMET_DEBUG_TAG, "  infoHash = '${candidate.item.infoHash}'")
+                Log.d(COMET_DEBUG_TAG, "  url = '${redactUrl(candidate.item.url)}'")
+                Log.d(
+                  COMET_DEBUG_TAG,
+                  "  => releaseTitle='${candidate.releaseTitle}' quality='${candidate.quality}' " +
+                    "details='${candidate.sizeAndPeers}'"
                 )
               }
             }

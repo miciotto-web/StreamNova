@@ -431,6 +431,12 @@ data class StremioStreamResponse(
 data class StremioStreamItem(
   val name: String? = null,
   val title: String? = null,
+  /**
+   * Descrizione estesa dello stream. Nel protocollo Stremio `title` è deprecato
+   * in favore di `description`: alcuni addon (es. Comet) popolano **solo**
+   * `description` con il titolo formattato e i dettagli (qualità, size, peer).
+   */
+  val description: String? = null,
   val url: String? = null,
   val infoHash: String? = null,
   @Json(name = "fileIdx") val fileIdx: Int? = null,
@@ -439,7 +445,18 @@ data class StremioStreamItem(
 ) {
   /** Etichetta combinata usata per estrarre la qualità e mostrare l'origine. */
   val label: String
-    get() = listOfNotNull(name, title).filter { it.isNotBlank() }.joinToString(" • ")
+    get() = listOfNotNull(name, title, description).filter { it.isNotBlank() }.joinToString(" • ")
+
+  /**
+   * Testo combinato di tutti i campi descrittivi (nome, titolo, descrizione,
+   * filename degli `behaviorHints`) usato per l'estrazione euristica di qualità,
+   * codec e tipo di rilascio: nessun addon è tagliato fuori a seconda di quale
+   * campo popola.
+   */
+  val descriptiveText: String
+    get() = listOfNotNull(name, title, description, behaviorHints?.filename)
+      .filter { it.isNotBlank() }
+      .joinToString(" ")
 
   /**
    * Sottotitoli utilizzabili dichiarati dallo stream: elementi `null` o incompleti
