@@ -5,6 +5,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.provider.AnimeStreamProvider
 import com.example.data.stremio.StremioAddonRepository
+import com.example.data.stremio.StremioStreamCandidate
+import com.example.data.stremio.StremioSubtitleAdapter
+import com.example.data.stremio.StremioSubtitleBridge
 import com.example.data.model.Episode
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
@@ -364,19 +367,10 @@ class StreamManager(
       Log.i(DIAG_TAG, "DIAG-C origin=StremioAddons result=EMPTY candidates=0")
       return emptyList()
     }
-    val directSources = candidates.mapNotNull { candidate ->
-      val url = candidate.item.url?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-      val quality = TorBoxStreamProvider.parseQualityLabel(candidate.item.label)
-      StreamSource(
-        streamUrl = url,
-        quality = quality,
-        serverName = candidate.addonName,
-        // Gli header richiesti dallo stream (behaviorHints.proxyHeaders.request)
-        // devono arrivare al player per evitare 403 su stream protetti.
-        headers = candidate.item.proxyHeaders,
-        declaredQuality = quality
-      )
-    }
+    // Stream "già sbloccati" (Debrid addon come Comet/ElfHosted): hanno `url`
+    // diretto e `infoHash == null`. Vengono convertiti direttamente in sorgenti
+    // giocabili e marcati cached; i placeholder di errore vengono scartati.
+    val directSources = candidates.mapNotNull { directStreamSource(it) }
     // DIAG TEMPORANEO (C): URL diretti validi per addon INTERROGATO, prima della dedup di mergeSources.
     candidates.groupBy { it.baseUrl }.forEach { (baseUrl, items) ->
       val validDirect = items.count { it.item.url?.isNotBlank() == true }
@@ -478,6 +472,107 @@ class StreamManager(
 
     /** Head-start (ms) concesso ad [AnimeStreamProvider] sugli altri provider per i contenuti anime. */
     const val ANIME_HEAD_START_MS = 700L
+
+    /**
+     * Converte un candidato Stremio con `url` **diretto** in una [StreamSource]
+     * giocabile e già marcata cached. È il caso degli addon Debrid pre-risolti
+     * (es. "Comet | ElfHosted"): generano stream con link video nel campo `url`
+     * e `infoHash == null`.
+     *
+     * Restituisce `null` — cioè lo scarta — quando:
+     *  - esiste un `infoHash`: quello stream è di competenza di
+     *    [TorBoxStreamProvider], che lo risolve con `checkcached` + unlock;
+     *  - manca un `url` giocabile (schema non HTTP, risorsa non video);
+     *  - `name`/`title` sono placeholder di errore dell'addon (es. "No streams
+     *    found", "Invalid Debrid API key").
+     *
+     * I metadati (titolo file, qualità, codec, tipo rilascio, sottotitoli) sono
+     * quelli già estratti dal candidato, così la card mostra il file reale e non
+     * l'etichetta dell'addon.
+     */
+    internal fun directStreamSource(candidate: StremioStreamCandidate): StreamSource? {
+      val item = candidate.item
+      val url = item.url?.trim()?.takeIf { it.isNotBlank() } ?: return null
+      // Gli infoHash restano a TorBox: qui solo stream Debrid già sbloccati.
+      if (!item.infoHash.isNullOrBlank()) return null
+      if (!isPlayableDirectUrl(url)) return null
+      if (isErrorPlaceholder(item.name, item.title)) return null
+
+      val quality = candidate.quality
+      val releaseTitle = candidate.releaseTitle.takeIf { it.isNotBlank() }
+      val details = candidate.sizeAndPeers.takeIf { it.isNotBlank() }
+      val instantTag = candidate.instantTag.takeIf { it.isNotBlank() }
+      val isItalian = StreamSource.isItalianSource(
+        listOfNotNull(candidate.addonNameFromStream, releaseTitle).joinToString(" ")
+      )
+      val subtitles = StremioSubtitleAdapter.toSubtitles(
+        StremioSubtitleBridge.fromStream(item),
+        addonName = candidate.addonName
+      )
+
+      return StreamSource(
+        streamUrl = url,
+        quality = quality,
+        serverName = candidate.addonName,
+        // Header richiesti dallo stream (behaviorHints.proxyHeaders.request):
+        // devono arrivare al player per evitare 403 su stream protetti.
+        headers = item.proxyHeaders,
+        declaredQuality = quality,
+        isProgressive = true,
+        isItalian = isItalian,
+        addonName = candidate.addonName,
+        instantTag = instantTag,
+        releaseTitle = releaseTitle,
+        details = details,
+        codec = candidate.codec,
+        // Link Debrid diretto già pronto alla riproduzione.
+        isCached = true,
+        releaseType = candidate.releaseType,
+        subtitles = subtitles
+      )
+    }
+
+    /** true se l'URL è un link HTTP(S) riproducibile (non un manifest/JSON). */
+    internal fun isPlayableDirectUrl(url: String): Boolean {
+      val u = url.trim().lowercase()
+      if (!u.startsWith("http://") && !u.startsWith("https://")) return false
+      if (u.endsWith(".json") || u.contains("/manifest.json")) return false
+      return true
+    }
+
+    /**
+     * Marker di errore/placeholder che gli addon Debrid (es. Comet) usano come
+     * finto stream quando la risoluzione fallisce. Frasi specifiche: un titolo
+     * di un film reale non le contiene, quindi nessun falso positivo sui nomi file.
+     */
+    private val ERROR_STREAM_MARKERS = listOf(
+      "no streams found",
+      "no stream found",
+      "no streams",
+      "no results",
+      "no torrents",
+      "invalid debrid",
+      "invalid api key",
+      "invalid token",
+      "debrid api key",
+      "debrid not configured",
+      "not configured",
+      "configuration required",
+      "unauthorized",
+      "expired token",
+      "expired api",
+      "service unavailable",
+      "rate limit",
+      "try again later",
+      "comet error"
+    )
+
+    /** true se `name`/`title` descrivono un errore/placeholder dell'addon. */
+    internal fun isErrorPlaceholder(name: String?, title: String?): Boolean {
+      val text = listOfNotNull(name, title).joinToString(" ").lowercase()
+      if (text.isBlank()) return false
+      return ERROR_STREAM_MARKERS.any { text.contains(it) }
+    }
 
     /**
      * Un contenuto e' considerato **anime** se appartiene a Crunchyroll (provider 283 /
