@@ -85,7 +85,10 @@ class TorBoxMultiSourceResolutionTest {
     AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.DEBRID_TORBOX)
     AppSettingsRepository.setAutoplayEnabled(false)
 
-    val viewModel = StreamNovaViewModel()
+    // Il dispatcher I/O è iniettato con quello del test: la risoluzione asincrona
+    // avanza sullo stesso scheduler, quindi `advanceUntilIdle()` la attende
+    // prima delle asserzioni (niente race con Dispatchers.IO reale).
+    val viewModel = StreamNovaViewModel(ioDispatcher = StandardTestDispatcher(testScheduler))
     viewModel.streamManager = customStreamManager
 
     val mediaItem = MediaItem(

@@ -49,6 +49,7 @@ import com.example.domain.model.Subtitle
 import com.example.ui.components.StreamingProvider
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -249,7 +250,14 @@ data class SourceSelectionTarget(
   val episode: Episode? = null
 )
 
-class StreamNovaViewModel : ViewModel() {
+class StreamNovaViewModel(
+  /**
+   * Dispatcher per il lavoro di I/O della risoluzione stream (addon, TorBox,
+   * sottotitoli). Iniettabile: nei test si passa un `TestDispatcher` per rendere
+   * l'esecuzione asincrona deterministica e attendibile con `advanceUntilIdle()`.
+   */
+  private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+) : ViewModel() {
 
   private val _currentSection = MutableStateFlow(SidebarSection.HOME)
   val currentSection: StateFlow<SidebarSection> = _currentSection.asStateFlow()
@@ -1435,7 +1443,7 @@ class StreamNovaViewModel : ViewModel() {
     }
 
     val currentJobGeneration = loadStreamGeneration
-    streamJob = viewModelScope.launch(Dispatchers.IO) {
+    streamJob = viewModelScope.launch(ioDispatcher) {
       val mode = AppSettingsRepository.streamingEngineMode.value
       val resolvedMediaItem = if (baseForResolution.tmdbId == null && baseForResolution.id.startsWith("tt", ignoreCase = true)) {
         val resolvedId = MediaRepository.resolveImdbToTmdbId(baseForResolution.id, isTv)
@@ -1453,7 +1461,7 @@ class StreamNovaViewModel : ViewModel() {
         return@launch
       }
 
-      val openSubtitlesDeferred = async(Dispatchers.IO) {
+      val openSubtitlesDeferred = async(ioDispatcher) {
         openSubtitlesProvider.fetchSubtitles(
           mediaItem = resolvedMediaItem,
           episode = effectiveEpisode,

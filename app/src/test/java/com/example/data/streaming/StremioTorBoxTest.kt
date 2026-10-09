@@ -3,8 +3,11 @@ package com.example.data.streaming
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.stremio.StremioAddonRepository
+import com.example.data.stremio.InstalledAddon
 import com.example.data.stremio.StremioStreamCandidate
 import com.example.data.stremio.StremioStreamItem
+import com.example.data.stremio.StremioStreamBehaviorHints
+import com.example.data.stremio.StremioProxyHeaders
 import com.example.data.torbox.TorBoxGateway
 import com.example.data.stremio.StremioManifest
 import com.example.data.stremio.StremioStreamResponse
@@ -51,6 +54,67 @@ class StremioTorBoxTest {
       "https://cinemeta.example.org",
       StremioAddonRepository.normalizeUrl("https://cinemeta.example.org/")
     )
+  }
+
+  /**
+   * Il percorso di configurazione (token Debrid, opzioni) NON deve mai essere
+   * eliminato: e' cio' che autentica le chiamate /stream/... dell'addon.
+   */
+  @Test
+  fun normalizeUrlPreservaConfigurazioneEQuery() {
+    // Segmento di configurazione prima di /manifest.json: preservato integralmente.
+    assertEquals(
+      "https://torrentio.strem.fun/realdebrid=KEY",
+      StremioAddonRepository.normalizeUrl("https://torrentio.strem.fun/realdebrid=KEY/manifest.json")
+    )
+    // Senza suffisso /manifest.json il baseUrl resta invariato.
+    assertEquals(
+      "https://torrentio.strem.fun/realdebrid=KEY",
+      StremioAddonRepository.normalizeUrl("stremio://torrentio.strem.fun/realdebrid=KEY")
+    )
+    // Suffisso terminale rimosso in modo case-insensitive.
+    assertEquals(
+      "https://host.example.com/conf",
+      StremioAddonRepository.normalizeUrl("https://host.example.com/conf/MANIFEST.JSON")
+    )
+    // La query string di configurazione non deve andare persa.
+    assertEquals(
+      "https://host.example.com/api/conf?token=abc&opt=1",
+      StremioAddonRepository.normalizeUrl("https://host.example.com/api/conf/manifest.json?token=abc&opt=1")
+    )
+  }
+
+  @Test
+  fun streamParsingBehaviorHintsProxyHeaders() {
+    val json = """
+      {"streams":[{"name":"Addon","url":"https://cdn.example/video.mkv",
+        "behaviorHints":{"proxyHeaders":{"request":{"User-Agent":"MyUA","Referer":"https://ref.example/"}}}}]}
+    """.trimIndent()
+    val response = moshi().adapter(StremioStreamResponse::class.java).fromJson(json)!!
+    val item = response.streams!!.first()
+    assertEquals("MyUA", item.proxyHeaders["User-Agent"])
+    assertEquals("https://ref.example/", item.proxyHeaders["Referer"])
+  }
+
+  @Test
+  fun supportsStreamIdRispettaIdPrefixes() {
+    val ttOnly = InstalledAddon(
+      baseUrl = "https://torrentio.strem.fun/realdebrid=KEY",
+      manifest = moshi().adapter(StremioManifest::class.java).fromJson(
+        """{"id":"tt","name":"TT","version":"1","resources":["stream"],"types":["movie"],"idPrefixes":["tt"]}"""
+      )!!
+    )
+    assertTrue(StremioAddonRepository.supportsStreamId(ttOnly, "tt0111161"))
+    assertFalse(StremioAddonRepository.supportsStreamId(ttOnly, "tmdb:603"))
+
+    val anyId = InstalledAddon(
+      baseUrl = "https://cinemeta.example.org",
+      manifest = moshi().adapter(StremioManifest::class.java).fromJson(
+        """{"id":"any","name":"Any","version":"1","resources":["stream"],"types":["movie"]}"""
+      )!!
+    )
+    assertTrue(StremioAddonRepository.supportsStreamId(anyId, "tmdb:603"))
+    assertTrue(StremioAddonRepository.supportsStreamId(anyId, "tt0111161"))
   }
 
   @Test(expected = IllegalArgumentException::class)
@@ -305,13 +369,15 @@ class StremioTorBoxTest {
       item = StremioStreamItem(
         infoHash = "hash" + i.toString().padStart(2, '0'),
         fileIdx = i,
-        title = when (i) {
-          7 -> "Torrentio 4K HDR"
-          3 -> "Torrentio 1080p"
-          12 -> "Torrentio 720p"
-          else -> "Torrentio 480p"
+        // Convenzione Stremio/Torrentio: `name` su due righe (addon + qualità),
+        // `title` con il nome del file. `StremioStreamCandidate.quality` legge la 2ª riga di `name`.
+        name = when (i) {
+          7 -> "Torrentio\n4K HDR"
+          3 -> "Torrentio\n1080p"
+          12 -> "Torrentio\n720p"
+          else -> "Torrentio\n480p"
         },
-        name = "Torrentio"
+        title = "release.$i.mkv"
       )
     )
   }
@@ -330,12 +396,14 @@ class StremioTorBoxTest {
     assertEquals("tutti gli hash nel batch", 15, fake.checkedBatches[0].size)
     assertTrue(fake.checkedBatches[0].containsAll(candidates.mapNotNull { it.item.infoHash }))
 
-    // 2) requestdl solo sul candidato migliore in cache (4K > 1080p > 720p)
-    assertEquals(listOf("hash07"), fake.unlocked)
-    assertEquals(1, sources.size)
-    assertEquals("4K", sources[0].quality)
-    assertEquals("[TorBox Instant 4K]", sources[0].serverName)
-    assertEquals("https://cdn.example.org/best.mkv", sources[0].url)
+    // 2) Nessuno sblocco preventivo: avviene ON-DEMAND al click (selectSource).
+    assertTrue("nessun requestdl in fase di resolve", fake.unlocked.isEmpty())
+
+    // 3) Solo i flussi in cache, ordinati dal migliore (4K > 1080p > 720p) in testa.
+    assertEquals("solo gli hash in cache", 3, sources.size)
+    assertEquals(listOf("4K", "1080p", "720p"), sources.map { it.quality })
+    assertTrue("streamUrl resta null, risolto on-demand", sources.all { it.streamUrl == null })
+    assertTrue("tutti i risultati sono confermati in cache", sources.all { it.isCached })
   }
 
   @Test

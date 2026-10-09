@@ -7,6 +7,7 @@ import com.example.data.streaming.providers.TwoEmbedProvider
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
+import org.junit.Ignore
 import org.junit.Test
 
 /**
@@ -15,6 +16,7 @@ import org.junit.Test
 class NewProvidersTest {
 
   /** 2Embed: catena completa 2embed.cc -> VidSrc -> master HLS. */
+  @Ignore("Flaky: dipende da resolver e domini esterni soggetti a cambi DNS/takedown")
   @Test
   fun twoEmbedRisolveFilmRealeConHls(): Unit = runBlocking {
     // I mirror possono andare in timeout transient: si riprova una volta
