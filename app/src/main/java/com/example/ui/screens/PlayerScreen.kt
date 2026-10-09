@@ -31,12 +31,15 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -193,6 +196,18 @@ fun PlayerScreen(
   val context = LocalContext.current
   val playbackState by viewModel.playbackState.collectAsState()
   val playbackSettings by viewModel.playbackSettings.collectAsState()
+
+  /**
+   * Lingua di riferimento per preselezionare i sottotitoli esterni con
+   * C.SELECTION_FLAG_DEFAULT nel MediaItem: la preferita dell'utente, oppure
+   * la lingua di sistema quando l'utente ha scelto "Originale / Qualsiasi".
+   * Dichiarata prima dell'istanziazione del player perché usata da buildMediaItem.
+   */
+  val defaultSubtitleSelectionLanguage: String =
+    playbackSettings.preferredSubtitleLanguage.trim().ifEmpty {
+      java.util.Locale.getDefault().language
+    }
+
   val showSourceDialog by viewModel.showSourceDialog.collectAsState()
   val availableSources by viewModel.availableSources.collectAsState()
   val media = playbackState.media ?: return
@@ -472,11 +487,26 @@ fun PlayerScreen(
       .setLoadControl(loadControl)
       .setVideoChangeFrameRateStrategy(frameRateStrategy)
       .build().apply {
+        // Punto 1 – Selezione automatica lingua preferita (allineamento NuvioTV):
+        // parametri di selezione predefiniti del player che privilegiano l'audio
+        // preferito (default italiano "it"/"ita") e impediscono la selezione
+        // automatica di sottotitoli con lingua indeterminata: i sottotitoli
+        // vengono scelti automaticamente solo se forzati o se la lingua audio
+        // preferita non è disponibile (logica fine in applySubtitlesConfiguration).
+        trackSelectionParameters = trackSelectionParameters.buildUpon()
+          .setPreferredAudioLanguages(*preferredAudioLangs.toTypedArray())
+          .setSelectUndeterminedTextLanguage(false)
+          .build()
+        Log.i(
+          "PlayerScreen",
+          "TrackSelectionParameters predefiniti: audioPreferred=${preferredAudioLangs.ifEmpty { listOf("nessuna") }}, " +
+            "selectUndeterminedTextLanguage=false"
+        )
         if (videoUrl != null) {
           Log.i("PlayerScreen", "Avvio riproduzione NuvioEngine: url=$videoUrl")
           stop()
           clearMediaItems()
-          val exoMediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles)
+          val exoMediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles, defaultSubtitleSelectionLanguage)
           setMediaItem(exoMediaItem)
           prepare()
           if (playbackState.currentPositionMs > 0) {
@@ -995,6 +1025,7 @@ fun PlayerScreen(
       Log.i("PlayerScreen", "Sottotitoli Forced OFF: fullSubtitlesEnabled=$fullSubtitlesEnabled")
       val builder = trackSelector.buildUponParameters()
         .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+        .setSelectUndeterminedTextLanguage(false)
       if (fullSubtitlesEnabled) {
         builder
           .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
@@ -1075,7 +1106,7 @@ fun PlayerScreen(
       exoPlayer.stop()
       exoPlayer.clearMediaItems()
 
-      val item = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, stremioSubtitles)
+      val item = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, stremioSubtitles, defaultSubtitleSelectionLanguage)
       exoPlayer.setMediaItem(item)
       exoPlayer.prepare()
       if (targetPos > 0) {
@@ -1316,7 +1347,7 @@ fun PlayerScreen(
             Log.w("THE_PITT_PLAYER", "Errore traccia sottotitoli (${failedSubtitle?.url ?: error.errorCodeName}): ripresa riproduzione senza la traccia problematica (maxVideoSize invariato).")
             val currentPos = exoPlayer.currentPosition
             val wasPlaying = exoPlayer.playWhenReady
-            val newItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl ?: "", remaining)
+            val newItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl ?: "", remaining, defaultSubtitleSelectionLanguage)
             exoPlayer.setMediaItem(newItem)
             if (currentPos > 0) exoPlayer.seekTo(currentPos)
             exoPlayer.prepare()
@@ -1764,7 +1795,7 @@ fun PlayerScreen(
                   playbackErrorMessage = null
                   isBuffering = true
                   exoPlayer.setMediaItem(
-                    PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles)
+                    PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles, defaultSubtitleSelectionLanguage)
                   )
                   exoPlayer.prepare()
                   exoPlayer.playWhenReady = true
@@ -2539,6 +2570,17 @@ fun TrackSelectionDialog(
   headerSwitchChecked: Boolean = false,
   onHeaderSwitchToggle: ((Boolean) -> Unit)? = null
 ) {
+  // Focus iniziale sul primo elemento focalizzabile: senza questa richiesta il
+  // telecomando (D-Pad) non ha alcun elemento focale all'apertura del dialog.
+  val initialFocusRequester = remember { FocusRequester() }
+  LaunchedEffect(Unit) {
+    try {
+      initialFocusRequester.requestFocus()
+    } catch (_: Exception) {
+      // Layout non ancora attivo: il focus resterà gestito dalla navigazione standard.
+    }
+  }
+
   Dialog(onDismissRequest = onDismiss) {
     Column(
       modifier = Modifier
@@ -2573,7 +2615,9 @@ fun TrackSelectionDialog(
         TvFocusableBox(
           shape = RoundedCornerShape(12.dp),
           onClick = { onHeaderSwitchToggle(!headerSwitchChecked) },
-          modifier = Modifier.fillMaxWidth()
+          modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(initialFocusRequester)
         ) { isFocused ->
           Row(
             modifier = Modifier
@@ -2629,13 +2673,29 @@ fun TrackSelectionDialog(
         Spacer(modifier = Modifier.height(16.dp))
       }
 
-      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      // Colonna scrollabile: con molte tracce (es. Stremio + OpenSubtitles) le
+      // opzioni devono restare raggiungibili col D-Pad anche fuori viewport.
+      Column(
+        modifier = Modifier
+          .heightIn(max = 360.dp)
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
         options.forEachIndexed { index, option ->
           val isSelected = index == selectedIndex
           TvFocusableBox(
             shape = RoundedCornerShape(50),
             onClick = { onSelect(index) },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+              .fillMaxWidth()
+              .then(
+                // Senza header switch il primo elemento della lista riceve il focus iniziale.
+                if (index == 0 && headerSwitchLabel == null) {
+                  Modifier.focusRequester(initialFocusRequester)
+                } else {
+                  Modifier
+                }
+              )
           ) { isFocused ->
             Row(
               modifier = Modifier
