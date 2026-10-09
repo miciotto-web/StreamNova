@@ -1454,6 +1454,13 @@ fun SettingsScreen(
             onClick = { showAudioLanguageDialog = true }
           )
           SettingsRow(
+            icon = Icons.Default.Language,
+            title = stringResource(R.string.settings_prioritize_italian_audio),
+            value = if (playbackSettings.prioritizeItalianAudio) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+            valueColor = if (playbackSettings.prioritizeItalianAudio) NovaGreen else NovaTextMuted,
+            onClick = { viewModel?.setPrioritizeItalianAudio(!playbackSettings.prioritizeItalianAudio) }
+          )
+          SettingsRow(
             icon = Icons.Default.PlayArrow,
             title = stringResource(R.string.settings_autoplay_next_episode),
             value = if (playbackSettings.autoPlayNextEpisode) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),

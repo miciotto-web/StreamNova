@@ -1,5 +1,7 @@
 package com.example.data.streaming
 
+import com.example.data.prefs.PlaybackSettings
+import com.example.data.prefs.PreferredResolution
 import com.example.domain.model.Subtitle
 
 /**
@@ -187,26 +189,71 @@ sealed interface StreamResult {
  *  1. risultati **cached** prima di quelli non cached; lo stato **sconosciuto**
  *     non viene mai trattato come cached (stessa fascia dei non cached, senza
  *     penalizzazione basata su un dato mancante);
- *  2. risoluzione più alta prima (2160p/4K → 1080p → 720p → 480p → Auto);
- *  3. a parità di risoluzione: qualità video e completezza dei metadati
+ *  2. (prioritizeItalianAudio == true) sorgenti in **italiano** prima
+ *     di quelle in altre lingue, a parità di stato di cache;
+ *  3. risoluzione più alta prima (2160p/4K → 1080p → 720p → 480p → Auto);
+ *     se preferredResolution == "1080p", 1080p ha priorità su 4K;
+ *  4. a parità di risoluzione: qualità video e completezza dei metadati
  *     (codec HEVC/AV1 > H264, indicatori HDR, numero di campi valorizzati);
- *  4. a parità dei criteri precedenti: dimensione file maggiore prima;
- *  5. criterio stabile finale (nome file, server, infoHash) per un ordine
+ *  5. a parità dei criteri precedenti: dimensione file maggiore prima;
+ *  6. criterio stabile finale (nome file, server, infoHash) per un ordine
  *     riproducibile.
  */
 object TorBoxSourceOrdering {
 
-  fun sort(sources: List<StreamSource>): List<StreamSource> = sources.sortedWith(
-    compareBy<StreamSource> { cacheTier(it) }
-      .thenByDescending { resolutionHeight(it) }
-      .thenByDescending { videoQualityScore(it) }
-      .thenByDescending { sizeBytesOf(it) }
-      .thenBy { stableKey(it) }
-  )
+  fun sort(sources: List<StreamSource>, settings: PlaybackSettings? = null): List<StreamSource> {
+    val prioritizeItalian = settings?.prioritizeItalianAudio ?: true
+    val preferredRes = settings?.preferredResolution ?: PreferredResolution.AUTO
+
+    return sources.sortedWith(
+      compareBy<StreamSource> { cacheTier(it) }
+        .thenByDescending { if (prioritizeItalian) italianPriority(it) else 0 }
+        .thenByDescending { resolutionScore(it, preferredRes) }
+        .thenByDescending { videoQualityScore(it) }
+        .thenByDescending { sizeBytesOf(it) }
+        .thenBy { stableKey(it) }
+    )
+  }
 
   /** 0 = cached, 1 = non cached o stato sconosciuto (mai classificato cached). */
   internal fun cacheTier(source: StreamSource): Int =
     if (source.cacheState == CacheState.Cached) 0 else 1
+
+  /** Priorità per sorgente italiana: 1 = ITA, 0 = altre lingue. */
+  internal fun italianPriority(source: StreamSource): Int =
+    if (source.isItalian) 1 else 0
+
+  /** Score risoluzione basato sulle preferenze utente. */
+  internal fun resolutionScore(source: StreamSource, preferredRes: PreferredResolution): Int {
+    val height = resolutionHeight(source)
+    return when (preferredRes) {
+      PreferredResolution.FULL_HD_1080P -> when {
+        height == 1080 -> 100
+        height == 720 -> 80
+        height == 2160 -> 60
+        else -> 40
+      }
+      PreferredResolution.HD_720P -> when {
+        height == 720 -> 100
+        height == 1080 -> 80
+        height == 2160 -> 60
+        else -> 40
+      }
+      PreferredResolution.UHD_4K -> when {
+        height == 2160 -> 100
+        height == 1080 -> 80
+        height == 720 -> 60
+        else -> 40
+      }
+      PreferredResolution.AUTO -> when {
+        height == 2160 -> 100
+        height == 1080 -> 80
+        height == 720 -> 60
+        height == 480 -> 40
+        else -> 0
+      }
+    }
+  }
 
   /** Altezza effettiva stimata dalla risoluzione dichiarata (0 = ignota). */
   internal fun resolutionHeight(source: StreamSource): Int {

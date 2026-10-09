@@ -1,5 +1,7 @@
 package com.example.data.streaming
 
+import com.example.data.prefs.PlaybackSettings
+import com.example.data.prefs.PreferredResolution
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -20,6 +22,7 @@ class TorBoxSourceOrderingTest {
     details: String? = null,
     declaredQuality: String = quality,
     infoHash: String? = null,
+    isItalian: Boolean = false,
   ) = StreamSource(
     streamUrl = null,
     quality = quality,
@@ -31,6 +34,7 @@ class TorBoxSourceOrderingTest {
     releaseType = releaseType,
     cacheState = cache,
     infoHash = infoHash,
+    isItalian = isItalian,
   )
 
   @Test
@@ -165,5 +169,94 @@ class TorBoxSourceOrderingTest {
 
     val noAudio = source(serverName = "plain", releaseTitle = "Movie.1080p.mkv")
     assertEquals(emptyList<String>(), noAudio.detectedAudioLanguages)
+  }
+
+  @Test
+  fun italianAudioPrefersItalianStreamsWhenEnabled() {
+    val italian1080 = source(
+      serverName = "ita-1080",
+      quality = "1080p",
+      isItalian = true
+    )
+    val english1080 = source(
+      serverName = "eng-1080",
+      quality = "1080p",
+      isItalian = false
+    )
+    val settings = PlaybackSettings(prioritizeItalianAudio = true)
+
+    val ordered = TorBoxSourceOrdering.sort(listOf(english1080, italian1080), settings)
+
+    assertEquals("ita-1080", ordered[0].serverName)
+    assertEquals("eng-1080", ordered[1].serverName)
+  }
+
+  @Test
+  fun italianPriorityDoesNotOverrideCache() {
+    val englishCached1080 = source(
+      serverName = "eng-cached",
+      quality = "1080p",
+      cache = CacheState.Cached,
+      isItalian = false
+    )
+    val italianNotCached1080 = source(
+      serverName = "ita-uncached",
+      quality = "1080p",
+      cache = CacheState.Unknown,
+      isItalian = true
+    )
+    val settings = PlaybackSettings(prioritizeItalianAudio = true)
+
+    val ordered = TorBoxSourceOrdering.sort(listOf(italianNotCached1080, englishCached1080), settings)
+
+    assertEquals("eng-cached", ordered[0].serverName)
+    assertEquals("ita-uncached", ordered[1].serverName)
+  }
+
+  @Test
+  fun resolution1080pHasPriorityOver4KWhenPreferred() {
+    val s4k = source("s4k", quality = "4K")
+    val s1080 = source("s1080", quality = "1080p")
+    val settings = PlaybackSettings(preferredResolution = PreferredResolution.FULL_HD_1080P)
+
+    val ordered = TorBoxSourceOrdering.sort(listOf(s4k, s1080), settings)
+
+    assertEquals("s1080", ordered[0].serverName)
+    assertEquals("s4k", ordered[1].serverName)
+  }
+
+  @Test
+  fun resolution4KHasPriorityWhenPreferred() {
+    val s4k = source("s4k", quality = "4K")
+    val s1080 = source("s1080", quality = "1080p")
+    val settings = PlaybackSettings(preferredResolution = PreferredResolution.UHD_4K)
+
+    val ordered = TorBoxSourceOrdering.sort(listOf(s1080, s4k), settings)
+
+    assertEquals("s4k", ordered[0].serverName)
+    assertEquals("s1080", ordered[1].serverName)
+  }
+  @Test
+  fun resolution720pHasPriorityOver1080pWhenPreferred() {
+    val s1080 = source("s1080", quality = "1080p")
+    val s720 = source("s720", quality = "720p")
+    val settings = PlaybackSettings(preferredResolution = PreferredResolution.HD_720P)
+
+    val ordered = TorBoxSourceOrdering.sort(listOf(s1080, s720), settings)
+
+    assertEquals("s720", ordered[0].serverName)
+    assertEquals("s1080", ordered[1].serverName)
+  }
+
+  @Test
+  fun defaultResolutionOrderMaintainsClassicPriority() {
+    val s4k = source("s4k", quality = "4K")
+    val s1080 = source("s1080", quality = "1080p")
+    val s720 = source("s720", quality = "720p")
+    val settings = PlaybackSettings(preferredResolution = PreferredResolution.AUTO)
+
+    val ordered = TorBoxSourceOrdering.sort(listOf(s720, s1080, s4k), settings)
+
+    assertEquals(listOf("s4k", "s1080", "s720"), ordered.map { it.serverName })
   }
 }
