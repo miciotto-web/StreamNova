@@ -1,6 +1,7 @@
 package com.example.data.streaming
 
 import android.util.Log
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.provider.AnimeStreamProvider
 import com.example.data.stremio.StremioAddonRepository
@@ -134,8 +135,13 @@ class StreamManager(
     // Merge comune a TUTTE le sorgenti (addon Stremio, TorBox, provider HTTP):
     // deduplica per URL (provider HTTP) o per infoHash+fileIdx (TorBox torrent).
     suspend fun mergeSources(origin: String, sources: List<StreamSource>) {
-      if (sources.isEmpty()) return
+      if (sources.isEmpty()) {
+        Log.i(DIAG_TAG, "DIAG-C origin=$origin incoming=0 (nessuna sorgente da unire)")
+        return
+      }
       Log.i(TAG, "$origin -> ${sources.size} sorgente/i trovate")
+      var added = 0
+      var dropped = 0
       mutex.withLock {
         sources.forEach { s ->
           val isTorBoxSource = s.infoHash != null
@@ -149,7 +155,17 @@ class StreamManager(
             otherKey == dedupKey
           }) {
             collected.add(s)
+            added++
+          } else {
+            dropped++
           }
+        }
+        // DIAG TEMPORANEO (C): deduplicazione delle sorgenti dirette addon (infoHash == null).
+        if (origin == "StremioAddons") {
+          Log.i(
+            DIAG_TAG,
+            "DIAG-C origin=$origin incoming=${sources.size} added=$added dropped_dup=$dropped collected=${collected.size}"
+          )
         }
         collected.sortWith(
           compareByDescending<StreamSource> { qualityScore(it) }
@@ -320,6 +336,14 @@ class StreamManager(
         logAndSendSelected(collected.toList())
       }
     }
+    // DIAG TEMPORANEO (E): conteggi aggregati finali. "stream-name:" e' il testo `name`
+    // della singola sorgente (payload addon), NON l'addon interrogato; "serverName:" per le
+    // sorgenti dirette e' il displayTitle dell'addon interrogato. Nessuna attribuzione dal titolo.
+    val diagFinalCounts = collected.groupingBy { diagFinalLabel(it) }.eachCount()
+    Log.i(
+      DIAG_TAG,
+      "DIAG-E resolveFlow COMPLETE searchId=$flowId total=${collected.size} byLabel=$diagFinalCounts"
+    )
   }
 
   /**
@@ -336,19 +360,48 @@ class StreamManager(
     episode: Int?
   ): List<StreamSource> {
     val candidates = addonRepository.fetchStreams(tmdbId, isTv, season, episode)
-    if (candidates.isEmpty()) return emptyList()
-    return candidates.mapNotNull { candidate ->
+    if (candidates.isEmpty()) {
+      Log.i(DIAG_TAG, "DIAG-C origin=StremioAddons result=EMPTY candidates=0")
+      return emptyList()
+    }
+    val directSources = candidates.mapNotNull { candidate ->
       val url = candidate.item.url?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
       val quality = TorBoxStreamProvider.parseQualityLabel(candidate.item.label)
       StreamSource(
         streamUrl = url,
         quality = quality,
         serverName = candidate.addonName,
-        headers = emptyMap(),
+        // Gli header richiesti dallo stream (behaviorHints.proxyHeaders.request)
+        // devono arrivare al player per evitare 403 su stream protetti.
+        headers = candidate.item.proxyHeaders,
         declaredQuality = quality
       )
     }
+    // DIAG TEMPORANEO (C): URL diretti validi per addon INTERROGATO, prima della dedup di mergeSources.
+    candidates.groupBy { it.baseUrl }.forEach { (baseUrl, items) ->
+      val validDirect = items.count { it.item.url?.isNotBlank() == true }
+      Log.i(
+        DIAG_TAG,
+        "DIAG-C addon=${diagHostLabel(baseUrl)} candidates=${items.size} direct_urls=$validDirect"
+      )
+    }
+    Log.i(
+      DIAG_TAG,
+      "DIAG-C origin=StremioAddons total_candidates=${candidates.size} direct_sources=${directSources.size}"
+    )
+    return directSources
   }
+
+  /** DIAG TEMPORANEO: etichetta finale che distingue il payload sorgente dall'addon interrogato. */
+  private fun diagFinalLabel(source: StreamSource): String {
+    val streamName = source.addonName?.takeIf { it.isNotBlank() }
+    if (streamName != null) return "stream-name:$streamName"
+    return "serverName:${source.serverName.substringBefore(" 🧲").trim()}"
+  }
+
+  /** DIAG TEMPORANEO: solo hostname, mai path/query/credenziali. */
+  private fun diagHostLabel(baseUrl: String): String =
+    baseUrl.trimEnd('/').toHttpUrlOrNull()?.host ?: "unknown-host"
 
   /**
    * Risolve le sorgenti disponibili restituendo il primo risultato non vuoto disponibile (Fast-Start).
@@ -414,6 +467,8 @@ class StreamManager(
   companion object {
     private const val TAG = "StreamManager"
     private const val HTTP_TRACE = "HTTP_TRACE"
+    // DIAG TEMPORANEO (solo logging).
+    private const val DIAG_TAG = "COMET_DIAG"
     var searchIdCounter = 0
     const val DEFAULT_TIMEOUT_MS = 15_000L
     const val FAST_START_FALLBACK_DELAY_MS = 1200L

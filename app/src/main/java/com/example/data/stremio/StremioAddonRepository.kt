@@ -109,10 +109,14 @@ data class StremioStreamCandidate(
 object StremioAddonRepository {
 
   private const val TAG = "StremioAddonRepo"
+  // DIAG TEMPORANEO (solo logging): tag dedicato per filtrare i conteggi diagnostici.
+  private const val DIAG_TAG = "COMET_DIAG"
   private const val CACHE_TTL_MS = 60_000L
   private const val CONNECT_TIMEOUT_S = 10L
   private const val READ_TIMEOUT_S = 15L
   private const val SUBTITLES_TIMEOUT_MS = 15_000L
+  /** Suffisso terminale dell'endpoint manifest, rimosso in [normalizeUrl]. */
+  private const val MANIFEST_SUFFIX = "/manifest.json"
 
   private val moshi: Moshi = Moshi.Builder()
     .add(KotlinJsonAdapterFactory())
@@ -170,11 +174,20 @@ object StremioAddonRepository {
   // ── URL ────────────────────────────────────────────────────────────────
 
   /**
-   * Normalizza l'URL di un addon:
-   *  - `stremio://` → `https://`
-   *  - aggiunge lo schema mancante
-   *  - rimuove trailing slash e il suffisso `/manifest.json` (con eventuale
-   *    segmento di percorso prima di esso, es. `/50540a7325788/manifest.json`)
+   * Normalizza l'URL di un addon **preservando integralmente il percorso di
+   * configurazione** (token Debrid, opzioni di risoluzione, sorting) che negli
+   * addon reali (Torrentio/Comet/MediaFusion/ElfHosted) precede `/manifest.json`.
+   *
+   * Regole:
+   *  - `stremio://` → `https://`; aggiunge lo schema se mancante;
+   *  - rimuove SOLO il suffisso terminale `/manifest.json` (case-insensitive) e
+   *    gli slash finali del path, **senza toccare gli altri segmenti**;
+   *  - preserva la query string eventualmente presente.
+   *
+   * Esempi:
+   *  - `https://torrentio.strem.fun/realdebrid=KEY/manifest.json` → `https://torrentio.strem.fun/realdebrid=KEY`
+   *  - `https://addon.example.com/50540a7325788/manifest.json`       → `https://addon.example.com/50540a7325788`
+   *  - `https://host/conf/manifest.json?x=y`                          → `https://host/conf?x=y`
    *
    * @throws IllegalArgumentException se l'URL non è valido.
    */
@@ -189,16 +202,26 @@ object StremioAddonRepository {
       url = "https://$url"
     }
 
-    val manifestIdx = url.indexOf("/manifest.json")
-    if (manifestIdx > 0) {
-      url = url.substring(0, manifestIdx)
-    }
-    url = url.trimEnd('/')
-    if (url.isBlank()) throw IllegalArgumentException("URL non valido: $rawUrl")
+    // Separa path e query: il suffisso va rimosso solo dal path, la query di
+    // configurazione va ricomposta intatta.
+    val queryStart = url.indexOf('?')
+    val path = if (queryStart >= 0) url.substring(0, queryStart) else url
+    val query = if (queryStart >= 0) url.substring(queryStart) else ""
 
-    val httpUrl = url.toHttpUrlOrNull()
+    val cleanPath = (if (path.endsWith(MANIFEST_SUFFIX, ignoreCase = true)) {
+      path.dropLast(MANIFEST_SUFFIX.length)
+    } else {
+      path
+    }).trimEnd('/')
+
+    val normalized = cleanPath + query
+    if (normalized.isBlank()) throw IllegalArgumentException("URL non valido: $rawUrl")
+
+    val httpUrl = normalized.toHttpUrlOrNull()
       ?: throw IllegalArgumentException("URL non valido: $rawUrl")
-    return httpUrl.toString().trimEnd('/')
+    val result = httpUrl.toString()
+    // Nessuno slash finale sul path (una query presente resta invariata).
+    return if (query.isEmpty()) result.trimEnd('/') else result
   }
 
   // ── CRUD addon ─────────────────────────────────────────────────────────
@@ -272,6 +295,16 @@ object StremioAddonRepository {
     emptyList()
   }
 
+  /**
+   * DIAG TEMPORANEO: etichetta dell'addon INTERROGATO per i log.
+   * Usa solo displayTitle + manifest.id + hostname: mai path/query/credenziali.
+   */
+  private fun diagAddonLabel(addon: InstalledAddon): String {
+    val host = addon.baseUrl.toHttpUrlOrNull()?.host ?: "unknown-host"
+    val id = addon.manifest.id?.takeIf { it.isNotBlank() } ?: "no-id"
+    return "${addon.manifest.displayTitle}[$id@$host]"
+  }
+
   // ── Manifest ───────────────────────────────────────────────────────────
 
   /** Scarica e valida `$baseUrl/manifest.json`. */
@@ -325,16 +358,20 @@ object StremioAddonRepository {
       active.map { addon ->
         async {
           val id = stremioIdFor(addon, tmdbId, imdbId)
-          if (id == null) {
+          if (id == null || !supportsStreamId(addon, id)) {
             Log.d(
               TAG,
               "Addon ${addon.manifest.displayTitle}: nessun id compatibile (prefix=${addon.manifest.idPrefixesForResource(RESOURCE_STREAM)})"
+            )
+            Log.i(
+              DIAG_TAG,
+              "DIAG-A addon=${diagAddonLabel(addon)} result=SKIP_NO_ID http=NONE streams=0 infoHash=0 url=0 both=0 neither=0"
             )
             return@async emptyList()
           }
           val path = buildStreamPath(type, id, if (isTv) season else null, if (isTv) episode else null)
           try {
-            withTimeout(10_000L) {
+            val mapped = withTimeout(10_000L) {
               fetchStreamItems(addon, path).map { item ->
                 StremioStreamCandidate(
                   addonName = addon.manifest.displayTitle,
@@ -343,8 +380,25 @@ object StremioAddonRepository {
                 )
               }
             }
+            // DIAG TEMPORANEO (A): conteggi per addon DOPO il parsing, prima della divisione url/infoHash.
+            val withHash = mapped.count { it.item.infoHash?.isNotBlank() == true }
+            val withUrl = mapped.count { it.item.url?.isNotBlank() == true }
+            val withBoth = mapped.count { it.item.infoHash?.isNotBlank() == true && it.item.url?.isNotBlank() == true }
+            val withNeither = mapped.size - mapped.count {
+              it.item.infoHash?.isNotBlank() == true || it.item.url?.isNotBlank() == true
+            }
+            Log.i(
+              DIAG_TAG,
+              "DIAG-A addon=${diagAddonLabel(addon)} result=OK streams=${mapped.size} infoHash=$withHash url=$withUrl both=$withBoth neither=$withNeither"
+            )
+            mapped
           } catch (e: Exception) {
-            Log.w(TAG, "Addon ${addon.manifest.displayTitle} -> ${e.message}")
+            // DIAG TEMPORANEO: non loggare e.message (puo' contenere l'URL completo dell'endpoint).
+            Log.w(TAG, "Addon ${addon.manifest.displayTitle} -> ${e.javaClass.simpleName}")
+            Log.w(
+              DIAG_TAG,
+              "DIAG-A addon=${diagAddonLabel(addon)} result=EXCEPTION streams=0 error=${e.javaClass.simpleName}"
+            )
             emptyList()
           }
         }
@@ -359,27 +413,53 @@ object StremioAddonRepository {
   }
 
   /**
-   * Sceglie l'id da usare a seconda dei `idPrefixes` dichiarati dall'addon:
-   *  - "tt" (o prefissi assenti) → id IMDb (`tt1234567`)
-   *  - "tmdb" → `tmdb:12345`
+   * true se [id] è gestibile dall'addon per la risorsa `stream` in base ai suoi
+   * `idPrefixes` (resource-level con fallback al manifest). Lista assente o vuota
+   * → qualsiasi id è accettato. Evita di inviare richieste che l'addon rifiuterebbe.
+   */
+  fun supportsStreamId(addon: InstalledAddon, id: String): Boolean {
+    if (id.isBlank()) return false
+    val prefixes = addon.manifest.idPrefixesForResource(RESOURCE_STREAM)
+      ?.filter { it.isNotBlank() }
+      .orEmpty()
+    if (prefixes.isEmpty()) return true
+    return prefixes.any { id.startsWith(it, ignoreCase = true) }
+  }
+
+  /**
+   * Sceglie l'id Stremio da usare a seconda dei `idPrefixes` dichiarati dall'addon:
+   *  - prefissi assenti/vuoti → l'addon accetta qualsiasi id: IMDb se disponibile,
+   *    altrimenti `tmdb:12345`;
+   *  - `tt` → id IMDb (`tt1234567`) se disponibile;
+   *  - `tmdb` → `tmdb:12345`.
+   *
+   * Non viene MAI inventato un id con un prefisso non dichiarato: in quel caso
+   * restituisce `null` e l'addon viene saltato da [fetchStreams].
    */
   private fun stremioIdFor(addon: InstalledAddon, tmdbId: Int, imdbId: String?): String? {
     val prefixes = addon.manifest.idPrefixesForResource(RESOURCE_STREAM)
       ?.filter { it.isNotBlank() }
       ?.map { it.lowercase() }
-    return when {
-      prefixes.isNullOrEmpty() -> imdbId ?: "tmdb:$tmdbId"
-      prefixes.contains("tt") -> imdbId ?: if (prefixes.contains("tmdb")) "tmdb:$tmdbId" else null
-      prefixes.contains("tmdb") -> "tmdb:$tmdbId"
-      else -> imdbId
+      .orEmpty()
+    if (prefixes.isEmpty()) return imdbId ?: "tmdb:$tmdbId"
+    if (prefixes.contains("tt")) {
+      imdbId?.takeIf { it.startsWith("tt", ignoreCase = true) }?.let { return it }
     }
+    if (prefixes.contains("tmdb")) return "tmdb:$tmdbId"
+    return null
   }
 
   private suspend fun fetchStreamItems(addon: InstalledAddon, path: String): List<StremioStreamItem> {
     val baseUrl = addon.baseUrl.trimEnd('/')
     val cacheKey = "$baseUrl|$path"
     streamCache[cacheKey]?.let { cached ->
-      if (System.currentTimeMillis() - cached.at < CACHE_TTL_MS) return cached.items
+      if (System.currentTimeMillis() - cached.at < CACHE_TTL_MS) {
+        Log.i(
+          DIAG_TAG,
+          "DIAG-A addon=${diagAddonLabel(addon)} result=CACHE_HIT http=NONE streams=${cached.items.size}"
+        )
+        return cached.items
+      }
       streamCache.remove(cacheKey)
     }
     val items = streamFetchFlight.run(cacheKey) {
@@ -387,11 +467,53 @@ object StremioAddonRepository {
         val url = "$baseUrl/stream/$path"
         val request = Request.Builder().url(url).header("Accept", "application/json").build()
         httpClient.newCall(request).execute().use { response ->
-          if (!response.isSuccessful) throw IOException("HTTP ${response.code} su $url")
-          val body = response.body?.string() ?: throw IOException("Risposta vuota da $url")
-          val parsed = streamResponseAdapter.fromJson(body)
-            ?: throw IOException("Risposta non valida da $url")
-          parsed.streams.orEmpty()
+          val httpStatus = response.code
+          if (!response.isSuccessful) {
+            Log.w(
+              DIAG_TAG,
+              "DIAG-A addon=${diagAddonLabel(addon)} result=HTTP_ERROR http=$httpStatus streams=0"
+            )
+            throw IOException("HTTP ${response.code} su $url")
+          }
+          val body = response.body?.string()
+          if (body == null) {
+            Log.w(
+              DIAG_TAG,
+              "DIAG-A addon=${diagAddonLabel(addon)} result=EMPTY_BODY http=$httpStatus streams=0"
+            )
+            throw IOException("Risposta vuota da $url")
+          }
+          val parsed = try {
+            streamResponseAdapter.fromJson(body)
+          } catch (e: Exception) {
+            // DIAG TEMPORANEO: solo classe + path del JSON (nessun corpo completo).
+            Log.w(
+              DIAG_TAG,
+              "DIAG-A addon=${diagAddonLabel(addon)} result=PARSE_FAILED http=$httpStatus " +
+                "error=${e.javaClass.simpleName}: ${e.message?.take(160)}"
+            )
+            throw e
+          }
+          if (parsed == null) {
+            Log.w(
+              DIAG_TAG,
+              "DIAG-A addon=${diagAddonLabel(addon)} result=PARSE_NULL http=$httpStatus streams=0"
+            )
+            throw IOException("Risposta non valida da $url")
+          }
+          val streams = parsed.streams.orEmpty()
+          val withHash = streams.count { it.infoHash?.isNotBlank() == true }
+          val withUrl = streams.count { it.url?.isNotBlank() == true }
+          val withBoth = streams.count { it.infoHash?.isNotBlank() == true && it.url?.isNotBlank() == true }
+          val withNeither = streams.size - streams.count {
+            it.infoHash?.isNotBlank() == true || it.url?.isNotBlank() == true
+          }
+          Log.i(
+            DIAG_TAG,
+            "DIAG-A addon=${diagAddonLabel(addon)} result=HTTP_OK http=$httpStatus streams=${streams.size} " +
+              "infoHash=$withHash url=$withUrl both=$withBoth neither=$withNeither"
+          )
+          streams
         }
       }
     }

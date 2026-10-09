@@ -173,6 +173,7 @@ data class StremioCatalogDefinition(
  * @param idPrefixes prefissi degli id supportati a livello globale ("tt" = IMDb, "tmdb"...).
  * @param catalogs cataloghi esposti dall'addon.
  * @param addonCatalogs cataloghi per la scoperta di addon (opzionali).
+ * @param behaviorHints hint opzionali (es. `configurable`/`configurationRequired`).
  */
 data class StremioManifest(
   val id: String? = null,
@@ -183,11 +184,16 @@ data class StremioManifest(
   val types: List<String>? = null,
   val idPrefixes: List<String>? = null,
   val catalogs: List<StremioCatalogDefinition>? = null,
-  val addonCatalogs: List<StremioCatalogDefinition>? = null
+  val addonCatalogs: List<StremioCatalogDefinition>? = null,
+  val behaviorHints: StremioManifestBehaviorHints? = null
 ) {
   /** Nome mostrato all'utente, con fallback su id. */
   val displayTitle: String
     get() = name?.takeIf { it.isNotBlank() } ?: id?.takeIf { it.isNotBlank() } ?: "Addon"
+
+  /** true se l'addon dichiara di essere configurabile via web (Stremio addon v3). */
+  val isConfigurable: Boolean
+    get() = behaviorHints?.configurable == true || behaviorHints?.configurationRequired == true
 
   /**
    * Converte la lista [resources] in una lista tipizzata di [StremioResource].
@@ -417,6 +423,10 @@ data class StremioStreamResponse(
  * `subtitles` e' dichiarato con elementi nullable perche' un addon può mandare un
  * `null` nell'array: in quel caso l'elemento viene scartato da [subtitleList] senza
  * far fallire il parsing dell'intero stream.
+ *
+ * `behaviorHints` (in particolare `proxyHeaders.request`) contiene header HTTP
+ * opzionali (User-Agent/Referer) necessari a riprodurre stream protetti: vanno
+ * propagati al player per evitare errori `HTTP 403`.
  */
 data class StremioStreamItem(
   val name: String? = null,
@@ -424,6 +434,7 @@ data class StremioStreamItem(
   val url: String? = null,
   val infoHash: String? = null,
   @Json(name = "fileIdx") val fileIdx: Int? = null,
+  val behaviorHints: StremioStreamBehaviorHints? = null,
   val subtitles: List<StremioSubtitle?>? = null
 ) {
   /** Etichetta combinata usata per estrarre la qualità e mostrare l'origine. */
@@ -441,7 +452,59 @@ data class StremioStreamItem(
 
   /** true se lo stream dichiara almeno un sottotitolo utilizzabile. */
   val hasSubtitles: Boolean get() = subtitleList.isNotEmpty()
+
+  /**
+   * Header HTTP richiesti dallo stream (`behaviorHints.proxyHeaders.request`),
+   * già pronti per essere passati al player. Mappa vuota se non dichiarati.
+   */
+  val proxyHeaders: Map<String, String>
+    get() = behaviorHints?.proxyHeaders?.request.orEmpty()
 }
+
+/**
+ * Hint opzionali di un addon (manifest `behaviorHints`, protocollo Stremio v3).
+ *
+ * @param configurable true se l'addon si configura tramite una pagina web.
+ * @param configurationRequired true se il manifest richiede una configurazione.
+ * @param newEpisodeNotifications true se l'addon invia notifiche di nuovi episodi.
+ */
+data class StremioManifestBehaviorHints(
+  val configurable: Boolean? = null,
+  @Json(name = "configurationRequired") val configurationRequired: Boolean? = null,
+  @Json(name = "newEpisodeNotifications") val newEpisodeNotifications: Boolean? = null
+)
+
+/**
+ * Hint opzionali di uno stream (`behaviorHints`, protocollo Stremio v3).
+ *
+ * @param notWebReady true se lo stream non è riproducibile via web.
+ * @param bingeGroup gruppo di binge-watching.
+ * @param countryWhitelist paesi in cui lo stream è disponibile.
+ * @param proxyHeaders header HTTP di richiesta/risposta richiesti dallo stream.
+ * @param videoHash hash del file video (utile per i sottotitoli).
+ * @param videoSize dimensione del file video in byte.
+ * @param filename nome del file video.
+ */
+data class StremioStreamBehaviorHints(
+  @Json(name = "notWebReady") val notWebReady: Boolean? = null,
+  @Json(name = "bingeGroup") val bingeGroup: String? = null,
+  @Json(name = "countryWhitelist") val countryWhitelist: List<String>? = null,
+  @Json(name = "proxyHeaders") val proxyHeaders: StremioProxyHeaders? = null,
+  @Json(name = "videoHash") val videoHash: String? = null,
+  @Json(name = "videoSize") val videoSize: Long? = null,
+  @Json(name = "filename") val filename: String? = null
+)
+
+/**
+ * Header proxy dichiarati da uno stream Stremio.
+ *
+ * @param request header da inviare nella richiesta HTTP del player (User-Agent, Referer...).
+ * @param response header attesi nella risposta (informativo).
+ */
+data class StremioProxyHeaders(
+  val request: Map<String, String>? = null,
+  val response: Map<String, String>? = null
+)
 
 /**
  * Risposta di `$baseUrl/subtitles/$type/$id.json`.
@@ -467,13 +530,13 @@ data class StremioSubtitle(
   val label: String? = null
 ) {
   val effectiveId: String?
-    get() = id?.takeIf { it.isNotBlank() }
+    get() = id?.trim()?.takeIf { it.isNotBlank() }
 
   val effectiveUrl: String?
-    get() = url?.takeIf { it.isNotBlank() }
+    get() = url?.trim()?.takeIf { it.isNotBlank() }
 
   val effectiveLang: String?
-    get() = lang?.takeIf { it.isNotBlank() }
+    get() = lang?.trim()?.takeIf { it.isNotBlank() }
 
   /** Etichetta mostrata: quella dell'addon quando presente, altrimenti la lingua. */
   val displayLabel: String
