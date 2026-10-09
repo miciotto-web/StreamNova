@@ -7,8 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -450,7 +450,10 @@ fun PosterMediaCard(
       .then(modifier)
       // La card in focus deve coprire le card vicine
       .zIndex(if (isFocused) 10f else 1f)
-      .scale(scale)
+      .graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+      }
       .onFocusChanged { isFocused = it.isFocused }
       // OK/Enter della tastiera D-pad -> onClick (consumato prima di clickable)
       .onKeyEvent { keyEvent ->

@@ -41,7 +41,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -49,6 +48,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.type
@@ -114,7 +114,12 @@ fun TvFocusableBox(
   Box(
     modifier = modifier
       .zIndex(if (isFocused) 10f else 1f)
-      .scale(scale)
+      // Punto 2 – Zoom via graphicsLayer: l'animazione della scala non ricomposizione
+      // la UI (la lambda legge lo stato direttamente in fase di draw/rendering).
+      .graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+      }
       .onFocusChanged {
         isFocused = it.isFocused
         if (!it.isFocused) {

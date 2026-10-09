@@ -135,11 +135,20 @@ fun TorBoxSourceSelectionScreen(
   }
 
   val listState = rememberLazyListState()
-  var focusedStreamIndex by remember { mutableIntStateOf(0) }
+
+  // Punto 1 – Sorgente "consigliata": la lista è già ordinata da TorBoxSourceOrdering
+  // (cached in cima, poi risoluzione decrescente), quindi la prima traccia cached è
+  // la migliore disponibile; se nessuna è cached si parte dalla prima in lista.
+  val recommendedIndex = remember(filtered) {
+    filtered.indexOfFirst { it.cacheState == CacheState.Cached }.takeIf { it >= 0 } ?: 0
+  }
+  var focusedStreamIndex by remember { mutableIntStateOf(recommendedIndex) }
 
   val allFilterRequester = remember { FocusRequester() }
   val providerRequesters = remember(providers) { providers.map { FocusRequester() } }
   val firstStreamRequester = remember { FocusRequester() }
+  // Requester dedicato alla sorgente consigliata: focus iniziale del dialog.
+  val recommendedStreamRequester = remember { FocusRequester() }
 
   // Requester del provider attivo: destinazione di UP dalla lista stream.
   val activeProviderRequester = remember(selectedProvider, providers, providerRequesters, allFilterRequester) {
@@ -151,12 +160,14 @@ fun TorBoxSourceSelectionScreen(
   // Back: chiude la schermata senza avviare la riproduzione.
   BackHandler { onDismiss() }
 
-  // Focus iniziale sul filtro "Tutto": la schermata e' navigabile subito col D-pad.
-  LaunchedEffect(Unit) {
+  // Punto 1 – Focus iniziale automatico sulla sorgente consigliata (prima cached,
+  // potenzialmente 4K/1080p in cima): l'utente TV preme solo OK/INVIO per avviare
+  // lo stream migliore senza scorrere l'elenco. Il retry copre il primo layout.
+  LaunchedEffect(ordered) {
     repeat(8) {
       withFrameNanos { }
       try {
-        allFilterRequester.requestFocus()
+        recommendedStreamRequester.requestFocus()
         return@LaunchedEffect
       } catch (_: IllegalStateException) {
         delay(40)
@@ -164,8 +175,10 @@ fun TorBoxSourceSelectionScreen(
     }
   }
 
-  // Cambio filtro: riparte dal primo stream della lista filtrata.
-  LaunchedEffect(selectedProvider) { focusedStreamIndex = 0 }
+  // Cambio filtro: riparte dalla sorgente consigliata della lista filtrata.
+  LaunchedEffect(selectedProvider) {
+    focusedStreamIndex = filtered.indexOfFirst { it.cacheState == CacheState.Cached }.takeIf { it >= 0 } ?: 0
+  }
 
   // La card focalizzata resta sempre visibile.
   LaunchedEffect(focusedStreamIndex, filtered) {
@@ -245,7 +258,9 @@ fun TorBoxSourceSelectionScreen(
             .weight(1f),
           state = listState,
           verticalArrangement = Arrangement.spacedBy(10.dp),
-          contentPadding = PaddingValues(bottom = 24.dp)
+          // Padding laterale/top: evita che lo zoom (1.03x) e il bordo luminoso della
+          // card focalizzata vengano tagliati (clip) ai bordi della lista.
+          contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 24.dp)
         ) {
           itemsIndexed(
             items = filtered,
@@ -257,6 +272,10 @@ fun TorBoxSourceSelectionScreen(
               onFocus = { if (it) focusedStreamIndex = index },
               modifier = Modifier
                 .then(if (index == 0) Modifier.focusRequester(firstStreamRequester) else Modifier)
+                .then(
+                  if (index == recommendedIndex) Modifier.focusRequester(recommendedStreamRequester)
+                  else Modifier
+                )
                 .focusProperties {
                   // UP dalla lista torna alla barra provider (confine superiore della lista).
                   if (index == 0) up = activeProviderRequester
@@ -593,7 +612,10 @@ private fun TorBoxSourceCard(
   val shape = RoundedCornerShape(14.dp)
   TvFocusableBox(
     shape = shape,
-    focusedScale = 1.02f,
+    // Punto 2 – Feedback focus 10-foot UI: zoom 1.03x fluido (animateFloatAsState
+    // interno a TvFocusableBox) + bordo luminescente e ombra già gestiti dal wrapper.
+    focusedScale = 1.03f,
+    borderWidth = 2.5.dp,
     onClick = onClick,
     modifier = modifier
       .fillMaxWidth()
@@ -605,7 +627,8 @@ private fun TorBoxSourceCard(
       modifier = Modifier
         .fillMaxWidth()
         .background(if (isFocused) NovaCardBgFocused else NovaSurfaceVariant, shape)
-        .border(1.dp, if (isFocused) NovaCyanBright else NovaDivider, shape)
+        // Bordo perimetrale interno più marcato quando focalizzato (inequivocabile da lontano).
+        .border(if (isFocused) 2.dp else 1.dp, if (isFocused) NovaCyanBright else NovaDivider, shape)
         .padding(horizontal = 16.dp, vertical = 14.dp),
       verticalAlignment = Alignment.CenterVertically
     ) {
