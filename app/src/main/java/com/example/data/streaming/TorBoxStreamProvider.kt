@@ -1,6 +1,7 @@
 package com.example.data.streaming
 
 import android.util.Log
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.StremioStreamCandidate
 import com.example.data.stremio.StremioSubtitleAdapter
@@ -69,8 +70,15 @@ open class TorBoxStreamProvider(
       Log.w(TAG, "Lettura candidati dagli addon fallita: ${e.message}")
     }
 
-    if (candidates.isEmpty()) return emptyList()
+    if (candidates.isEmpty()) {
+      Log.i(DIAG_TAG, "DIAG-B nessun candidato torrent (infoHash) da alcun addon")
+      return emptyList()
+    }
     Log.i(TAG, "${candidates.size} candidati torrent da risolvere con TorBox")
+    // DIAG TEMPORANEO (B): candidati torrent per addon INTERROGATO (hostname, mai URL completo).
+    candidates.groupBy { it.baseUrl }.forEach { (baseUrl, items) ->
+      Log.i(DIAG_TAG, "DIAG-B addon=${diagHostLabel(baseUrl)} candidati_torrent=${items.size}")
+    }
     return resolveItems(candidates)
   }
 
@@ -97,6 +105,18 @@ open class TorBoxStreamProvider(
     }
     val hashes = distinct.mapNotNull { it.item.infoHash?.trim()?.lowercase() }
 
+    // DIAG TEMPORANEO (B): prima/dopo la deduplicazione per addon INTERROGATO.
+    candidates.groupBy { it.baseUrl }.forEach { (baseUrl, items) ->
+      val kept = items.distinctBy {
+        "${it.item.infoHash?.trim()?.lowercase()}_${it.item.fileIdx ?: -1}"
+      }
+      Log.i(
+        DIAG_TAG,
+        "DIAG-B addon=${diagHostLabel(baseUrl)} before_dedup=${items.size} " +
+          "after_dedup=${kept.size} dropped_dup=${items.size - kept.size}"
+      )
+    }
+
     if (hashes.isEmpty()) return emptyList()
 
     // 2) UN solo checkcached per tutti gli hash della lista.
@@ -111,6 +131,20 @@ open class TorBoxStreamProvider(
       TAG,
       "TorBox: ${hashes.size} hash da addon, ${cachedHashes.size} trovati in cache istantanea"
     )
+    // DIAG TEMPORANEO (B): hash effettivamente inviati e trovati in cache, per addon INTERROGATO.
+    candidates.groupBy { it.baseUrl }.forEach { (baseUrl, items) ->
+      val addonHashes = items.mapNotNull { it.item.infoHash?.trim()?.lowercase() }.distinct()
+      val addonCached = addonHashes.count { cachedHashes.contains(it) }
+      Log.i(
+        DIAG_TAG,
+        "DIAG-B addon=${diagHostLabel(baseUrl)} hashes_sent=${addonHashes.size} cached=$addonCached"
+      )
+    }
+    Log.i(
+      DIAG_TAG,
+      "DIAG-B totals candidates=${candidates.size} after_dedup=${distinct.size} " +
+        "dropped_dup=${candidates.size - distinct.size} hashes_sent=${hashes.size} cached=${cachedHashes.size}"
+    )
     if (cachedHashes.isEmpty()) return emptyList()
 
     // 3) Costruisce StreamSource CON streamUrl = NULL per OGNI hash in cache.
@@ -122,36 +156,45 @@ open class TorBoxStreamProvider(
 
       val entry = entries[normalizedHash] ?: continue
       val quality = candidate.quality
-      val addonName = candidate.addonNameFromStream
+      // Identità STABILE del provider = titolo del manifest dell'addon Stremio
+      // (es. "Torrentio"). NON la prima riga di `stream.name`, che in alcune
+      // configurazioni include già qualità/HDR/DV (es. "Torrentio 4k DV | HDR")
+      // e faceva comparire un chip distinto per ogni variante.
+      val providerName = candidate.addonName
+      // Riga originale dello stream + metadati release conservati separatamente
+      // per la visualizzazione (non più usati come identità del provider).
+      val addonNameFromStream = candidate.addonNameFromStream
       val instantTag = candidate.instantTag
       val releaseTitle = candidate.releaseTitle
       val details = candidate.sizeAndPeers
       val codec = candidate.codec
       val releaseType = candidate.releaseType
-      val isItalian = StreamSource.isItalianSource(addonName)
+      // Rilevazione "italiano" invariata (resta sulla riga dello stream): così
+      // ordinamento e selezione non cambiano.
+      val isItalian = StreamSource.isItalianSource(addonNameFromStream)
       // Sottotitoli dichiarati dallo stream (`stream.subtitles[]`): gia' allineati alla
       // release riprodotta, quindi hanno precedenza. Il bridge non esegue alcuna
       // richiesta di rete, quindi qui non viene introdotto alcun lavoro di rete.
       val subtitles = StremioSubtitleAdapter.toSubtitles(
         StremioSubtitleBridge.fromStream(candidate.item),
-        addonName = addonName
+        addonName = providerName
       )
 
-      Log.i(TAG, "TorBox: in cache ($quality) da $addonName - $releaseTitle")
+      Log.i(TAG, "TorBox: in cache ($quality) da $providerName - $releaseTitle")
       Log.i(
         "[StreamNova-TorBox-Debug]",
-        "1. DATI STREAM DALL'ADDON -> stream name='${candidate.item.name}', title='${candidate.item.title}', infoHash=$normalizedHash, filename/displayName='$releaseTitle', quality/resolution='$quality', seeders/details='$details', addon='$addonName'"
+        "1. DATI STREAM DALL'ADDON -> stream name='${candidate.item.name}', title='${candidate.item.title}', infoHash=$normalizedHash, filename/displayName='$releaseTitle', quality/resolution='$quality', seeders/details='$details', addon='$providerName', stream-addon-line='$addonNameFromStream'"
       )
       sources.add(
         StreamSource(
           streamUrl = null,
           quality = quality,
-          serverName = "$addonName 🧲 $instantTag",
+          serverName = "$providerName 🧲 $instantTag",
           headers = emptyMap(),
           declaredQuality = quality,
           isProgressive = true,
           isItalian = isItalian,
-          addonName = addonName,
+          addonName = providerName,
           instantTag = instantTag,
           releaseTitle = releaseTitle,
           details = details,
@@ -174,6 +217,12 @@ open class TorBoxStreamProvider(
 
   companion object {
     private const val TAG = "TorBoxStreamProvider"
+    // DIAG TEMPORANEO (solo logging).
+    private const val DIAG_TAG = "COMET_DIAG"
+
+    /** DIAG TEMPORANEO: solo hostname dell'addon, mai path/query/credenziali. */
+    private fun diagHostLabel(baseUrl: String): String =
+      baseUrl.trimEnd('/').toHttpUrlOrNull()?.host ?: "unknown-host"
 
     /** Prefisso del badge sorgente mostrato anche nel player. */
     const val BADGE_PREFIX = "[TorBox Instant "

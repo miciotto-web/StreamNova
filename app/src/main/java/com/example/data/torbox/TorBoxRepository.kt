@@ -57,6 +57,15 @@ object TorBoxRepository : TorBoxGateway {
   private const val TAG = "TorBoxRepository"
   private const val LINK_TTL_MS = 15 * 60 * 1000L
 
+  /**
+   * Numero massimo di hash per singola richiesta `checkcached`.
+   *
+   * TorBox ne accetta circa 100: il limite e' legato alla lunghezza massima della query string
+   * (`?hash=h1,h2,...`). Superarlo fa fallire l'intera richiesta, azzerando i risultati di tutti
+   * gli addon contemporaneamente.
+   */
+  const val CHECKCACHED_MAX_HASHES = 100
+
   /** Esito della verifica dell'account (`GET /user/me`). */
   sealed interface AccountCheck {
     /** Nessuna chiave configurata o Instant Debrid disabilitato. */
@@ -149,31 +158,80 @@ object TorBoxRepository : TorBoxGateway {
 
   /**
    * `GET /torrents/checkcached?hash=h1,h2&format=object`.
-   * Restituisce per ogni hash lo stato di cache (mappa vuota su errore).
+   *
+   * Gli hash vengono **suddivisi in batch da massimo [CHECKCACHED_MAX_HASHES] elementi**: TorBox
+   * accetta circa 100 hash per richiesta (limite legato alla lunghezza massima della query string),
+   * quindi un'unica chiamata con tutti gli hash di piu' addon fallirebbe e azzererebbe TUTTI i
+   * risultati. Ogni batch produce una richiesta indipendente e i risultati vengono uniti.
+   *
+   * Un batch che fallisce **non** contribuisce hash "non in cache": gli hash di quel batch restano
+   * semplicemente assenti dalla mappa, cosi' [com.example.data.streaming.TorBoxStreamProvider] li
+   * ignora senza dichiararli falsamente non cached.
    */
   override suspend fun checkCached(hashes: List<String>): Map<String, TorBoxCacheEntry> {
     if (hashes.isEmpty() || apiKey() == null) return emptyMap()
     val normalized = hashes.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
     if (normalized.isEmpty()) return emptyMap()
     return withContext(Dispatchers.IO) {
-      try {
-        val response = TorBoxApiClient.api.checkCached(
-          hashes = normalized.joinToString(","),
-          format = "object"
+      val batches = normalized.distinct().chunked(CHECKCACHED_MAX_HASHES)
+      Log.i(
+        TAG,
+        "checkcached: ${normalized.size} hash richiesti, ${batches.size} batch da max $CHECKCACHED_MAX_HASHES"
+      )
+      if (batches.size > 1) {
+        Log.w(
+          TAG,
+          "checkcached: lista oltre il limite di $CHECKCACHED_MAX_HASHES hash per richiesta: " +
+            "i batch sono stati suddivisi per evitare il fallimento dell'intera verifica"
         )
-        if (response.success != true) {
-          Log.w(TAG, "checkcached errore: ${response.error}")
-          return@withContext emptyMap()
-        }
-        val parsed = parseCheckCached(response.data)
-        Log.d(TAG, "checkcached batch: ${normalized.size} hash inviati, ${parsed.count { it.value.cached }} in cache")
-        parsed
-      } catch (e: Exception) {
-        Log.w(TAG, "checkcached fallito: ${e.message}")
-        emptyMap()
       }
+
+      val merged = HashMap<String, TorBoxCacheEntry>(normalized.size)
+      var okBatches = 0
+      batches.forEachIndexed { index, batch ->
+        val batchNumber = index + 1
+        try {
+          val response = TorBoxApiClient.api.checkCached(
+            hashes = batch.joinToString(","),
+            format = "object"
+          )
+          if (response.success != true) {
+            // Batch non riuscito: nessun hash di questo batch viene dichiarato "non in cache".
+            Log.w(
+              TAG,
+              "checkcached batch $batchNumber/${batches.size} non riuscito (${batch.size} hash): ${response.error}"
+            )
+            return@forEachIndexed
+          }
+          val parsed = parseCheckCached(response.data)
+          merged.putAll(parsed)
+          okBatches++
+          Log.d(
+            TAG,
+            "checkcached batch $batchNumber/${batches.size}: ${batch.size} hash inviati, " +
+              "${parsed.count { it.value.cached }} in cache"
+          )
+        } catch (e: Exception) {
+          // Idem: il batch fallito non invalida gli altri e non marca hash come non cached.
+          Log.w(
+            TAG,
+            "checkcached batch $batchNumber/${batches.size} fallito (${batch.size} hash, " +
+              "http=${httpCodeOf(e)}): ${e.message}"
+          )
+        }
+      }
+      Log.i(
+        TAG,
+        "checkcached: ${okBatches}/${batches.size} batch riusciti, ${merged.size} hash analizzati, " +
+          "${merged.count { it.value.cached }} in cache"
+      )
+      merged
     }
   }
+
+  /** Codice HTTP estratto da un'eccezione Retrofit/OkHttp, quando disponibile. */
+  private fun httpCodeOf(e: Exception): String =
+    (e as? HttpException)?.code()?.toString() ?: "n/d"
 
   /** Normalizza un infoHash (trim + lowercase) come chiave di cache interna. */
   override fun normalizeHash(infoHash: String): String = infoHash.trim().lowercase()
@@ -193,13 +251,20 @@ object TorBoxRepository : TorBoxGateway {
         when (value) {
           null -> out[hash] = TorBoxCacheEntry(cached = false)
           is Map<*, *> -> {
-            val torrent = value["torrent"] as? Map<*, *>
-            val source = torrent ?: value
-            out[hash] = TorBoxCacheEntry(
-              cached = true,
-              torrentId = ((source["id"] as? Number) ?: (value["torrent_id"] as? Number))?.toLong(),
-              files = parseFiles(source["files"])
-            )
+            // Alcune risposte includono un flag esplicito `cached` dentro l'oggetto:
+            // va rispettato, così `{"hash": {"cached": false}}` NON diventa "in cache".
+            val explicitCached = coerceBoolean(value["cached"])
+            if (explicitCached == false) {
+              out[hash] = TorBoxCacheEntry(cached = false)
+            } else {
+              val torrent = value["torrent"] as? Map<*, *>
+              val source = torrent ?: value
+              out[hash] = TorBoxCacheEntry(
+                cached = true,
+                torrentId = ((source["id"] as? Number) ?: (value["torrent_id"] as? Number))?.toLong(),
+                files = parseFiles(source["files"])
+              )
+            }
           }
           is List<*> -> out[hash] = TorBoxCacheEntry(true, null, parseFiles(value))
           else -> out[hash] = TorBoxCacheEntry(cached = value == true)
@@ -217,6 +282,21 @@ object TorBoxRepository : TorBoxGateway {
       }
     }
     return out
+  }
+
+  /**
+   * Interpreta un flag booleano proveniente dal JSON (`true`/`false`, `"true"`/`"false"`,
+   * `0`/`1`). Restituisce `null` se il valore non è interpretabile come booleano.
+   */
+  private fun coerceBoolean(raw: Any?): Boolean? = when (raw) {
+    is Boolean -> raw
+    is String -> when (raw.trim().lowercase()) {
+      "true" -> true
+      "false" -> false
+      else -> null
+    }
+    is Number -> raw.toInt() != 0
+    else -> null
   }
 
   private fun parseFiles(data: Any?): List<TorBoxFile> {

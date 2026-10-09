@@ -105,9 +105,13 @@ object ProviderCatalogPlanner {
     var unmapped = 0
 
     val resolved = targets
-      // 1. Filtro di tipo PRIMA di qualsiasi lookup: la separazione film/serie è strutturale.
-      .filter { matchesRequestedType(it.type, mediaType) }
       .mapNotNull { target ->
+        // 1. La separazione film/serie resta strutturale: un catalogo di tipo diverso da
+        //    quello richiesto non entra mai nel piano, ma resta conteggiato tra i non mappati.
+        if (!matchesRequestedType(target.type, mediaType)) {
+          unmapped++
+          return@mapNotNull null
+        }
         val key = CatalogKey.of(target.addonId, target.type, target.catalogId)
         if (key == null) {
           unmapped++

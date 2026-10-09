@@ -70,6 +70,11 @@
     <string name="source_dialog_title">Sélectionner la source (%d)</string>
     <string name="source_dialog_hints">↑↓ naviguer  •  ENTRÉE choisir  •  🡄 🡆 filtrer</string>
     <string name="source_dialog_filter_all">Tout</string>
+    <string name="torbox_source_cached">En cache</string>
+    <string name="torbox_source_not_cached">Non en cache</string>
+    <string name="torbox_source_unknown">État inconnu</string>
+    <string name="torbox_source_audio">Audio</string>
+    <string name="torbox_source_subtitles">Sous-titres</string>
 
     <!-- Context Menu -->
     <string name="context_resume">Reprendre</string>
