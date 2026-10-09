@@ -53,17 +53,22 @@ data class StremioStreamCandidate(
   val sizeAndPeers: String
     get() = item.title?.lines()?.drop(1)?.joinToString(" " )?.trim() ?: ""
 
+  /**
+   * Qualità rilevata dallo stream.
+   *
+   *  1. Prima si cerca un token riconosciuto nel campo `name`. La convenzione
+   *     Stremio/Torrentio mette la qualità sulla 2ª riga (`Torrentio\n4K HDR`),
+   *     ma addon localizzati/custom (es. "Torrentio 🇮🇹") possono omettere la
+   *     seconda riga o usare stringhe non standard: per questo il campo viene
+   *     scansionato interamente.
+   *  2. Se `name` non dichiara nulla, si applica un regex di fallback sul nome
+   *     file (`title`), es. `Spider-Man...2160p...`.
+   *  3. Nessun match → "Auto" (nessun valore inventato).
+   */
   val quality: String
-    get() = item.name?.lines()?.getOrNull(1)?.let { line ->
-      val lower = line.lowercase()
-      when {
-        lower.contains("4k") || lower.contains("2160") -> "4K"
-        lower.contains("1080") -> "1080p"
-        lower.contains("720") -> "720p"
-        lower.contains("480") -> "480p"
-        else -> "Auto"
-      }
-    } ?: "Auto"
+    get() = resolutionFromName(item.name)
+      ?: resolutionFromText(item.title)
+      ?: "Auto"
 
   val codec: String?
     get() {
@@ -86,7 +91,42 @@ data class StremioStreamCandidate(
         text.contains("hdr") -> "HDR"
         else -> null
       }
-    }
+  }
+}
+
+/**
+ * Risoluzione riconosciuta nel campo `name` di uno stream (ricerca per
+ * sottostringa, così da coprire anche le varianti senza suffisso `p` come
+ * `2160` o stringhe non standard degli addon localizzati).
+ */
+private fun resolutionFromName(name: String?): String? {
+  val lower = name?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
+  return when {
+    lower.contains("4k") || lower.contains("2160") -> "4K"
+    lower.contains("1080") -> "1080p"
+    lower.contains("720") -> "720p"
+    lower.contains("480") -> "480p"
+    else -> null
+  }
+}
+
+/** Regex di fallback per la risoluzione nel nome file (`title`). */
+private val RESOLUTION_REGEX =
+  Regex("\\b(4k|2160p|1080p|720p|480p)\\b", RegexOption.IGNORE_CASE)
+
+/**
+ * Risoluzione riconosciuta nel testo libero tramite [RESOLUTION_REGEX], o null.
+ * Usata come fallback sul nome file quando il campo `name` non dichiara la qualità.
+ */
+private fun resolutionFromText(text: String?): String? {
+  val match = RESOLUTION_REGEX.find(text ?: return null) ?: return null
+  return when (match.value.lowercase()) {
+    "4k", "2160p" -> "4K"
+    "1080p" -> "1080p"
+    "720p" -> "720p"
+    "480p" -> "480p"
+    else -> null
+  }
 }
 
 /**
@@ -114,6 +154,12 @@ object StremioAddonRepository {
   private const val CACHE_TTL_MS = 60_000L
   private const val CONNECT_TIMEOUT_S = 10L
   private const val READ_TIMEOUT_S = 15L
+  /**
+   * Timeout complessivo del fetch stream. Gli addon che fanno scraping in tempo
+   * reale (es. Comet) possono richiedere 8-10 secondi: il valore non deve mai
+   * scendere sotto i 10s. Allineato al [READ_TIMEOUT_S] del client OkHttp.
+   */
+  private const val STREAM_FETCH_TIMEOUT_MS = 15_000L
   private const val SUBTITLES_TIMEOUT_MS = 15_000L
   /** Suffisso terminale dell'endpoint manifest, rimosso in [normalizeUrl]. */
   private const val MANIFEST_SUFFIX = "/manifest.json"
@@ -371,7 +417,7 @@ object StremioAddonRepository {
           }
           val path = buildStreamPath(type, id, if (isTv) season else null, if (isTv) episode else null)
           try {
-            val mapped = withTimeout(10_000L) {
+            val mapped = withTimeout(STREAM_FETCH_TIMEOUT_MS) {
               fetchStreamItems(addon, path).map { item ->
                 StremioStreamCandidate(
                   addonName = addon.manifest.displayTitle,

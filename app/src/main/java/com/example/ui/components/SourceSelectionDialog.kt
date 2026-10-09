@@ -637,15 +637,16 @@ private fun TorBoxSourceCard(
 
         val sizeLabel = formatSize(TorBoxSourceOrdering.sizeBytesOf(source).takeIf { it > 0L })
         val extraDetails = remainingDetails(source.details)
-        val addon = source.addonName?.takeIf { it.isNotBlank() }
-        if (sizeLabel != null || addon != null || extraDetails != null) {
+        // Il nome dell'addon NON ripete qui: è già mostrato dal badge provider
+        // sulla destra ([SourceProviderLogo] / [providerLabelOf]). La riga resta
+        // dedicata a dimensione e dettagli residui (peer, ecc.).
+        if (sizeLabel != null || extraDetails != null) {
           Spacer(modifier = Modifier.height(8.dp))
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
           ) {
             sizeLabel?.let { MetaPill(it) }
-            addon?.let { MetaText(it) }
             extraDetails?.let { MetaText(it) }
           }
         }
