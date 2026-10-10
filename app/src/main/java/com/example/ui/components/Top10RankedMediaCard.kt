@@ -57,6 +57,7 @@ import com.example.R
 import com.example.data.model.MediaItem
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyanBright
+import com.example.ui.theme.NovaTextMuted
 
 /**
  * Geometria della card Top 10.
@@ -80,8 +81,9 @@ private val Top10CardWidth = Top10RankAreaWidth + Top10RankGapWidth + Top10Poste
  * Il numero gigante è a sinistra e la locandina è allineata a destra.
  *
  * Il poster contiene SOLO l'artwork: anno, voto (stellina) e titolo sono stati
- * rimossi dagli overlay. Il titolo vive in una riga dedicata SOTTO la locandina
- * (`titleSmall`, max 2 righe con ellissi), così la locandina resta pulita.
+ * rimossi dagli overlay. Titolo e anno vivono in una colonna dedicata SOTTO la
+ * locandina (titolo `titleSmall` max 2 righe con ellissi; anno `labelSmall` attenuato),
+ * così la locandina resta pulita.
  *
  * Il numero di classifica è un elemento puramente grafico: non è focusable, non si
  * sposta e non viene scalato al focus, e resta fuori dall'area di focus del poster.
@@ -247,20 +249,34 @@ fun Top10RankedMediaCard(
 
     Spacer(modifier = Modifier.height(6.dp))
 
-    // 4. Titolo FUORI dal poster: riga dedicata sotto la locandina, allineata alla
-    //    colonna del poster. Nessuna stellina né anno: solo il testo, minimale.
+    // 4. Titolo + anno FUORI dal poster: colonna dedicata sotto la locandina,
+    //    allineata alla colonna del poster. Nessuna stellina: la locandina resta pulita.
     Row(modifier = Modifier.fillMaxWidth()) {
       Spacer(modifier = Modifier.width(Top10RankAreaWidth + Top10RankGapWidth))
-      Text(
-        text = media.title,
-        color = if (isFocused) NovaCyanBright else Color.White,
-        style = MaterialTheme.typography.titleSmall,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
+      Column(
         modifier = Modifier
           .weight(1f)
           .padding(end = 4.dp)
-      )
+      ) {
+        Text(
+          text = media.title,
+          color = if (isFocused) NovaCyanBright else Color.White,
+          style = MaterialTheme.typography.titleSmall,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+        // Anno di produzione/rilascio: riga secondaria discreta, gerarchia sotto il titolo.
+        if (media.year > 0) {
+          Spacer(modifier = Modifier.height(2.dp))
+          Text(
+            text = media.year.toString(),
+            color = NovaTextMuted,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+      }
     }
   }
 }
