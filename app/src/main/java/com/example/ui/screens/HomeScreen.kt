@@ -42,7 +42,6 @@ import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.HomeCatalogs
-import com.example.data.repository.MediaRepository
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import com.example.ui.components.ContinueWatchingCard
@@ -90,7 +89,7 @@ fun HomeScreen(
     }
     SidebarSection.FILM -> {
       val moviesItems = remember(homeCatalogs, allMedia) {
-        if (homeCatalogs.isMoviesFromStremio && homeCatalogs.allMovies.isNotEmpty()) {
+        if (homeCatalogs.allMovies.isNotEmpty()) {
           homeCatalogs.allMovies
         } else {
           allMedia.filter { it.type == MediaType.FILM }
@@ -106,7 +105,7 @@ fun HomeScreen(
     }
     SidebarSection.SERIE_TV -> {
       val seriesItems = remember(homeCatalogs, allMedia) {
-        if (homeCatalogs.isSeriesFromStremio && homeCatalogs.allSeries.isNotEmpty()) {
+        if (homeCatalogs.allSeries.isNotEmpty()) {
           homeCatalogs.allSeries
         } else {
           allMedia.filter { it.type == MediaType.SERIE_TV }
@@ -174,39 +173,18 @@ fun HomeMainBrowsingContent(
   val hasXperienceMovies = homeCatalogs?.hasXperienceMovies == true
   val hasXperienceSeries = homeCatalogs?.hasXperienceSeries == true
 
-  val top10Movies = remember(homeCatalogs, allMedia) {
-    if (hasXperienceMovies) emptyList()
-    else homeCatalogs?.top10Movies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTop10Movies()
-  }
-  val top10Series = remember(homeCatalogs, allMedia) {
-    if (hasXperienceSeries) emptyList()
-    else homeCatalogs?.top10Series?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTop10Series()
-  }
-  val trendingMovies = remember(homeCatalogs, allMedia) {
-    if (hasXperienceMovies) emptyList()
-    else homeCatalogs?.trendingMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTrendingMovies()
-  }
-  val trendingSeries = remember(homeCatalogs, allMedia) {
-    if (hasXperienceSeries) emptyList()
-    else homeCatalogs?.trendingSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTrendingSeries()
-  }
-  val forYouMovies = remember(homeCatalogs, allMedia) {
-    if (hasXperienceMovies) emptyList()
-    else homeCatalogs?.forYouMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getForYouMovies()
-  }
-  val forYouSeries = remember(homeCatalogs, allMedia) {
-    if (hasXperienceSeries) emptyList()
-    else homeCatalogs?.forYouSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getForYouSeries()
-  }
+  // Le righe della Home arrivano ESCLUSIVAMENTE dai cataloghi risolti (Cinemeta di
+  // default + addon utente). Nessun fallback ai feed nativi TMDB: se il catalogo di
+  // default non è disponibile la riga resta semplicemente vuota.
+  val top10Movies = remember(homeCatalogs) { if (hasXperienceMovies) emptyList() else homeCatalogs?.top10Movies ?: emptyList() }
+  val top10Series = remember(homeCatalogs) { if (hasXperienceSeries) emptyList() else homeCatalogs?.top10Series ?: emptyList() }
+  val trendingMovies = remember(homeCatalogs) { if (hasXperienceMovies) emptyList() else homeCatalogs?.trendingMovies ?: emptyList() }
+  val trendingSeries = remember(homeCatalogs) { if (hasXperienceSeries) emptyList() else homeCatalogs?.trendingSeries ?: emptyList() }
+  val forYouMovies = remember(homeCatalogs) { if (hasXperienceMovies) emptyList() else homeCatalogs?.forYouMovies ?: emptyList() }
+  val forYouSeries = remember(homeCatalogs) { if (hasXperienceSeries) emptyList() else homeCatalogs?.forYouSeries ?: emptyList() }
 
-  val popularMovies = remember(homeCatalogs, allMedia) {
-    if (hasXperienceMovies) emptyList()
-    else homeCatalogs?.popularMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getPopularMovies()
-  }
-  val popularSeries = remember(homeCatalogs, allMedia) {
-    if (hasXperienceSeries) emptyList()
-    else homeCatalogs?.popularSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getPopularSeries()
-  }
+  val popularMovies = remember(homeCatalogs) { if (hasXperienceMovies) emptyList() else homeCatalogs?.popularMovies ?: emptyList() }
+  val popularSeries = remember(homeCatalogs) { if (hasXperienceSeries) emptyList() else homeCatalogs?.popularSeries ?: emptyList() }
 
   // Hero Banner Dinamico: selezione di massimo 9 titoli alternati tra Film e Serie TV
   val dynamicHeroItems = remember(homeCatalogs, allMedia) {
@@ -315,8 +293,12 @@ fun HomeMainBrowsingContent(
             ContinueWatchingCard(
               media = item,
               onClick = {
-                Log.d("HomeScreen", "ContinueWatchingCard onClick called for ${item.title}")
-                onMediaClick(item)
+                // Il click semplice su "Continua a guardare" NON apre il Dettaglio:
+                // avvia direttamente il Player riprendendo dal punto salvato
+                // (l'episodio/stagione e la posizione sono ricavati dal MediaItem
+                // e dal progresso persistito in Room dentro openStreamForMedia).
+                Log.d("HomeScreen", "ContinueWatchingCard onClick (resume playback) called for ${item.title}")
+                onPlayClick(item)
               },
               onLongPress = {
                 Log.d("HomeScreen", "ContinueWatchingCard onLongPress called for ${item.title}")
