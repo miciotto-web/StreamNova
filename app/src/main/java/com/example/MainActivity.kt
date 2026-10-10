@@ -46,6 +46,7 @@ import com.example.data.model.MediaType
 import com.example.data.repository.MediaRepository
 import com.example.data.streaming.StreamResult
 import com.example.ui.components.ProviderConstants
+import com.example.ui.components.ModalOverlayState
 import com.example.ui.components.TvPinDialog
 import com.example.ui.components.SidebarNavigation
 import com.example.ui.components.TorBoxSourceSelectionScreen
@@ -254,7 +255,8 @@ fun StreamNovaApp(
             // modifier esterno scatta prima che moveFocus() ritorni), quindi la lettura
             // immediata dopo moveFocus() rispecchia sempre lo stato reale del focus.
             .onPreviewKeyEvent { keyEvent ->
-              if (!isSidebarExpanded &&
+              if (!ModalOverlayState.isAnyOpen &&
+                !isSidebarExpanded &&
                 keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
                 keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT
               ) {

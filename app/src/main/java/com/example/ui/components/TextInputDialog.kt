@@ -1,17 +1,22 @@
 package com.example.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -19,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,11 +32,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -46,8 +55,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import com.example.R
@@ -69,6 +76,7 @@ import com.example.ui.theme.NovaTextSecondary
  *   la tastiera software compare come overlay e si compila con il telecomando).
  * - SU/GIÙ dal campo spostano il focus sui pulsanti; INVIO conferma.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun TextInputDialog(
   title: String,
@@ -81,7 +89,21 @@ fun TextInputDialog(
   val resolvedConfirmLabel = confirmLabel ?: stringResource(R.string.action_save)
   var text by remember { mutableStateOf(initialText) }
   val fieldFocusRequester = remember { FocusRequester() }
+  val confirmFocusRequester = remember { FocusRequester() }
+  val cancelFocusRequester = remember { FocusRequester() }
   val focusManager = LocalFocusManager.current
+
+  // Segnala all'Activity che un modale in-window è aperto: mentre lo è, la gesture
+  // LEFT (che apre la sidebar) va disattivata per non far fuggire il focus.
+  DisposableEffect(Unit) {
+    ModalOverlayState.onShown()
+    onDispose { ModalOverlayState.onHidden() }
+  }
+
+  // Rete di sicurezza per BACK: se il tasto arriva come evento di sistema (e non come
+  // KeyEvent consumato dall'overlay), il dialog si chiude comunque in modo pulito.
+  // Mentre l'IME è aperto è il sistema a consumare il primo BACK (chiude la tastiera).
+  BackHandler { onDismiss() }
 
   // Focus immediato sul campo: apre la tastiera del telecomando/IME.
   LaunchedEffect(Unit) {
@@ -106,19 +128,35 @@ fun TextInputDialog(
     }
   }
 
-  Dialog(
-    onDismissRequest = onDismiss,
-    // BACK chiude il popup (dopo che l'IME ha consumato il primo BACK della tastiera);
-    // il tap fuori NON deve chiudere il dialog su TV.
-    properties = DialogProperties(
-      dismissOnBackPress = true,
-      dismissOnClickOutside = false
-    )
+  // OVERLAY IN-WINDOW (nessuna seconda Window di sistema): il dialog vive nella stessa
+  // finestra della MainActivity. Così, quando l'IME si chiude con BACK, Android TV non
+  // può riassegnare il focus a un'altra finestra e il D-pad resta confinato al popup.
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .background(Color.Black.copy(alpha = 0.75f))
+      // Lo scrim NON è un target di focus: serve solo a bloccare i tocchi sullo sfondo.
+      .focusProperties { canFocus = false }
+      .clickable(
+        interactionSource = remember { MutableInteractionSource() },
+        indication = null
+      ) { /* no-op: impedisce di raggiungere l'interfaccia sottostante */ }
+      // BACK chiude il popup (dopo che l'IME ha consumato il primo BACK della tastiera).
+      .onPreviewKeyEvent { event ->
+        if (event.type == KeyEventType.KeyUp && event.key == Key.Back) {
+          onDismiss()
+          true
+        } else {
+          false
+        }
+      },
+    contentAlignment = Alignment.Center
   ) {
     Column(
       modifier = Modifier
+        .widthIn(max = 500.dp)
         .fillMaxWidth()
-        .padding(horizontal = 8.dp)
+        .padding(horizontal = 24.dp)
         .background(NovaSurface, RoundedCornerShape(20.dp))
         .border(1.5.dp, NovaCyan, RoundedCornerShape(20.dp))
         .padding(24.dp)
@@ -143,6 +181,13 @@ fun TextInputDialog(
           tint = NovaTextSecondary,
           modifier = Modifier
             .size(22.dp)
+            // UP dal tasto chiudi non deve uscire dalla Card.
+            .focusProperties {
+              up = FocusRequester.Cancel
+              down = fieldFocusRequester
+              left = FocusRequester.Cancel
+              right = FocusRequester.Cancel
+            }
             .clickable { onDismiss() }
         )
       }
@@ -166,14 +211,27 @@ fun TextInputDialog(
         modifier = Modifier
           .fillMaxWidth()
           .focusRequester(fieldFocusRequester)
+          // LEFT/RIGHT non devono portare il focus fuori dalla Card.
+          .focusProperties {
+            left = FocusRequester.Cancel
+            right = FocusRequester.Cancel
+          }
           // SU/GIÙ escono dal campo verso i pulsanti (il cursore non si sposta).
           .onPreviewKeyEvent { event ->
             if (event.type == KeyEventType.KeyDown &&
               (event.key == Key.DirectionDown || event.key == Key.DirectionUp)
             ) {
-              focusManager.moveFocus(
+              val moved = focusManager.moveFocus(
                 if (event.key == Key.DirectionDown) FocusDirection.Down else FocusDirection.Up
               )
+              // Fallback: se la ricerca geometrica non trova nulla, scendi comunque
+              // sul pulsante di conferma (nessuna fuga verso lo sfondo).
+              if (!moved && event.key == Key.DirectionDown) {
+                try {
+                  confirmFocusRequester.requestFocus()
+                } catch (_: Exception) {
+                }
+              }
               true
             } else {
               false
@@ -217,6 +275,14 @@ fun TextInputDialog(
         verticalAlignment = Alignment.CenterVertically
       ) {
         TvFocusableBox(
+          modifier = Modifier
+            .focusRequester(cancelFocusRequester)
+            .focusProperties {
+              // Nessuna uscita dalla Card: DOWN e LEFT annullati, UP torna al campo.
+              down = FocusRequester.Cancel
+              left = FocusRequester.Cancel
+              up = fieldFocusRequester
+            },
           shape = RoundedCornerShape(50),
           focusedScale = 1.05f,
           onClick = onDismiss
@@ -235,6 +301,14 @@ fun TextInputDialog(
           )
         }
         TvFocusableBox(
+          modifier = Modifier
+            .focusRequester(confirmFocusRequester)
+            .focusProperties {
+              // Nessuna uscita dalla Card: DOWN e RIGHT annullati, UP torna al campo.
+              down = FocusRequester.Cancel
+              right = FocusRequester.Cancel
+              up = fieldFocusRequester
+            },
           shape = RoundedCornerShape(50),
           focusedScale = 1.05f,
           onClick = {
