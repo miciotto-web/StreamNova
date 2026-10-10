@@ -1,7 +1,10 @@
 package com.example.ui.components
 
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -25,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,11 +41,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -55,7 +61,6 @@ import com.example.data.model.MediaType
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaSurfaceVariant
-import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import kotlinx.coroutines.delay
@@ -82,15 +87,23 @@ fun HeroBanner(
 
   val currentMedia = safeItems.getOrElse(currentIndex) { safeItems.first() }
 
+  // Ombra leggera di supporto per il titolo: garantisce leggibilità del testo su artwork chiari.
+  val titleShadowStyle = TextStyle(
+    shadow = Shadow(color = Color.Black.copy(alpha = 0.6f), blurRadius = 8f)
+  )
+
   Box(
     modifier = modifier
       .fillMaxWidth()
       .height(350.dp)
   ) {
-    // Backdrop Image con transizione morbida tra i titoli TMDB
-    Crossfade(
+    // Backdrop Image con dissolvenza incrociata cinematografica tra i titoli (~350ms)
+    AnimatedContent(
       targetState = currentMedia,
-      animationSpec = tween(durationMillis = 800),
+      transitionSpec = {
+        fadeIn(animationSpec = tween(durationMillis = 350)) togetherWith
+          fadeOut(animationSpec = tween(durationMillis = 350))
+      },
       label = "HeroBackdropCrossfade"
     ) { media ->
       Box(modifier = Modifier.fillMaxSize()) {
@@ -98,7 +111,7 @@ fun HeroBanner(
           AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
               .data(media.backdropUrl)
-              .crossfade(true)
+              .crossfade(350)
               .build(),
             contentDescription = media.title,
             contentScale = ContentScale.Crop,
@@ -116,35 +129,36 @@ fun HeroBanner(
       }
     }
 
-    // Gradienti cinematografici di contrasto per leggibilità
+    // Vignette Gradient a doppio asse: profondità e leggibilità su qualsiasi artwork.
+    // Il colore di raccordo è lo sfondo della schermata, così l'Hero si fonde con la
+    // prima riga di poster senza stacco.
+    val vignetteColor = MaterialTheme.colorScheme.background
     Box(
       modifier = Modifier
         .fillMaxSize()
+        // Orizzontale (sinistra -> destra): protegge titolo, testo e pulsanti a sinistra.
         .background(
           Brush.horizontalGradient(
             colors = listOf(
-              Color(0xFF07090E),
-              Color(0xEE07090E),
-              Color(0x8807090E),
+              vignetteColor.copy(alpha = 0.85f),
+              vignetteColor.copy(alpha = 0.5f),
               Color.Transparent
             ),
             startX = 0f,
-            endX = 1300f
+            endX = Float.POSITIVE_INFINITY
           )
         )
-    )
-
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
+        // Verticale (fondo -> alto): sfuma al 100% nello sfondo verso la prima riga di poster.
         .background(
           Brush.verticalGradient(
             colors = listOf(
               Color.Transparent,
-              Color(0x9907090E),
-              Color(0xFF07090E)
+              Color.Transparent,
+              vignetteColor.copy(alpha = 0.5f),
+              vignetteColor
             ),
-            startY = 170f
+            startY = 0f,
+            endY = Float.POSITIVE_INFINITY
           )
         )
     )
@@ -160,7 +174,7 @@ fun HeroBanner(
         SubcomposeAsyncImage(
           model = ImageRequest.Builder(LocalContext.current)
             .data(currentMedia.logoUrl)
-            .crossfade(true)
+            .crossfade(350)
             .build(),
           contentDescription = currentMedia.title,
           contentScale = ContentScale.Fit,
@@ -174,7 +188,8 @@ fun HeroBanner(
               color = NovaTextPrimary,
               fontSize = 32.sp,
               fontWeight = FontWeight.ExtraBold,
-              letterSpacing = 0.5.sp
+              letterSpacing = 0.5.sp,
+              style = titleShadowStyle
             )
           }
         )
@@ -184,38 +199,32 @@ fun HeroBanner(
           color = NovaTextPrimary,
           fontSize = 32.sp,
           fontWeight = FontWeight.ExtraBold,
-          letterSpacing = 0.5.sp
+          letterSpacing = 0.5.sp,
+          style = titleShadowStyle
         )
       }
 
-      Spacer(modifier = Modifier.height(6.dp))
+      Spacer(modifier = Modifier.height(10.dp))
 
-      // Metadati essenziali: Anno • Durata / Stagioni • Generi
+      // Badge compatti e allineati: Anno • Classificazione • Durata/Stagioni (+ generi)
       Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
       ) {
-        Text(
-          text = currentMedia.year.toString(),
-          color = NovaTextSecondary,
-          fontSize = 13.sp,
-          fontWeight = FontWeight.Medium
-        )
-        Text(text = "•", color = NovaTextMuted, fontSize = 12.sp)
-        Text(
+        QualityBadge(text = currentMedia.year.toString())
+        currentMedia.ageRating?.let { age ->
+          QualityBadge(text = "$age+")
+        }
+        QualityBadge(
           text = if (currentMedia.type == MediaType.SERIE_TV) {
             stringResource(R.string.hero_seasons_count, currentMedia.seasonsCount ?: 1)
           } else {
             currentMedia.formattedDuration
-          },
-          color = NovaTextSecondary,
-          fontSize = 13.sp,
-          fontWeight = FontWeight.Medium
+          }
         )
         if (currentMedia.genres.isNotEmpty()) {
-          Text(text = "•", color = NovaTextMuted, fontSize = 12.sp)
           Text(
-            text = currentMedia.genres.take(3).joinToString(", "),
+            text = currentMedia.genres.take(3).joinToString(" · "),
             color = NovaTextSecondary,
             fontSize = 13.sp
           )
