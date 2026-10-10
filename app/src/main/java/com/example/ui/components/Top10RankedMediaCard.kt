@@ -7,7 +7,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -35,7 +35,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
@@ -58,7 +57,6 @@ import com.example.R
 import com.example.data.model.MediaItem
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyanBright
-import com.example.ui.theme.NovaTextMuted
 
 /**
  * Geometria della card Top 10.
@@ -73,12 +71,17 @@ private val Top10RankAreaWidth = 130.dp
 private val Top10RankGapWidth = 16.dp
 private val Top10PosterWidth = 148.dp
 private val Top10PosterHeight = 220.dp
+/** Altezza del blocco numero + poster (il titolo sotto è aggiunto a parte). */
 private val Top10CardHeight = 235.dp
 private val Top10CardWidth = Top10RankAreaWidth + Top10RankGapWidth + Top10PosterWidth
 
 /**
  * Card stile "TOP 10" con numero gigante in stile TV streaming (es. Netflix/HBO style)
  * Il numero gigante è a sinistra e la locandina è allineata a destra.
+ *
+ * Il poster contiene SOLO l'artwork: anno, voto (stellina) e titolo sono stati
+ * rimossi dagli overlay. Il titolo vive in una riga dedicata SOTTO la locandina
+ * (`titleSmall`, max 2 righe con ellissi), così la locandina resta pulita.
  *
  * Il numero di classifica è un elemento puramente grafico: non è focusable, non si
  * sposta e non viene scalato al focus, e resta fuori dall'area di focus del poster.
@@ -135,17 +138,18 @@ fun Top10RankedMediaCard(
     }
   }
 
-  Box(
+  Column(
     modifier = modifier
       .width(Top10CardWidth)
-      .height(Top10CardHeight)
-      // L'intero blocco (numero + poster) sale sopra le card vicine quando è a fuoco.
+      // L'intero blocco (numero + poster + titolo) sale sopra le card vicine quando è a fuoco.
       .zIndex(if (isFocused) 10f else 1f)
       .bringIntoViewRequester(cardBringIntoViewRequester)
       .onFocusChanged { isFocused = it.isFocused }
   ) {
     Row(
-      modifier = Modifier.fillMaxSize()
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(Top10CardHeight)
     ) {
       // 1. Area riservata al numero di classifica (NON focusable)
       Box(
@@ -238,70 +242,25 @@ fun Top10RankedMediaCard(
             modifier = Modifier.fillMaxSize()
           )
         }
-
-        // Gradiente sfumato in basso
-        Box(
-          modifier = Modifier
-            .fillMaxSize()
-            .background(
-              Brush.verticalGradient(
-                colors = listOf(
-                  Color.Transparent,
-                  Color.Black.copy(alpha = 0.2f),
-                  Color.Black.copy(alpha = 0.9f)
-                ),
-                startY = 120f
-              )
-            )
-        )
-
-        // Badge TOP 10 in alto a sinistra
-        Box(
-          modifier = Modifier
-            .align(Alignment.TopStart)
-            .padding(6.dp)
-            .background(Color(0xFFE50914), RoundedCornerShape(4.dp))
-            .padding(horizontal = 6.dp, vertical = 2.dp)
-        ) {
-          Text(
-            text = "TOP 10",
-            color = Color.White,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.ExtraBold,
-            letterSpacing = 0.5.sp
-          )
-        }
-
-        // Titolo, dettagli e voto TMDB allineato in basso a destra
-        Row(
-          modifier = Modifier
-            .align(Alignment.BottomStart)
-            .fillMaxWidth()
-            .padding(start = 8.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(4.dp),
-          verticalAlignment = Alignment.Bottom
-        ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = media.title,
-              color = if (isFocused) NovaCyanBright else Color.White,
-              fontSize = 12.sp,
-              fontWeight = FontWeight.Bold,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-            Text(
-              text = "${media.year} • ${media.type.labelItalian}",
-              color = NovaTextMuted,
-              fontSize = 9.5.sp,
-              maxLines = 1,
-              softWrap = false,
-              overflow = TextOverflow.Ellipsis
-            )
-          }
-          PosterRatingBadge(rating = media.rating, compact = true)
-        }
       }
+    }
+
+    Spacer(modifier = Modifier.height(6.dp))
+
+    // 4. Titolo FUORI dal poster: riga dedicata sotto la locandina, allineata alla
+    //    colonna del poster. Nessuna stellina né anno: solo il testo, minimale.
+    Row(modifier = Modifier.fillMaxWidth()) {
+      Spacer(modifier = Modifier.width(Top10RankAreaWidth + Top10RankGapWidth))
+      Text(
+        text = media.title,
+        color = if (isFocused) NovaCyanBright else Color.White,
+        style = MaterialTheme.typography.titleSmall,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+          .weight(1f)
+          .padding(end = 4.dp)
+      )
     }
   }
 }
