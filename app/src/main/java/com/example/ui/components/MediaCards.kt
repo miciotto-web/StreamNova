@@ -1,14 +1,21 @@
 package com.example.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -425,10 +432,14 @@ fun StandardMediaCard(
 /**
  * Locandina verticale (formato poster 2:3) con metadati esterni sotto il poster.
  *
- * Layout:
- * - Column fissa 150.dp: poster 150x225 (clip 14.dp) + Spacer(8.dp) + titolo + anno
- * - nessun badge sul poster: solo un velo gradiente minimo in basso
- * - focus TV: scala 1.06f + bordo ciano perimetrale 2.5.dp
+ * Restyle premium "Neon Glow + Glass Specular Highlight":
+ * - Animazioni GPU (scale, alone, riflesso) guidate da [animateFloatAsState]; i valori
+ *   animati sono letti DENTRO graphicsLayer/drawBehind/drawWithContent, quindi ogni
+ *   frame invalida solo la fase di disegno: zero ricomposizioni.
+ * - Alone Neon ciano diffuso attorno al poster quando è a fuoco (~10dp oltre i bordi).
+ * - Bordo nitido luminescente 2.5dp in [NovaCyanBright] sul perimetro.
+ * - Riflesso "di vetro" diagonale semitrasparente sul terzo superiore dell'immagine.
+ * - Tutto clippato a [RoundedCornerShape] 14dp: immagine, riflesso e bordo non sbordano.
  */
 @Composable
 fun PosterMediaCard(
@@ -437,12 +448,26 @@ fun PosterMediaCard(
   modifier: Modifier = Modifier
 ) {
   var isFocused by remember { mutableStateOf(false) }
-  val scale by animateFloatAsState(
+
+  // Stato di scala: 1.0 -> 1.06 al focus, con easing GPU-friendly.
+  val scaleState = animateFloatAsState(
     targetValue = if (isFocused) 1.06f else 1f,
-    animationSpec = tween(durationMillis = 200),
+    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
     label = "posterCardScale"
   )
-  val shape = RoundedCornerShape(14.dp)
+  // Intensità dell'alone Neon (0 = spento, 1 = massimo).
+  val glowState = animateFloatAsState(
+    targetValue = if (isFocused) 1f else 0f,
+    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+    label = "posterCardGlow"
+  )
+  // Entrata delicata del riflesso speculare.
+  val specularState = animateFloatAsState(
+    targetValue = if (isFocused) 1f else 0f,
+    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+    label = "posterCardSpecular"
+  )
+  val shape = RoundedCornerShape(NeonCardCorner)
 
   Column(
     modifier = Modifier
@@ -451,8 +476,9 @@ fun PosterMediaCard(
       // La card in focus deve coprire le card vicine
       .zIndex(if (isFocused) 10f else 1f)
       .graphicsLayer {
-        scaleX = scale
-        scaleY = scale
+        val s = scaleState.value
+        scaleX = s
+        scaleY = s
       }
       .onFocusChanged { isFocused = it.isFocused }
       // OK/Enter della tastiera D-pad -> onClick (consumato prima di clickable)
@@ -467,20 +493,35 @@ fun PosterMediaCard(
           false
         }
       }
-      .border(
-        width = if (isFocused) 2.5.dp else 1.dp,
-        color = if (isFocused) Color(0xFF00E5FF) else Color.Transparent,
-        shape = shape
-      )
-      .clip(shape)
       .clickable { onClick() }
   ) {
-    // 1) Poster 150x225 con clip arrotondato
+    // 1) Poster 150x225: alone Neon, clip arrotondato, riflesso speculare e bordo.
     Box(
       modifier = Modifier
         .width(150.dp)
         .height(225.dp)
+        // Alone disegnato PRIMA del clip: si estende oltre i bordi della card.
+        .drawBehind {
+          drawNeonGlow(
+            cornerRadiusPx = NeonCardCorner.toPx(),
+            color = NovaCyanBright,
+            spreadPx = NeonCardGlowSpread.toPx(),
+            intensity = glowState.value
+          )
+        }
         .clip(shape)
+        .background(NovaCardBg)
+        // Riflesso di vetro SOPRA l'immagine (drawContent) + bordo nitido, dentro il clip.
+        .drawWithContent {
+          drawContent()
+          drawSpecularHighlight(intensity = specularState.value)
+          drawNeonBorder(
+            cornerRadiusPx = NeonCardCorner.toPx(),
+            color = NovaCyanBright,
+            widthPx = NeonCardBorderWidth.toPx(),
+            intensity = glowState.value
+          )
+        }
     ) {
       val fallbackRes = media.posterRes ?: media.backdropRes ?: R.drawable.banner_dune
       CardMediaImage(
@@ -527,4 +568,75 @@ fun PosterMediaCard(
       overflow = TextOverflow.Ellipsis
     )
   }
+}
+
+/** Geometria condivisa del restyle Neon Glow delle poster card. */
+private val NeonCardCorner = 14.dp
+private val NeonCardGlowSpread = 10.dp
+private val NeonCardBorderWidth = 2.5.dp
+
+/**
+ * Alone Neon diffuso: layer di rounded-rect concentrici con alpha decrescente,
+ * disegnati anche oltre i bordi. Va richiamato in un [drawBehind] NON clippato: la somma
+ * dei layer produce una sfumatura morbida che si estende di [spreadPx] oltre la card.
+ */
+private fun DrawScope.drawNeonGlow(
+  cornerRadiusPx: Float,
+  color: Color,
+  spreadPx: Float,
+  intensity: Float
+) {
+  if (intensity <= 0.01f || spreadPx <= 0f) return
+  val layers = 14
+  val perLayerAlpha = 0.04f * intensity
+  for (i in layers downTo 1) {
+    val t = i.toFloat() / layers
+    val inflate = spreadPx * t
+    drawRoundRect(
+      color = color.copy(alpha = perLayerAlpha),
+      topLeft = Offset(-inflate, -inflate),
+      size = Size(size.width + inflate * 2f, size.height + inflate * 2f),
+      cornerRadius = CornerRadius(cornerRadiusPx + inflate, cornerRadiusPx + inflate)
+    )
+  }
+}
+
+/**
+ * Riflesso di vetro (specular highlight): gradiente lineare diagonale bianco sul terzo
+ * superiore dell'immagine. Disegnato SOPRA il contenuto, dentro il clip arrotondato.
+ */
+private fun DrawScope.drawSpecularHighlight(intensity: Float) {
+  if (intensity <= 0.01f) return
+  val brush = Brush.linearGradient(
+    colors = listOf(
+      Color.White.copy(alpha = 0.22f * intensity),
+      Color.White.copy(alpha = 0.05f * intensity),
+      Color.Transparent
+    ),
+    start = Offset(0f, 0f),
+    end = Offset(size.width, size.height * 0.45f)
+  )
+  drawRect(brush = brush)
+}
+
+/** Bordo nitido luminescente lungo il perimetro, disegnato dentro il clip. */
+private fun DrawScope.drawNeonBorder(
+  cornerRadiusPx: Float,
+  color: Color,
+  widthPx: Float,
+  intensity: Float
+) {
+  if (intensity <= 0.01f || widthPx <= 0f) return
+  val inset = widthPx / 2f
+  val innerRadius = (cornerRadiusPx - inset).coerceAtLeast(0f)
+  drawRoundRect(
+    color = color.copy(alpha = intensity),
+    topLeft = Offset(inset, inset),
+    size = Size(
+      (size.width - widthPx).coerceAtLeast(0f),
+      (size.height - widthPx).coerceAtLeast(0f)
+    ),
+    cornerRadius = CornerRadius(innerRadius, innerRadius),
+    style = Stroke(width = widthPx)
+  )
 }
