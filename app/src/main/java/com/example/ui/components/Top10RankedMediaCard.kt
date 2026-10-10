@@ -1,9 +1,12 @@
 package com.example.ui.components
 
-import androidx.compose.foundation.Image
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,7 +18,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -30,9 +32,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -41,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.R
@@ -48,8 +59,6 @@ import com.example.data.model.MediaItem
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaTextMuted
-import com.example.ui.theme.NovaTextPrimary
-import com.example.ui.theme.NovaTextSecondary
 
 /**
  * Geometria della card Top 10.
@@ -58,7 +67,7 @@ import com.example.ui.theme.NovaTextSecondary
  *
  * L'area del numero è dimensionata per contenere il rank a due cifre (fino a "10")
  * alla dimensione attuale del font (115.sp), così il numero non invade mai il poster,
- * nemmeno quando il poster è focalizzato e scala a 1.08.
+ * nemmeno quando il poster è focalizzato e scala.
  */
 private val Top10RankAreaWidth = 130.dp
 private val Top10RankGapWidth = 16.dp
@@ -74,7 +83,13 @@ private val Top10CardWidth = Top10RankAreaWidth + Top10RankGapWidth + Top10Poste
  * Il numero di classifica è un elemento puramente grafico: non è focusable, non si
  * sposta e non viene scalato al focus, e resta fuori dall'area di focus del poster.
  *
- * Il focus resta esclusivamente sul poster, ma quando il poster è focalizzato lo scroll
+ * Restyle premium "Neon Glow + Glass Specular Highlight" (condiviso con
+ * [PosterMediaCard]/[StandardMediaCard]): il poster ha alone Neon diffuso, bordo
+ * luminescente [NovaCyanBright] e riflesso di vetro diagonale. Le animazioni (scale,
+ * alone, riflesso) leggono i valori solo nelle lambda di disegno, quindi non
+ * ricompongono a ogni frame.
+ *
+ * Il focus resta esclusivamente sul poster, ma quando è focalizzato lo scroll
  * (bring-into-view) usa come area di riferimento l'INTERO contenitore della card, così il
  * numero di classifica resta visibile e non finisce sotto la Sidebar.
  */
@@ -86,8 +101,26 @@ fun Top10RankedMediaCard(
   onClick: () -> Unit,
   modifier: Modifier = Modifier
 ) {
-  // Traccia lo stato di focus del poster per gli elementi non focusable (numero di classifica)
+  // Traccia lo stato di focus del poster per gli elementi non focusable (numero di classifica).
   var isFocused by remember { mutableStateOf(false) }
+
+  // Animazioni GPU: i valori sono letti solo dentro graphicsLayer/drawBehind/drawWithContent.
+  val scaleState = animateFloatAsState(
+    targetValue = if (isFocused) 1.06f else 1f,
+    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+    label = "top10PosterScale"
+  )
+  val glowState = animateFloatAsState(
+    targetValue = if (isFocused) 1f else 0f,
+    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+    label = "top10PosterGlow"
+  )
+  val specularState = animateFloatAsState(
+    targetValue = if (isFocused) 1f else 0f,
+    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+    label = "top10PosterSpecular"
+  )
+  val posterShape = RoundedCornerShape(NeonCardCorner)
 
   // Richiesta di bring-into-view agganciata al contenitore completo della card (NON focusable):
   // il poster continua a essere l'unico elemento focalizzabile, ma è il contenitore a definire
@@ -106,6 +139,8 @@ fun Top10RankedMediaCard(
     modifier = modifier
       .width(Top10CardWidth)
       .height(Top10CardHeight)
+      // L'intero blocco (numero + poster) sale sopra le card vicine quando è a fuoco.
+      .zIndex(if (isFocused) 10f else 1f)
       .bringIntoViewRequester(cardBringIntoViewRequester)
       .onFocusChanged { isFocused = it.isFocused }
   ) {
@@ -137,109 +172,134 @@ fun Top10RankedMediaCard(
       Spacer(modifier = Modifier.width(Top10RankGapWidth))
 
       // 3. Area poster: unico elemento focusable della card
-      TvFocusableBox(
+      Box(
         modifier = Modifier
           .align(Alignment.CenterVertically)
           .width(Top10PosterWidth)
-          .height(Top10PosterHeight),
-        shape = RoundedCornerShape(12.dp),
-        focusedScale = 1.08f,
-        onClick = onClick
+          .height(Top10PosterHeight)
+          .graphicsLayer {
+            val s = scaleState.value
+            scaleX = s
+            scaleY = s
+          }
+          .onFocusChanged { isFocused = it.isFocused }
+          .onKeyEvent { keyEvent ->
+            val isConfirm = keyEvent.key == Key.Enter ||
+              keyEvent.key == Key.NumPadEnter ||
+              keyEvent.key == Key.DirectionCenter
+            if (isConfirm && keyEvent.type == KeyEventType.KeyUp) {
+              onClick()
+              true
+            } else {
+              false
+            }
+          }
+          .clickable { onClick() }
+          // Alone Neon PRIMA del clip: si estende oltre i bordi del poster.
+          .drawBehind {
+            drawNeonGlow(
+              cornerRadiusPx = NeonCardCorner.toPx(),
+              color = NovaCyanBright,
+              spreadPx = NeonCardGlowSpread.toPx(),
+              intensity = glowState.value
+            )
+          }
+          .clip(posterShape)
+          .background(NovaCardBg)
+          // Riflesso di vetro SOPRA l'immagine + bordo nitido, dentro il clip.
+          .drawWithContent {
+            drawContent()
+            drawSpecularHighlight(intensity = specularState.value)
+            drawNeonBorder(
+              cornerRadiusPx = NeonCardCorner.toPx(),
+              color = NovaCyanBright,
+              widthPx = NeonCardBorderWidth.toPx(),
+              intensity = glowState.value
+            )
+          }
       ) {
+        val posterUrl = media.posterUrl ?: media.backdropUrl
+        if (!posterUrl.isNullOrBlank()) {
+          AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+              .data(posterUrl)
+              .crossfade(true)
+              .build(),
+            contentDescription = media.title,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+          )
+        } else {
+          val fallbackRes = media.posterRes ?: media.backdropRes ?: R.drawable.banner_dune
+          Image(
+            painter = painterResource(id = fallbackRes),
+            contentDescription = media.title,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+          )
+        }
+
+        // Gradiente sfumato in basso
         Box(
           modifier = Modifier
             .fillMaxSize()
-            .clip(RoundedCornerShape(12.dp))
-            .background(NovaCardBg)
-            .border(
-              width = if (isFocused) 2.dp else 1.dp,
-              color = if (isFocused) NovaCyanBright else Color(0x33334155),
-              shape = RoundedCornerShape(12.dp)
+            .background(
+              Brush.verticalGradient(
+                colors = listOf(
+                  Color.Transparent,
+                  Color.Black.copy(alpha = 0.2f),
+                  Color.Black.copy(alpha = 0.9f)
+                ),
+                startY = 120f
+              )
             )
+        )
+
+        // Badge TOP 10 in alto a sinistra
+        Box(
+          modifier = Modifier
+            .align(Alignment.TopStart)
+            .padding(6.dp)
+            .background(Color(0xFFE50914), RoundedCornerShape(4.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
         ) {
-          val posterUrl = media.posterUrl ?: media.backdropUrl
-          if (!posterUrl.isNullOrBlank()) {
-            AsyncImage(
-              model = ImageRequest.Builder(LocalContext.current)
-                .data(posterUrl)
-                .crossfade(true)
-                .build(),
-              contentDescription = media.title,
-              contentScale = ContentScale.Crop,
-              modifier = Modifier.fillMaxSize()
-            )
-          } else {
-            val fallbackRes = media.posterRes ?: media.backdropRes ?: R.drawable.banner_dune
-            Image(
-              painter = painterResource(id = fallbackRes),
-              contentDescription = media.title,
-              contentScale = ContentScale.Crop,
-              modifier = Modifier.fillMaxSize()
-            )
-          }
-
-          // Gradiente sfumato in basso
-          Box(
-            modifier = Modifier
-              .fillMaxSize()
-              .background(
-                Brush.verticalGradient(
-                  colors = listOf(
-                    Color.Transparent,
-                    Color.Black.copy(alpha = 0.2f),
-                    Color.Black.copy(alpha = 0.9f)
-                  ),
-                  startY = 120f
-                )
-              )
+          Text(
+            text = "TOP 10",
+            color = Color.White,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 0.5.sp
           )
+        }
 
-          // Badge TOP 10 in alto a sinistra
-          Box(
-            modifier = Modifier
-              .align(Alignment.TopStart)
-              .padding(6.dp)
-              .background(Color(0xFFE50914), RoundedCornerShape(4.dp))
-              .padding(horizontal = 6.dp, vertical = 2.dp)
-          ) {
+        // Titolo, dettagli e voto TMDB allineato in basso a destra
+        Row(
+          modifier = Modifier
+            .align(Alignment.BottomStart)
+            .fillMaxWidth()
+            .padding(start = 8.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+          horizontalArrangement = Arrangement.spacedBy(4.dp),
+          verticalAlignment = Alignment.Bottom
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
             Text(
-              text = "TOP 10",
-              color = Color.White,
-              fontSize = 9.sp,
-              fontWeight = FontWeight.ExtraBold,
-              letterSpacing = 0.5.sp
+              text = media.title,
+              color = if (isFocused) NovaCyanBright else Color.White,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+            Text(
+              text = "${media.year} • ${media.type.labelItalian}",
+              color = NovaTextMuted,
+              fontSize = 9.5.sp,
+              maxLines = 1,
+              softWrap = false,
+              overflow = TextOverflow.Ellipsis
             )
           }
-
-          // Titolo, dettagli e voto TMDB allineato in basso a destra
-          Row(
-            modifier = Modifier
-              .align(Alignment.BottomStart)
-              .fillMaxWidth()
-              .padding(start = 8.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.Bottom
-          ) {
-            Column(modifier = Modifier.weight(1f)) {
-              Text(
-                text = media.title,
-                color = if (isFocused) NovaCyanBright else Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-              Text(
-                text = "${media.year} • ${media.type.labelItalian}",
-                color = NovaTextMuted,
-                fontSize = 9.5.sp,
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Ellipsis
-              )
-            }
-            PosterRatingBadge(rating = media.rating, compact = true)
-          }
+          PosterRatingBadge(rating = media.rating, compact = true)
         }
       }
     }
