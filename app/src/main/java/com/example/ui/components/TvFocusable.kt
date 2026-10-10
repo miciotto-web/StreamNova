@@ -71,6 +71,7 @@ import com.example.data.model.MediaType
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaCyanGlow
+import com.example.ui.theme.NovaGold
 import com.example.ui.theme.NovaSurface
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextPrimary
@@ -273,9 +274,11 @@ fun TvActionButton(
 fun QualityBadge(
   text: String,
   modifier: Modifier = Modifier,
-  isHighlighted: Boolean = false
+  isHighlighted: Boolean = false,
+  leadingIcon: ImageVector? = null,
+  leadingIconTint: Color = if (isHighlighted) NovaCyanBright else NovaTextPrimary
 ) {
-  Box(
+  Row(
     modifier = modifier
       .background(
         color = if (isHighlighted) NovaCyan.copy(alpha = 0.2f) else Color(0x3320293A),
@@ -286,8 +289,18 @@ fun QualityBadge(
         color = if (isHighlighted) NovaCyan.copy(alpha = 0.7f) else Color(0x4464748B),
         shape = RoundedCornerShape(4.dp)
       )
-      .padding(horizontal = 6.dp, vertical = 3.dp)
+      .padding(horizontal = 6.dp, vertical = 3.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(4.dp)
   ) {
+    if (leadingIcon != null) {
+      Icon(
+        imageVector = leadingIcon,
+        contentDescription = null,
+        tint = leadingIconTint,
+        modifier = Modifier.size(12.dp)
+      )
+    }
     Text(
       text = text,
       color = if (isHighlighted) NovaCyanBright else NovaTextPrimary,

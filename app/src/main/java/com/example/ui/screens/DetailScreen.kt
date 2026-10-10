@@ -36,11 +36,13 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -60,6 +62,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -67,6 +70,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -86,6 +90,7 @@ import com.example.data.model.toEpisode
 import com.example.data.repository.MediaRepository
 import com.example.ui.components.ProviderBadge
 import com.example.ui.components.ProviderConstants
+import com.example.ui.components.QualityBadge
 import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvActionButton
@@ -94,10 +99,17 @@ import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
+import com.example.ui.theme.NovaGold
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import java.util.Locale
+
+// Ombra proiettata di supporto per il titolo: garantisce leggibilità su artwork chiari.
+private val DetailTitleShadow = TextStyle(
+  shadow = Shadow(color = Color.Black.copy(alpha = 0.7f), blurRadius = 8f)
+)
 
 enum class DetailTab(val titleRes: Int) {
   EPISODI(R.string.detail_tab_episodes),
@@ -212,67 +224,69 @@ fun DetailScreen(
       .fillMaxSize()
       .background(NovaBackground)
   ) {
-    // 1. Backdrop Wallpaper (16:9) with cinematic gradient overlays
+    // 1. Backdrop immersivo (16:9) con vignette gradient a doppio asse.
+    // L'artwork resta confinato alla fascia superiore: la vignette verticale lo fonde
+    // al 100% nel background della schermata, raccordandolo con trama, cast, episodi e sorgenti.
     val backdropUrl = extendedDetails?.backdropUrl ?: displayMedia.backdropUrl
-    if (!backdropUrl.isNullOrBlank()) {
-      AsyncImage(
-        model = ImageRequest.Builder(LocalContext.current)
-          .data(backdropUrl)
-          .crossfade(true)
-          .build(),
-        contentDescription = displayMedia.title,
-        contentScale = ContentScale.Crop,
+    val vignetteColor = MaterialTheme.colorScheme.background
+    Box(
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(500.dp)
+        .align(Alignment.TopCenter)
+    ) {
+      if (!backdropUrl.isNullOrBlank()) {
+        AsyncImage(
+          model = ImageRequest.Builder(LocalContext.current)
+            .data(backdropUrl)
+            .crossfade(350)
+            .build(),
+          contentDescription = displayMedia.title,
+          contentScale = ContentScale.Crop,
+          modifier = Modifier.fillMaxSize()
+        )
+      } else {
+        val backdropRes = displayMedia.backdropRes ?: R.drawable.banner_lastofus
+        Image(
+          painter = painterResource(id = backdropRes),
+          contentDescription = displayMedia.title,
+          contentScale = ContentScale.Crop,
+          modifier = Modifier.fillMaxSize()
+        )
+      }
+
+      // Vignette a doppio asse:
+      // - Orizzontale (sinistra -> destra): semitrasparenza scura sul lato sinistro per
+      //   garantire contrasto e leggibilità immediata di titolo e metadati.
+      // - Verticale (basso -> alto): fusione al 100% nel background della schermata.
+      Box(
         modifier = Modifier
-          .fillMaxWidth()
-          .height(500.dp)
-          .align(Alignment.TopCenter)
-      )
-    } else {
-      val backdropRes = displayMedia.backdropRes ?: R.drawable.banner_lastofus
-      Image(
-        painter = painterResource(id = backdropRes),
-        contentDescription = displayMedia.title,
-        contentScale = ContentScale.Crop,
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(500.dp)
-          .align(Alignment.TopCenter)
+          .fillMaxSize()
+          .background(
+            Brush.horizontalGradient(
+              colors = listOf(
+                Color.Black.copy(alpha = 0.70f),
+                Color.Black.copy(alpha = 0.30f),
+                Color.Transparent
+              ),
+              startX = 0f,
+              endX = Float.POSITIVE_INFINITY
+            )
+          )
+          .background(
+            Brush.verticalGradient(
+              colors = listOf(
+                Color.Transparent,
+                Color.Transparent,
+                vignetteColor.copy(alpha = 0.6f),
+                vignetteColor
+              ),
+              startY = 0f,
+              endY = Float.POSITIVE_INFINITY
+            )
+          )
       )
     }
-
-    // Cinematic dark gradient overlay: horizontal fade and vertical fade into NovaBackground
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .background(
-          Brush.horizontalGradient(
-            colors = listOf(
-              NovaBackground,
-              NovaBackground.copy(alpha = 0.95f),
-              NovaBackground.copy(alpha = 0.70f),
-              Color.Transparent
-            ),
-            startX = 0f,
-            endX = 1400f
-          )
-        )
-    )
-
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .background(
-          Brush.verticalGradient(
-            colors = listOf(
-              Color.Transparent,
-              NovaBackground.copy(alpha = 0.85f),
-              NovaBackground
-            ),
-            startY = 160f,
-            endY = 520f
-          )
-        )
-    )
 
    // Main Scrollable Content
    val listState = rememberLazyListState()
@@ -438,7 +452,8 @@ fun DetailScreen(
                   color = NovaTextPrimary,
                   fontSize = 36.sp,
                   fontWeight = FontWeight.Black,
-                  letterSpacing = 0.5.sp
+                  letterSpacing = 0.5.sp,
+                  style = DetailTitleShadow
                 )
               }
             )
@@ -449,7 +464,8 @@ fun DetailScreen(
               color = NovaTextPrimary,
               fontSize = 36.sp,
               fontWeight = FontWeight.Black,
-              letterSpacing = 0.5.sp
+              letterSpacing = 0.5.sp,
+              style = DetailTitleShadow
             )
           }
 
@@ -466,16 +482,13 @@ fun DetailScreen(
 
           Spacer(modifier = Modifier.height(8.dp))
 
-          // Metadata row: Year • Type • Seasons/Duration
+          // Badge compatti: Anno • Durata/Stagioni • Classificazione età • Rating TMDB
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
           ) {
             val displayYear = extendedDetails?.releaseYear ?: displayMedia.year
-            Text(text = displayYear.toString(), color = NovaTextSecondary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            Text(text = "•", color = NovaTextMuted)
-            Text(text = stringResource(if (displayMedia.type == MediaType.SERIE_TV) R.string.nav_tv_series else R.string.nav_movies), color = NovaTextSecondary, fontSize = 14.sp)
-            Text(text = "•", color = NovaTextMuted)
+            QualityBadge(text = displayYear.toString())
 
             val durationText = if (displayMedia.type == MediaType.SERIE_TV) {
               val sCount = extendedDetails?.seasonsCount ?: displayMedia.seasonsCount ?: 1
@@ -491,7 +504,20 @@ fun DetailScreen(
               val m = durMins % 60
               if (h > 0) "${h}h ${m}m" else "${m}m"
             }
-            Text(text = durationText, color = NovaTextSecondary, fontSize = 14.sp)
+            QualityBadge(text = durationText)
+
+            val ageRating = extendedDetails?.ageRating ?: displayMedia.ageRating
+            ageRating?.let { QualityBadge(text = "$it+") }
+
+            val tmdbRating = extendedDetails?.rating?.takeIf { it > 0f }
+              ?: displayMedia.tmdbRating?.takeIf { it > 0f }
+            tmdbRating?.let { rating ->
+              QualityBadge(
+                text = String.format(Locale.US, "%.1f", rating),
+                leadingIcon = Icons.Default.Star,
+                leadingIconTint = NovaGold
+              )
+            }
           }
 
           Spacer(modifier = Modifier.height(8.dp))
