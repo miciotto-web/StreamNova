@@ -167,4 +167,27 @@ class CinemetaDefaultCatalogTest {
     // La cache resta disponibile per le schermate categoria (fallback offline).
     assertEquals(listOf(cached.id), catalog.allMovies.map { it.id })
   }
+
+  @Test
+  fun leRigheTop10SonoLimitateAEsattamenteDieciElementi() {
+    // Il catalogo di default restituisce una pagina intera (~49-50 elementi).
+    val manyMovies = (1..50).map { movie("tt100%04d".format(it), "Film $it") }
+    val manySeries = (1..50).map { series("tt200%04d".format(it), "Serie $it") }
+
+    val catalog = StremioCatalogRepository.buildHomeCatalogs(
+      defaultSections = listOf(
+        section(CinemetaAddon.CATALOG_TOP_RATED, MediaType.FILM, items = manyMovies),
+        section(CinemetaAddon.CATALOG_TOP_RATED, MediaType.SERIE_TV, items = manySeries)
+      ),
+      userSections = emptyList(),
+      allMedia = emptyList()
+    )
+
+    assertEquals(10, StremioCatalogRepository.HOME_TOP_10_SIZE)
+    assertEquals(10, catalog.top10Movies.size)
+    assertEquals(10, catalog.top10Series.size)
+    // Truncamento dei PRIMI 10 in classifica (ordine preservato).
+    assertEquals(manyMovies.take(10).map { it.id }, catalog.top10Movies.map { it.id })
+    assertEquals(manySeries.take(10).map { it.id }, catalog.top10Series.map { it.id })
+  }
 }

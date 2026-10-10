@@ -42,6 +42,7 @@ import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.HomeCatalogs
+import com.example.data.repository.StremioCatalogRepository
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import com.example.ui.components.ContinueWatchingCard
@@ -176,8 +177,15 @@ fun HomeMainBrowsingContent(
   // Le righe della Home arrivano ESCLUSIVAMENTE dai cataloghi risolti (Cinemeta di
   // default + addon utente). Nessun fallback ai feed nativi TMDB: se il catalogo di
   // default non è disponibile la riga resta semplicemente vuota.
-  val top10Movies = remember(homeCatalogs) { if (hasXperienceMovies) emptyList() else homeCatalogs?.top10Movies ?: emptyList() }
-  val top10Series = remember(homeCatalogs) { if (hasXperienceSeries) emptyList() else homeCatalogs?.top10Series ?: emptyList() }
+  // Classifica Top 10: limite rigido a 10 card (difensivo, oltre al troncamento alla fonte).
+  val top10Movies = remember(homeCatalogs) {
+    if (hasXperienceMovies) emptyList()
+    else homeCatalogs?.top10Movies?.take(StremioCatalogRepository.HOME_TOP_10_SIZE) ?: emptyList()
+  }
+  val top10Series = remember(homeCatalogs) {
+    if (hasXperienceSeries) emptyList()
+    else homeCatalogs?.top10Series?.take(StremioCatalogRepository.HOME_TOP_10_SIZE) ?: emptyList()
+  }
   val trendingMovies = remember(homeCatalogs) { if (hasXperienceMovies) emptyList() else homeCatalogs?.trendingMovies ?: emptyList() }
   val trendingSeries = remember(homeCatalogs) { if (hasXperienceSeries) emptyList() else homeCatalogs?.trendingSeries ?: emptyList() }
   val forYouMovies = remember(homeCatalogs) { if (hasXperienceMovies) emptyList() else homeCatalogs?.forYouMovies ?: emptyList() }
