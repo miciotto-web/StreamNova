@@ -219,7 +219,9 @@ class RegistryAutoBindingTest {
         id = addonId,
         name = "Addon Fixture",
         catalogs = listOf(
-          StremioCatalogDefinition(type = TYPE_MOVIE, id = "brand_movies", name = "Brand Movies")
+          // Titolo di brand: rende il catalogo proponibile dall'euristica, così la UI ha una
+          // riga da mostrare. La chiave (tipo + id) resta quella dichiarata nel registry.
+          StremioCatalogDefinition(type = TYPE_MOVIE, id = "brand_movies", name = "Disney+ Movies")
         )
       ),
       providers = providers,
@@ -265,7 +267,15 @@ class RegistryAutoBindingTest {
     // La voce di registry resta valida ma per il provider dichiarato nel registry.
     val disney = plan(resolver, "disney", MediaType.FILM)
     assertFalse(disney.resolved.any { it.target.catalogId == "brand_movies" })
-    assertTrue(disney.resolved.any { it.binding.source == BindingSource.REGISTRY })
+    // Il binding USER su netflix sopprime l'unica voce FILM di disney: il suo piano resta vuoto.
+    assertTrue(disney.resolved.isEmpty())
+
+    // L'altro binding di registry (brand_movies_netflix) resta attivo sul provider dichiarato.
+    assertTrue(
+      netflix.resolved.any {
+        it.target.catalogId == "brand_movies_netflix" && it.binding.source == BindingSource.REGISTRY
+      }
+    )
   }
 
   // ── 7. Rimozione USER -> torna il REGISTRY ───────────────────────────────────

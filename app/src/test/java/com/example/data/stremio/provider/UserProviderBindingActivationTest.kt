@@ -108,7 +108,8 @@ class UserProviderBindingActivationTest {
     assertFalse(movies.hasConfirmedBindings)
     assertFalse(series.hasConfirmedBindings)
     assertFalse(all.hasConfirmedBindings)
-    assertEquals(1, all.unmappedTargets)
+    // Con mediaType nullo entrambi i cataloghi del brand (movie + series) sono non mappati.
+    assertEquals(2, all.unmappedTargets)
   }
 
   // ── B. USER binding movie -> il provider carica i film da Stremio ────────────

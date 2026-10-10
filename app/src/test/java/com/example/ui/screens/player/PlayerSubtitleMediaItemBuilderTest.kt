@@ -48,7 +48,8 @@ class PlayerSubtitleMediaItemBuilderTest {
 
     assertEquals("tt0111161-ita", spec.id)
     assertEquals("https://sub.test/it.srt", spec.url)
-    assertEquals("ita", spec.language)
+    // La lingua viene normalizzata in forma BCP-47 minuscola dal builder.
+    assertEquals("it", spec.language)
     assertEquals("Italiano", spec.label)
     assertEquals(MimeTypes.APPLICATION_SUBRIP, spec.mimeType)
   }
@@ -71,7 +72,9 @@ class PlayerSubtitleMediaItemBuilderTest {
 
   @Test
   fun linguaPreservata() {
-    assertEquals("por-BR", PlayerSubtitleMediaItemBuilder.toSpec(subtitle(lang = "por-BR"))?.language)
+    // Codice normalizzato (minuscolo + separatore '-'), non il valore grezzo dell'addon.
+    assertEquals("por-br", PlayerSubtitleMediaItemBuilder.toSpec(subtitle(lang = "por-BR"))?.language)
+    assertEquals("pt-br", PlayerSubtitleMediaItemBuilder.toSpec(subtitle(lang = "PT-BR"))?.language)
     assertEquals("und", PlayerSubtitleMediaItemBuilder.toSpec(subtitle(lang = "und"))?.language)
   }
 
@@ -196,7 +199,7 @@ class PlayerSubtitleMediaItemBuilderTest {
 
     assertEquals("sub-9", configuration.id)
     assertEquals("https://a.test/x.vtt", configuration.uri.toString())
-    assertEquals("ita", configuration.language)
+    assertEquals("it", configuration.language)
     assertEquals("Italiano", configuration.label)
     assertEquals(MimeTypes.TEXT_VTT, configuration.mimeType)
   }
@@ -272,7 +275,7 @@ class PlayerSubtitleMediaItemBuilderTest {
 
     assertEquals(2, configurations.size)
     assertEquals("s1", configurations[0].id)
-    assertEquals("ita", configurations[0].language)
+    assertEquals("it", configurations[0].language)
     assertEquals("Italiano", configurations[0].label)
     assertEquals(MimeTypes.APPLICATION_SUBRIP, configurations[0].mimeType)
     assertEquals("e1", configurations[1].id)
