@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +25,18 @@ enum class PreferredResolution(val label: String, val targetHeight: Int) {
   UHD_4K("4K", 2160),
   FULL_HD_1080P("1080p", 1080),
   HD_720P("720p", 720)
+}
+
+/**
+ * Durata di validità della cache dell'ultimo flusso funzionante ("Riusa l'ultimo link").
+ * Oltre la finestra la voce salvata viene ignorata e la risoluzione riparte dalla lista.
+ */
+enum class LastStreamCacheDuration(val label: String, val hours: Int) {
+  SIX_HOURS("6 ore", 6),
+  TWELVE_HOURS("12 ore", 12),
+  ONE_DAY("1 giorno", 24),
+  THREE_DAYS("3 giorni", 72),
+  SEVEN_DAYS("7 giorni", 168)
 }
 
 /**
@@ -95,8 +108,16 @@ enum class DecoderFallbackMode(val label: String, val mode: Int) {
 /** Impostazioni della sezione RIPRODUZIONE e AVANZATE. */
 data class PlaybackSettings(
   val preferredResolution: PreferredResolution = PreferredResolution.AUTO,
-  val autoPlayNextEpisode: Boolean = true,
+  val autoPlayNextEpisodeEnabled: Boolean = true,
   val autoResume: Boolean = true,
+  /**
+   * "Riusa l'ultimo link": riproduce automaticamente l'ultimo flusso funzionante
+   * salvato per lo stesso film/episodio, se la cache è ancora valida.
+   */
+  val reuseLastWorkingStreamEnabled: Boolean = true,
+  /** Validità in ore della cache dell'ultimo flusso riutilizzabile (default 24h = 1 giorno). */
+  val lastWorkingStreamCacheDurationHours: Int = 24,
+  val prioritizeItalianAudio: Boolean = true,
   /**
    * Lingua preferita dell'audio (codice ISO, default "it").
    * "" = "Originale / Qualsiasi": nessuna preferenza linguistica verso Media3.
@@ -146,6 +167,9 @@ object SettingsRepository {
   private val KEY_PREFERRED_RESOLUTION = stringPreferencesKey("preferred_resolution")
   private val KEY_AUTO_PLAY_NEXT = booleanPreferencesKey("auto_play_next_episode")
   private val KEY_AUTO_RESUME = booleanPreferencesKey("auto_resume")
+  private val KEY_REUSE_LAST_WORKING_STREAM = booleanPreferencesKey("reuse_last_working_stream")
+  private val KEY_LAST_STREAM_CACHE_HOURS = intPreferencesKey("last_working_stream_cache_hours")
+  private val KEY_PRIORITIZE_ITALIAN_AUDIO = booleanPreferencesKey("prioritize_italian_audio")
   private val KEY_PREFERRED_AUDIO_LANGUAGE = stringPreferencesKey("preferred_audio_language")
   private val KEY_SUBTITLES_ENABLED = booleanPreferencesKey("subtitles_enabled")
   private val KEY_FORCED_SUBTITLES_ENABLED = booleanPreferencesKey("forced_subtitles_enabled")
@@ -182,8 +206,11 @@ object SettingsRepository {
           preferredResolution = prefs[KEY_PREFERRED_RESOLUTION]
             ?.let { name -> PreferredResolution.entries.firstOrNull { it.name == name } }
             ?: PreferredResolution.AUTO,
-          autoPlayNextEpisode = prefs[KEY_AUTO_PLAY_NEXT] ?: true,
+          autoPlayNextEpisodeEnabled = prefs[KEY_AUTO_PLAY_NEXT] ?: true,
           autoResume = prefs[KEY_AUTO_RESUME] ?: true,
+          reuseLastWorkingStreamEnabled = prefs[KEY_REUSE_LAST_WORKING_STREAM] ?: true,
+          lastWorkingStreamCacheDurationHours = prefs[KEY_LAST_STREAM_CACHE_HOURS] ?: 24,
+          prioritizeItalianAudio = prefs[KEY_PRIORITIZE_ITALIAN_AUDIO] ?: true,
           preferredAudioLanguage = prefs[KEY_PREFERRED_AUDIO_LANGUAGE] ?: "it",
           subtitlesEnabled = prefs[KEY_SUBTITLES_ENABLED] ?: false,
           forcedSubtitlesEnabled = prefs[KEY_FORCED_SUBTITLES_ENABLED] ?: true,
@@ -231,6 +258,18 @@ object SettingsRepository {
 
   fun setAutoResume(value: Boolean) {
     scope.launch { dataStore?.edit { it[KEY_AUTO_RESUME] = value } }
+  }
+
+  fun setReuseLastWorkingStreamEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_REUSE_LAST_WORKING_STREAM] = value } }
+  }
+
+  fun setLastWorkingStreamCacheDurationHours(value: Int) {
+    scope.launch { dataStore?.edit { it[KEY_LAST_STREAM_CACHE_HOURS] = value } }
+  }
+
+  fun setPrioritizeItalianAudio(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_PRIORITIZE_ITALIAN_AUDIO] = value } }
   }
 
   fun setPreferredAudioLanguage(value: String) {

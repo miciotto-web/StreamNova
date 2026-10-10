@@ -278,6 +278,21 @@ fun PlayerScreen(
   // Sessione fallita/non conclusa: errore ExoPlayer, streamUrl assente/vuoto o errore di
   // risoluzione. Un errore NON deve mai causare il passaggio all'episodio successivo.
   var playbackFailed by remember { mutableStateOf(false) }
+  // Stato overlay "Prossimo Episodio": chiusura esplicita (BACK, nascosto fino alla fine
+  // del video per i titoli di coda) e secondi rimanenti del countdown automatico.
+  var nextEpisodeDismissed by remember { mutableStateOf(false) }
+  var nextEpisodeCountdownSeconds by remember { mutableIntStateOf(0) }
+
+  // Overlay "Prossimo Episodio": attivo negli ultimi 35 secondi o a STATE_ENDED.
+  val isNextEpisodePromptVisible = NextEpisodePromptUtils.shouldShow(
+    positionMs = currentPosition,
+    durationMs = totalDuration,
+    playbackEnded = playbackEnded,
+    isTvShow = isTvShow,
+    hasNextEpisode = nextEpisode != null,
+    dismissed = nextEpisodeDismissed,
+    playbackFailed = playbackFailed
+  )
 
   // Aspect ratio / ResizeMode
   var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
@@ -1152,6 +1167,8 @@ fun PlayerScreen(
     initialQualityApplied = false
     manualSubtitleSelection = null
     manualAudioSelection = null
+    nextEpisodeDismissed = false
+    nextEpisodeCountdownSeconds = 0
   }
 
   // Applica la "Risoluzione preferita" una sola volta, quando il player è pronto
@@ -1192,17 +1209,26 @@ fun PlayerScreen(
     }
   }
 
-  // "Riproduci automaticamente il prossimo episodio": a fine episodio, se l'opzione
-  // è ON e esiste un episodio successivo, passa automaticamente al successivo.
-  // Il nuovo episodio riparte dal proprio progresso (o da 0), mai da quello precedente.
-  // Solo conclusione NORMALE (STATE_ENDED senza errori): una sessione fallita non
-  // deve mai generare auto-next.
-  LaunchedEffect(playbackEnded, currentEpKey) {
-    if (playbackEnded && !playbackFailed && isTvShow && nextEpisode != null && playbackSettings.autoPlayNextEpisode) {
-      playbackEnded = false
-      Log.i("PlayerScreen", "Auto-advance episodio: fine E${currentEp?.episodeNumber}, prossimo E${nextEpisode.episodeNumber}")
+  // "Prossimo Episodio": countdown automatico quando l'overlay è visibile e l'opzione
+  // "Riproduci automaticamente il prossimo episodio" è ON. Allo scadere del countdown si
+  // passa al prossimo episodio (risoluzione stream inclusa, senza uscire dal player);
+  // con l'opzione OFF resta solo il pulsante manuale "Guarda ora" senza countdown.
+  // Mai auto-next da sessione fallita: playbackFailed blocca sempre il passaggio.
+  LaunchedEffect(isNextEpisodePromptVisible, playbackSettings.autoPlayNextEpisodeEnabled, currentEpKey) {
+    if (!isNextEpisodePromptVisible || !playbackSettings.autoPlayNextEpisodeEnabled) {
+      nextEpisodeCountdownSeconds = 0
+      return@LaunchedEffect
+    }
+    nextEpisodeCountdownSeconds = NextEpisodePromptUtils.COUNTDOWN_SECONDS
+    while (nextEpisodeCountdownSeconds > 0) {
+      delay(1_000L)
+      nextEpisodeCountdownSeconds--
+    }
+    val target = nextEpisode
+    if (target != null && !playbackFailed) {
+      Log.i("PlayerScreen", "Auto-advance: countdown scaduto, passaggio a S${target.seasonNumber}E${target.episodeNumber}")
       viewModel.saveCurrentPlaybackProgress(exoPlayer.duration.coerceAtLeast(exoPlayer.currentPosition))
-      viewModel.playNextEpisode(nextEpisode)
+      viewModel.playNextEpisode(target)
     }
   }
 
@@ -1223,6 +1249,9 @@ fun PlayerScreen(
         if (state == Player.STATE_READY) {
           playbackErrorMessage = null
           playbackFailed = false
+          // Flusso riprodotto con successo: salvalo come "ultimo funzionante" per il titolo
+          // (funzione "Riusa l'ultimo link"). Nessun salvataggio su READY di contenuti demo.
+          viewModel.onStreamPlaybackReady()
           totalDuration = exoPlayer.duration.coerceAtLeast(1L)
           val vf = exoPlayer.videoFormat
           val vs = exoPlayer.videoSize
@@ -1387,6 +1416,15 @@ fun PlayerScreen(
           }
         }
 
+        // Fallback difensivo "Riusa l'ultimo link": se lo stream corrente proviene dalla
+        // cache e non è riproducibile (link Debrid scaduto, 403/404 o errore di caricamento),
+        // il ViewModel invalida la voce e riapre la risoluzione/selezione classica.
+        if (viewModel.handleReusedStreamFailure()) {
+          Log.w("StreamNovaReuse", "Flusso riutilizzato non riproducibile (${error.errorCodeName}): fallback alle sorgenti")
+          isBuffering = true
+          return
+        }
+
         // Fallback codec 720p: attivato SOLO per errori codec effettivamente associati al
         // renderer VIDEO. Un errore sottotitoli/text non modifica mai maxVideoSize.
         val fallbackMaxVideoSize = PlayerCodecErrorClassifier.fallbackMaxVideoSize(error, media.title)
@@ -1539,6 +1577,16 @@ fun PlayerScreen(
     hideTimerTick++
   }
 
+  // "Guarda ora": passaggio manuale all'episodio successivo dall'overlay (interrompe il countdown).
+  fun confirmNextEpisode() {
+    val target = nextEpisode ?: return
+    if (playbackFailed) return
+    nextEpisodeCountdownSeconds = 0
+    Log.i("PlayerScreen", "Guarda ora: passaggio manuale a S${target.seasonNumber}E${target.episodeNumber}")
+    viewModel.saveCurrentPlaybackProgress(exoPlayer.duration.coerceAtLeast(exoPlayer.currentPosition))
+    viewModel.playNextEpisode(target)
+  }
+
   fun seekBy(deltaMs: Long) {
     val durationMs = exoPlayer.duration
     val target = if (durationMs > 0) {
@@ -1599,13 +1647,21 @@ fun PlayerScreen(
     if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
   }
 
-  // BACK su controlli
+  // BACK su controlli: se l'overlay "Prossimo Episodio" è visibile, il primo BACK lo
+  // nasconde (consente di vedere i titoli di coda senza auto-next); il BACK successivo
+  // esce dal player.
   BackHandler(enabled = !anyModalOpen) {
     Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler")
     Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
-    Log.d("BACK_TRACE", "PLAYERSCREEN: chiamata a closePlayer()")
-    viewModel.resetStreamState()
-    viewModel.closePlayer()
+    if (isNextEpisodePromptVisible) {
+      Log.d("BACK_TRACE", "PLAYERSCREEN: BACK su overlay Prossimo Episodio: chiusura overlay")
+      nextEpisodeDismissed = true
+      nextEpisodeCountdownSeconds = 0
+    } else {
+      Log.d("BACK_TRACE", "PLAYERSCREEN: chiamata a closePlayer()")
+      viewModel.resetStreamState()
+      viewModel.closePlayer()
+    }
   }
 
   Box(
@@ -1625,6 +1681,12 @@ fun PlayerScreen(
               showSubtitleModal = false
               showQualityModal = false
               showSpeedModal = false
+            } else if (isNextEpisodePromptVisible) {
+              // Primo BACK con overlay "Prossimo Episodio": nasconde solo l'overlay
+              // (niente auto-next, restano i titoli di coda); serve un secondo BACK per uscire.
+              Log.d("BACK_TRACE", "PLAYERSCREEN: BACK su overlay Prossimo Episodio: chiusura overlay")
+              nextEpisodeDismissed = true
+              nextEpisodeCountdownSeconds = 0
             } else {
               Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent chiamata a closePlayer()")
               viewModel.resetStreamState()
@@ -2365,6 +2427,33 @@ fun PlayerScreen(
       }
     }
 
+    // Overlay "Prossimo Episodio": card in basso a destra con countdown automatico
+    // (opzione "Riproduci automaticamente il prossimo episodio" ON) oppure solo
+    // pulsante manuale "Guarda ora" quando l'opzione è OFF.
+    AnimatedVisibility(
+      visible = isNextEpisodePromptVisible && nextEpisode != null,
+      enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
+      exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
+      modifier = Modifier
+        .align(Alignment.BottomEnd)
+        .padding(end = 40.dp, bottom = 40.dp)
+    ) {
+      NextEpisodePromptCard(
+        seasonNumber = nextEpisode?.seasonNumber,
+        episodeNumber = nextEpisode?.episodeNumber,
+        episodeTitle = nextEpisode?.title,
+        countdownSeconds = if (playbackSettings.autoPlayNextEpisodeEnabled) {
+          nextEpisodeCountdownSeconds
+        } else {
+          null
+        },
+        onWatchNow = {
+          kickAutoHide()
+          confirmNextEpisode()
+        }
+      )
+    }
+
     // Modal Audio dinamico con tracce Media3 reali
     if (showAudioModal) {
       val audioOptions = getAvailableAudioOptions(currentTracksState)
@@ -2888,4 +2977,129 @@ private fun mapPreferredAudioLanguages(code: String): List<String> = when (code.
   "fr" -> listOf("fr", "fra")
   "de" -> listOf("de", "deu", "ger")
   else -> emptyList()
+}
+
+/**
+ * Card dell'overlay "Prossimo Episodio": numero/stagione (es. "S02E03"), titolo
+ * dell'episodio successivo, countdown decrescente (visibile con auto-play ON) e
+ * pulsante "Guarda ora" focalizzabile da D-Pad.
+ *
+ * Ancoraggio in basso a destra, sfondo scuro semitrasparente e bordo/glow ciano
+ * coerenti con il tema Nova (stesso linguaggio visivo di "Salta Intro").
+ */
+@Composable
+private fun NextEpisodePromptCard(
+  seasonNumber: Int?,
+  episodeNumber: Int?,
+  episodeTitle: String?,
+  countdownSeconds: Int?,
+  onWatchNow: () -> Unit
+) {
+  val epLabel = if (seasonNumber != null && episodeNumber != null) {
+    "S${seasonNumber.toString().padStart(2, '0')}E${episodeNumber.toString().padStart(2, '0')}"
+  } else {
+    null
+  }
+  Column(
+    modifier = Modifier
+      .widthIn(max = 340.dp)
+      .shadow(
+        elevation = 12.dp,
+        shape = RoundedCornerShape(16.dp),
+        spotColor = NovaCyanBright
+      )
+      .background(
+        color = Color(0xF20B111E),
+        shape = RoundedCornerShape(16.dp)
+      )
+      .border(
+        width = 1.5.dp,
+        color = NovaCyan.copy(alpha = 0.85f),
+        shape = RoundedCornerShape(16.dp)
+      )
+      .padding(horizontal = 20.dp, vertical = 16.dp),
+    verticalArrangement = Arrangement.spacedBy(10.dp)
+  ) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+      Icon(
+        imageVector = Icons.Default.SkipNext,
+        contentDescription = stringResource(R.string.player_cd_next_episode),
+        tint = NovaCyanBright,
+        modifier = Modifier.size(18.dp)
+      )
+      Text(
+        text = stringResource(R.string.player_next_episode_title),
+        color = NovaCyanBright,
+        fontWeight = FontWeight.Bold,
+        fontSize = 12.sp,
+        letterSpacing = 1.sp
+      )
+    }
+    if (epLabel != null) {
+      Text(
+        text = epLabel,
+        color = Color.White,
+        fontWeight = FontWeight.Bold,
+        fontSize = 18.sp
+      )
+    }
+    if (!episodeTitle.isNullOrBlank()) {
+      Text(
+        text = episodeTitle,
+        color = Color.White.copy(alpha = 0.85f),
+        fontSize = 14.sp,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+      )
+    }
+    if (countdownSeconds != null && countdownSeconds > 0) {
+      Text(
+        text = stringResource(R.string.player_next_episode_countdown, countdownSeconds),
+        color = NovaTextSecondary,
+        fontSize = 12.sp
+      )
+    }
+    TvFocusableBox(
+      shape = RoundedCornerShape(50),
+      onClick = onWatchNow
+    ) { isFocused ->
+      Row(
+        modifier = Modifier
+          .shadow(
+            elevation = if (isFocused) 16.dp else 4.dp,
+            shape = RoundedCornerShape(50),
+            spotColor = NovaCyanBright
+          )
+          .background(
+            color = if (isFocused) NovaCyanBright else Color(0xCC0B111E),
+            shape = RoundedCornerShape(50)
+          )
+          .border(
+            width = if (isFocused) 2.dp else 1.5.dp,
+            color = if (isFocused) Color.White else NovaCyan.copy(alpha = 0.8f),
+            shape = RoundedCornerShape(50)
+          )
+          .padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Icon(
+          imageVector = Icons.Default.PlayArrow,
+          contentDescription = null,
+          tint = if (isFocused) Color.Black else NovaCyanBright,
+          modifier = Modifier.size(18.dp)
+        )
+        Text(
+          text = stringResource(R.string.player_next_episode_watch_now),
+          color = if (isFocused) Color.Black else Color.White,
+          fontWeight = FontWeight.Bold,
+          fontSize = 13.sp,
+          letterSpacing = 0.5.sp
+        )
+      }
+    }
+  }
 }
