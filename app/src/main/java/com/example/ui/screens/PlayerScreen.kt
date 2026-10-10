@@ -99,6 +99,10 @@ import com.example.R
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException as ExoPlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
+import com.example.ui.screens.player.PlayerIntroUtils
+import com.example.ui.screens.player.PlayerIntroUtils.IntroWindow
+import com.example.data.repository.IntroSkipRepository
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
@@ -215,7 +219,12 @@ fun PlayerScreen(
 
   val isSourceSelectionActive = showSourceDialog && availableSources.isNotEmpty()
 
-  val isTvShow = media.type == MediaType.SERIE_TV
+  val isTvShow = PlayerIntroUtils.isTvShow(
+    isTvShow = media.type == MediaType.SERIE_TV,
+    seasonNumber = episode?.seasonNumber ?: media.lastWatchedSeason,
+    episodeNumber = episode?.episodeNumber ?: media.lastWatchedEpisode,
+    mediaType = media.type.name
+  ) || media.episodes.isNotEmpty() || media.type.labelItalian.contains("serie", ignoreCase = true)
 
   // Episodio attivo (se TV Show ma episode è null, cerca il primo o l'ultimo guardato)
   val currentEp = episode ?: if (isTvShow) {
@@ -513,6 +522,28 @@ fun PlayerScreen(
   }
 
   var currentTracksState by remember(exoPlayer) { mutableStateOf(exoPlayer.currentTracks) }
+
+  // ---------------------------------------------------------------------------
+  // INTRO / "SALTA INTRO"
+  // Gestione finestra intro: extras reali del media oppure IntroDB
+  // ---------------------------------------------------------------------------
+  var isIntroDismissed by remember { mutableStateOf(false) }
+  var introDbWindow by remember { mutableStateOf<IntroWindow?>(null) }
+  var introWindow by remember { mutableStateOf<IntroWindow?>(null) }
+
+  fun updateIntroWindow() {
+    val resolved = PlayerIntroUtils.resolveIntroWindow(
+      mediaItem = exoPlayer.currentMediaItem,
+      introDbWindow = introDbWindow
+    )
+    if (resolved != introWindow) {
+      introWindow = resolved
+    }
+    Log.d(
+      "StreamNovaIntro",
+      "Stato intro: isTvShow=$isTvShow, introWindow=$resolved, currentPosition=$currentPosition, playbackState=${exoPlayer.playbackState}"
+    )
+  }
 
   fun formatAudioTrackDisplayName(
     formatLanguage: String?,
@@ -1218,6 +1249,7 @@ fun PlayerScreen(
             FrameRateUtils.switchDisplayModeForFrameRate(act, vf.frameRate)
           }
           playerReady = true
+          updateIntroWindow()
         } else if (state == Player.STATE_ENDED) {
           isBuffering = false
           // Conclusione normale SOLO se la sessione non è fallita e la riproduzione
@@ -1225,6 +1257,13 @@ fun PlayerScreen(
           if (!playbackFailed && exoPlayer.currentPosition > 0L && exoPlayer.duration > 0L) {
             playbackEnded = true
           }
+        }
+      }
+
+      override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+        if (exoPlayer.duration > 0L) {
+          totalDuration = exoPlayer.duration.coerceAtLeast(1L)
+          updateIntroWindow()
         }
       }
 
@@ -1430,30 +1469,60 @@ fun PlayerScreen(
           val w = exoPlayer.videoFormat?.width ?: exoPlayer.videoSize.width
           updateResolutionFromHeight(h, w)
         }
+        if (introWindow == null && introDbWindow != null) {
+          updateIntroWindow()
+        }
+        introWindow?.let { win ->
+          if (currentPosition in (win.startMs - 15_000L)..(win.endMs)) {
+            val visible = !isIntroDismissed && PlayerIntroUtils.isButtonVisible(currentPosition, win)
+            Log.d(
+              "StreamNovaIntro",
+              "Posizione intro: currentPosition=$currentPosition, startMs=${win.startMs}, endMs=${win.endMs}, isButtonVisible=$visible, isIntroDismissed=$isIntroDismissed, isTvShow=$isTvShow"
+            )
+          }
+        }
       }
       delay(500)
     }
   }
 
   // ---------------------------------------------------------------------------
-  // INTRO / "SALTA INTRO"
-  // L'intervallo della sigla arriva SOLO da metadati reali del MediaItem
-  // (`mediaMetadata.extras`, popolati dai metadata dello stream/Stremio/Cinemeta).
-  // Senza timestamp validi il pulsante non compare: nessun intervallo fittizio.
+  // INTRO / "SALTA INTRO" (IntroDB e Metadati Reali)
   // ---------------------------------------------------------------------------
-  var isIntroDismissed by remember { mutableStateOf(false) }
-  var introWindow by remember { mutableStateOf<com.example.ui.screens.player.PlayerIntroUtils.IntroWindow?>(null) }
-
   LaunchedEffect(media.id, currentEp?.id) {
     isIntroDismissed = false
-    introWindow = com.example.ui.screens.player.PlayerIntroUtils.windowFromMediaItem(exoPlayer.currentMediaItem)
+    introDbWindow = null
+    updateIntroWindow()
+
+    if (isTvShow) {
+      val season = currentEp?.seasonNumber ?: episode?.seasonNumber ?: media.lastWatchedSeason ?: 1
+      val epNum = currentEp?.episodeNumber ?: episode?.episodeNumber ?: media.lastWatchedEpisode ?: 1
+      val imdbId = if (media.id.startsWith("tt", ignoreCase = true)) {
+        media.id.substringBefore(":")
+      } else null
+
+      val fetched = IntroSkipRepository.getIntroWindow(
+        imdbId = imdbId,
+        tmdbId = media.tmdbId,
+        season = season,
+        episode = epNum
+      )
+      if (fetched != null) {
+        introDbWindow = fetched
+        updateIntroWindow()
+        Log.d("StreamNovaIntro", "IntroDB timestamps applicati per S${season}E${epNum}: $fetched")
+      } else {
+        Log.d("StreamNovaIntro", "Nessun timestamp intro trovato su IntroDB per S${season}E${epNum}")
+      }
+    }
   }
-  LaunchedEffect(exoPlayer.currentMediaItem) {
-    introWindow = com.example.ui.screens.player.PlayerIntroUtils.windowFromMediaItem(exoPlayer.currentMediaItem)
+
+  LaunchedEffect(exoPlayer.currentMediaItem, introDbWindow) {
+    updateIntroWindow()
   }
 
   val isIntroActive = !isIntroDismissed &&
-    com.example.ui.screens.player.PlayerIntroUtils.isButtonVisible(currentPosition, introWindow)
+    PlayerIntroUtils.isButtonVisible(currentPosition, introWindow)
 
   val hudShown = areControlsVisible || !isPlaying
 
@@ -1945,6 +2014,10 @@ fun PlayerScreen(
                 onClick = {
                   kickAutoHide()
                   introWindow?.let { window ->
+                    Log.d(
+                      "StreamNovaIntro",
+                      "Click Salta Intro (HUD): seekTo=${window.endMs}, currentPosition=$currentPosition, isTvShow=$isTvShow"
+                    )
                     exoPlayer.seekTo(window.endMs)
                     currentPosition = window.endMs
                   }
@@ -2244,6 +2317,10 @@ fun PlayerScreen(
         onClick = {
           kickAutoHide()
           introWindow?.let { window ->
+            Log.d(
+              "StreamNovaIntro",
+              "Click Salta Intro (Floating): seekTo=${window.endMs}, currentPosition=$currentPosition, isTvShow=$isTvShow"
+            )
             exoPlayer.seekTo(window.endMs)
             currentPosition = window.endMs
           }

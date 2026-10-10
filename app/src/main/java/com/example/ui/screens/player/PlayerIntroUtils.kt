@@ -6,11 +6,13 @@ import androidx.media3.common.MediaItem
 /**
  * Logica di risoluzione e visibilità del pulsante "Salta Intro".
  *
- * L'intervallo della sigla iniziale è un dato REALE: arriva dagli extras del
- * [MediaItem.mediaMetadata] corrente, popolati dai metadata dello stream
- * (Stremio / Cinemeta / provider). Se i timestamp non sono presenti o non sono
- * coerenti, [window] restituisce `null` e il pulsante NON deve mai comparire:
- * è esplicitamente vietato ripiegare su un intervallo fittizio (es. 0 → 90s).
+ * Supporta unicamente timestamp reali:
+ * 1. Timestamp reali da extras del [MediaItem.mediaMetadata] (es. stream/Cinemeta/provider o capitoli).
+ * 2. Timestamp reali restituiti da IntroDB tramite IntroSkipRepository.
+ *
+ * È esplicitamente vietato qualsiasi fallback o stima euristica hardcoded (es. 30s..150s o 90s..150s):
+ * se nessuna fonte certificata fornisce timestamp reali, [IntroWindow] è null e il pulsante
+ * non viene mai mostrato.
  */
 internal object PlayerIntroUtils {
 
@@ -42,6 +44,48 @@ internal object PlayerIntroUtils {
   }
 
   /**
+   * Verifica se il titolo di un capitolo corrisponde a una sigla / intro.
+   * Riconosce parole chiave come "intro", "sigla", "opening".
+   */
+  fun isChapterIntroTitle(title: String?): Boolean {
+    if (title.isNullOrBlank()) return false
+    val lower = title.lowercase()
+    return lower.contains("intro") || lower.contains("sigla") || lower.contains("opening")
+  }
+
+  /**
+   * Estrae una [IntroWindow] da un capitolo con titolo matching intro.
+   */
+  fun windowFromChapter(title: String?, startMs: Long?, endMs: Long?): IntroWindow? {
+    if (!isChapterIntroTitle(title)) return null
+    return window(startMs, endMs)
+  }
+
+  /**
+   * Verifica se l'elemento è identificabile come serie TV in modo resiliente:
+   * considera il flag booleano, seasonNumber, episodeNumber, o mediaType ("series", "tv", etc.).
+   */
+  fun isTvShow(
+    isTvShow: Boolean = false,
+    seasonNumber: Int? = null,
+    episodeNumber: Int? = null,
+    mediaType: String? = null
+  ): Boolean {
+    if (isTvShow) return true
+    if (seasonNumber != null || episodeNumber != null) return true
+    if (mediaType != null) {
+      if (mediaType.equals("series", ignoreCase = true) ||
+        mediaType.equals("tv", ignoreCase = true) ||
+        mediaType.equals("serie_tv", ignoreCase = true) ||
+        mediaType.contains("serie", ignoreCase = true)
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
    * `true` SOLO mentre [positionMs] cade dentro la sigla, con chiusura anticipata di
    * [INTRO_BUTTON_END_MARGIN_MS] prima della fine.
    *
@@ -63,6 +107,28 @@ internal object PlayerIntroUtils {
       startMs = extras.readLongOrNull(EXTRA_INTRO_START_MS),
       endMs = extras.readLongOrNull(EXTRA_INTRO_END_MS)
     )
+  }
+
+  /**
+   * Risolve la finestra intro considerando priorità:
+   * 1. Metadata reali del MediaItem (se presenti ed extras validi).
+   * 2. Timestamp reali da IntroDB ([introDbWindow]).
+   *
+   * Se nessuna fonte certificata fornisce timestamp reali, restituisce `null`.
+   * Nessun fallback euristico o intervallo fittizio.
+   */
+  fun resolveIntroWindow(
+    mediaItem: MediaItem?,
+    introDbWindow: IntroWindow? = null
+  ): IntroWindow? {
+    val realFromMedia = windowFromMediaItem(mediaItem)
+    if (realFromMedia != null && realFromMedia.isValid) {
+      return realFromMedia
+    }
+    if (introDbWindow != null && introDbWindow.isValid) {
+      return introDbWindow
+    }
+    return null
   }
 
   private fun Bundle.readLongOrNull(key: String): Long? =

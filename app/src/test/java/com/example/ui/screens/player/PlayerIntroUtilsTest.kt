@@ -101,4 +101,84 @@ class PlayerIntroUtilsTest {
       .build()
     assertNull(PlayerIntroUtils.windowFromMediaItem(item))
   }
+
+  @Test
+  fun isTvShowRiconosceIndicatoriDiversi() {
+    assertTrue(PlayerIntroUtils.isTvShow(isTvShow = true))
+    assertTrue(PlayerIntroUtils.isTvShow(seasonNumber = 2))
+    assertTrue(PlayerIntroUtils.isTvShow(episodeNumber = 5))
+    assertTrue(PlayerIntroUtils.isTvShow(mediaType = "series"))
+    assertTrue(PlayerIntroUtils.isTvShow(mediaType = "SERIES"))
+    assertTrue(PlayerIntroUtils.isTvShow(mediaType = "tv"))
+    assertTrue(PlayerIntroUtils.isTvShow(mediaType = "SERIE_TV"))
+    assertFalse(PlayerIntroUtils.isTvShow(mediaType = "movie"))
+    assertFalse(PlayerIntroUtils.isTvShow())
+  }
+
+  @Test
+  fun capitoliIntroRiconosciuti() {
+    assertTrue(PlayerIntroUtils.isChapterIntroTitle("Intro"))
+    assertTrue(PlayerIntroUtils.isChapterIntroTitle("Opening Theme"))
+    assertTrue(PlayerIntroUtils.isChapterIntroTitle("Sigla Iniziale"))
+    assertFalse(PlayerIntroUtils.isChapterIntroTitle("Episode Start"))
+    assertFalse(PlayerIntroUtils.isChapterIntroTitle("Credits"))
+    assertFalse(PlayerIntroUtils.isChapterIntroTitle(null))
+
+    val chapterWin = PlayerIntroUtils.windowFromChapter("Opening", 15_000L, 85_000L)
+    assertEquals(15_000L, chapterWin?.startMs)
+    assertEquals(85_000L, chapterWin?.endMs)
+
+    assertNull(PlayerIntroUtils.windowFromChapter("Scene 1", 15_000L, 85_000L))
+  }
+
+  @Test
+  fun resolveIntroWindowConPrecedenzaRealeSuIntroDb() {
+    val extras = Bundle().apply {
+      putLong(PlayerIntroUtils.EXTRA_INTRO_START_MS, 10_000L)
+      putLong(PlayerIntroUtils.EXTRA_INTRO_END_MS, 60_000L)
+    }
+    val item = MediaItem.Builder()
+      .setUri("https://v.test/tv.mkv")
+      .setMediaMetadata(MediaMetadata.Builder().setExtras(extras).build())
+      .build()
+
+    val introDbWin = PlayerIntroUtils.IntroWindow(20_000L, 80_000L)
+
+    val w = PlayerIntroUtils.resolveIntroWindow(
+      mediaItem = item,
+      introDbWindow = introDbWin
+    )
+    // Ha priorità il timestamp reale dal file media
+    assertEquals(10_000L, w?.startMs)
+    assertEquals(60_000L, w?.endMs)
+  }
+
+  @Test
+  fun resolveIntroWindowUsaIntroDbSeMediaSenzaMetadata() {
+    val item = MediaItem.Builder().setUri("https://v.test/tv.mkv").build()
+    val introDbWin = PlayerIntroUtils.IntroWindow(20_000L, 80_000L)
+
+    val w = PlayerIntroUtils.resolveIntroWindow(
+      mediaItem = item,
+      introDbWindow = introDbWin
+    )
+    assertEquals(20_000L, w?.startMs)
+    assertEquals(80_000L, w?.endMs)
+  }
+
+  @Test
+  fun resolveIntroWindowSenzaFonteRestituisceSempreNull() {
+    val item = MediaItem.Builder().setUri("https://v.test/tv.mkv").build()
+
+    // Nessun metadato e nessun introDbWindow -> tassativamente null (nessun fallback fittizio)
+    assertNull(PlayerIntroUtils.resolveIntroWindow(
+      mediaItem = item,
+      introDbWindow = null
+    ))
+
+    assertNull(PlayerIntroUtils.resolveIntroWindow(
+      mediaItem = null,
+      introDbWindow = null
+    ))
+  }
 }
