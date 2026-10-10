@@ -168,35 +168,44 @@ fun HomeMainBrowsingContent(
   }
   var contextMenuMedia by remember { mutableStateOf<MediaItem?>(null) }
 
+  // Regola di priorità Xperience: se i cataloghi Xperience/addon sono attivi per un
+  // tipo, le 4 righe TMDB locali di quel tipo vengono escluse dalla Home (per evitare
+  // duplicati). Senza Xperience attivo restano la base predefinita.
+  val hasXperienceMovies = homeCatalogs?.hasXperienceMovies == true
+  val hasXperienceSeries = homeCatalogs?.hasXperienceSeries == true
+
   val top10Movies = remember(homeCatalogs, allMedia) {
-    homeCatalogs?.top10Movies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTop10Movies()
+    if (hasXperienceMovies) emptyList()
+    else homeCatalogs?.top10Movies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTop10Movies()
   }
   val top10Series = remember(homeCatalogs, allMedia) {
-    homeCatalogs?.top10Series?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTop10Series()
+    if (hasXperienceSeries) emptyList()
+    else homeCatalogs?.top10Series?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTop10Series()
   }
   val trendingMovies = remember(homeCatalogs, allMedia) {
-    homeCatalogs?.trendingMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTrendingMovies()
+    if (hasXperienceMovies) emptyList()
+    else homeCatalogs?.trendingMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTrendingMovies()
   }
   val trendingSeries = remember(homeCatalogs, allMedia) {
-    homeCatalogs?.trendingSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTrendingSeries()
+    if (hasXperienceSeries) emptyList()
+    else homeCatalogs?.trendingSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getTrendingSeries()
   }
   val forYouMovies = remember(homeCatalogs, allMedia) {
-    homeCatalogs?.forYouMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getForYouMovies()
+    if (hasXperienceMovies) emptyList()
+    else homeCatalogs?.forYouMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getForYouMovies()
   }
   val forYouSeries = remember(homeCatalogs, allMedia) {
-    homeCatalogs?.forYouSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getForYouSeries()
+    if (hasXperienceSeries) emptyList()
+    else homeCatalogs?.forYouSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getForYouSeries()
   }
 
-  // Presenza catalogo XPERIENCE / addon per tipo: se disponibile, la sezione locale "For You" corrispondente viene nascosta
-  val hasXperienceMovies = homeCatalogs?.isMoviesFromStremio == true ||
-    (homeCatalogs?.extraSections?.any { it.mediaType == MediaType.FILM && it.items.isNotEmpty() } == true)
-  val hasXperienceSeries = homeCatalogs?.isSeriesFromStremio == true ||
-    (homeCatalogs?.extraSections?.any { it.mediaType == MediaType.SERIE_TV && it.items.isNotEmpty() } == true)
   val popularMovies = remember(homeCatalogs, allMedia) {
-    homeCatalogs?.popularMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getPopularMovies()
+    if (hasXperienceMovies) emptyList()
+    else homeCatalogs?.popularMovies?.takeIf { it.isNotEmpty() } ?: MediaRepository.getPopularMovies()
   }
   val popularSeries = remember(homeCatalogs, allMedia) {
-    homeCatalogs?.popularSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getPopularSeries()
+    if (hasXperienceSeries) emptyList()
+    else homeCatalogs?.popularSeries?.takeIf { it.isNotEmpty() } ?: MediaRepository.getPopularSeries()
   }
 
   // Hero Banner Dinamico: selezione di massimo 9 titoli alternati tra Film e Serie TV
@@ -320,12 +329,12 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 4. TOP 10 FILM (Card con numero gigante stilizzato)
-    if (top10Movies.isNotEmpty()) {
+    // 4. TOP 10 FILM (Card con numero gigante stilizzato) - esclusa se Xperience Film è attivo
+    if (!hasXperienceMovies && top10Movies.isNotEmpty()) {
       item(key = "section_top_10_film") {
         CarouselHeader(
           title = stringResource(R.string.home_section_top_10_movies),
-          badge = if (homeCatalogs?.isMoviesFromStremio == true) "Stremio" else stringResource(R.string.home_badge_tmdb_ranking_italy)
+          badge = stringResource(R.string.home_badge_tmdb_ranking_italy)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -343,12 +352,12 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 5. TOP 10 SERIE (Card con numero gigante stilizzato)
-    if (top10Series.isNotEmpty()) {
+    // 5. TOP 10 SERIE (Card con numero gigante stilizzato) - esclusa se Xperience Serie è attivo
+    if (!hasXperienceSeries && top10Series.isNotEmpty()) {
       item(key = "section_top_10_serie") {
         CarouselHeader(
           title = stringResource(R.string.home_section_top_10_series),
-          badge = if (homeCatalogs?.isSeriesFromStremio == true) "Stremio" else stringResource(R.string.home_badge_most_watched_tmdb)
+          badge = stringResource(R.string.home_badge_most_watched_tmdb)
         )
         LazyRow(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
@@ -366,8 +375,8 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 6. TRENDING FILM
-    if (trendingMovies.isNotEmpty()) {
+    // 6. TRENDING FILM - esclusa se Xperience Film è attivo
+    if (!hasXperienceMovies && trendingMovies.isNotEmpty()) {
       item(key = "section_trending_film") {
         CarouselHeader(
           title = stringResource(R.string.home_section_trending_movies),
@@ -388,8 +397,8 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 7. TRENDING SERIE
-    if (trendingSeries.isNotEmpty()) {
+    // 7. TRENDING SERIE - esclusa se Xperience Serie è attivo
+    if (!hasXperienceSeries && trendingSeries.isNotEmpty()) {
       item(key = "section_trending_serie") {
         CarouselHeader(
           title = stringResource(R.string.home_section_trending_series),
@@ -410,7 +419,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 8. FOR YOU FILM (Consigliati per te - Film) - fallback locale se XPERIENCE non fornisce catalogo Film
+    // 8. FOR YOU FILM (Consigliati per te - Film) - esclusa se Xperience Film è attivo
     if (!hasXperienceMovies && forYouMovies.isNotEmpty()) {
       item(key = "section_for_you_film") {
         CarouselHeader(
@@ -432,7 +441,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 9. FOR YOU SERIE (Consigliate per te - Serie TV) - fallback locale se XPERIENCE non fornisce catalogo Serie
+    // 9. FOR YOU SERIE (Consigliate per te - Serie TV) - esclusa se Xperience Serie è attivo
     if (!hasXperienceSeries && forYouSeries.isNotEmpty()) {
       item(key = "section_for_you_serie") {
         CarouselHeader(
@@ -454,8 +463,8 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 12. POPOLARI FILM
-    if (popularMovies.isNotEmpty()) {
+    // 12. POPOLARI FILM - esclusa se Xperience Film è attivo
+    if (!hasXperienceMovies && popularMovies.isNotEmpty()) {
       item(key = "section_popolari_film") {
         CarouselHeader(
           title = stringResource(R.string.home_section_popular_movies),
@@ -476,8 +485,8 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 15. POPOLARI SERIE
-    if (popularSeries.isNotEmpty()) {
+    // 15. POPOLARI SERIE - esclusa se Xperience Serie è attivo
+    if (!hasXperienceSeries && popularSeries.isNotEmpty()) {
       item(key = "section_popolari_serie") {
         CarouselHeader(
           title = stringResource(R.string.home_section_popular_series),
@@ -498,7 +507,8 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // Sezioni aggiuntive da addon Stremio (se presenti)
+    // Sezioni catalogo Stremio (addon): si AGGIUNGONO alle righe TMDB, così la Home
+    // mostra l'unione dei cataloghi locali e di quelli degli addon abilitati.
     homeCatalogs?.extraSections?.forEach { extraSec ->
       if (extraSec.items.isNotEmpty()) {
         item(key = "section_${extraSec.id}") {
