@@ -313,14 +313,6 @@ fun PlayerScreen(
     showSpeedModal = false
   }
 
-  // Gestione Intro per le serie TV (attivo dai primi secondi fino a 90s, resettato al cambio episodio)
-  var isIntroDismissed by remember { mutableStateOf(false) }
-  LaunchedEffect(media.id, currentEp?.id) {
-    isIntroDismissed = false
-  }
-  val introEndMs = 90_000L
-  val isIntroActive = isTvShow && !isIntroDismissed && currentPosition in 1_000L..introEndMs
-
   val streamHeaders = playbackState.streamHeaders
   // FASE 3.3: frazione altezza per la dimensione testo sottotitoli (lettura tracciata in
   // composizione: qualsiasi cambio preferenza ri-esegue l'update del PlayerView).
@@ -506,7 +498,7 @@ fun PlayerScreen(
           Log.i("PlayerScreen", "Avvio riproduzione NuvioEngine: url=$videoUrl")
           stop()
           clearMediaItems()
-          val exoMediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles, defaultSubtitleSelectionLanguage)
+          val exoMediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles)
           setMediaItem(exoMediaItem)
           prepare()
           if (playbackState.currentPositionMs > 0) {
@@ -1106,7 +1098,7 @@ fun PlayerScreen(
       exoPlayer.stop()
       exoPlayer.clearMediaItems()
 
-      val item = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, stremioSubtitles, defaultSubtitleSelectionLanguage)
+      val item = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, stremioSubtitles)
       exoPlayer.setMediaItem(item)
       exoPlayer.prepare()
       if (targetPos > 0) {
@@ -1347,7 +1339,7 @@ fun PlayerScreen(
             Log.w("THE_PITT_PLAYER", "Errore traccia sottotitoli (${failedSubtitle?.url ?: error.errorCodeName}): ripresa riproduzione senza la traccia problematica (maxVideoSize invariato).")
             val currentPos = exoPlayer.currentPosition
             val wasPlaying = exoPlayer.playWhenReady
-            val newItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl ?: "", remaining, defaultSubtitleSelectionLanguage)
+            val newItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl ?: "", remaining)
             exoPlayer.setMediaItem(newItem)
             if (currentPos > 0) exoPlayer.seekTo(currentPos)
             exoPlayer.prepare()
@@ -1442,6 +1434,26 @@ fun PlayerScreen(
       delay(500)
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // INTRO / "SALTA INTRO"
+  // L'intervallo della sigla arriva SOLO da metadati reali del MediaItem
+  // (`mediaMetadata.extras`, popolati dai metadata dello stream/Stremio/Cinemeta).
+  // Senza timestamp validi il pulsante non compare: nessun intervallo fittizio.
+  // ---------------------------------------------------------------------------
+  var isIntroDismissed by remember { mutableStateOf(false) }
+  var introWindow by remember { mutableStateOf<com.example.ui.screens.player.PlayerIntroUtils.IntroWindow?>(null) }
+
+  LaunchedEffect(media.id, currentEp?.id) {
+    isIntroDismissed = false
+    introWindow = com.example.ui.screens.player.PlayerIntroUtils.windowFromMediaItem(exoPlayer.currentMediaItem)
+  }
+  LaunchedEffect(exoPlayer.currentMediaItem) {
+    introWindow = com.example.ui.screens.player.PlayerIntroUtils.windowFromMediaItem(exoPlayer.currentMediaItem)
+  }
+
+  val isIntroActive = !isIntroDismissed &&
+    com.example.ui.screens.player.PlayerIntroUtils.isButtonVisible(currentPosition, introWindow)
 
   val hudShown = areControlsVisible || !isPlaying
 
@@ -1795,7 +1807,7 @@ fun PlayerScreen(
                   playbackErrorMessage = null
                   isBuffering = true
                   exoPlayer.setMediaItem(
-                    PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles, defaultSubtitleSelectionLanguage)
+                    PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles)
                   )
                   exoPlayer.prepare()
                   exoPlayer.playWhenReady = true
@@ -1932,9 +1944,10 @@ fun PlayerScreen(
                 shape = RoundedCornerShape(50),
                 onClick = {
                   kickAutoHide()
-                  val target = (currentPosition + 85_000L).coerceAtMost(totalDuration)
-                  exoPlayer.seekTo(target)
-                  currentPosition = target
+                  introWindow?.let { window ->
+                    exoPlayer.seekTo(window.endMs)
+                    currentPosition = window.endMs
+                  }
                   isIntroDismissed = true
                   requestFocusOn(playPauseFocusRequester)
                 }
@@ -2230,9 +2243,10 @@ fun PlayerScreen(
         shape = RoundedCornerShape(50),
         onClick = {
           kickAutoHide()
-          val target = (currentPosition + 85_000L).coerceAtMost(totalDuration)
-          exoPlayer.seekTo(target)
-          currentPosition = target
+          introWindow?.let { window ->
+            exoPlayer.seekTo(window.endMs)
+            currentPosition = window.endMs
+          }
           isIntroDismissed = true
           showControls()
         }
