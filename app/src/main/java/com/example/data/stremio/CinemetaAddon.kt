@@ -177,4 +177,33 @@ object CinemetaAddon {
       HomeCatalogPlan(it, mapOf(EXTRA_GENRE to newReleasesYear.toString()))
     }
   )
+
+  private val allMediaTypes = listOf(MediaType.FILM, MediaType.SERIE_TV)
+
+  /**
+   * Cataloghi Cinemeta usati come fonte di DEFAULT per le CATEGORIE della sezione
+   * Ricerca ("Esplora per Genere"): il catalogo Popolari (`top`), che dichiara le
+   * opzioni `genre`, per Film e Serie TV. Il filtro avviene inviando
+   * `genre={NomeGenere}` (vedi la risoluzione delle richieste nel repository).
+   *
+   * Se [mediaType] è null vengono restituiti entrambi i tipi.
+   */
+  fun genreCatalogs(mediaType: MediaType? = null): List<StremioCatalogDefinition> {
+    val types = mediaType?.let { listOf(it) } ?: allMediaTypes
+    return types
+      .mapNotNull { findCatalog(it, CATALOG_POPULAR) }
+      .filter { it.supportsGenre() && !it.requiresSearch() }
+  }
+
+  /**
+   * Cataloghi Cinemeta usati come provider di DEFAULT per la RICERCA testuale
+   * globale (extra `search`) quando nessun addon utente copre la query.
+   * Se [mediaType] è null vengono restituiti entrambi i tipi.
+   */
+  fun searchCatalogs(mediaType: MediaType? = null): List<StremioCatalogDefinition> {
+    val types = mediaType?.let { listOf(it) } ?: allMediaTypes
+    return types
+      .mapNotNull { findCatalog(it, CATALOG_POPULAR) }
+      .filter { it.supportsSearch() }
+  }
 }
