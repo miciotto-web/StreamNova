@@ -1253,6 +1253,10 @@ fun SettingsScreen(
   val updateCheckState = viewModel?.updateCheckState?.collectAsState()?.value ?: UpdateCheckState.Idle
   val updateDownloadState = viewModel?.updateDownloadState?.collectAsState()?.value ?: UpdateDownloadState.Idle
   var showTorBoxKeyDialog by remember { mutableStateOf(false) }
+  // Ripristino del focus sulla riga che ha aperto il popup chiave API: al BACK (o
+  // Salva/Annulla) il focus torna qui invece di perdersi sulla schermata.
+  val torBoxKeyRowFocusRequester = remember { FocusRequester() }
+  var restoreTorBoxKeyRowFocus by remember { mutableStateOf(false) }
   var showResolutionDialog by remember { mutableStateOf(false) }
   var showSubtitleLanguageDialog by remember { mutableStateOf(false) }
   var showSubtitleSizeDialog by remember { mutableStateOf(false) }
@@ -1288,6 +1292,19 @@ fun SettingsScreen(
       is UpdateCheckState.UpdateAvailable,
       UpdateCheckState.Error -> true
       else -> false
+    }
+  }
+
+  // Quando il popup della chiave API si chiude (BACK, Salva o Annulla) il focus torna
+  // sulla riga di Impostazioni che lo ha aperto, con una riga di frame di margine per
+  // lasciare ricomporre lo sfondo.
+  LaunchedEffect(restoreTorBoxKeyRowFocus) {
+    if (!restoreTorBoxKeyRowFocus) return@LaunchedEffect
+    restoreTorBoxKeyRowFocus = false
+    withFrameNanos { }
+    try {
+      torBoxKeyRowFocusRequester.requestFocus()
+    } catch (_: Exception) {
     }
   }
 
@@ -1387,7 +1404,8 @@ fun SettingsScreen(
               title = stringResource(R.string.settings_torbox_api_key),
               value = torBoxApiKey?.let { maskApiKey(it) } ?: stringResource(R.string.settings_not_configured),
               valueColor = if (!torBoxApiKey.isNullOrBlank()) NovaGreen else NovaTextMuted,
-              onClick = { showTorBoxKeyDialog = true }
+              onClick = { showTorBoxKeyDialog = true },
+              modifier = Modifier.focusRequester(torBoxKeyRowFocusRequester)
             )
 
             // Stato account: verde "Collegato" se valida, altrimenti pulsante
@@ -1646,10 +1664,14 @@ fun SettingsScreen(
       confirmLabel = stringResource(R.string.action_save),
       onConfirm = { key ->
         showTorBoxKeyDialog = false
+        restoreTorBoxKeyRowFocus = true
         viewModel?.setTorBoxApiKey(key)
         viewModel?.verifyTorBoxAccount()
       },
-      onDismiss = { showTorBoxKeyDialog = false }
+      onDismiss = {
+        showTorBoxKeyDialog = false
+        restoreTorBoxKeyRowFocus = true
+      }
     )
   }
 
@@ -2344,13 +2366,14 @@ fun SettingsRow(
   title: String,
   value: String? = null,
   valueColor: Color = NovaCyanBright,
-  onClick: (() -> Unit)? = null
+  onClick: (() -> Unit)? = null,
+  modifier: Modifier = Modifier
 ) {
   TvFocusableBox(
     shape = RoundedCornerShape(10.dp),
     focusedScale = 1.02f,
     onClick = { onClick?.invoke() },
-    modifier = Modifier
+    modifier = modifier
       .fillMaxWidth()
       .padding(horizontal = 8.dp)
   ) { isFocused ->

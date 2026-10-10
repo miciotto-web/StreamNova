@@ -3,6 +3,7 @@ package com.example.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -45,6 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import com.example.R
@@ -89,7 +92,29 @@ fun TextInputDialog(
     }
   }
 
-  Dialog(onDismissRequest = onDismiss) {
+  // FOCUS TRAP: traccia se il focus è ancora dentro il popup. Se esce (es. dopo che
+  // la tastiera a schermo è stata chiusa con BACK e il focus è caduto sugli elementi
+  // sottostanti delle Impostazioni) viene riportato sul campo di testo, così è sempre
+  // possibile riaprire la tastiera.
+  var focusInsideDialog by remember { mutableStateOf(false) }
+  LaunchedEffect(focusInsideDialog) {
+    if (focusInsideDialog) return@LaunchedEffect
+    withFrameNanos { }
+    try {
+      fieldFocusRequester.requestFocus()
+    } catch (_: Exception) {
+    }
+  }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    // BACK chiude il popup (dopo che l'IME ha consumato il primo BACK della tastiera);
+    // il tap fuori NON deve chiudere il dialog su TV.
+    properties = DialogProperties(
+      dismissOnBackPress = true,
+      dismissOnClickOutside = false
+    )
+  ) {
     Column(
       modifier = Modifier
         .fillMaxWidth()
@@ -97,6 +122,9 @@ fun TextInputDialog(
         .background(NovaSurface, RoundedCornerShape(20.dp))
         .border(1.5.dp, NovaCyan, RoundedCornerShape(20.dp))
         .padding(24.dp)
+        // Delimita il gruppo di navigazione D-pad: il focus resta tra campo e pulsanti.
+        .focusGroup()
+        .onFocusChanged { focusInsideDialog = it.hasFocus }
     ) {
       Row(
         modifier = Modifier.fillMaxWidth(),
