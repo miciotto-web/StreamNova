@@ -44,7 +44,15 @@ data class Episode(
   val totalDurationMs: Long = (durationMinutes * 60 * 1000).toLong(),
   val rating: Float? = null,
   val airDate: String? = null,
+  val seriesImdbId: String? = null,
 ) {
+  val season: Int get() = seasonNumber
+  val episode: Int get() = episodeNumber
+
+  val effectiveImdbId: String?
+    get() = seriesImdbId?.takeIf { it.isNotBlank() }
+      ?: id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
+
   val isCompleted: Boolean
     get() = totalDurationMs > 0 && currentProgressMs >= (totalDurationMs * 0.9)
 
@@ -73,6 +81,7 @@ data class MediaItem(
   val posterUrl: String? = null,
   val logoUrl: String? = null,
   val tmdbId: Int? = null,
+  val imdbId: String? = null,
   val type: MediaType = MediaType.FILM,
   val year: Int = 2024,
   val durationMinutes: Int = 120,
@@ -105,6 +114,10 @@ data class MediaItem(
 ) {
   val progressFraction: Float
     get() = if (totalDurationMs > 0) (currentProgressMs.toFloat() / totalDurationMs.toFloat()).coerceIn(0f, 1f) else 0f
+
+  val effectiveImdbId: String?
+    get() = imdbId?.takeIf { it.isNotBlank() }
+      ?: id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
 
   val formattedDuration: String
     get() {
@@ -202,7 +215,9 @@ data class EpisodeItem(
     get() = "E%02d".format(episodeNumber)
 }
 
-fun EpisodeItem.toEpisode(seriesId: String, progressMs: Long = 0L): Episode {
+fun EpisodeItem.toEpisode(seriesId: String, progressMs: Long = 0L, seriesImdbId: String? = null): Episode {
+  val cleanSeriesImdb = seriesImdbId?.takeIf { it.isNotBlank() }
+    ?: if (seriesId.startsWith("tt", ignoreCase = true)) seriesId.substringBefore(":") else null
   return Episode(
     id = "${seriesId}_s${seasonNumber}e${episodeNumber}",
     seasonNumber = seasonNumber,
@@ -214,7 +229,8 @@ fun EpisodeItem.toEpisode(seriesId: String, progressMs: Long = 0L): Episode {
     videoUrl = videoUrl,
     currentProgressMs = progressMs,
     rating = rating,
-    airDate = airDate
+    airDate = airDate,
+    seriesImdbId = cleanSeriesImdb
   )
 }
 
@@ -228,9 +244,9 @@ data class SeasonItem(
 
 sealed interface SeasonEpisodesUiState {
   object Idle : SeasonEpisodesUiState
-  data class Loading(val seasonNumber: Int) : SeasonEpisodesUiState
-  data class Success(val seasonNumber: Int, val season: SeasonItem) : SeasonEpisodesUiState
-  data class Error(val seasonNumber: Int, val message: String) : SeasonEpisodesUiState
+  data class Loading(val seasonNumber: Int, val seriesId: String? = null) : SeasonEpisodesUiState
+  data class Success(val seasonNumber: Int, val season: SeasonItem, val seriesId: String? = null) : SeasonEpisodesUiState
+  data class Error(val seasonNumber: Int, val message: String, val seriesId: String? = null) : SeasonEpisodesUiState
 }
 
 

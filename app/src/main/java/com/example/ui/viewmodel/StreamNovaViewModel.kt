@@ -16,6 +16,7 @@ import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
 import com.example.data.model.VideoResolution
+import com.example.data.model.toEpisode
 import android.content.Context
 import com.example.data.local.StreamNovaDatabase
 import com.example.data.prefs.BackBufferOption
@@ -32,6 +33,7 @@ import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.HomeCatalogs
+import com.example.data.repository.LastWorkingStreamRepository
 import com.example.data.repository.ProviderCoverage
 import com.example.data.repository.StremioCatalogRepository
 import com.example.data.stremio.InstalledAddon
@@ -47,6 +49,7 @@ import com.example.data.opensubtitles.OpenSubtitlesSubtitleAdapter
 import com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider
 import com.example.domain.model.Subtitle
 import com.example.ui.components.StreamingProvider
+import com.example.ui.screens.player.NextEpisodePromptUtils
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -128,6 +131,168 @@ internal val TMDB_TV_GENRE_NAMES: Map<Int, String> = mapOf(
   10768 to "War & Politics",
   9648 to "Mystery"
 )
+
+/**
+ * Auto-pick universale per la selezione automatica dello stream (usato dal
+ * passaggio automatico al prossimo episodio e, in autoplay, dall'apertura
+ * diretta di un titolo).
+ *
+ * - **Caso A (Debrid attiva e account configurato)** — [StreamingEngineMode.DEBRID_TORBOX]
+ *   con `isDebridConfigured = true`: tenta di sbloccare il primo flusso Debrid valido
+ *   (infoHash → URL CDN via [TorBoxRepository.resolveInfoHash]); gli stream addon già
+ *   sbloccati con URL diretto vengono accettati così come sono.
+ * - **Caso B (HTTP diretta o Debrid disattivato/assente)**: filtra le sorgenti alla
+ *   ricerca del primo stream con link HTTP/HTTPS diretto riproducibile (mai torrent
+ *   grezzi, magnet o manifest JSON).
+ * - **Caso C (nessuno stream riproducibile automaticamente)**: restituisce `null`;
+ *   il chiamante NON deve marcare la sessione come fallita ma aprire il dialog di
+ *   selezione manuale delle sorgenti.
+ *
+ * @return lo stream selezionato con `streamUrl` valorizzato e riproducibile,
+ *         oppure `null` se nessuna sorgente è selezionabile automaticamente.
+ */
+internal suspend fun resolveAutoPickSource(
+  sources: List<StreamSource>,
+  streamingEngineMode: StreamingEngineMode,
+  isDebridConfigured: Boolean,
+  season: Int?,
+  episode: Int?
+): StreamSource? {
+  val useDebridUnlock = streamingEngineMode == StreamingEngineMode.DEBRID_TORBOX && isDebridConfigured
+  for (candidate in sources) {
+    val playable = if (useDebridUnlock && candidate.infoHash != null && candidate.streamUrl == null) {
+      // Caso A: Debrid attiva e configurata -> sblocco del primo flusso Debrid.
+      TorBoxRepository.setRequestMetadata(season, episode)
+      val directUrl = TorBoxRepository.resolveInfoHash(candidate.infoHash, candidate.fileIdx)
+      if (directUrl != null) candidate.copy(streamUrl = directUrl) else null
+    } else {
+      candidate
+    }
+    // Caso B: solo link HTTP(S) diretti riproducibili ("non torrent grezzo").
+    if (playable != null && StreamManager.isPlayableDirectUrl(playable.streamUrl.orEmpty())) {
+      return playable
+    }
+  }
+  return null
+}
+
+/** Tag di log del fast-path "stessa fonte" del prossimo episodio. */
+private const val SAME_SOURCE_TAG = "NextEpisodeSameSource"
+
+/**
+ * Timeout breve (4s) per il fast-path "stesso torrent di stagione": se il file
+ * del nuovo episodio non si sblocca in tempo si passa alla risoluzione normale
+ * (che termina comunque sul dialog di selezione, mai in un loop infinito).
+ */
+internal const val SAME_SOURCE_TIMEOUT_MS = 4_000L
+
+/**
+ * Timeout rigido (3.5s) imposto al fast-path bingewatching nel chiamante
+ * ([StreamNovaViewModel.openStreamForMedia]): se la risoluzione dello stesso
+ * torrent Debrid non termina entro questa finestra si prosegue IMMEDIATAMENTE
+ * con la ricerca normale delle sorgenti. Non esiste alcun percorso che possa
+ * restare sospeso oltre questo limite.
+ */
+internal const val NEXT_EPISODE_FAST_PATH_TIMEOUT_MS = 3_500L
+
+/**
+ * Timeout globale (10s) dell'intera risoluzione stream per il prossimo episodio:
+ * allo scadere, se nessuno stream è stato avviato, si azzera `_isSwitchingEpisode`
+ * e si mostra il dialog di selezione manuale delle sorgenti. Mai spinner infinito.
+ */
+internal const val NEXT_EPISODE_RESOLUTION_TIMEOUT_MS = 10_000L
+
+/**
+ * Priorita' assoluta del bingewatching: risolve il nuovo episodio DALLA STESSA
+ * fonte Debrid dell'episodio corrente quando questa era un torrent di stagione.
+ *
+ * Verifica all'interno dello stesso torrent/container Debrid se esiste il file
+ * corrispondente al nuovo (season, episode): se presente lo avvia DIRETTAMENTE
+ * (nessuna interrogazione degli addon). La URL arriva da
+ * [TorBoxRepository.resolveSeasonPackEpisode] (iniettabile nei test).
+ *
+ * @return lo stream dell'episodio successivo (stesso addon/metadati della fonte
+ *         corrente, nuovo URL CDN) oppure null se la fonte non era un torrent di
+ *         stagione, TorBox non e' configurato o lo sblocco non riesce nel tempo
+ *         massimo [SAME_SOURCE_TIMEOUT_MS].
+ */
+internal suspend fun tryResolveNextEpisodeFromSameTorrent(
+  pinned: StreamSource,
+  season: Int,
+  episode: Int,
+  seasonPackUrlResolver: suspend (String, Int, Int) -> String? = TorBoxRepository::resolveSeasonPackEpisode
+): StreamSource? {
+  val hash = pinned.infoHash?.trim()?.takeIf { it.isNotBlank() } ?: return null
+  if (!TorBoxRepository.isConfigured()) return null
+  val url = withTimeoutOrNull(SAME_SOURCE_TIMEOUT_MS) {
+    seasonPackUrlResolver(hash, season, episode)
+  } ?: return null
+  if (url.isBlank()) return null
+  Log.i(SAME_SOURCE_TAG, "S${season}E${episode}: sbloccato dallo stesso torrent ${hash.take(8)}...")
+  return pinned.copy(streamUrl = url)
+}
+
+/**
+ * Riorganizza le sorgenti del prossimo episodio dando massima precedenza a
+ * quelle con maggiore **affinita' di fonte** con l'episodio corrente ([pinned]):
+ *
+ *  1. stesso torrent (infoHash) — il caso "season pack" piu' forte;
+ *  2. stesso addon Debrid (addonName);
+ *  3. stesso provider HTTP (serverName);
+ *  4. firma di release simile (qualita', codec, gruppo).
+ *
+ * Ordinamento stabile: a parita' di punteggio resta l'ordine originale del
+ * resolver. Funzione pura, verificabile nei test.
+ */
+internal fun rankBySameSourceAffinity(
+  sources: List<StreamSource>,
+  pinned: StreamSource
+): List<StreamSource> {
+  if (sources.size <= 1) return sources
+  val pinnedHash = pinned.infoHash?.trim()?.lowercase()
+  val pinnedAddon = pinned.addonName?.trim()?.lowercase()
+  val pinnedServer = pinned.serverName.trim().lowercase().takeIf { it.isNotBlank() }
+  val pinnedQuality = sameSourceQualityKey(pinned)
+  val pinnedCodec = pinned.codec?.trim()?.lowercase()
+  val pinnedGroup = sameSourceReleaseGroup(pinned.releaseTitle)
+
+  fun affinityScore(source: StreamSource): Int {
+    var score = 0
+    // Priorita' assoluta: stesso torrent (season pack) sopra ogni altra firma.
+    if (pinnedHash != null && source.infoHash?.trim()?.lowercase() == pinnedHash) score += 500
+    if (pinnedAddon != null && source.addonName?.trim()?.lowercase() == pinnedAddon) score += 200
+    if (pinnedServer != null && source.serverName.trim().lowercase() == pinnedServer) score += 150
+    if (pinnedQuality != null && sameSourceQualityKey(source) == pinnedQuality) score += 60
+    if (pinnedCodec != null && source.codec?.trim()?.lowercase() == pinnedCodec) score += 40
+    if (pinnedGroup != null && sameSourceReleaseGroup(source.releaseTitle) == pinnedGroup) score += 30
+    return score
+  }
+
+  return sources.withIndex()
+    .sortedWith(
+      compareByDescending<IndexedValue<StreamSource>> { affinityScore(it.value) }
+        .thenBy { it.index }
+    )
+    .map { it.value }
+}
+
+/** Chiave qualita' della release (altezza effettiva) per il match di firma. */
+private fun sameSourceQualityKey(source: StreamSource): String? {
+  val height = source.effectiveHeight
+  return if (height > 0) height.toString() else null
+}
+
+/**
+ * Nome "gruppo" della release (es. "AMZN", "WEB", "NF") estratto dal titolo:
+ * primo token interamente maiuscolo di lunghezza 2-6, prima di qualita'/codec.
+ */
+private fun sameSourceReleaseGroup(releaseTitle: String?): String? {
+  if (releaseTitle.isNullOrBlank()) return null
+  val tokens = releaseTitle.replace(Regex("[._]+"), " ").trim().split(' ')
+  return tokens.firstOrNull { token ->
+    token.length in 2..6 && token == token.uppercase() && token.any { c -> c in 'A'..'Z' }
+  }
+}
 
 /**
  * Origine dei contenuti mostrati in una categoria della sezione Ricerca.
@@ -220,6 +385,18 @@ data class PlayerPlaybackState(
    * Il player li legge per allegare le `SubtitleConfiguration` al Media3 `MediaItem`.
    */
   val subtitles: List<Subtitle> = emptyList(),
+  /**
+   * True se lo stream corrente proviene dalla cache "Riusa l'ultimo link".
+   * In caso di errore il ViewModel lo invalida e riapre la risoluzione classica.
+   */
+  val isReusedStream: Boolean = false,
+  /**
+   * StreamSource dell'episodio corrente (infoHash, addon, provider HTTP, firma
+   * della release). E' la base dell'**affinita' di fonte** del prossimo episodio:
+   * stesso torrent di stagione, stesso addon/provider e firma di release vicina.
+   */
+  val currentSource: StreamSource? = null,
+  val subtitleOffsetMs: Long = 0L,
 )
 
 /**
@@ -245,9 +422,27 @@ sealed interface StreamResolutionState {
  * per cui sono state risolte le [StreamSource]. Serve solo alla UI della schermata
  * di selezione, che ricava poster/backdrop/logo da [media] senza nuove richieste.
  */
-data class SourceSelectionTarget(
+data class SourceDialogTarget(
   val media: MediaItem,
   val episode: Episode? = null
+)
+typealias SourceSelectionTarget = SourceDialogTarget
+
+/**
+ * Pacchetto atomico e immutabile della sessione di riproduzione aperta.
+ *
+ * Contiene **esclusivamente** i dati del media e dell'episodio effettivamente cliccati
+ * dall'utente. Viene usato per scrivere in Room il record di "Continua a guardare"
+ * senza dipendere da variabili globali mutevoli del ViewModel, prevenendo sovrascritture
+ * incrociate tra schede aperte in momenti diversi.
+ */
+data class PlaybackSession(
+  val mediaId: String,
+  val mediaTitle: String,
+  val posterUrl: String?,
+  val isSeries: Boolean,
+  val seasonNumber: Int?,
+  val episodeNumber: Int?
 )
 
 class StreamNovaViewModel(
@@ -282,11 +477,40 @@ class StreamNovaViewModel(
   private val _playbackState = MutableStateFlow(PlayerPlaybackState())
   val playbackState: StateFlow<PlayerPlaybackState> = _playbackState.asStateFlow()
 
+  private val _onlineSubtitles = MutableStateFlow<List<Subtitle>>(emptyList())
+  val onlineSubtitles: StateFlow<List<Subtitle>> = _onlineSubtitles.asStateFlow()
+
+  private val _isOnlineSubtitlesLoading = MutableStateFlow(false)
+  val isOnlineSubtitlesLoading: StateFlow<Boolean> = _isOnlineSubtitlesLoading.asStateFlow()
+
   // Stato della risoluzione dello stream con gestione rigida del timeout e lifecycle
   private val _streamResolutionState = MutableStateFlow<StreamResolutionState>(StreamResolutionState.Idle)
   val streamResolutionState: StateFlow<StreamResolutionState> = _streamResolutionState.asStateFlow()
 
+  /**
+   * True durante il passaggio al prossimo episodio: la risoluzione delle sorgenti
+   * per la nuova puntata è in corso e il player NON deve mai mostrare l'errore
+   * "Stream non disponibile" (né azzerare la sessione) finché il flag è attivo.
+   */
+  private val _isSwitchingEpisode = MutableStateFlow(false)
+  val isSwitchingEpisode: StateFlow<Boolean> = _isSwitchingEpisode.asStateFlow()
+
   private var streamJob: Job? = null
+  /**
+   * Job del fetch di dettaglio/metadati corrente. Cancellato all'apertura di un nuovo
+   * media per impedire che una risposta HTTP in ritardo (scheda aperta prima) sovrascriva
+   * i metadati del media realmente in riproduzione.
+   */
+  private var currentMediaFetchJob: Job? = null
+  private var selectSeasonJob: Job? = null
+
+  /**
+   * Sessione di riproduzione corrente (pacchetto atomico e immutabile). Impostata in
+   * [executeOpenPlayer] con i soli dati del media/episodio cliccati e azzerata in
+   * [closePlayer]. Il salvataggio "Continua a guardare" usa questi campi, mai
+   * variabili globali mutevoli.
+   */
+  private var currentSession: PlaybackSession? = null
 
   /**
    * Resetta immediatamente lo stato di risoluzione dello stream a Idle
@@ -294,14 +518,111 @@ class StreamNovaViewModel(
    */
   fun resetStreamState() {
     Log.d(TAG, "resetStreamState: reimpostazione a Idle e cancellazione Job")
+    currentMediaFetchJob?.cancel()
+    currentMediaFetchJob = null
     streamJob?.cancel()
     streamJob = null
     loadStreamJob?.cancel()
     loadStreamGeneration++
     loadStreamJob = null
+    _showSourceDialog.value = false
+    _availableSources.value = emptyList()
+    _sourceDialogMedia.value = null
     _streamResolutionState.value = StreamResolutionState.Idle
     _streamResult.value = StreamResult.Idle
+    _isSwitchingEpisode.value = false
+    // NOTA: _nextEpisode e playerSeasonEpisodes NON vengono azzerati qui:
+    // resetStreamState viene invocato anche dall'onDispose di ExoPlayer durante la
+    // ricreazione del player (cambio impostazioni), a sessione in corso. Il valore
+    // viene comunque ricalcolato da refreshNextEpisodeForPlayback a ogni apertura player.
   }
+
+  // ── "Prossimo Episodio" ────────────────────────────────────────────────
+  // Stato osservato dalla UI del player: episodio successivo risolto in modo
+  // deterministico (stessa stagione E+1, poi stagione successiva E1).
+  private val _nextEpisode = MutableStateFlow<Episode?>(null)
+  val nextEpisode: StateFlow<Episode?> = _nextEpisode.asStateFlow()
+
+  /**
+   * Episodi caricati in background per (mediaId, stagione) quando `media.episodes`
+   * è vuota al momento del play (item da catalogo/Cinemeta senza episodi inline).
+   */
+  private val playerSeasonEpisodes = mutableMapOf<Pair<String, Int>, List<Episode>>()
+
+  /**
+   * Ricalcola l'episodio successivo per il player e lo espone in [nextEpisode].
+   *
+   * Pool = `media.episodes` + stagioni già caricate in background. Se il prossimo
+   * non è determinabile e la serie ha un TMDB id, carica in background la stagione
+   * corrente e la successiva (cache-first Room + TMDB) e ricalcola. Log con tag
+   * `[NextEpisode]` per la diagnostica su dispositivo.
+   */
+  fun refreshNextEpisodeForPlayback(media: MediaItem, currentEpisode: Episode?) {
+    if (media.type != MediaType.SERIE_TV || currentEpisode == null) {
+      _nextEpisode.value = null
+      return
+    }
+    val effectiveImdb = media.effectiveImdbId
+      ?: currentEpisode.effectiveImdbId
+      ?: media.id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
+
+    val pool = mergePlayerEpisodes(media)
+    val next = NextEpisodePromptUtils.resolveNextEpisode(pool, currentEpisode)
+    val enrichedNext = if (next != null && next.seriesImdbId.isNullOrBlank() && !effectiveImdb.isNullOrBlank()) {
+      next.copy(seriesImdbId = effectiveImdb)
+    } else {
+      next
+    }
+    _nextEpisode.value = enrichedNext
+    Log.i(
+      "NextEpisode",
+      "Current: S${currentEpisode.seasonNumber}E${currentEpisode.episodeNumber}, " +
+        "Next: ${enrichedNext?.let { "S${it.seasonNumber}E${it.episodeNumber} ${it.title}" } ?: "NON TROVATO"}, " +
+        "TotalEpisodes: ${pool.size}"
+    )
+    if (enrichedNext != null) return
+    val tmdbId = media.tmdbId
+    if (tmdbId == null || tmdbId <= 0) return
+    val seasonsToLoad = listOf(currentEpisode.seasonNumber, currentEpisode.seasonNumber + 1)
+      .filter { season -> playerSeasonEpisodes[media.id to season].isNullOrEmpty() }
+    if (seasonsToLoad.isEmpty()) return
+    viewModelScope.launch {
+      var updated = false
+      for (season in seasonsToLoad) {
+        try {
+          val details = MediaRepository.getSeasonDetails(tmdbId, season, media)
+          val loaded = details.episodes.map { it.toEpisode(media.id, seriesImdbId = effectiveImdb) }
+          if (loaded.isNotEmpty()) {
+            playerSeasonEpisodes[media.id to season] = loaded
+            updated = true
+            Log.i("NextEpisode", "Caricati ${loaded.size} episodi S$season per ${media.id} (background)")
+          }
+        } catch (e: Exception) {
+          Log.w("NextEpisode", "Caricamento episodi S$season fallito: ${e.message}")
+        }
+      }
+      if (updated) {
+        val merged = mergePlayerEpisodes(media)
+        val resolved = NextEpisodePromptUtils.resolveNextEpisode(merged, currentEpisode)
+        val enrichedResolved = if (resolved != null && resolved.seriesImdbId.isNullOrBlank() && !effectiveImdb.isNullOrBlank()) {
+          resolved.copy(seriesImdbId = effectiveImdb)
+        } else {
+          resolved
+        }
+        _nextEpisode.value = enrichedResolved
+        Log.i(
+          "NextEpisode",
+          "Ricalcolo dopo caricamento: Current: S${currentEpisode.seasonNumber}E${currentEpisode.episodeNumber}, " +
+            "Next: ${enrichedResolved?.let { "S${it.seasonNumber}E${it.episodeNumber} ${it.title}" } ?: "NON TROVATO"}, " +
+            "TotalEpisodes: ${merged.size}"
+        )
+      }
+    }
+  }
+
+  private fun mergePlayerEpisodes(media: MediaItem): List<Episode> =
+    (media.episodes + playerSeasonEpisodes.filterKeys { it.first == media.id }.values.flatten())
+      .distinctBy { it.id }
 
   // Stato del ciclo di ricerca sorgenti (estrazione provider -> player)
   private val _streamResult = MutableStateFlow<StreamResult>(StreamResult.Idle)
@@ -323,8 +644,9 @@ class StreamNovaViewModel(
    * per comporre la schermata di selezione (poster, backdrop, logo, SxEx) senza
    * introdurre nuove chiamate di rete: sono gli stessi dati già risolti dal flow.
    */
-  private val _sourceSelectionTarget = MutableStateFlow<SourceSelectionTarget?>(null)
-  val sourceSelectionTarget: StateFlow<SourceSelectionTarget?> = _sourceSelectionTarget.asStateFlow()
+  private val _sourceDialogMedia = MutableStateFlow<SourceDialogTarget?>(null)
+  val sourceDialogMedia: StateFlow<SourceDialogTarget?> = _sourceDialogMedia.asStateFlow()
+  val sourceSelectionTarget: StateFlow<SourceDialogTarget?> = _sourceDialogMedia.asStateFlow()
   private var loadStreamJob: Job? = null
 
   /**
@@ -361,7 +683,15 @@ class StreamNovaViewModel(
   // 1) VixSrc/VixCloud (istantaneo via TMDB ID), 2) CB01 e 3) Eurostreaming
   // (cataloghi italiani, ricerca per titolo/anno) con timeout per ciascuno.
   internal var streamManager = StreamManager()
-  internal var openSubtitlesProvider = OpenSubtitlesSubtitleProvider()
+  internal var openSubtitlesProvider = OpenSubtitlesSubtitleProvider(ioDispatcher = ioDispatcher)
+
+  /**
+   * Fast-path bingewatching "stesso torrent di stagione" per il prossimo episodio.
+   * Overridable nei test (default: sblocco TorBox del file dell'episodio richiesto).
+   */
+  internal var seasonPackEpisodeResolver:
+    suspend (pinned: StreamSource, season: Int, episode: Int) -> StreamSource? =
+    { pinned, season, episode -> tryResolveNextEpisodeFromSameTorrent(pinned, season, episode) }
 
   private val _isLoading = MutableStateFlow(false)
   val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -375,7 +705,7 @@ class StreamNovaViewModel(
   val allMedia: StateFlow<List<MediaItem>> = MediaRepository.mediaList
 
   private val _homeCatalogs = MutableStateFlow(
-    StremioCatalogRepository.buildTmdbHomeCatalogs(MediaRepository.mediaList.value)
+    StremioCatalogRepository.buildDefaultHomeCatalogs(MediaRepository.mediaList.value)
   )
   val homeCatalogs: StateFlow<HomeCatalogs> = _homeCatalogs.asStateFlow()
 
@@ -429,7 +759,9 @@ class StreamNovaViewModel(
       StremioAddonRepository.addons.collect {
         _stremioProviderMedia.value = emptyMap()
         _stremioProviderStates.value = emptyMap()
+        StremioCatalogRepository.clearCache()
         StremioCatalogRepository.resetProviderPaging()
+        _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
         refreshHomeCatalogs(allMedia.value)
       }
     }
@@ -479,6 +811,15 @@ class StreamNovaViewModel(
 
   fun setAutoResume(enabled: Boolean) =
     SettingsRepository.setAutoResume(enabled)
+
+  fun setReuseLastWorkingStreamEnabled(enabled: Boolean) =
+    SettingsRepository.setReuseLastWorkingStreamEnabled(enabled)
+
+  fun setLastWorkingStreamCacheDurationHours(hours: Int) =
+    SettingsRepository.setLastWorkingStreamCacheDurationHours(hours)
+
+  fun setPrioritizeItalianAudio(enabled: Boolean) =
+    SettingsRepository.setPrioritizeItalianAudio(enabled)
 
   fun setPreferredAudioLanguage(language: String) =
     SettingsRepository.setPreferredAudioLanguage(language)
@@ -561,6 +902,7 @@ class StreamNovaViewModel(
         val db = StreamNovaDatabase.getInstance(context)
         db?.tmdbResponseCacheDao()?.clearAll()
         db?.cachedMediaDao()?.clearNonFavorites()
+        db?.lastWorkingStreamDao()?.clearAll()
 
         // 3. Svuota la directory cache applicativa
         context.cacheDir?.deleteRecursively()
@@ -734,6 +1076,9 @@ class StreamNovaViewModel(
       _addonMessage.value = null
       try {
         val addon = StremioAddonRepository.installAddon(rawUrl)
+        StremioCatalogRepository.clearCache()
+        _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
+        refreshHomeCatalogs()
         _addonMessage.value = "Addon installato: ${addon.manifest.displayTitle}"
       } catch (e: Exception) {
         _addonMessage.value = "Installazione fallita: ${e.message ?: "errore sconosciuto"}"
@@ -745,11 +1090,17 @@ class StreamNovaViewModel(
 
   fun removeAddon(id: String) {
     StremioAddonRepository.removeAddon(id)
+    StremioCatalogRepository.clearCache()
+    _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
+    refreshHomeCatalogs()
     _addonMessage.value = "Addon rimosso"
   }
 
   fun setAddonEnabled(id: String, enabled: Boolean) {
     StremioAddonRepository.setAddonEnabled(id, enabled)
+    StremioCatalogRepository.clearCache()
+    _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
+    refreshHomeCatalogs()
   }
 
   fun clearAddonMessage() {
@@ -1166,7 +1517,10 @@ class StreamNovaViewModel(
 
   fun loadDetails(tmdbId: Int, isTv: Boolean, baseMedia: MediaItem? = null) {
     if (tmdbId <= 0) return
-    viewModelScope.launch {
+    // Cancella il fetch di dettaglio precedente: una risposta in ritardo per un media
+    // aperto prima non deve sovrascrivere i metadati correnti.
+    currentMediaFetchJob?.cancel()
+    currentMediaFetchJob = viewModelScope.launch {
       MediaRepository.loadMediaDetails(tmdbId, isTv, baseMedia)
     }
   }
@@ -1176,37 +1530,89 @@ class StreamNovaViewModel(
       _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
       return
     }
+    val mediaId = fallbackSeries?.id ?: "tmdb_tv_$seriesTmdbId"
     _selectedSeasonNumber.value = seasonNumber
-    _seasonEpisodesUiState.value = SeasonEpisodesUiState.Loading(seasonNumber)
-    viewModelScope.launch {
+    _seasonEpisodesUiState.value = SeasonEpisodesUiState.Loading(seasonNumber, mediaId)
+    selectSeasonJob?.cancel()
+    selectSeasonJob = viewModelScope.launch {
       try {
         val season = MediaRepository.getSeasonDetails(seriesTmdbId, seasonNumber, fallbackSeries)
-        _seasonEpisodesUiState.value = SeasonEpisodesUiState.Success(seasonNumber, season)
+        _seasonEpisodesUiState.value = SeasonEpisodesUiState.Success(seasonNumber, season, mediaId)
       } catch (e: Exception) {
         _seasonEpisodesUiState.value = SeasonEpisodesUiState.Error(
           seasonNumber,
-          e.localizedMessage ?: "Errore nel caricamento degli episodi della stagione $seasonNumber"
+          e.localizedMessage ?: "Errore nel caricamento degli episodi della stagione $seasonNumber",
+          mediaId
         )
       }
     }
   }
 
+  fun loadEpisodesForSeason(mediaId: String, seasonNumber: Int, fallbackSeries: MediaItem? = null) {
+    val numericId = mediaId.removePrefix("tmdb_tv_").toIntOrNull()
+      ?: fallbackSeries?.tmdbId
+    if (numericId != null && numericId > 0) {
+      selectSeason(numericId, seasonNumber, fallbackSeries)
+    } else if (mediaId.startsWith("tt", ignoreCase = true) || fallbackSeries?.id?.startsWith("tt", ignoreCase = true) == true) {
+      val imdb = if (mediaId.startsWith("tt", ignoreCase = true)) mediaId else fallbackSeries?.id ?: ""
+      _selectedSeasonNumber.value = seasonNumber
+      _seasonEpisodesUiState.value = SeasonEpisodesUiState.Loading(seasonNumber, mediaId)
+      selectSeasonJob?.cancel()
+      selectSeasonJob = viewModelScope.launch {
+        try {
+          val resolvedId = MediaRepository.resolveImdbToTmdbId(imdb, isTv = true)
+          if (resolvedId != null && resolvedId > 0) {
+            val updatedFallback = fallbackSeries?.copy(tmdbId = resolvedId)
+            selectSeason(resolvedId, seasonNumber, updatedFallback)
+          } else {
+            _seasonEpisodesUiState.value = SeasonEpisodesUiState.Error(
+              seasonNumber,
+              "Identificatore TMDB non trovato per $imdb",
+              mediaId
+            )
+          }
+        } catch (e: Exception) {
+          _seasonEpisodesUiState.value = SeasonEpisodesUiState.Error(
+            seasonNumber,
+            e.localizedMessage ?: "Errore nel caricamento degli episodi",
+            mediaId
+          )
+        }
+      }
+    } else {
+      _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+    }
+  }
+
+  fun loadEpisodesForSeason(media: MediaItem, seasonNumber: Int) {
+    loadEpisodesForSeason(media.id, seasonNumber, media)
+  }
+
   fun openDetail(media: MediaItem) {
+    selectSeasonJob?.cancel()
+    selectSeasonJob = null
     _selectedMedia.value = media
     _screenState.value = ScreenState.DETAIL
     val isTv = media.type == MediaType.SERIE_TV
 
     val currentTmdbId = media.tmdbId
+      ?: media.id.removePrefix("tmdb_tv_").removePrefix("tmdb_movie_").toIntOrNull()
     if (currentTmdbId != null && currentTmdbId > 0) {
-      loadDetails(currentTmdbId, isTv, media)
+      val mediaWithTmdb = if (media.tmdbId == null) media.copy(tmdbId = currentTmdbId) else media
+      _selectedMedia.value = mediaWithTmdb
+      loadDetails(currentTmdbId, isTv, mediaWithTmdb)
       if (isTv) {
-        val initialSeason = media.lastWatchedSeason ?: 1
-        selectSeason(currentTmdbId, initialSeason, media)
+        val initialSeason = mediaWithTmdb.lastWatchedSeason ?: 1
+        selectSeason(currentTmdbId, initialSeason, mediaWithTmdb)
       } else {
         _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
       }
     } else if (media.id.startsWith("tt", ignoreCase = true)) {
       MediaRepository.setDetailLoading(media)
+      if (isTv) {
+        val initialSeason = media.lastWatchedSeason ?: 1
+        _seasonEpisodesUiState.value = SeasonEpisodesUiState.Loading(initialSeason, media.id)
+      }
       viewModelScope.launch {
         val resolvedId = MediaRepository.resolveImdbToTmdbId(media.id, isTv)
         if (resolvedId != null && resolvedId > 0) {
@@ -1252,7 +1658,12 @@ class StreamNovaViewModel(
     executeOpenPlayer(media, episode, source)
   }
 
-  private fun executeOpenPlayer(media: MediaItem, episode: Episode? = null, source: StreamSource? = null) {
+  private fun executeOpenPlayer(
+    media: MediaItem,
+    episode: Episode? = null,
+    source: StreamSource? = null,
+    isReusedStream: Boolean = false
+  ) {
     val isTv = media.type == MediaType.SERIE_TV
     val effectiveEpisode = if (isTv && episode == null) {
       val s = media.lastWatchedSeason ?: 1
@@ -1266,19 +1677,36 @@ class StreamNovaViewModel(
             title = "Episodio $e",
             synopsis = "",
             durationMinutes = media.durationMinutes.takeIf { it > 0 } ?: 55,
-            videoUrl = media.videoUrl
+            videoUrl = media.videoUrl,
+            seriesImdbId = media.effectiveImdbId
           )
     } else {
       episode
     }
 
-    val savedInitialPos = if (isTv && effectiveEpisode != null) {
-      val saved = MediaRepository.getEpisodeProgress(media.id, effectiveEpisode.seasonNumber, effectiveEpisode.episodeNumber)
-      if (saved > 0L) saved else effectiveEpisode.currentProgressMs
+    val effectiveSeriesImdb = media.effectiveImdbId
+      ?: effectiveEpisode?.effectiveImdbId
+      ?: media.id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
+
+    val finalEpisode = if (effectiveEpisode != null && effectiveEpisode.seriesImdbId.isNullOrBlank() && !effectiveSeriesImdb.isNullOrBlank()) {
+      effectiveEpisode.copy(seriesImdbId = effectiveSeriesImdb)
     } else {
-      media.currentProgressMs
+      effectiveEpisode
     }
-    val totalDur = effectiveEpisode?.totalDurationMs ?: media.totalDurationMs
+
+    val finalMedia = if (media.imdbId.isNullOrBlank() && !effectiveSeriesImdb.isNullOrBlank()) {
+      media.copy(imdbId = effectiveSeriesImdb)
+    } else {
+      media
+    }
+
+    val savedInitialPos = if (isTv && finalEpisode != null) {
+      val saved = MediaRepository.getEpisodeProgress(finalMedia.id, finalEpisode.seasonNumber, finalEpisode.episodeNumber)
+      if (saved > 0L) saved else finalEpisode.currentProgressMs
+    } else {
+      finalMedia.currentProgressMs
+    }
+    val totalDur = finalEpisode?.totalDurationMs ?: finalMedia.totalDurationMs
     // "Riprendi automaticamente la riproduzione": se OFF si parte da 0:00 SENZA
     // cancellare il progresso salvato (il valore resta in Room).
     // Se l'episodio è già concluso (>= 90% o <15s alla fine), si riparte da 0:00
@@ -1286,27 +1714,45 @@ class StreamNovaViewModel(
     val isAlreadyFinished = totalDur > 0L && (savedInitialPos >= (totalDur * 0.90f) || (totalDur - savedInitialPos) <= 15_000L)
     val initialPos = if (SettingsRepository.settings.value.autoResume && !isAlreadyFinished) savedInitialPos else 0L
 
+    // Pacchetto atomico e immutabile: descrive SOLO il media/episodio cliccati ora.
+    // Da qui in avanti ogni salvataggio (Continua a guardare) usa questi campi.
+    currentSession = PlaybackSession(
+      mediaId = finalMedia.id,
+      mediaTitle = finalMedia.title,
+      posterUrl = finalMedia.posterUrl,
+      isSeries = isTv,
+      seasonNumber = finalEpisode?.seasonNumber,
+      episodeNumber = finalEpisode?.episodeNumber
+    )
+
     _playbackState.value = PlayerPlaybackState(
-      media = media,
-      currentEpisode = effectiveEpisode?.copy(currentProgressMs = initialPos),
+      media = finalMedia,
+      currentEpisode = finalEpisode?.copy(currentProgressMs = initialPos),
       isPlaying = true,
       currentPositionMs = initialPos,
       durationMs = totalDur,
-      selectedResolution = media.resolution,
+      selectedResolution = finalMedia.resolution,
       areControlsVisible = true,
       streamUrl = source?.streamUrl,
       streamHeaders = source?.headers ?: emptyMap(),
       streamQuality = source?.quality,
       streamServer = source?.serverName,
       streamProgressive = source?.isProgressive,
-      subtitles = source?.subtitles ?: emptyList()
+      subtitles = source?.subtitles ?: emptyList(),
+      isReusedStream = isReusedStream,
+      currentSource = source
     )
+    // Stream del nuovo episodio ormai disponibile: la transizione è conclusa.
+    _isSwitchingEpisode.value = false
+    // "Prossimo Episodio": risolve (o carica in background) l'episodio successivo
+    // e lo espone a PlayerScreen per overlay e auto-advance.
+    refreshNextEpisodeForPlayback(finalMedia, finalEpisode)
     val initialSubtitles = source?.subtitles ?: emptyList()
     if (initialSubtitles.none { it.addonName == OpenSubtitlesSubtitleAdapter.PROVIDER_NAME }) {
       viewModelScope.launch(Dispatchers.IO) {
         val external = openSubtitlesProvider.fetchSubtitles(
-          mediaItem = media,
-          episode = effectiveEpisode,
+          mediaItem = finalMedia,
+          episode = finalEpisode,
           preferredLanguage = SettingsRepository.settings.value.preferredSubtitleLanguage
         )
         if (external.isNotEmpty()) {
@@ -1318,28 +1764,100 @@ class StreamNovaViewModel(
       }
     }
     // Memorizza l'origine reale (DETAIL / PROVIDER / BROWSING) per un ritorno corretto al BACK.
-    screenBeforePlayer = _screenState.value
-    sectionBeforePlayer = _currentSection.value
+    if (_screenState.value != ScreenState.PLAYER) {
+      screenBeforePlayer = _screenState.value
+      sectionBeforePlayer = _currentSection.value
+    }
     _screenState.value = ScreenState.PLAYER
+  }
+
+  /**
+   * Chiamato dal player quando lo stream raggiunge lo stato READY **senza** errori HTTP
+   * fatali: persiste il flusso corrente come "ultimo funzionante" per il titolo, così la
+   * prossima apertura può ripartire direttamente da qui ("Riusa l'ultimo link").
+   */
+  fun onStreamPlaybackReady() {
+    val state = _playbackState.value
+    val media = state.media ?: return
+    val url = state.streamUrl?.takeIf { it.isNotBlank() } ?: return
+    // Nessuna cache per i contenuti demo (URL fittizi, mai riutilizzabili).
+    if (MediaRepository.isDemoSeedItem(media.id)) return
+
+    val episode = state.currentEpisode
+    val season = episode?.seasonNumber ?: LastWorkingStreamRepository.NO_EPISODE
+    val epNumber = episode?.episodeNumber ?: LastWorkingStreamRepository.NO_EPISODE
+    viewModelScope.launch(Dispatchers.IO) {
+      LastWorkingStreamRepository.saveStream(
+        mediaId = media.id,
+        seasonNumber = season,
+        episodeNumber = epNumber,
+        streamUrl = url,
+        streamTitle = state.streamServer,
+        streamQuality = state.streamQuality,
+        serverName = state.streamServer,
+        headers = state.streamHeaders,
+        isProgressive = state.streamProgressive
+      )
+    }
+  }
+
+  /**
+   * Fallback difensivo del riuso: lo stream proveniente dalla cache non è più
+   * riproducibile (link Debrid scaduto, HTTP 403/404 o errore di caricamento ExoPlayer).
+   * Invalida la voce per quel titolo e riapre **immediatamente** la risoluzione/selezione
+   * classica delle sorgenti, senza riusare la cache.
+   *
+   * @return true se lo stream corrente era riutilizzato e il fallback è stato avviato.
+   */
+  fun handleReusedStreamFailure(): Boolean {
+    val state = _playbackState.value
+    val media = state.media ?: return false
+    if (!state.isReusedStream) return false
+
+    val episode = state.currentEpisode
+    val season = episode?.seasonNumber ?: LastWorkingStreamRepository.NO_EPISODE
+    val epNumber = episode?.episodeNumber ?: LastWorkingStreamRepository.NO_EPISODE
+    // Disattiva subito il flag: evita un secondo fallback mentre la nuova risoluzione parte.
+    _playbackState.value = state.copy(isReusedStream = false)
+
+    viewModelScope.launch(Dispatchers.IO) {
+      LastWorkingStreamRepository.invalidate(media.id, season, epNumber)
+    }
+    Log.i(TAG, "Reuse: flusso riutilizzato fallito per ${media.id} S$season E$epNumber, fallback alla risoluzione classica")
+    openStreamForMedia(media, episode, allowReuse = false)
+    return true
   }
 
   /**
    * Salva il progresso della sessione corrente di riproduzione:
    * se serie TV, lo associa specificamente alla coppia (stagione, episodio) in Room;
    * se film, lo associa al mediaId del film.
+   *
+   * Il record è scritto usando il pacchetto atomico [currentSession] (i soli dati del
+   * media/episodio cliccati), mai variabili globali mutevoli: se la sessione non
+   * corrisponde al media in stato (contaminazione da una scheda precedente), il
+   * salvataggio viene scartato.
    */
   fun saveCurrentPlaybackProgress(finalPos: Long) {
     val current = _playbackState.value
     val media = current.media ?: return
     if (finalPos <= 0L) return
 
-    if (media.type == MediaType.SERIE_TV) {
-      val ep = current.currentEpisode
-      val s = ep?.seasonNumber ?: media.lastWatchedSeason ?: 1
-      val e = ep?.episodeNumber ?: media.lastWatchedEpisode ?: 1
-      MediaRepository.updateEpisodeProgress(media.id, s, e, finalPos, current.durationMs)
+    val session = currentSession
+    if (session == null || session.mediaId != media.id) {
+      Log.w(
+        TAG,
+        "saveCurrentPlaybackProgress: scartato, sessione ${session?.mediaId} != media ${media.id}"
+      )
+      return
+    }
+
+    if (session.isSeries) {
+      val s = session.seasonNumber ?: current.currentEpisode?.seasonNumber ?: media.lastWatchedSeason ?: 1
+      val e = session.episodeNumber ?: current.currentEpisode?.episodeNumber ?: media.lastWatchedEpisode ?: 1
+      MediaRepository.updateEpisodeProgress(session.mediaId, s, e, finalPos, current.durationMs)
     } else {
-      MediaRepository.updateProgress(media.id, finalPos)
+      MediaRepository.updateProgress(session.mediaId, finalPos)
     }
   }
 
@@ -1356,8 +1874,18 @@ class StreamNovaViewModel(
       saveCurrentPlaybackProgress(current.currentPositionMs)
     }
 
+    val effectiveSeriesImdb = media.effectiveImdbId
+      ?: nextEpisode.effectiveImdbId
+      ?: media.id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
+
+    val enrichedMedia = if (media.imdbId.isNullOrBlank() && !effectiveSeriesImdb.isNullOrBlank()) {
+      media.copy(imdbId = effectiveSeriesImdb)
+    } else {
+      media
+    }
+
     val nextSavedRaw = MediaRepository.getEpisodeProgress(
-      media.id,
+      enrichedMedia.id,
       nextEpisode.seasonNumber,
       nextEpisode.episodeNumber
     )
@@ -1365,16 +1893,126 @@ class StreamNovaViewModel(
     // se "Riprendi automaticamente" è OFF o se l'episodio era già completato, parte da 0.
     val isNextFinished = nextEpisode.totalDurationMs > 0L && (nextSavedRaw >= (nextEpisode.totalDurationMs * 0.90f) || (nextEpisode.totalDurationMs - nextSavedRaw) <= 15_000L)
     val nextSavedPos = if (SettingsRepository.settings.value.autoResume && !isNextFinished) nextSavedRaw else 0L
-    val enrichedNext = nextEpisode.copy(currentProgressMs = nextSavedPos)
+    val enrichedNext = nextEpisode.copy(
+      currentProgressMs = nextSavedPos,
+      seriesImdbId = nextEpisode.seriesImdbId ?: effectiveSeriesImdb
+    )
 
     _playbackState.value = current.copy(
+      media = enrichedMedia,
       currentEpisode = enrichedNext,
       currentPositionMs = nextSavedPos,
       durationMs = enrichedNext.totalDurationMs,
       streamUrl = null
     )
+    // Aggiorna il pacchetto atomico alla nuova puntata: i salvataggi successivi non
+    // devono più riferirsi all'episodio precedente.
+    currentSession = PlaybackSession(
+      mediaId = enrichedMedia.id,
+      mediaTitle = enrichedMedia.title,
+      posterUrl = enrichedMedia.posterUrl,
+      isSeries = true,
+      seasonNumber = enrichedNext.seasonNumber,
+      episodeNumber = enrichedNext.episodeNumber
+    )
 
-    loadStream(media, enrichedNext)
+    // "Prossimo Episodio": aggiorna subito il next verso l'episodio successivo a quello
+    // appena aperto, così overlay e countdown restano corretti già dalla nuova riproduzione.
+    refreshNextEpisodeForPlayback(enrichedMedia, enrichedNext)
+
+    Log.d(
+      "NextEpisodeStream",
+      "Risoluzione stream per S${enrichedNext.season}E${enrichedNext.episode} - Id: ${enrichedNext.id}, SeriesId: ${enrichedMedia.id}, IMDb: ${enrichedMedia.imdbId}"
+    )
+
+    openStreamForMedia(enrichedMedia, enrichedNext, allowReuse = false, isNextEpisode = true)
+  }
+
+  /**
+   * Tenta la riproduzione rapida dall'ultimo flusso funzionante salvato in cache.
+   *
+   * Blindatura: il riuso è consentito **solo** se la cache corrisponde esattamente al
+   * media richiesto e, per le serie, alla stessa puntata (`season`/`episode`). In caso
+   * contrario la cache viene scartata categoricamente: nessun link di un altro titolo
+   * o di un'altra puntata può essere riprodotto.
+   *
+   * @param requestedMediaId id del media effettivamente richiesto (default: [media.id]).
+   * @param requestedSeason stagione richiesta per le serie (default: quella di [episode]).
+   * @param requestedEpisode episodio richiesto per le serie (default: quello di [episode]).
+   * @return true se un flusso valido è stato trovato e aperto nel player (la risoluzione
+   *         classica va saltata), false se la cache è assente/scaduta o la funzione è OFF.
+   */
+  private suspend fun tryOpenReusedStream(
+    media: MediaItem,
+    episode: Episode?,
+    generation: Int,
+    requestedMediaId: String? = null,
+    requestedSeason: Int? = null,
+    requestedEpisode: Int? = null
+  ): Boolean {
+    val settings = SettingsRepository.settings.value
+    if (!settings.reuseLastWorkingStreamEnabled) return false
+    // La riproduzione rapida da cache è pensata per la modalità Debrid.
+    if (AppSettingsRepository.streamingEngineMode.value != StreamingEngineMode.DEBRID_TORBOX) return false
+
+    val reqId = requestedMediaId?.takeIf { it.isNotBlank() } ?: media.id
+    val season = episode?.seasonNumber ?: LastWorkingStreamRepository.NO_EPISODE
+    val epNumber = episode?.episodeNumber ?: LastWorkingStreamRepository.NO_EPISODE
+    val reqSeason = requestedSeason ?: season
+    val reqEp = requestedEpisode ?: epNumber
+
+    // Blindatura 1: l'id richiesto deve coincidere con quello del media risolto.
+    if (reqId != media.id) {
+      Log.w(TAG, "Reuse: scartato, id richiesto $reqId != media risolto ${media.id}")
+      return false
+    }
+    // Blindatura 2: per le serie la puntata richiesta deve coincidere esattamente.
+    if (episode != null &&
+      (episode.seasonNumber != reqSeason || episode.episodeNumber != reqEp)
+    ) {
+      Log.w(TAG, "Reuse: scartato, puntata richiesta S$reqSeason E$reqEp != S${episode.seasonNumber} E${episode.episodeNumber}")
+      return false
+    }
+
+    val cached = LastWorkingStreamRepository.getValidStream(
+      mediaId = reqId,
+      seasonNumber = reqSeason,
+      episodeNumber = reqEp,
+      durationHours = settings.lastWorkingStreamCacheDurationHours
+    ) ?: return false
+    if (cached.streamUrl.isBlank()) return false
+
+    // Blindatura 3: la voce di cache deve appartenere esattamente al titolo/puntata richiesti.
+    if (cached.mediaId != reqId ||
+      cached.seasonNumber != reqSeason ||
+      cached.episodeNumber != reqEp
+    ) {
+      Log.w(
+        TAG,
+        "Reuse: scartato, cache ${cached.mediaId} S${cached.seasonNumber} E${cached.episodeNumber} " +
+          "!= richiesta $reqId S$reqSeason E$reqEp"
+      )
+      return false
+    }
+
+    Log.i(TAG, "Reuse: ultimo flusso valido per $reqId S$reqSeason E$reqEp (${cached.serverName})")
+    val source = cached.toStreamSource()
+    withContext(Dispatchers.Main) {
+      if (generation != loadStreamGeneration) return@withContext
+      _streamResolutionState.value = StreamResolutionState.Success(
+        streamUrl = source.streamUrl ?: "",
+        mediaItem = media,
+        episode = episode,
+        streamHeaders = source.headers,
+        quality = source.quality,
+        serverName = source.serverName,
+        isProgressive = source.isProgressive
+      )
+      _streamResult.value = StreamResult.Success(listOf(source))
+      // Apre il player marcando lo stream come "riutilizzato" per il fallback difensivo.
+      executeOpenPlayer(media, episode, source, isReusedStream = true)
+    }
+    return true
   }
 
   /**
@@ -1385,31 +2023,63 @@ class StreamNovaViewModel(
    * - Al successo imposta lo stato su Success e avvia il player.
    * - Al fallimento o timeout imposta lo stato su Error.
    */
-  fun openStreamForMedia(mediaItem: MediaItem, episode: Episode? = null) {
+  fun openStreamForMedia(
+    mediaItem: MediaItem,
+    episode: Episode? = null,
+    allowReuse: Boolean = true,
+    isNextEpisode: Boolean = false
+  ) {
     Log.d(TAG, "openStreamForMedia START mediaId=${mediaItem.id} tmdbId=${mediaItem.tmdbId}")
 
+    // Impostazione atomica immediata del media associato al dialog delle sorgenti:
+    // prima di mostrare o raccogliere le sorgenti, elimina residui di titoli precedenti
+    // e allinea subito la colonna di sinistra del dialog al target corrente.
+    _sourceDialogMedia.value = SourceDialogTarget(mediaItem, episode)
+
     if (shouldBlockForParentalControl(mediaItem)) {
+      _sourceDialogMedia.value = null
       pendingPlayback = PendingPlayback(mediaItem, episode, null)
       _parentalPinErrorResId.value = null
       _showParentalPinDialog.value = true
       return
     }
 
-    // Cancella tassativamente il Job precedente
+    // Cancella tassativamente il Job precedente: sia il fetch metadati sia la
+    // risoluzione stream in volo vengono annullati, così nessuna risposta in ritardo
+    // può contaminare la sessione appena aperta.
+    currentMediaFetchJob?.cancel()
+    currentMediaFetchJob = null
     streamJob?.cancel()
     loadStreamJob?.cancel()
     loadStreamGeneration++
-    _playbackState.value = _playbackState.value.copy(streamUrl = null)
+    // Sessione pulita: azzera lo stream corrente e i puntatori di fallback.
+    // Eccezione mirata: nel cambio puntata consecutivo della STESSA serie il
+    // `currentSource` viene conservato perché è la base dell'affinità di fonte
+    // (stesso torrent di stagione / stesso provider) per l'episodio successivo.
+    val sameSeriesNextEpisode = isNextEpisode &&
+      _playbackState.value.media?.id == mediaItem.id &&
+      _playbackState.value.currentSource != null
+    _playbackState.value = _playbackState.value.copy(
+      streamUrl = null,
+      currentSource = if (sameSeriesNextEpisode) _playbackState.value.currentSource else null,
+      isReusedStream = false
+    )
     _availableSources.value = emptyList()
+    // Ogni nuova risoluzione riparte senza dialog di selezione (il flag viene
+    // riattivato dal flusso solo quando serve la scelta manuale).
+    _showSourceDialog.value = false
 
-    // Imposta subito lo stato su Loading
+    // Imposta subito lo stato su Loading. `isSwitchingEpisode` marca la
+    // transizione al prossimo episodio: finché è attivo il player resta in
+    // caricamento (spinner "Caricamento episodio successivo...") e non fallisce.
+    _isSwitchingEpisode.value = isNextEpisode
     _streamResolutionState.value = StreamResolutionState.Loading
     _streamResult.value = StreamResult.Loading("Ricerca sorgenti in corso...")
 
     val currentDetail = detailUiState.value
     val enrichedMedia = if (currentDetail is MediaDetailUiState.Success) {
       val candidate = currentDetail.media
-      val matches = (mediaItem.tmdbId != null && candidate.tmdbId == mediaItem.tmdbId) ||
+      val matches = (mediaItem.tmdbId != null && mediaItem.tmdbId > 0 && candidate.tmdbId == mediaItem.tmdbId) ||
         (mediaItem.id.isNotBlank() && (candidate.id == mediaItem.id || candidate.id.equals(mediaItem.id, ignoreCase = true)))
       if (matches) candidate else null
     } else null
@@ -1426,7 +2096,8 @@ class StreamNovaViewModel(
         genres = if (mediaItem.genres.isNotEmpty()) mediaItem.genres else enrichedMedia.genres,
         episodes = if (mediaItem.episodes.isNotEmpty()) mediaItem.episodes else enrichedMedia.episodes,
         lastWatchedSeason = mediaItem.lastWatchedSeason ?: enrichedMedia.lastWatchedSeason,
-        lastWatchedEpisode = mediaItem.lastWatchedEpisode ?: enrichedMedia.lastWatchedEpisode
+        lastWatchedEpisode = mediaItem.lastWatchedEpisode ?: enrichedMedia.lastWatchedEpisode,
+        imdbId = mediaItem.imdbId ?: enrichedMedia.imdbId
       )
     } else {
       mediaItem
@@ -1442,6 +2113,9 @@ class StreamNovaViewModel(
       episode
     }
 
+    // Aggiorna atomicamente con il media arricchito e l'episodio calcolato
+    _sourceDialogMedia.value = SourceDialogTarget(baseForResolution, effectiveEpisode)
+
     val currentJobGeneration = loadStreamGeneration
     streamJob = viewModelScope.launch(ioDispatcher) {
       val mode = AppSettingsRepository.streamingEngineMode.value
@@ -1451,14 +2125,90 @@ class StreamNovaViewModel(
       } else {
         baseForResolution
       }
+      withContext(Dispatchers.Main) {
+        if (currentJobGeneration == loadStreamGeneration) {
+          _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
+        }
+      }
       val tmdbId = resolvedMediaItem.tmdbId
       if (tmdbId == null || tmdbId <= 0) {
         withContext(Dispatchers.Main) {
           if (currentJobGeneration != loadStreamGeneration) return@withContext
-          _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
-          _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
+          _isSwitchingEpisode.value = false
+          if (isNextEpisode) {
+            // Nuova puntata non ricercabile (id mancante): mai schermata nera,
+            // si passa alla selezione manuale delle sorgenti.
+            _sourceDialogMedia.value = SourceDialogTarget(baseForResolution, effectiveEpisode)
+            _showSourceDialog.value = true
+            _streamResolutionState.value = StreamResolutionState.Idle
+            _streamResult.value = StreamResult.Idle
+          } else {
+            _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
+            _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
+          }
         }
         return@launch
+      }
+
+      // "Riusa l'ultimo link": se esiste un flusso funzionante ancora valido per questo
+      // film/episodio, si salta la ricerca e la selezione della lista e si riproduce
+      // direttamente lo stream salvato. In caso di fallimento subentra il fallback in
+      // [handleReusedStreamFailure], che richiama questo metodo con `allowReuse = false`.
+      // NOTA: la cache è utilizzabile solo se corrisponde esattamente al media e alla
+      // puntata richiesti (id esplicito del click + stagione/episodio effettivi).
+      if (allowReuse && tryOpenReusedStream(
+          media = resolvedMediaItem,
+          episode = effectiveEpisode,
+          generation = currentJobGeneration,
+          requestedMediaId = mediaItem.id,
+          requestedSeason = effectiveEpisode?.seasonNumber,
+          requestedEpisode = effectiveEpisode?.episodeNumber
+        )
+      ) {
+        return@launch
+      }
+
+      val season = if (isTv) (effectiveEpisode?.seasonNumber ?: resolvedMediaItem.lastWatchedSeason ?: 1) else null
+      val epNumber = if (isTv) (effectiveEpisode?.episodeNumber ?: resolvedMediaItem.lastWatchedEpisode ?: 1) else null
+
+      // Bingewatching - Priorita' assoluta: stessa fonte dell'episodio corrente.
+      // Se l'episodio precedente veniva da un torrent di stagione (Debrid), si
+      // cerca il file del nuovo episodio DENTRO lo stesso torrent e lo si avvia
+      // direttamente, senza interrogare nuovamente gli addon.
+      val pinnedSource = if (isNextEpisode) _playbackState.value.currentSource else null
+      if (pinnedSource != null && season != null && epNumber != null &&
+        mode == StreamingEngineMode.DEBRID_TORBOX && pinnedSource.infoHash != null
+      ) {
+        val pinnedHash = pinnedSource.infoHash
+        Log.d("NextEpisodeDebrid", "Tentativo fast-path torrent: $pinnedHash per S${season}E${epNumber}")
+        // Timeout rigido e insuperabile (3.5s): se lo stesso torrent non risponde,
+        // non si resta MAI in sospeso. Fallthrough immediato alla ricerca normale.
+        val fastPathStream = withTimeoutOrNull(NEXT_EPISODE_FAST_PATH_TIMEOUT_MS) {
+          seasonPackEpisodeResolver(pinnedSource, season, epNumber)
+        }
+        Log.d("NextEpisodeDebrid", "Esito fast-path: ${fastPathStream != null}")
+        val samePackSource = fastPathStream
+        if (samePackSource != null && !samePackSource.streamUrl.isNullOrBlank()) {
+          withContext(Dispatchers.Main) {
+            if (currentJobGeneration != loadStreamGeneration) return@withContext
+            Log.i(SAME_SOURCE_TAG, "Avvio diretto S$season E$epNumber dallo stesso torrent")
+            _availableSources.value = listOf(samePackSource)
+            _streamResolutionState.value = StreamResolutionState.Success(
+              streamUrl = samePackSource.streamUrl ?: "",
+              mediaItem = resolvedMediaItem,
+              episode = effectiveEpisode,
+              streamHeaders = samePackSource.headers,
+              quality = samePackSource.quality,
+              serverName = samePackSource.serverName,
+              isProgressive = samePackSource.isProgressive
+            )
+            _streamResult.value = StreamResult.Success(listOf(samePackSource))
+            openPlayer(resolvedMediaItem, effectiveEpisode, samePackSource)
+          }
+          return@launch
+        } else {
+          Log.d("NextEpisodeDebrid", "Fast-path fallito o timeout, procedo con ricerca normale")
+        }
       }
 
       val openSubtitlesDeferred = async(ioDispatcher) {
@@ -1469,93 +2219,144 @@ class StreamNovaViewModel(
         )
       }
 
-      val season = if (isTv) (effectiveEpisode?.seasonNumber ?: resolvedMediaItem.lastWatchedSeason ?: 1) else null
-      val epNumber = if (isTv) (effectiveEpisode?.episodeNumber ?: resolvedMediaItem.lastWatchedEpisode ?: 1) else null
       val searchTitle = resolvedMediaItem.title.ifBlank { resolvedMediaItem.originalTitle }
 
-      var hasEmittedAny = false
+      val effectiveImdb = resolvedMediaItem.effectiveImdbId
+        ?: effectiveEpisode?.effectiveImdbId
+        ?: resolvedMediaItem.id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
+
       var hasOpenedPlayer = false
       var currentBestUrl: String? = null
 
-      try {
-        streamManager.resolveFlow(
-          tmdbId = tmdbId,
-          isTv = isTv,
-          season = season,
-          episode = epNumber,
-          title = searchTitle,
-          year = resolvedMediaItem.year,
-          originalTitle = resolvedMediaItem.originalTitle.takeIf { it.isNotBlank() },
-          providerTag = resolvedMediaItem.provider,
-          genres = resolvedMediaItem.genres,
-          streamingEngineMode = mode
-        ).collect { rawSources ->
-          if (rawSources.isEmpty()) return@collect
-          hasEmittedAny = true
+      val resolutionFlow = streamManager.resolveFlow(
+        tmdbId = tmdbId,
+        isTv = isTv,
+        season = season,
+        episode = epNumber,
+        title = searchTitle,
+        year = resolvedMediaItem.year,
+        originalTitle = resolvedMediaItem.originalTitle.takeIf { it.isNotBlank() },
+        providerTag = resolvedMediaItem.provider,
+        genres = resolvedMediaItem.genres,
+        streamingEngineMode = mode,
+        imdbId = effectiveImdb
+      )
+      val collectBlock: suspend (List<StreamSource>) -> Unit = collect@{ rawSources ->
+        // L'auto-pick valuta SOLO liste non vuote: un primo tick senza risultati
+        // (provider HTTP/addon ancora in corso) non deve mai scatenare un fallimento.
+        if (rawSources.isEmpty()) return@collect
 
-          @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-          val externalSubs = if (openSubtitlesDeferred.isCompleted) {
-            try {
-              openSubtitlesDeferred.getCompleted()
-            } catch (e: Exception) {
-              emptyList()
-            }
-          } else {
+        @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+        val externalSubs = if (openSubtitlesDeferred.isCompleted) {
+          try {
+            openSubtitlesDeferred.getCompleted()
+          } catch (e: Exception) {
             emptyList()
           }
+        } else {
+          emptyList()
+        }
 
-          val finalSources = rawSources.map { s ->
-            val merged = (s.subtitles + externalSubs).distinctBy { it.id.ifBlank { it.url } }
-            s.copy(subtitles = merged)
-          }
+        val finalSources = rawSources.map { s ->
+          val merged = (s.subtitles + externalSubs).distinctBy { it.id.ifBlank { it.url } }
+          s.copy(subtitles = merged)
+        }
 
+        // Affinita' con la fonte dell'episodio corrente: stesso addon/provider e
+        // firma di release piu' vicina in cima (anche davanti a qualita' grezza).
+        val affinitySources = if (pinnedSource != null) {
+          rankBySameSourceAffinity(finalSources, pinnedSource)
+        } else {
+          finalSources
+        }
+
+        val shouldShowDialog = mode == StreamingEngineMode.DEBRID_TORBOX && !AppSettingsRepository.autoplayEnabled.value
+        if (shouldShowDialog) {
           withContext(Dispatchers.Main) {
-            if (currentJobGeneration != loadStreamGeneration) {
-              Log.d(TAG, "Job ignorato perché una nuova ricerca o cancellazione è avvenuta")
-              return@withContext
-            }
-
-            val shouldShowDialog = mode == StreamingEngineMode.DEBRID_TORBOX && !AppSettingsRepository.autoplayEnabled.value
-            if (shouldShowDialog) {
-              _availableSources.value = finalSources
-              _sourceSelectionTarget.value = SourceSelectionTarget(resolvedMediaItem, effectiveEpisode)
-              _showSourceDialog.value = true
-              _streamResolutionState.value = StreamResolutionState.Idle
-              _streamResult.value = StreamResult.Idle
-              return@withContext
-            }
-
-            val best = finalSources.first()
-            val resolvedBest = if (best.infoHash != null && best.streamUrl == null) {
-              TorBoxRepository.setRequestMetadata(season, epNumber)
-              val directUrl = TorBoxRepository.resolveInfoHash(best.infoHash, best.fileIdx)
-              if (directUrl != null) best.copy(streamUrl = directUrl) else null
-            } else {
-              best
-            }
-
-            if (resolvedBest != null && !resolvedBest.streamUrl.isNullOrBlank()) {
-              _availableSources.value = finalSources
-              if (!hasOpenedPlayer) {
-                hasOpenedPlayer = true
-                currentBestUrl = resolvedBest.streamUrl
-                _streamResolutionState.value = StreamResolutionState.Success(
-                  streamUrl = resolvedBest.streamUrl ?: "",
-                  mediaItem = resolvedMediaItem,
-                  episode = effectiveEpisode,
-                  streamHeaders = resolvedBest.headers,
-                  quality = resolvedBest.quality,
-                  serverName = resolvedBest.serverName,
-                  isProgressive = resolvedBest.isProgressive
-                )
-                _streamResult.value = StreamResult.Success(listOf(resolvedBest))
-                openPlayer(resolvedMediaItem, effectiveEpisode, resolvedBest)
-              } else if (resolvedBest.streamUrl != currentBestUrl) {
-                currentBestUrl = resolvedBest.streamUrl
-                upgradeStreamSource(resolvedBest)
-              }
+            if (currentJobGeneration != loadStreamGeneration) return@withContext
+            _availableSources.value = affinitySources
+            _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
+            _showSourceDialog.value = true
+            _streamResolutionState.value = StreamResolutionState.Idle
+            _streamResult.value = StreamResult.Idle
+            _isSwitchingEpisode.value = false
+            if (isNextEpisode) {
+              Log.d("NextEpisodeStream", "Flussi trovati: ${affinitySources.size}, Flusso scelto: null (Selezione manuale attiva)")
             }
           }
+          return@collect
+        }
+
+        // Auto-pick universale: Debrid attiva/configurata -> sblocco infoHash;
+        // HTTP diretta o Debrid assente -> primo link HTTP(S) riproducibile.
+        // Null (Caso C) -> selezione manuale, mai errore/schermata nera.
+        val chosenStream = resolveAutoPickSource(
+          sources = affinitySources,
+          streamingEngineMode = mode,
+          isDebridConfigured = TorBoxRepository.isConfigured(),
+          season = season,
+          episode = epNumber
+        )
+
+        if (isNextEpisode) {
+          Log.d("NextEpisodeStream", "Flussi trovati: ${affinitySources.size}, Flusso scelto: ${chosenStream?.title}")
+        }
+
+        withContext(Dispatchers.Main) {
+          if (currentJobGeneration != loadStreamGeneration) {
+            Log.d(TAG, "Job ignorato perché una nuova ricerca o cancellazione è avvenuta")
+            return@withContext
+          }
+
+          if (chosenStream != null && !chosenStream.streamUrl.isNullOrBlank()) {
+            _availableSources.value = affinitySources
+            if (!hasOpenedPlayer) {
+              hasOpenedPlayer = true
+              currentBestUrl = chosenStream.streamUrl
+              _streamResolutionState.value = StreamResolutionState.Success(
+                streamUrl = chosenStream.streamUrl ?: "",
+                mediaItem = resolvedMediaItem,
+                episode = effectiveEpisode,
+                streamHeaders = chosenStream.headers,
+                quality = chosenStream.quality,
+                serverName = chosenStream.serverName,
+                isProgressive = chosenStream.isProgressive
+              )
+              _streamResult.value = StreamResult.Success(listOf(chosenStream))
+              openPlayer(resolvedMediaItem, effectiveEpisode, chosenStream)
+            } else if (chosenStream.streamUrl != currentBestUrl) {
+              currentBestUrl = chosenStream.streamUrl
+              upgradeStreamSource(chosenStream)
+            }
+          } else {
+            _availableSources.value = affinitySources
+            _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
+            _showSourceDialog.value = true
+            _streamResolutionState.value = StreamResolutionState.Idle
+            _streamResult.value = StreamResult.Idle
+            _isSwitchingEpisode.value = false
+          }
+        }
+      }
+
+      try {
+        if (isNextEpisode) {
+          Log.d(
+            "NextEpisodeDebrid",
+            "Avvio ricerca sorgenti con timeout globale ${NEXT_EPISODE_RESOLUTION_TIMEOUT_MS}ms"
+          )
+          val completed = withTimeoutOrNull(NEXT_EPISODE_RESOLUTION_TIMEOUT_MS) {
+            resolutionFlow.collect(collectBlock)
+            true
+          }
+          if (completed != true) {
+            Log.d(
+              "NextEpisodeDebrid",
+              "Timeout globale ${NEXT_EPISODE_RESOLUTION_TIMEOUT_MS}ms senza stream avviato: apertura dialog sorgenti"
+            )
+          }
+        } else {
+          resolutionFlow.collect(collectBlock)
         }
       } catch (e: CancellationException) {
         throw e
@@ -1565,9 +2366,20 @@ class StreamNovaViewModel(
 
       withContext(Dispatchers.Main) {
         if (currentJobGeneration != loadStreamGeneration) return@withContext
-        if (!hasEmittedAny) {
-          _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
-          _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
+        if (!hasOpenedPlayer && !_showSourceDialog.value) {
+          if (_availableSources.value.isNotEmpty() || isNextEpisode) {
+            // Caso C (anche con zero flussi per il prossimo episodio): la sessione
+            // resta in attesa di scelta manuale, mai in errore/schermata nera.
+            _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
+            _showSourceDialog.value = true
+            _streamResolutionState.value = StreamResolutionState.Idle
+            _streamResult.value = StreamResult.Idle
+            _isSwitchingEpisode.value = false
+          } else {
+            _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
+            _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
+            _isSwitchingEpisode.value = false
+          }
         }
       }
     }
@@ -1587,7 +2399,8 @@ class StreamNovaViewModel(
       streamQuality = source.quality,
       streamServer = source.serverName,
       streamProgressive = source.isProgressive,
-      subtitles = (source.subtitles + current.subtitles).distinctBy { it.id.ifBlank { it.url } }
+      subtitles = (source.subtitles + current.subtitles).distinctBy { it.id.ifBlank { it.url } },
+      currentSource = source
     )
   }
 
@@ -1595,7 +2408,7 @@ class StreamNovaViewModel(
     loadStreamJob?.cancel()
     loadStreamJob = null
     viewModelScope.launch {
-      val target = _sourceSelectionTarget.value ?: return@launch
+      val target = _sourceDialogMedia.value ?: return@launch
       val media = target.media
       val episode = target.episode
 
@@ -1625,7 +2438,7 @@ class StreamNovaViewModel(
 
       _showSourceDialog.value = false
       _availableSources.value = emptyList()
-      _sourceSelectionTarget.value = null
+      _sourceDialogMedia.value = null
       _isLoading.value = false
 
       Log.i(TAG, "Source selection: ${resolvedSource.serverName} (${resolvedSource.quality})")
@@ -1645,26 +2458,45 @@ class StreamNovaViewModel(
   }
 
   fun dismissSourceDialog() {
+    currentMediaFetchJob?.cancel()
+    currentMediaFetchJob = null
     resetStreamState()
     _showSourceDialog.value = false
     _availableSources.value = emptyList()
-    _sourceSelectionTarget.value = null
+    _sourceDialogMedia.value = null
   }
 
   fun closePlayer() {
     Log.d("BACK_TRACE", "STREAMNOVAVM: ingresso in closePlayer()")
     Log.i(HTTP_TRACE, "[VM] closePlayer INVOKE")
     Log.d("BACK_TRACE", "STREAMNOVAVM: valore di _screenState prima: ${_screenState.value}")
-    resetStreamState()
-    currentlyUnlockedMediaId = null
+    // Salva il progresso PRIMA di azzerare lo stato, usando il pacchetto atomico della
+    // sessione corrente (mai variabili globali mutevoli).
     val current = _playbackState.value
     if (current.currentPositionMs > 0L) {
       saveCurrentPlaybackProgress(current.currentPositionMs)
     }
+    // Pulizia totale della sessione: la prossima riproduzione parte da tabula rasa.
+    currentMediaFetchJob?.cancel()
+    currentMediaFetchJob = null
+    resetStreamState()
+    currentSession = null
+    currentlyUnlockedMediaId = null
+    _showSourceDialog.value = false
+    _sourceDialogMedia.value = null
     _playbackState.value = _playbackState.value.copy(
       streamUrl = null,
+      streamHeaders = emptyMap(),
+      streamQuality = null,
+      streamServer = null,
+      streamProgressive = null,
+      subtitles = emptyList(),
+      isReusedStream = false,
+      currentSource = null,
+      subtitleOffsetMs = 0L,
       isPlaying = false
     )
+    _onlineSubtitles.value = emptyList()
     _availableSources.value = emptyList()
     val origin = screenBeforePlayer
     val previousSection = sectionBeforePlayer
@@ -1690,6 +2522,9 @@ class StreamNovaViewModel(
 
   fun backFromDetail() {
     resetStreamState()
+    selectSeasonJob?.cancel()
+    selectSeasonJob = null
+    _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
     _selectedMedia.value = null
     if (_selectedProvider.value != null) {
       _screenState.value = ScreenState.PROVIDER
@@ -1962,4 +2797,44 @@ class StreamNovaViewModel(
   fun setResolution(res: VideoResolution) {
     _playbackState.update { it.copy(selectedResolution = res) }
   }
+  fun setSubtitleOffsetMs(offsetMs: Long) {
+    val clamped = offsetMs.coerceIn(-10_000L, 10_000L)
+    _playbackState.update { it.copy(subtitleOffsetMs = clamped) }
+  }
+
+  fun adjustSubtitleOffsetMs(deltaMs: Long) {
+    val current = _playbackState.value.subtitleOffsetMs
+    setSubtitleOffsetMs(current + deltaMs)
+  }
+
+  fun resetSubtitleOffsetMs() {
+    setSubtitleOffsetMs(0L)
+  }
+
+  fun loadOnlineSubtitles(
+    mediaItem: MediaItem? = _playbackState.value.media,
+    episode: Episode? = _playbackState.value.currentEpisode
+  ) {
+    val media = mediaItem ?: return
+    viewModelScope.launch(ioDispatcher) {
+      _isOnlineSubtitlesLoading.value = true
+      try {
+        val results = openSubtitlesProvider.fetchFromStremioOpenSubtitles(media, episode)
+        _onlineSubtitles.value = results
+      } catch (e: Exception) {
+        Log.w("StreamNovaVM", "Errore caricamento sottotitoli online: ${e.message}")
+        _onlineSubtitles.value = emptyList()
+      } finally {
+        _isOnlineSubtitlesLoading.value = false
+      }
+    }
+  }
+
+  fun injectOnlineSubtitle(subtitle: Subtitle) {
+    _playbackState.update { current ->
+      val updated = (current.subtitles + subtitle).distinctBy { it.id.ifBlank { it.url } }
+      current.copy(subtitles = updated)
+    }
+  }
 }
+

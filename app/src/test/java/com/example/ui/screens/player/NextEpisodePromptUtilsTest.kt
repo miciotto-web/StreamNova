@@ -1,7 +1,9 @@
 package com.example.ui.screens.player
 
+import com.example.data.model.Episode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -100,5 +102,61 @@ class NextEpisodePromptUtilsTest {
   @Test
   fun `finestra di attivazione di trentacinque secondi`() {
     assertEquals(35_000L, NextEpisodePromptUtils.PROMPT_WINDOW_MS)
+  }
+
+  // ── resolveNextEpisode ─────────────────────────────────────────────────────
+
+  private fun ep(season: Int, number: Int): Episode = Episode(
+    id = "series_s${season}e${number}",
+    seasonNumber = season,
+    episodeNumber = number,
+    title = "Episodio $number",
+    synopsis = "",
+    durationMinutes = 50,
+    videoUrl = ""
+  )
+
+  @Test
+  fun `next risolve il successivo nella stessa stagione`() {
+    val episodes = listOf(ep(1, 1), ep(1, 2), ep(1, 3))
+    val next = NextEpisodePromptUtils.resolveNextEpisode(episodes, ep(1, 2))
+    assertEquals(3, next?.episodeNumber)
+    assertEquals(1, next?.seasonNumber)
+  }
+
+  @Test
+  fun `next passa alla stagione successiva con l'ultimo episodio della stagione`() {
+    val episodes = listOf(ep(1, 9), ep(1, 10), ep(2, 1), ep(2, 2))
+    val next = NextEpisodePromptUtils.resolveNextEpisode(episodes, ep(1, 10))
+    assertEquals(2, next?.seasonNumber)
+    assertEquals(1, next?.episodeNumber)
+  }
+
+  @Test
+  fun `next e null dopo l'ultimo episodio della serie`() {
+    val episodes = listOf(ep(1, 1), ep(1, 2))
+    assertNull(NextEpisodePromptUtils.resolveNextEpisode(episodes, ep(1, 2)))
+  }
+
+  @Test
+  fun `next usa il numero piu basso della stagione successiva se manca l'E1`() {
+    val episodes = listOf(ep(2, 2), ep(2, 3))
+    val next = NextEpisodePromptUtils.resolveNextEpisode(episodes, ep(1, 10))
+    assertEquals(2, next?.seasonNumber)
+    assertEquals(2, next?.episodeNumber)
+  }
+
+  @Test
+  fun `next funziona con liste non ordinate`() {
+    val episodes = listOf(ep(2, 1), ep(1, 2), ep(1, 1))
+    val next = NextEpisodePromptUtils.resolveNextEpisode(episodes, ep(1, 1))
+    assertEquals(1, next?.seasonNumber)
+    assertEquals(2, next?.episodeNumber)
+  }
+
+  @Test
+  fun `next e null con lista vuota o episodio corrente assente`() {
+    assertNull(NextEpisodePromptUtils.resolveNextEpisode(emptyList(), ep(1, 1)))
+    assertNull(NextEpisodePromptUtils.resolveNextEpisode(listOf(ep(1, 1)), null))
   }
 }

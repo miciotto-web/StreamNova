@@ -117,6 +117,18 @@ enum class DetailTab(val titleRes: Int) {
   DETTAGLI(R.string.detail_tab_technical_details)
 }
 
+private fun matchesSeries(stateSeriesId: String?, media: MediaItem): Boolean {
+  if (stateSeriesId == null) return true
+  if (stateSeriesId.equals(media.id, ignoreCase = true)) return true
+  val mediaTmdb = media.tmdbId
+  if (mediaTmdb != null && mediaTmdb > 0) {
+    if (stateSeriesId == mediaTmdb.toString() || stateSeriesId == "tmdb_tv_$mediaTmdb") return true
+  }
+  val stateTmdb = stateSeriesId.removePrefix("tmdb_tv_").toIntOrNull()
+  if (stateTmdb != null && stateTmdb > 0 && stateTmdb == media.tmdbId) return true
+  return false
+}
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun DetailScreen(
@@ -130,8 +142,8 @@ fun DetailScreen(
   detailUiState: MediaDetailUiState? = null,
   selectedSeasonNumber: Int = 1,
   seasonEpisodesUiState: SeasonEpisodesUiState? = null,
-  onSeasonChange: ((Int) -> Unit)? = null,
-  onEpisodeClick: ((Episode) -> Unit)? = null,
+  onSeasonChange: ((MediaItem, Int) -> Unit)? = null,
+  onEpisodeClick: ((MediaItem, Episode) -> Unit)? = null,
   onRetry: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
@@ -172,17 +184,27 @@ fun DetailScreen(
     localSelectedSeason
   }
 
-  val isSeasonLoading = seasonEpisodesUiState is SeasonEpisodesUiState.Loading && seasonEpisodesUiState.seasonNumber == activeSeason
-  val seasonErrorMessage = if (seasonEpisodesUiState is SeasonEpisodesUiState.Error && seasonEpisodesUiState.seasonNumber == activeSeason) {
+  val isMatchingSeries = matchesSeries(
+    when (seasonEpisodesUiState) {
+      is SeasonEpisodesUiState.Loading -> seasonEpisodesUiState.seriesId
+      is SeasonEpisodesUiState.Success -> seasonEpisodesUiState.seriesId
+      is SeasonEpisodesUiState.Error -> seasonEpisodesUiState.seriesId
+      else -> null
+    },
+    displayMedia
+  )
+
+  val isSeasonLoading = seasonEpisodesUiState is SeasonEpisodesUiState.Loading && seasonEpisodesUiState.seasonNumber == activeSeason && isMatchingSeries
+  val seasonErrorMessage = if (seasonEpisodesUiState is SeasonEpisodesUiState.Error && seasonEpisodesUiState.seasonNumber == activeSeason && isMatchingSeries) {
     seasonEpisodesUiState.message
   } else null
 
   // Filter or resolve episodes for the currently active season
   val episodesForSeason = remember(displayMedia, activeSeason, seasonEpisodesUiState) {
-    val rawList = if (seasonEpisodesUiState is SeasonEpisodesUiState.Success && seasonEpisodesUiState.seasonNumber == activeSeason) {
+    val rawList = if (seasonEpisodesUiState is SeasonEpisodesUiState.Success && seasonEpisodesUiState.seasonNumber == activeSeason && isMatchingSeries) {
       seasonEpisodesUiState.season.episodes.map { epItem ->
         val saved = MediaRepository.getEpisodeProgress(displayMedia.id, epItem.seasonNumber, epItem.episodeNumber)
-        epItem.toEpisode(displayMedia.id, saved)
+        epItem.toEpisode(displayMedia.id, saved, displayMedia.imdbId)
       }
     } else {
       val eps = displayMedia.episodes.filter { it.seasonNumber == activeSeason }
@@ -200,7 +222,8 @@ fun DetailScreen(
             thumbnailUrl = displayMedia.backdropUrl,
             thumbnailRes = displayMedia.backdropRes,
             videoUrl = displayMedia.videoUrl,
-            rating = displayMedia.rating
+            rating = displayMedia.rating,
+            seriesImdbId = displayMedia.imdbId
           )
         }
       }
@@ -725,7 +748,7 @@ fun DetailScreen(
                     focusedScale = 1.05f,
                     onClick = {
                       localSelectedSeason = seasonNum
-                      onSeasonChange?.invoke(seasonNum)
+                      onSeasonChange?.invoke(displayMedia, seasonNum)
                     }
                   ) { isFocused ->
                     Row(
@@ -875,7 +898,7 @@ fun DetailScreen(
                 }
                 TvFocusableBox(
                   shape = RoundedCornerShape(8.dp),
-                  onClick = { onSeasonChange?.invoke(activeSeason) }
+                  onClick = { onSeasonChange?.invoke(displayMedia, activeSeason) }
                 ) { isFocused ->
                   Row(
                     modifier = Modifier
@@ -910,7 +933,7 @@ fun DetailScreen(
                 fallbackBackdropUrl = displayMedia.backdropUrl,
                 fallbackBackdropRes = displayMedia.backdropRes,
                 onClick = {
-                  onEpisodeClick?.invoke(episode) ?: onPlayClick(displayMedia, episode)
+                  onEpisodeClick?.invoke(displayMedia, episode) ?: onPlayClick(displayMedia, episode)
                 },
                 modifier = Modifier.padding(horizontal = 32.dp, vertical = 6.dp)
               )

@@ -328,9 +328,9 @@ fun StreamNovaApp(
       ) { backStackEntry ->
         val args = DetailNavArgs.fromBundle(backStackEntry.arguments)
         val selectedMedia by viewModel.selectedMedia.collectAsState()
-        val baseMedia = selectedMedia?.takeIf { it.tmdbId == args.tmdbId }
-          ?: allMedia.find { it.tmdbId == args.tmdbId }
-          ?: allMedia.firstOrNull()
+        val baseMedia = selectedMedia?.takeIf { (args.tmdbId > 0 && it.tmdbId == args.tmdbId) || args.tmdbId <= 0 }
+          ?: allMedia.find { args.tmdbId > 0 && it.tmdbId == args.tmdbId }
+          ?: selectedMedia
 
         val selectedSeasonNumber by viewModel.selectedSeasonNumber.collectAsState()
         val seasonEpisodesUiState by viewModel.seasonEpisodesUiState.collectAsState()
@@ -348,7 +348,7 @@ fun StreamNovaApp(
           val currentMedia = when (val state = detailUiState) {
             is MediaDetailUiState.Success -> {
               val candidate = state.media
-              if (candidate.tmdbId == baseMedia.tmdbId || (baseMedia.id.isNotBlank() && candidate.id.equals(baseMedia.id, ignoreCase = true))) {
+              if ((candidate.tmdbId != null && candidate.tmdbId > 0 && (candidate.tmdbId == baseMedia.tmdbId || baseMedia.tmdbId == null || baseMedia.tmdbId <= 0)) || (baseMedia.id.isNotBlank() && (candidate.id.equals(baseMedia.id, ignoreCase = true) || baseMedia.id.startsWith("tt", ignoreCase = true)))) {
                 candidate
               } else {
                 baseMedia
@@ -360,7 +360,7 @@ fun StreamNovaApp(
           }
 
           DetailScreen(
-            media = baseMedia,
+            media = currentMedia,
             allMedia = allMedia,
             onBackClick = {
               viewModel.resetStreamState()
@@ -382,11 +382,11 @@ fun StreamNovaApp(
             detailUiState = detailUiState,
             selectedSeasonNumber = selectedSeasonNumber,
             seasonEpisodesUiState = seasonEpisodesUiState,
-            onSeasonChange = { seasonNum ->
-              viewModel.selectSeason(baseMedia.tmdbId ?: 0, seasonNum, baseMedia)
+            onSeasonChange = { media, seasonNum ->
+              viewModel.loadEpisodesForSeason(media, seasonNum)
             },
-            onEpisodeClick = { episode ->
-              viewModel.openStreamForMedia(currentMedia, episode)
+            onEpisodeClick = { media, episode ->
+              viewModel.openStreamForMedia(media, episode)
             },
             onRetry = { viewModel.retryLoadDetail() }
           )
@@ -452,12 +452,11 @@ fun StreamNovaApp(
 
     val showSourceDialog by viewModel.showSourceDialog.collectAsState()
     val availableSources by viewModel.availableSources.collectAsState()
-    val sourceSelectionTarget by viewModel.sourceSelectionTarget.collectAsState()
-    if (showSourceDialog && availableSources.isNotEmpty()) {
+    val sourceDialogMedia by viewModel.sourceDialogMedia.collectAsState()
+    if (showSourceDialog && availableSources.isNotEmpty() && sourceDialogMedia != null) {
       TorBoxSourceSelectionScreen(
         sources = availableSources,
-        media = sourceSelectionTarget?.media,
-        episode = sourceSelectionTarget?.episode,
+        target = sourceDialogMedia,
         onSelect = { source -> viewModel.selectSource(source) },
         onDismiss = { viewModel.dismissSourceDialog() }
       )

@@ -35,10 +35,18 @@ class TorBoxMultiSourceResolutionTest {
   @Before
   fun setUp() {
     Dispatchers.setMain(testDispatcher)
+    com.example.data.stremio.StremioAddonRepository.getInstalledAddons().forEach {
+      com.example.data.stremio.StremioAddonRepository.removeAddon(it.id)
+    }
+    com.example.data.stremio.StremioAddonRepository.clearCaches()
   }
 
   @After
   fun tearDown() {
+    com.example.data.stremio.StremioAddonRepository.getInstalledAddons().forEach {
+      com.example.data.stremio.StremioAddonRepository.removeAddon(it.id)
+    }
+    com.example.data.stremio.StremioAddonRepository.clearCaches()
     Dispatchers.resetMain()
   }
 
@@ -73,6 +81,7 @@ class TorBoxMultiSourceResolutionTest {
         title: String?,
         year: Int?
       ): List<StreamSource> {
+        println("DEBUG: FAKE TORBOX GETSTREAMS CALLED!")
         return listOf(source1080p, source4k, source720p)
       }
     }
@@ -90,6 +99,13 @@ class TorBoxMultiSourceResolutionTest {
     // prima delle asserzioni (niente race con Dispatchers.IO reale).
     val viewModel = StreamNovaViewModel(ioDispatcher = StandardTestDispatcher(testScheduler))
     viewModel.streamManager = customStreamManager
+    viewModel.openSubtitlesProvider = object : com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider() {
+      override suspend fun fetchSubtitles(
+        mediaItem: MediaItem,
+        episode: com.example.data.model.Episode?,
+        preferredLanguage: String?
+      ): List<com.example.domain.model.Subtitle> = emptyList()
+    }
 
     val mediaItem = MediaItem(
       id = "movie_123",
@@ -101,8 +117,10 @@ class TorBoxMultiSourceResolutionTest {
     )
 
     // 2. Act: open stream for media
-    viewModel.openStreamForMedia(mediaItem)
+    viewModel.openStreamForMedia(mediaItem, allowReuse = false)
     advanceUntilIdle()
+
+    println("DEBUG: available.size=${viewModel.availableSources.value.size}, state=${viewModel.streamResolutionState.value}, result=${viewModel.streamResult.value}, dialog=${viewModel.showSourceDialog.value}")
 
     // 3. Assert: All sources found must be in availableSources
     val available = viewModel.availableSources.value

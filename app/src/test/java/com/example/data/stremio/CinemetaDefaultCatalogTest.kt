@@ -190,4 +190,111 @@ class CinemetaDefaultCatalogTest {
     assertEquals(manyMovies.take(10).map { it.id }, catalog.top10Movies.map { it.id })
     assertEquals(manySeries.take(10).map { it.id }, catalog.top10Series.map { it.id })
   }
+
+  @Test
+  fun quandoXperienceEAttivoLeRigheStockCinemetaVengonoSoppresseEPopolatiAllMoviesAllSeries() {
+    val cinemeta = movie("tt1000001", "Popolare Cinemeta")
+    val userMovie = movie("tt9999001", "Movie Xperience")
+    val userSeries = series("tt9999002", "Series Xperience")
+
+    val catalog = StremioCatalogRepository.buildHomeCatalogs(
+      defaultSections = listOf(section("top", MediaType.FILM, items = listOf(cinemeta))),
+      userSections = listOf(
+        section("trending_movies", MediaType.FILM, addonName = "Xperience", items = listOf(userMovie)),
+        section("trending_series", MediaType.SERIE_TV, addonName = "Xperience", items = listOf(userSeries))
+      ),
+      allMedia = emptyList(),
+      isXperienceActive = true
+    )
+
+    // Tutte le righe stock Cinemeta devono essere soppresse
+    assertTrue("popularMovies deve essere vuoto", catalog.popularMovies.isEmpty())
+    assertTrue("top10Movies deve essere vuoto", catalog.top10Movies.isEmpty())
+    assertTrue("trendingMovies deve essere vuoto", catalog.trendingMovies.isEmpty())
+    assertTrue("popularSeries deve essere vuoto", catalog.popularSeries.isEmpty())
+    assertTrue("top10Series deve essere vuoto", catalog.top10Series.isEmpty())
+    assertTrue("trendingSeries deve essere vuoto", catalog.trendingSeries.isEmpty())
+    assertTrue("forYouMovies deve essere vuoto", catalog.forYouMovies.isEmpty())
+    assertTrue("forYouSeries deve essere vuoto", catalog.forYouSeries.isEmpty())
+
+    // Flag Xperience attivi
+    assertTrue(catalog.hasXperienceMovies)
+    assertTrue(catalog.hasXperienceSeries)
+    assertTrue(catalog.hasXperienceCatalogs)
+
+    // allMovies e allSeries popolati da Xperience
+    assertEquals(listOf(userMovie.id), catalog.allMovies.map { it.id })
+    assertEquals(listOf(userSeries.id), catalog.allSeries.map { it.id })
+
+    // Sezioni extra presenti
+    assertEquals(2, catalog.extraSections.size)
+  }
+
+  @Test
+  fun detectBrandRiconoscePiattaformeDiStreaming() {
+    val netflixTarget = StremioCatalogTarget(
+      addonId = "test",
+      addonName = "Xperience",
+      baseUrl = "https://xperience",
+      catalog = StremioCatalogDefinition(type = "movie", id = "snoak_netflix_top10_movies", name = "Netflix Top 10")
+    )
+    val disneyTarget = StremioCatalogTarget(
+      addonId = "test",
+      addonName = "Xperience",
+      baseUrl = "https://xperience",
+      catalog = StremioCatalogDefinition(type = "movie", id = "streaming_disney_movies", name = "Disney+")
+    )
+    val hboTarget = StremioCatalogTarget(
+      addonId = "test",
+      addonName = "Xperience",
+      baseUrl = "https://xperience",
+      catalog = StremioCatalogDefinition(type = "series", id = "snoak_hbo_top10_series", name = "HBO Max Top 10")
+    )
+    val primeTarget = StremioCatalogTarget(
+      addonId = "test",
+      addonName = "Xperience",
+      baseUrl = "https://xperience",
+      catalog = StremioCatalogDefinition(type = "movie", id = "streaming_prime_movies", name = "Prime Video")
+    )
+    val appleTarget = StremioCatalogTarget(
+      addonId = "test",
+      addonName = "Xperience",
+      baseUrl = "https://xperience",
+      catalog = StremioCatalogDefinition(type = "series", id = "streaming_apple_series", name = "Apple TV+")
+    )
+
+    assertEquals("Netflix", StremioCatalogRepository.detectBrandFromTarget(netflixTarget))
+    assertEquals("Disney+", StremioCatalogRepository.detectBrandFromTarget(disneyTarget))
+    assertEquals("HBO Max", StremioCatalogRepository.detectBrandFromTarget(hboTarget))
+    assertEquals("Prime Video", StremioCatalogRepository.detectBrandFromTarget(primeTarget))
+    assertEquals("Apple TV+", StremioCatalogRepository.detectBrandFromTarget(appleTarget))
+  }
+
+  @Test
+  fun deduplicateItemsFondeProviderSpecificoEGeneri() {
+    val genericItem = MediaItem(
+      id = "tt001",
+      title = "Test Show",
+      synopsis = "",
+      videoUrl = "",
+      type = MediaType.SERIE_TV,
+      provider = "Xperience",
+      genres = listOf("Drama")
+    )
+    val netflixItem = MediaItem(
+      id = "tt001",
+      title = "Test Show",
+      synopsis = "",
+      videoUrl = "",
+      type = MediaType.SERIE_TV,
+      provider = "Netflix",
+      genres = listOf("Drama", "Top 10")
+    )
+
+    val merged = StremioCatalogRepository.deduplicateItems(listOf(genericItem, netflixItem))
+    assertEquals(1, merged.size)
+    assertEquals("Netflix", merged.single().provider)
+    assertTrue(merged.single().genres.contains("Top 10"))
+    assertTrue(merged.single().genres.contains("Drama"))
+  }
 }
