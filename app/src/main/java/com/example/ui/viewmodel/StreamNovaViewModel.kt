@@ -2587,6 +2587,20 @@ class StreamNovaViewModel(
   private val providerPages = mutableMapOf<Pair<Int, Boolean>, Int>()
   private val loadingProviderKeys = mutableSetOf<Pair<Int, Boolean>>()
 
+  // ── Paginazione Stremio (`skip`) dei cataloghi provider ───────────────────────
+  // Stati SEPARATI dalla paginazione TMDB: su una copertura PARTIAL le due
+  // sorgenti devono potersi esaurire in modo indipendente (il catalogo Stremio può
+  // terminare mentre TMDB ha ancora pagine, e viceversa).
+
+  /** true se la sorgente Stremio di UNA coppia (providerId, tipo) ha ancora pagine. */
+  private val stremioHasMorePages = mutableMapOf<Pair<Int, Boolean>, Boolean>()
+
+  /** Coppie (providerId, tipo) con fetch Stremio `skip` in corso -> token anti duplicati. */
+  private val stremioLoadingKeys = mutableMapOf<Pair<Int, Boolean>, Any>()
+
+  /** Job della paginazione Stremio per coppia: annullato all'apertura del provider. */
+  private val stremioPagingJobs = mutableMapOf<Pair<Int, Boolean>, Job>()
+
   /**
    * Caricamento iniziale del catalogo Stremio del provider aperto. La paginazione lo
    * attende: senza questo ordinamento la pagina successiva, lanciata subito dopo
@@ -2594,63 +2608,130 @@ class StreamNovaViewModel(
    */
   private var providerInitialLoad: Job? = null
 
+  /** Aggiorna lo spinner "caricamento in corso" considerando entrambe le sorgenti. */
+  private fun updateProviderLoadingState() {
+    _isProviderLoading.value = loadingProviderKeys.isNotEmpty() || stremioLoadingKeys.isNotEmpty()
+  }
+
   /** Interrogazione puntuale dello stato hasMore della singola coppia (provider, tipo). */
   fun hasMoreProviderPages(providerId: Int, isTv: Boolean): Boolean =
     _providerHasMorePages.value[Pair(providerId, isTv)] ?: true
+
+  /**
+   * Interrogazione puntuale del hasMore STREMIO della coppia (provider, tipo).
+   * Resta `true` finché l'ultima risposta ha consegnato titoli nuovi: un catalogo
+   * che risponde con esattamente una pagina piena (20 item) NON è esaurito.
+   */
+  fun hasMoreStremioProviderPages(providerId: Int, isTv: Boolean): Boolean =
+    stremioHasMorePages[Pair(providerId, isTv)] ?: true
 
   /** Reset della paginazione di UN provider (entrambi i tipi, indipendentemente dagli altri). */
   fun resetProviderPagination(providerId: Int) {
     listOf(true, false).forEach { isTv ->
       val key = Pair(providerId, isTv)
+      stremioPagingJobs.remove(key)?.cancel()
+      stremioLoadingKeys.remove(key)
+      stremioHasMorePages.remove(key)
       providerPages.remove(key)
       _providerHasMorePages.update { it - key }
     }
-    _isProviderLoading.value = loadingProviderKeys.isNotEmpty()
+    updateProviderLoadingState()
   }
 
+  /**
+   * Carica la pagina successiva del provider per il tipo richiesto.
+   *
+   * Due sorgenti, ognuna con il SUO stato:
+   *  - Stremio: extra `skip` sui cataloghi confermati (una fetch per tipo alla volta,
+   *    protetta da [stremioLoadingKeys] per evitare richieste duplicate concorrenti);
+   *  - TMDB: paginazione nativa, usata come completamento quando la copertura è
+   *    PARTIAL (o come fonte unica quando è NONE).
+   */
   fun loadNextProviderPage(providerId: Int, isTv: Boolean) {
+    val key = Pair(providerId, isTv)
     val currentProvider = _selectedProvider.value
-    if (currentProvider != null && currentProvider.tmdbProviderId == providerId) {
-      val stremioState = _stremioProviderStates.value[currentProvider.id]
-      // Copertura del provider: il ramo Stremio esiste solo se NON è NONE.
-      // Ogni catalogo mantiene il proprio offset: niente più skip condiviso.
-      val coverage = stremioState?.coverage
+    val coverage: ProviderCoverage? = if (currentProvider != null && currentProvider.tmdbProviderId == providerId) {
+      _stremioProviderStates.value[currentProvider.id]?.coverage
         ?: StremioCatalogRepository.providerCoverage(currentProvider)
-      if (coverage != ProviderCoverage.NONE) {
-        val mediaType = if (isTv) MediaType.SERIE_TV else MediaType.FILM
-        viewModelScope.launch {
+    } else {
+      null
+    }
+
+    if (currentProvider != null && coverage != null && coverage != ProviderCoverage.NONE) {
+      val provider = currentProvider
+      val activeCoverage = coverage
+      if (hasMoreStremioProviderPages(providerId, isTv) && !stremioLoadingKeys.containsKey(key)) {
+        val token = Any()
+        stremioLoadingKeys[key] = token
+        updateProviderLoadingState()
+        val job = viewModelScope.launch {
           try {
             // Attende la prima pagina del provider: la paginazione non deve sovrascriverla.
             providerInitialLoad?.join()
-            val stremioItems = _stremioProviderMedia.value[currentProvider.id].orEmpty()
-            val more = StremioCatalogRepository.paginateProviderCatalog(currentProvider, mediaType)
+            if (_selectedProvider.value?.id != provider.id) return@launch
+            if (!hasMoreStremioProviderPages(providerId, isTv)) return@launch
+
+            val mediaType = if (isTv) MediaType.SERIE_TV else MediaType.FILM
+            val more = StremioCatalogRepository.paginateProviderCatalog(provider, mediaType)
+            if (_selectedProvider.value?.id != provider.id) return@launch
+
+            // Read-modify-write ATOMICO: Film e Serie paginano in parallelo sulla stessa
+            // entry di mappa, un read prima del fetch perderebbe l'aggiornamento.
+            var newTotal = -1
             if (more.isNotEmpty()) {
-              val combined = StremioCatalogRepository.deduplicateCrossSource(stremioItems + more)
-              _stremioProviderMedia.update { it + (currentProvider.id to combined) }
-              _stremioProviderStates.update {
-                val base = it[currentProvider.id] ?: StremioProviderCatalogState()
-                it + (currentProvider.id to base.copy(
-                  hasConfirmedBindings = true,
-                  itemCount = combined.size,
-                  coverage = coverage
-                ))
+              _stremioProviderMedia.update { map ->
+                val current = map[provider.id].orEmpty()
+                val combined = StremioCatalogRepository.deduplicateCrossSource(current + more)
+                if (combined.size > current.size) {
+                  newTotal = combined.size
+                  map + (provider.id to combined)
+                } else {
+                  map
+                }
               }
             }
+
+            if (newTotal > 0) {
+              _stremioProviderStates.update { map ->
+                val base = map[provider.id] ?: StremioProviderCatalogState()
+                map + (provider.id to base.copy(
+                  hasConfirmedBindings = true,
+                  itemCount = newTotal,
+                  coverage = activeCoverage
+                ))
+              }
+              stremioHasMorePages[key] = true
+            } else {
+              // Nessun titolo nuovo: pagina vuota oppure l'addon ignora `skip` e
+              // riconsegna duplicati. È l'UNICO punto che ferma la paginazione:
+              // una risposta piena (20 item) con titoli nuovi NON azzera hasMore.
+              stremioHasMorePages[key] = false
+            }
+          } catch (e: CancellationException) {
+            throw e
           } catch (e: Exception) {
             Log.w(TAG, "Errore paginazione provider Stremio: ${e.message}")
+          } finally {
+            // Il token evita che il finally di un job annullato (riapertura del
+            // provider) rilasci il lock della NUOVA richiesta partita dopo il reset.
+            if (stremioLoadingKeys[key] === token) {
+              stremioLoadingKeys.remove(key)
+              updateProviderLoadingState()
+            }
           }
         }
-        // FULL: solo Stremio (return). PARTIAL: nessun return anticipato, la
-        // paginazione TMDB prosegue sotto come completamento del catalogo.
-        if (coverage == ProviderCoverage.FULL) return
+        stremioPagingJobs[key] = job
       }
+
+      // FULL: solo Stremio (return). PARTIAL: nessun return anticipato, la
+      // paginazione TMDB prosegue sotto come completamento del catalogo.
+      if (coverage == ProviderCoverage.FULL) return
     }
 
-    val key = Pair(providerId, isTv)
     if (loadingProviderKeys.contains(key)) return
     if (!hasMoreProviderPages(providerId, isTv)) return
     loadingProviderKeys.add(key)
-    _isProviderLoading.value = true
+    updateProviderLoadingState()
 
     viewModelScope.launch {
       try {
@@ -2687,7 +2768,7 @@ class StreamNovaViewModel(
         Log.w(TAG, "Errore caricamento pagina provider $providerId (isTv=$isTv): ${e.message}")
       } finally {
         loadingProviderKeys.remove(key)
-        _isProviderLoading.value = loadingProviderKeys.isNotEmpty()
+        updateProviderLoadingState()
       }
     }
   }

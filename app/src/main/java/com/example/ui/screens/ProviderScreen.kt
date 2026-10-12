@@ -142,10 +142,10 @@ fun ProviderScreen(
     }
   }
 
-  // Pre-caricamento pagina iniziale al cambio filtro se necessario:
-  // consentito per NONE e per PARTIAL (completamento TMDB), non per FULL.
+  // Pre-caricamento pagina iniziale al cambio filtro: il ViewModel ignora la chiamata
+  // se una fetch per quella coppia (provider, tipo) è già in corso o se il catalogo
+  // è esaurito, quindi è sicuro per ogni copertura (NONE / PARTIAL / FULL).
   LaunchedEffect(provider, selectedFilter, coverage) {
-    if (coverage != ProviderCoverage.FULL) {
     when (selectedFilter) {
       ProviderCatalogFilter.TV_SERIES -> {
         viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
@@ -162,11 +162,14 @@ fun ProviderScreen(
         onLoadMore?.invoke(true)
       }
     }
-    }
   }
 
-  // Scorrimento Infinito: snapshotFlow rileva quando l'utente si avvicina alla fine dell'elenco
-  LaunchedEffect(gridState, selectedFilter, provider) {
+  // Scorrimento Infinito: snapshotFlow rileva quando l'utente si avvicina alla fine
+  // dell'elenco (anche via D-pad, che fa scorrere la LazyGrid). La chiave include la
+  // dimensione della lista: ad OGNIA pagina caricata l'effetto si riavvia e
+  // rivaluta la soglia, così il caricamento prosegue finché non si esce dalla
+  // finestra visibile o il catalogo non è esaurito.
+  LaunchedEffect(gridState, selectedFilter, provider, providerMedia.size) {
     snapshotFlow {
       val layoutInfo = gridState.layoutInfo
       val totalItems = layoutInfo.totalItemsCount
