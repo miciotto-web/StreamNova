@@ -480,10 +480,16 @@ class ProviderCatalogResolverTest {
 
   @Test
   fun ogniBindingEDichiarativoNonEsisteSourceEuristico() {
-    // Invariante architetturale: le sorgenti sono solo USER e REGISTRY,
-    // quindi nessun binding può essere stato prodotto da un euristica.
-    assertEquals(listOf("USER", "REGISTRY"), BindingSource.values().map { it.name })
+    // Invariante architetturale: le sorgenti sono solo dati deterministici
+    // (scelta utente, registry, match su addon personalizzato, fallback di
+    // sistema), mai il risultato di un punteggio soglia.
+    assertEquals(
+      listOf("USER", "REGISTRY", "CUSTOM_ADDON", "SYSTEM_DEFAULT"),
+      BindingSource.values().map { it.name }
+    )
     assertTrue(binding("addon.a", "movie", "x", "disney", BindingSource.REGISTRY).isDeclarative)
     assertTrue(binding("addon.a", "movie", "x", "disney", BindingSource.USER).isDeclarative)
+    assertTrue(binding("addon.a", "movie", "x", "disney", BindingSource.CUSTOM_ADDON).isDeclarative)
+    assertTrue(binding("addon.a", "movie", "x", "disney", BindingSource.SYSTEM_DEFAULT).isDeclarative)
   }
 }

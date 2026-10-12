@@ -315,6 +315,47 @@ object StremioAddonRepository {
   fun getActiveAddons(): List<InstalledAddon> = _addons.value.filter { it.isEnabled }
 
   /**
+   * Addon di SISTEMA sempre attivi: il catalogo di default primario (Cinemeta),
+   * registrato dal manifest statico [CinemetaAddon] e non dipendente dalla
+   * persistenza utente. È la sorgente predefinita della Home quando non ci sono
+   * cataloghi personalizzati.
+   */
+  fun getSystemAddons(): List<InstalledAddon> = CinemetaAddon.systemAddons
+
+  /** true se [id] identifica un addon di sistema (Cinemeta). */
+  fun isSystemAddon(id: String?): Boolean = CinemetaAddon.isSystemAddon(id)
+
+  /** true se l'addon identificato corrisponde a Xperience. */
+  fun isXperienceAddon(addon: InstalledAddon): Boolean {
+    val id = addon.id.lowercase()
+    val name = (addon.manifest.name ?: "").lowercase()
+    val baseUrl = addon.baseUrl.lowercase()
+    return id.contains("xperience") || name.contains("xperience") || baseUrl.contains("xperience")
+  }
+
+  /** true se almeno un addon Xperience è installato ed abilitato. */
+  fun isXperienceEnabled(): Boolean =
+    getActiveAddons().any { isXperienceAddon(it) }
+
+  /**
+   * true se [addon] espone almeno un catalogo PERSONALIZZATO, cioè non è un addon di
+   * sistema (Cinemeta) e non è escluso da [StremioCatalogFilters].
+   *
+   * È il criterio generalizzato che sostituisce la vecchia rilevazione Xperience-only:
+   * qualsiasi addon con cataloghi propri (Xperience, Easy Catalog, "Nova stream addon"
+   * quando non filtrato, ecc.) fa scattare la precedenza sui cataloghi Cinemeta di default.
+   */
+  fun isCustomCatalogAddon(addon: InstalledAddon): Boolean {
+    if (isSystemAddon(addon.id)) return false
+    if (StremioCatalogFilters.isIgnoredAddon(addon)) return false
+    return addon.manifest.validCatalogs().isNotEmpty()
+  }
+
+  /** true se almeno un addon installato ed abilitato espone cataloghi personalizzati. */
+  fun hasCustomCatalogAddons(): Boolean =
+    getActiveAddons().any { isCustomCatalogAddon(it) }
+
+  /**
    * Installa un addon: normalizza l'URL, scarica e valida il manifest e salva
    * l'addon in persistenza.
    *
@@ -447,20 +488,23 @@ object StremioAddonRepository {
     tmdbId: Int,
     isTv: Boolean,
     season: Int? = null,
-    episode: Int? = null
+    episode: Int? = null,
+    imdbId: String? = null
   ): List<StremioStreamCandidate> {
     val type = if (isTv) TYPE_SERIES else TYPE_MOVIE
     val active = _addons.value.filter {
       it.isEnabled && it.manifest.supportsStreamForType(type)
     }
-    if (active.isEmpty() || tmdbId <= 0) return emptyList()
+    val cleanImdbId = imdbId?.trim()?.takeIf { it.isNotBlank() }?.substringBefore(":")
+    if (active.isEmpty()) return emptyList()
+    if (tmdbId <= 0 && cleanImdbId.isNullOrBlank()) return emptyList()
 
-    val imdbId = resolveImdbId(tmdbId, isTv)
+    val effectiveImdbId = cleanImdbId ?: resolveImdbId(tmdbId, isTv)
 
     return coroutineScope {
       active.map { addon ->
         async {
-          val id = stremioIdFor(addon, tmdbId, imdbId)
+          val id = stremioIdFor(addon, tmdbId, effectiveImdbId)
           if (id == null || !supportsStreamId(addon, id)) {
             Log.d(
               TAG,
@@ -531,8 +575,9 @@ object StremioAddonRepository {
 
   /** Costruisce il path `series/tt...:S:E.json` / `movie/tt....json`. */
   fun buildStreamPath(type: String, id: String, season: Int?, episode: Int?): String {
+    val cleanId = id.substringBefore(":")
     val suffix = if (type == "series" && season != null && episode != null) ":$season:$episode" else ""
-    return "$type/$id$suffix.json"
+    return "$type/$cleanId$suffix.json"
   }
 
   /**
@@ -564,11 +609,12 @@ object StremioAddonRepository {
       ?.filter { it.isNotBlank() }
       ?.map { it.lowercase() }
       .orEmpty()
-    if (prefixes.isEmpty()) return imdbId ?: "tmdb:$tmdbId"
+    val cleanImdb = imdbId?.substringBefore(":")
+    if (prefixes.isEmpty()) return cleanImdb ?: if (tmdbId > 0) "tmdb:$tmdbId" else null
     if (prefixes.contains("tt")) {
-      imdbId?.takeIf { it.startsWith("tt", ignoreCase = true) }?.let { return it }
+      cleanImdb?.takeIf { it.startsWith("tt", ignoreCase = true) }?.let { return it }
     }
-    if (prefixes.contains("tmdb")) return "tmdb:$tmdbId"
+    if (prefixes.contains("tmdb") && tmdbId > 0) return "tmdb:$tmdbId"
     return null
   }
 
@@ -727,10 +773,12 @@ object StremioAddonRepository {
    * rispettando sia la dichiarazione del catalogo che i vincoli resource-level.
    */
   fun getActiveCatalogsForType(type: String): List<Pair<InstalledAddon, StremioCatalogDefinition>> {
-    return getActiveAddons().flatMap { addon ->
-      if (!addon.manifest.supportsCatalogForType(type)) return@flatMap emptyList()
-      addon.manifest.catalogsForType(type).map { catalog -> addon to catalog }
-    }
+    return getActiveAddons()
+      .filterNot { StremioCatalogFilters.isIgnoredAddon(it) }
+      .flatMap { addon ->
+        if (!addon.manifest.supportsCatalogForType(type)) return@flatMap emptyList()
+        addon.manifest.catalogsForType(type).map { catalog -> addon to catalog }
+      }
   }
 
   /**

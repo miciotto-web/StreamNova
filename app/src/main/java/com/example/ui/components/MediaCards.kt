@@ -65,6 +65,7 @@ import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.stremio.StremioCatalogMapper
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
@@ -89,8 +90,8 @@ fun CardMediaImage(
   modifier: Modifier = Modifier,
   contentScale: ContentScale = ContentScale.Crop
 ) {
-  val cleanPrimary = primaryUrl?.trim()?.takeIf { it.isNotEmpty() }
-  val cleanSecondary = secondaryUrl?.trim()?.takeIf { it.isNotEmpty() && it != cleanPrimary }
+  val cleanPrimary = StremioCatalogMapper.extractImageUrl(primaryUrl)?.trim()?.takeIf { it.isNotEmpty() }
+  val cleanSecondary = StremioCatalogMapper.extractImageUrl(secondaryUrl)?.trim()?.takeIf { it.isNotEmpty() && it != cleanPrimary }
 
   var primaryFailed by remember(cleanPrimary) { mutableStateOf(false) }
 
@@ -260,15 +261,17 @@ fun ContinueWatchingCard(
         val seasonEpisodeText = if (media.type == com.example.data.model.MediaType.SERIE_TV && media.lastWatchedEpisode != null) {
           "S${media.lastWatchedSeason ?: 1} E${media.lastWatchedEpisode}"
         } else {
-          media.year.toString()
+          media.displayYear
         }
-        Text(
-          text = seasonEpisodeText,
-          color = Color.White.copy(alpha = 0.9f),
-          fontSize = 11.sp,
-          fontWeight = FontWeight.SemiBold,
-          maxLines = 1
-        )
+        if (seasonEpisodeText.isNotEmpty()) {
+          Text(
+            text = seasonEpisodeText,
+            color = Color.White.copy(alpha = 0.9f),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+          )
+        }
 
         // Riga 2: Titolo del Media / Serie
         Text(
@@ -322,6 +325,10 @@ fun ContinueWatchingCard(
 
 /**
  * Card Orizzontale Backdrop (16:9 con backdrop TMDB)
+ *
+ * Restyle premium coerente con [PosterMediaCard] (alone Neon + bordo luminescente +
+ * riflesso di vetro), con le stesse garanzie di performance: i valori animati sono letti
+ * solo nelle lambda di disegno (graphicsLayer/drawBehind/drawWithContent).
  */
 @Composable
 fun StandardMediaCard(
@@ -329,101 +336,155 @@ fun StandardMediaCard(
   onClick: () -> Unit,
   modifier: Modifier = Modifier
 ) {
-  TvFocusableBox(
-    modifier = modifier.width(220.dp),
-    shape = RoundedCornerShape(12.dp),
-    focusedScale = 1.07f,
-    onClick = onClick
-  ) { isFocused ->
+  var isFocused by remember { mutableStateOf(false) }
+  val scaleState = animateFloatAsState(
+    targetValue = if (isFocused) 1.06f else 1f,
+    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+    label = "standardCardScale"
+  )
+  val glowState = animateFloatAsState(
+    targetValue = if (isFocused) 1f else 0f,
+    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+    label = "standardCardGlow"
+  )
+  val specularState = animateFloatAsState(
+    targetValue = if (isFocused) 1f else 0f,
+    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+    label = "standardCardSpecular"
+  )
+  val shape = RoundedCornerShape(NeonCardCorner)
+
+  Column(
+    modifier = modifier
+      .width(220.dp)
+      // La card in focus deve coprire le card vicine
+      .zIndex(if (isFocused) 10f else 1f)
+      .graphicsLayer {
+        val s = scaleState.value
+        scaleX = s
+        scaleY = s
+      }
+      .onFocusChanged { isFocused = it.isFocused }
+      .onKeyEvent { keyEvent ->
+        val isConfirm = keyEvent.key == Key.Enter ||
+          keyEvent.key == Key.NumPadEnter ||
+          keyEvent.key == Key.DirectionCenter
+        if (isConfirm && keyEvent.type == KeyEventType.KeyUp) {
+          onClick()
+          true
+        } else {
+          false
+        }
+      }
+      .clickable { onClick() }
+      // Alone Neon PRIMA del clip: si estende oltre i bordi della card.
+      .drawBehind {
+        drawNeonGlow(
+          cornerRadiusPx = NeonCardCorner.toPx(),
+          color = NovaCyanBright,
+          spreadPx = NeonCardGlowSpread.toPx(),
+          intensity = glowState.value
+        )
+      }
+      .clip(shape)
+      .background(NovaCardBg)
+      // Riflesso di vetro SOPRA l'immagine + bordo nitido, dentro il clip.
+      .drawWithContent {
+        drawContent()
+        drawSpecularHighlight(intensity = specularState.value)
+        drawNeonBorder(
+          cornerRadiusPx = NeonCardCorner.toPx(),
+          color = NovaCyanBright,
+          widthPx = NeonCardBorderWidth.toPx(),
+          intensity = glowState.value
+        )
+      }
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(124.dp)
+    ) {
+      val fallbackRes = media.backdropRes ?: media.posterRes ?: R.drawable.banner_dune
+      CardMediaImage(
+        primaryUrl = media.backdropUrl,
+        secondaryUrl = media.posterUrl,
+        fallbackRes = fallbackRes,
+        contentDescription = media.title,
+        modifier = Modifier.fillMaxSize(),
+        contentScale = ContentScale.Crop
+      )
+
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(
+            Brush.verticalGradient(
+              colors = listOf(
+                Color.Transparent,
+                Color.Black.copy(alpha = 0.75f)
+              ),
+              startY = 40f
+            )
+          )
+      )
+
+      // TMDB Rating Badge (in basso a destra, sul gradiente scuro)
+      Box(
+        modifier = Modifier
+          .align(Alignment.BottomEnd)
+          .padding(6.dp)
+      ) {
+        PosterRatingBadge(rating = media.rating)
+      }
+    }
+
     Column(
       modifier = Modifier
         .fillMaxWidth()
-        .background(NovaCardBg)
+        .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
-      Box(
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(124.dp)
+      Text(
+        text = media.title,
+        color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+      )
+      Spacer(modifier = Modifier.height(2.dp))
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        val fallbackRes = media.backdropRes ?: media.posterRes ?: R.drawable.banner_dune
-        CardMediaImage(
-          primaryUrl = media.backdropUrl,
-          secondaryUrl = media.posterUrl,
-          fallbackRes = fallbackRes,
-          contentDescription = media.title,
-          modifier = Modifier.fillMaxSize(),
-          contentScale = ContentScale.Crop
-        )
-
-        Box(
-          modifier = Modifier
-            .fillMaxSize()
-            .background(
-              Brush.verticalGradient(
-                colors = listOf(
-                  Color.Transparent,
-                  Color.Black.copy(alpha = 0.75f)
-                ),
-                startY = 40f
-              )
-            )
-        )
-
-        // TMDB Rating Badge (in basso a destra, sul gradiente scuro)
-        Box(
-          modifier = Modifier
-            .align(Alignment.BottomEnd)
-            .padding(6.dp)
-        ) {
-          PosterRatingBadge(rating = media.rating)
+        if (media.year > 0) {
+          Text(
+            text = media.displayYear,
+            color = NovaTextMuted,
+            fontSize = 11.sp
+          )
+          Text(
+            text = "•",
+            color = NovaTextMuted,
+            fontSize = 10.sp
+          )
         }
-      }
-
-      Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .padding(horizontal = 10.dp, vertical = 8.dp)
-      ) {
         Text(
-          text = media.title,
-          color = if (isFocused) NovaCyanBright else NovaTextPrimary,
-          fontSize = 13.sp,
-          fontWeight = FontWeight.Bold,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis
+          text = if (media.seasonsCount != null) stringResource(R.string.media_card_seasons_abbr, media.seasonsCount ?: 1) else media.formattedDuration,
+          color = NovaTextMuted,
+          fontSize = 11.sp
         )
-        Spacer(modifier = Modifier.height(2.dp))
-        Row(
-          horizontalArrangement = Arrangement.spacedBy(6.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Text(
-            text = media.year.toString(),
-            color = NovaTextMuted,
-            fontSize = 11.sp
-          )
-          Text(
-            text = "•",
-            color = NovaTextMuted,
-            fontSize = 10.sp
-          )
-          Text(
-            text = if (media.seasonsCount != null) stringResource(R.string.media_card_seasons_abbr, media.seasonsCount ?: 1) else media.formattedDuration,
-            color = NovaTextMuted,
-            fontSize = 11.sp
-          )
-          Text(
-            text = "•",
-            color = NovaTextMuted,
-            fontSize = 10.sp
-          )
-          Text(
-            text = media.genres.firstOrNull() ?: stringResource(if (media.type == MediaType.SERIE_TV) R.string.nav_tv_series else R.string.nav_movies),
-            color = NovaTextSecondary,
-            fontSize = 11.sp,
-            maxLines = 1
-          )
-        }
+        Text(
+          text = "•",
+          color = NovaTextMuted,
+          fontSize = 10.sp
+        )
+        Text(
+          text = media.genres.firstOrNull() ?: stringResource(if (media.type == MediaType.SERIE_TV) R.string.nav_tv_series else R.string.nav_movies),
+          color = NovaTextSecondary,
+          fontSize = 11.sp,
+          maxLines = 1
+        )
       }
     }
   }
@@ -560,27 +621,29 @@ fun PosterMediaCard(
     )
 
     // 4) Anno
-    Text(
-      text = media.year.toString(),
-      color = Color(0xFFAAAAAA),
-      fontSize = 13.sp,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis
-    )
+    if (media.year > 0) {
+      Text(
+        text = media.displayYear,
+        color = Color(0xFFAAAAAA),
+        fontSize = 13.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+      )
+    }
   }
 }
 
 /** Geometria condivisa del restyle Neon Glow delle poster card. */
-private val NeonCardCorner = 14.dp
-private val NeonCardGlowSpread = 10.dp
-private val NeonCardBorderWidth = 2.5.dp
+internal val NeonCardCorner = 14.dp
+internal val NeonCardGlowSpread = 10.dp
+internal val NeonCardBorderWidth = 2.5.dp
 
 /**
  * Alone Neon diffuso: layer di rounded-rect concentrici con alpha decrescente,
  * disegnati anche oltre i bordi. Va richiamato in un [drawBehind] NON clippato: la somma
  * dei layer produce una sfumatura morbida che si estende di [spreadPx] oltre la card.
  */
-private fun DrawScope.drawNeonGlow(
+internal fun DrawScope.drawNeonGlow(
   cornerRadiusPx: Float,
   color: Color,
   spreadPx: Float,
@@ -605,7 +668,7 @@ private fun DrawScope.drawNeonGlow(
  * Riflesso di vetro (specular highlight): gradiente lineare diagonale bianco sul terzo
  * superiore dell'immagine. Disegnato SOPRA il contenuto, dentro il clip arrotondato.
  */
-private fun DrawScope.drawSpecularHighlight(intensity: Float) {
+internal fun DrawScope.drawSpecularHighlight(intensity: Float) {
   if (intensity <= 0.01f) return
   val brush = Brush.linearGradient(
     colors = listOf(
@@ -620,7 +683,7 @@ private fun DrawScope.drawSpecularHighlight(intensity: Float) {
 }
 
 /** Bordo nitido luminescente lungo il perimetro, disegnato dentro il clip. */
-private fun DrawScope.drawNeonBorder(
+internal fun DrawScope.drawNeonBorder(
   cornerRadiusPx: Float,
   color: Color,
   widthPx: Float,

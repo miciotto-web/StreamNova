@@ -103,12 +103,22 @@ fun ProviderScreen(
     allMedia.filter { it.provider?.contains(provider.id, ignoreCase = true) == true }
   }
 
-  val providerMedia = remember(stremioItems, nativeProviderMedia, coverage) {
+  // true quando i cataloghi Stremio sono il FALLBACK Cinemeta (solo senza addon di
+  // catalogo personalizzati): il catalogo specifico della piattaforma resta PRIMO e
+  // il fallback completa la lista senza mai sostituirlo.
+  val isFallbackSource = stremioStateMap[provider.id]?.fallbackToDefault == true
+
+  val providerMedia = remember(stremioItems, nativeProviderMedia, coverage, isFallbackSource) {
     when (coverage) {
       ProviderCoverage.FULL -> stremioItems
       // Stremio resta davanti, TMDB completa; dedup cross-source obbligatorio.
+      // Con fallback Cinemeta l'ordine si inverte: TMDB (specifico) prima.
       ProviderCoverage.PARTIAL ->
-        StremioCatalogRepository.deduplicateCrossSource(stremioItems + nativeProviderMedia)
+        if (isFallbackSource) {
+          StremioCatalogRepository.deduplicateCrossSource(nativeProviderMedia + stremioItems)
+        } else {
+          StremioCatalogRepository.deduplicateCrossSource(stremioItems + nativeProviderMedia)
+        }
       ProviderCoverage.NONE -> nativeProviderMedia
     }
   }

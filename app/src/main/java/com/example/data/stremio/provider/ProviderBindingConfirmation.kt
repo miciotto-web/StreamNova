@@ -119,7 +119,9 @@ object ProviderBindingConfirmation {
         status = when (bound?.source) {
           BindingSource.USER -> ProviderBindingProposalStatus.USER
           BindingSource.REGISTRY -> ProviderBindingProposalStatus.REGISTRY
-          null -> ProviderBindingProposalStatus.PROPOSED
+          // Sorgenti iniettate dal piano (match addon / fallback di sistema): non
+          // provengono da `resolve`, quindi non sono ancora una scelta dell'utente.
+          else -> ProviderBindingProposalStatus.PROPOSED
         },
         boundProviderId = bound?.normalizedProviderId,
         catalogTitle = manifest.findCatalog(proposal.key.stremioType, proposal.key.catalogId)

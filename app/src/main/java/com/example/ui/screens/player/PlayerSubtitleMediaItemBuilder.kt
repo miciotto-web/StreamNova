@@ -134,18 +134,24 @@ internal object PlayerSubtitleMediaItemBuilder {
     return orderedSubtitles.mapNotNull { toSpec(it) }
   }
 
+  /** Conversione di un singolo [SubtitleTrackSpec] in [MediaItem.SubtitleConfiguration]. */
+  fun toConfiguration(spec: SubtitleTrackSpec): MediaItem.SubtitleConfiguration =
+    MediaItem.SubtitleConfiguration.Builder(Uri.parse(spec.url))
+      .setMimeType(spec.mimeType)
+      .setLanguage(spec.language)
+      .setLabel(spec.label)
+      .setId(spec.id)
+      .setRoleFlags(spec.roleFlags)
+      .setSelectionFlags(spec.selectionFlags)
+      .build()
+
+  /** Conversione di un singolo [Subtitle] in [MediaItem.SubtitleConfiguration]. */
+  fun toConfiguration(subtitle: Subtitle): MediaItem.SubtitleConfiguration? =
+    toSpec(subtitle)?.let { toConfiguration(it) }
+
   /** Conversione in [MediaItem.SubtitleConfiguration], stesso ordine di [toSpecs]. */
   fun toConfigurations(subtitles: List<Subtitle>): List<MediaItem.SubtitleConfiguration> =
-    toSpecs(subtitles).map { spec ->
-      MediaItem.SubtitleConfiguration.Builder(Uri.parse(spec.url))
-        .setMimeType(spec.mimeType)
-        .setLanguage(spec.language)
-        .setLabel(spec.label)
-        .setId(spec.id)
-        .setRoleFlags(spec.roleFlags)
-        .setSelectionFlags(spec.selectionFlags)
-        .build()
-    }
+    toSpecs(subtitles).map { toConfiguration(it) }
 
   /**
    * Allega i sottotitoli esterni al [MediaItem] del video.

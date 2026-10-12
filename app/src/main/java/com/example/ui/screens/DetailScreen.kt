@@ -4,7 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
@@ -31,8 +30,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -58,12 +55,12 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
@@ -88,6 +85,9 @@ import com.example.data.model.MediaType
 import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.toEpisode
 import com.example.data.repository.MediaRepository
+import com.example.data.stremio.StremioCatalogMapper
+import com.example.ui.components.MediaActionBar
+import com.example.ui.components.MediaActionBarFocus
 import com.example.ui.components.ProviderBadge
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.QualityBadge
@@ -105,6 +105,7 @@ import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 // Ombra proiettata di supporto per il titolo: garantisce leggibilità su artwork chiari.
 private val DetailTitleShadow = TextStyle(
@@ -145,6 +146,8 @@ fun DetailScreen(
   onSeasonChange: ((MediaItem, Int) -> Unit)? = null,
   onEpisodeClick: ((MediaItem, Episode) -> Unit)? = null,
   onRetry: (() -> Unit)? = null,
+  onToggleWatched: ((MediaItem) -> Unit)? = null,
+  onPlayTrailer: ((MediaItem) -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   // Resolve active media & extended details depending on UI State
@@ -314,50 +317,95 @@ fun DetailScreen(
    // Main Scrollable Content
    val listState = rememberLazyListState()
 
-   val initialFocusRequester = remember { FocusRequester() }
-   val playButtonRequester = remember { FocusRequester() }
-   val hasFocusableProviderBadge = displayMedia.provider != null && onProviderClick != null
-   val headerFocusModifier = Modifier
-     .focusRequester(initialFocusRequester)
-     .focusProperties {
-       down = playButtonRequester
-       up = if (hasFocusableProviderBadge) FocusRequester.Default else FocusRequester.Cancel
-     }
-     .focusable()
+    // Catena D-pad della barra azioni: Riproduci -> Cuore -> Occhio -> Trailer.
+    // "Riproduci" e' il PRIMO (e unico) nodo focusabile della zona superiore:
+    // header, logo, titolo, badge e backdrop sono puramente visivi e non
+    // ricevono mai il focus D-pad.
+    val actionFocus = remember(displayMedia.id) { MediaActionBarFocus() }
+    // FocusRequester dedicato al pulsante principale "Riproduci".
+    val playButtonFocusRequester = actionFocus.play
 
-   var isBringIntoViewAllowed by remember { mutableStateOf(false) }
-   val ambientBringIntoViewSpec = LocalBringIntoViewSpec.current
-   val guardedBringIntoViewSpec = remember(ambientBringIntoViewSpec) {
-     object : BringIntoViewSpec {
-       override fun calculateScrollDistance(
-         offset: Float,
-         size: Float,
-         containerSize: Float
-       ): Float {
-         if (!isBringIntoViewAllowed) return 0f
-         return ambientBringIntoViewSpec.calculateScrollDistance(offset, size, containerSize)
-       }
-     }
-   }
+    // Scroll guard: la viewport resta CONGELATA finche' l'utente non preme
+    // attivamente SU/GIU' per uscire dalla riga dei pulsanti.
+    // `isActionBarFocused` blocca qualunque scroll (anche quello innescato dalla
+    // ricerca del focus) mentre il cursore e' su Riproduci/Preferiti/Visto/Trailer,
+    // cosi' i movimenti DESTRA/SINISTRA non spostano di un pixel backdrop e header.
+    var isBringIntoViewAllowed by remember { mutableStateOf(false) }
+    var isActionBarFocused by remember { mutableStateOf(false) }
+    // true quando il focus e' atterrato con certezza su "Riproduci".
+    var isPlayFocused by remember { mutableStateOf(false) }
 
-   LaunchedEffect(displayMedia.id) {
-     repeat(6) {
-       withFrameNanos { }
-       try {
-         initialFocusRequester.requestFocus()
-         return@LaunchedEffect
-       } catch (_: IllegalStateException) {
-       }
-     }
-   }
+    val ambientBringIntoViewSpec = LocalBringIntoViewSpec.current
+    val guardedBringIntoViewSpec = remember(ambientBringIntoViewSpec) {
+      object : BringIntoViewSpec {
+        override fun calculateScrollDistance(
+          offset: Float,
+          size: Float,
+          containerSize: Float
+        ): Float {
+          // Focus dentro la pulsantiera (o nell'item di testa della LazyColumn che
+          // ospita titolo + barra azioni): mai scrollare.
+          if (isActionBarFocused) return 0f
+          // Scroll consentito solo dopo una pressione di SU/GIU' (vedi key handler).
+          if (!isBringIntoViewAllowed) return 0f
+          return ambientBringIntoViewSpec.calculateScrollDistance(offset, size, containerSize)
+        }
+      }
+    }
+
+    // Rientro del focus sulla pulsantiera (risalita dalle sezioni inferiori):
+    // il guard di `calculateScrollDistance` tiene fermo il bring-into-view mentre
+    // `isActionBarFocused` e' true, quindi lo scroll fino in cima va fatto qui in modo
+    // esplicito. L'animazione programmatica (`animateScrollToItem`) NON passa dal
+    // BringIntoViewSpec, quindi non viene bloccata dal guard: la testata completa
+    // (logo/titolo, badge, trama e pulsantiera) torna interamente visibile a offset 0.
+    LaunchedEffect(isActionBarFocused) {
+      if (isActionBarFocused &&
+        (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0)
+      ) {
+        listState.animateScrollToItem(0, 0)
+      }
+    }
+
+    // Focus iniziale: IMMEDIATAMENTE e ESCLUSIVAMENTE su "Riproduci", con vista
+    // ferma (offset di scroll = 0). `requestFocus()` non lancia eccezioni se il nodo
+    // non e' ancora agganciato al sistema di focus (no-op silenzioso), quindi si
+    // ritenta finche' `onPlayFocusChanged` non conferma che il focus e' sul pulsante.
+    LaunchedEffect(displayMedia.id) {
+      isBringIntoViewAllowed = false
+      isActionBarFocused = false
+      isPlayFocused = false
+      listState.scrollToItem(0, 0)
+      repeat(12) {
+        withFrameNanos { } // attende composizione + layout del nodo focusabile
+        try {
+          playButtonFocusRequester.requestFocus()
+        } catch (_: Exception) {
+          // FocusRequester non ancora inizializzato: riprova al frame successivo.
+        }
+        if (isPlayFocused) {
+          listState.scrollToItem(0, 0)
+          return@LaunchedEffect
+        }
+        delay(32)
+      }
+      listState.scrollToItem(0, 0)
+    }
 
    CompositionLocalProvider(LocalBringIntoViewSpec provides guardedBringIntoViewSpec) {
    LazyColumn(
      state = listState,
      modifier = Modifier
        .fillMaxSize()
-       .onPreviewKeyEvent {
-         if (it.type == KeyEventType.KeyDown) isBringIntoViewAllowed = true
+       .onPreviewKeyEvent { event ->
+         if (event.type == KeyEventType.KeyDown) {
+           // Sbloccano lo scroll SOLO SU/GIU' (uscita verticale dalla pulsantiera).
+           // LEFT/RIGHT e ogni altro tasto non muovono la viewport: il bring-into-view
+           // resta azzerato, quindi lo scorrimento orizzontale tra i pulsanti non
+           // nasconde mai backdrop e header.
+           isBringIntoViewAllowed = event.key == Key.DirectionDown ||
+             event.key == Key.DirectionUp
+         }
          false
        },
      contentPadding = PaddingValues(top = 28.dp, bottom = 48.dp)
@@ -440,35 +488,37 @@ fun DetailScreen(
             .fillMaxWidth()
             .padding(start = 32.dp, end = 260.dp)
         ) {
-          // Streaming Provider Row
+          // Streaming Provider Row: badge PURAMENTE VISIVO (nessun focus D-pad),
+          // cosi' nulla sopra la pulsantiera puo' catturare il focus. La
+          // selezione del provider resta disponibile dall'Hub in Home.
           val providerObj = ProviderConstants.ALL.firstOrNull { it.id == displayMedia.provider?.lowercase() }
           if (providerObj != null) {
             Row(
               verticalAlignment = Alignment.CenterVertically,
               horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-              ProviderBadge(
-                provider = providerObj,
-                onClick = if (onProviderClick != null) { { onProviderClick(providerObj) } } else null
-              )
+              ProviderBadge(provider = providerObj)
             }
           }
 
           Spacer(modifier = Modifier.height(10.dp))
 
-          // Big Main Title (Original TMDB Logo if available)
-          if (!displayMedia.logoUrl.isNullOrBlank()) {
+          // Clear logo originale (TMDB images.logos, priorita' it -> en): sostituisce il
+          // poster rettangolare come titolo visivo. Se assente, titolo testuale display.
+          val clearLogoUrl = extendedDetails?.logoUrl?.takeIf { it.isNotBlank() }
+            ?: displayMedia.logoUrl?.takeIf { it.isNotBlank() }
+          if (clearLogoUrl != null) {
             SubcomposeAsyncImage(
               model = ImageRequest.Builder(LocalContext.current)
-                .data(displayMedia.logoUrl)
+                .data(clearLogoUrl)
                 .crossfade(true)
                 .build(),
               contentDescription = displayMedia.title,
               contentScale = ContentScale.Fit,
               alignment = Alignment.CenterStart,
-              modifier = headerFocusModifier
-                .heightIn(min = 46.dp, max = 84.dp)
-                .widthIn(max = 440.dp),
+              modifier = Modifier
+                .heightIn(min = 80.dp, max = 100.dp)
+                .widthIn(max = 480.dp),
               error = {
                 Text(
                   text = displayMedia.title,
@@ -483,7 +533,6 @@ fun DetailScreen(
           } else {
             Text(
               text = displayMedia.title,
-              modifier = headerFocusModifier,
               color = NovaTextPrimary,
               fontSize = 36.sp,
               fontWeight = FontWeight.Black,
@@ -511,7 +560,9 @@ fun DetailScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
           ) {
             val displayYear = extendedDetails?.releaseYear ?: displayMedia.year
-            QualityBadge(text = displayYear.toString())
+            if (displayYear > 0) {
+              QualityBadge(text = displayYear.toString())
+            }
 
             val durationText = if (displayMedia.type == MediaType.SERIE_TV) {
               val sCount = extendedDetails?.seasonsCount ?: displayMedia.seasonsCount ?: 1
@@ -626,19 +677,21 @@ fun DetailScreen(
               stringResource(R.string.action_play)
             }
 
-            TvActionButton(
-              text = playButtonLabel,
-              icon = Icons.Default.PlayArrow,
-              isPrimary = true,
-              modifier = Modifier.focusRequester(playButtonRequester),
-              onClick = { onPlayClick(displayMedia, resumeEpisode) }
-            )
-
-            TvActionButton(
-              text = if (displayMedia.isFavorite) stringResource(R.string.detail_remove_favorite) else stringResource(R.string.detail_add_favorite),
-              icon = if (displayMedia.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-              isPrimary = false,
-              onClick = { onToggleFavorite(displayMedia.id) }
+            // Barra azioni: pillola Riproduci + Cuore (preferiti) + Occhio (visto) +
+            // Trailer YouTube interno (mai Intent verso l'app esterna).
+            // SU dalla barra resta bloccato: sopra non c'e' nessun nodo focusabile.
+            MediaActionBar(
+              playLabel = playButtonLabel,
+              onPlay = { onPlayClick(displayMedia, resumeEpisode) },
+              isFavorite = displayMedia.isFavorite,
+              onToggleFavorite = { onToggleFavorite(displayMedia.id) },
+              isWatched = displayMedia.isWatched,
+              onToggleWatched = { onToggleWatched?.invoke(displayMedia) },
+              onPlayTrailer = { onPlayTrailer?.invoke(displayMedia) },
+              focus = actionFocus,
+              upTarget = FocusRequester.Cancel,
+              onFocusChanged = { isActionBarFocused = it },
+              onPlayFocusChanged = { isPlayFocused = it }
             )
           }
         }
@@ -1330,7 +1383,7 @@ fun TechnicalDetailsCard(
     horizontalArrangement = Arrangement.spacedBy(24.dp)
   ) {
     // Visual Separation: Official TMDB Poster (2:3 aspect ratio)
-    val posterUrl = details?.posterUrl ?: media.posterUrl
+    val posterUrl = StremioCatalogMapper.extractImageUrl(details?.posterUrl ?: media.posterUrl)
     if (!posterUrl.isNullOrBlank()) {
       Box(
         modifier = Modifier

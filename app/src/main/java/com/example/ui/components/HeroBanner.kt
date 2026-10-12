@@ -211,7 +211,9 @@ fun HeroBanner(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
       ) {
-        QualityBadge(text = currentMedia.year.toString())
+        if (currentMedia.year > 0) {
+          QualityBadge(text = currentMedia.displayYear)
+        }
         currentMedia.ageRating?.let { age ->
           QualityBadge(text = "$age+")
         }

@@ -11,7 +11,23 @@ enum class BindingSource {
   USER,
 
   /** Dati dichiarativi bundled nell'app (`res/raw/stremio_provider_bindings.json`). */
-  REGISTRY
+  REGISTRY,
+
+  /**
+   * Match sui cataloghi di un ADDON DI CATALOGO PERSONALIZZATO attivo
+   * (Xperience / Easy Catalog / ...): alias del provider confrontati con
+   * `catalog.id`, `catalog.name`, nome addon ed extra (`genre` / `provider` /
+   * `platform`) dichiarati dal manifest. Generato SOLO quando
+   * `hasCustomCatalogAddons()` è `true` e MAI per i target Cinemeta.
+   */
+  CUSTOM_ADDON,
+
+  /**
+   * Fallback di sistema sui cataloghi Cinemeta, generato SOLO quando
+   * `hasCustomCatalogAddons()` è `false` e nessun binding dichiarato copre
+   * il provider.
+   */
+  SYSTEM_DEFAULT
 }
 
 /** Grado di conferma del binding. */
@@ -26,9 +42,21 @@ enum class BindingConfidence {
 /**
  * Associazione dichiarata fra un catalogo Stremio e un provider StreamNova.
  *
- * Un binding è SEMPRE dichiarato: nasce da una scelta utente ([BindingSource.USER])
- * o da dati di registry ([BindingSource.REGISTRY]). Il resolver non può mai
- * synthesizzare un binding a partire da un nome o da un id.
+ * Un binding è SEMPRE derivato da DATI DETERMINISTICI, mai da un punteggio:
+ * - [BindingSource.USER]: scelta esplicita dell'utente;
+ * - [BindingSource.REGISTRY]: dati dichiarativi bundled (`res/raw`).
+ * - [BindingSource.CUSTOM_ADDON]: match sui cataloghi di un addon di catalogo
+ *   personalizzato attivo (Xperience / Easy Catalog / ...), calcolato sugli alias
+ *   del provider confrontati con id, nome e extra dichiarati dal manifest.
+ *   Usato SOLO quando `hasCustomCatalogAddons()` è `true`.
+ * - [BindingSource.SYSTEM_DEFAULT]: fallback sui cataloghi di sistema Cinemeta,
+ *   usato SOLO quando `hasCustomCatalogAddons()` è `false` e nessun binding
+ *   dichiarato copre il provider.
+ *
+ * Il resolver non può mai sintetizzare un binding a partire da un nome o da un id:
+ * [ProviderCatalogResolver.resolve] restituisce solo USER o REGISTRY; le sorgenti
+ * CUSTOM_ADDON e SYSTEM_DEFAULT vengono iniettate esclusivamente dal
+ * [ProviderCatalogPlanner] nel piano di caricamento del provider.
  */
 data class ProviderBinding(
   val key: CatalogKey,
@@ -44,12 +72,13 @@ data class ProviderBinding(
   val normalizedProviderId: String get() = providerId.trim().lowercase()
 
   /**
-   * true se il binding è utilizzabile. Oggi tutti i [BindingSource] sono dichiarativi,
-   * quindi il valore è sempre true: resta esplicito per documentare l'invariante
-   * "nulla euristica entra in resolve".
+   * true se il binding è utilizzabile: tutti i [BindingSource] sono DATI
+   * deterministici (scelta utente, registry, match su manifest, fallback di
+   * sistema), mai un punteggio soglia. Resta esplicito per documentare
+   * l'invariante "nulla euristico entra in resolve".
    */
   val isDeclarative: Boolean
-    get() = source == BindingSource.USER || source == BindingSource.REGISTRY
+    get() = true
 }
 
 /**

@@ -1,5 +1,7 @@
 package com.example.ui.screens.player
 
+import com.example.data.model.Episode
+
 /**
  * Logica di attivazione dell'overlay "Prossimo Episodio" nel player.
  *
@@ -47,5 +49,23 @@ internal object NextEpisodePromptUtils {
     // overlay fin dall'inizio su clip brevi); il trigger è position >= duration - 35s.
     if (durationMs <= PROMPT_WINDOW_MS) return false
     return positionMs >= durationMs - PROMPT_WINDOW_MS
+  }
+
+  /**
+   * Risoluzione deterministica dell'episodio successivo:
+   * 1. stessa stagione, episodio N+1;
+   * 2. se l'episodio corrente è l'ultimo della stagione, il primo episodio della
+   *    stagione successiva (E1; in sua assenza l'episodio più basso disponibile).
+   *
+   * Funziona su liste non ordinate (pool ottenute da merge/concat).
+   */
+  fun resolveNextEpisode(episodes: List<Episode>, current: Episode?): Episode? {
+    if (current == null || episodes.isEmpty()) return null
+    episodes
+      .firstOrNull { it.seasonNumber == current.seasonNumber && it.episodeNumber == current.episodeNumber + 1 }
+      ?.let { return it }
+    val nextSeason = episodes.filter { it.seasonNumber == current.seasonNumber + 1 }
+    if (nextSeason.isEmpty()) return null
+    return nextSeason.firstOrNull { it.episodeNumber == 1 } ?: nextSeason.minByOrNull { it.episodeNumber }
   }
 }

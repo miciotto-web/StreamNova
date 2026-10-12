@@ -307,14 +307,20 @@ data class StremioManifest(
   fun supportsCatalogForType(type: String): Boolean {
     if (!supportsCatalog()) return false
     if (!catalogs.isNullOrEmpty()) {
-      return catalogs.any { it.isValid && it.type.equals(type, ignoreCase = true) }
+      return validCatalogs().any { it.type.equals(type, ignoreCase = true) }
     }
     return supportsTypeForResource(RESOURCE_CATALOG, type)
   }
 
-  /** Elenco dei cataloghi validi esposti dall'addon. */
+  /**
+   * Elenco dei cataloghi validi esposti dall'addon.
+   *
+   * I cataloghi esclusi da [StremioCatalogFilters] (es. "Top Film Nova") non vengono
+   * mai restituiti: il filtro è applicato qui, al punto di ingresso del manifest, così
+   * tutte le viste a valle (Home, Film/Serie TV, Provider, categorie) lo ereditano.
+   */
   fun validCatalogs(): List<StremioCatalogDefinition> =
-    catalogs.orEmpty().filter { it.isValid }
+    catalogs.orEmpty().filter { it.isValid && !StremioCatalogFilters.isIgnoredCatalog(it) }
 
   /** Elenco dei cataloghi addon validi. */
   fun validAddonCatalogs(): List<StremioCatalogDefinition> =
@@ -358,6 +364,9 @@ data class StremioMetaItem(
   val logo: String? = null,
   val description: String? = null,
   val releaseInfo: Any? = null,
+  @Json(name = "release_date") val releaseDate: String? = null,
+  val released: String? = null,
+  val posterFallback: String? = null,
   val imdbRating: Any? = null,
   val genres: List<String>? = null,
   val genre: List<String>? = null

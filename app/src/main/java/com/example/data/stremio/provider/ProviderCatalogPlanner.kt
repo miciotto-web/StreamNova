@@ -26,11 +26,14 @@ data class CatalogProvenance(
  *
  * @param target target del catalogo (addon + definizione).
  * @param binding binding confermato che ha prodotto l'associazione.
- * @param extra parametri extra obbligatori per questo target (es. `genre` richiesto).
+ * @param platformExtra extra di PIATTAFORMA dichiarati dal manifest del cui valore
+ *        coincide col provider (es. `provider=Prime Video`): vanno inviati altrimenti
+ *        il catalogo restituirebbe contenuti di TUTTE le piattaforme.
  */
 data class ResolvedProviderTarget(
   val target: StremioCatalogTarget,
-  val binding: ProviderBinding
+  val binding: ProviderBinding,
+  val platformExtra: Map<String, String> = emptyMap()
 ) {
   /** Chiave completa: addonManifestId + type + catalogId. */
   val catalogKey: CatalogKey get() = binding.key
@@ -54,12 +57,22 @@ data class ResolvedProviderTarget(
 
 /**
  * Piano di caricamento di un provider: i soli cataloghi Stremio **confermati**.
+ *
+ * @param providerId slug normalizzato del provider.
+ * @param mediaType tipo richiesto, `null` per entrambi.
+ * @param resolved target risolti con il loro binding.
+ * @param unmappedTargets target dichiarati ma non associabili al provider.
+ * @param fallbackToDefault true se l'intero piano deriva dal FALLBACK di sistema
+ *        (Cinemeta): usato SOLO quando non è attivo nessun addon di catalogo
+ *        personalizzato e nessun binding dichiarato copre il provider. Non può
+ *        valere copertura `FULL`.
  */
 data class ProviderCatalogPlan(
   val providerId: String,
   val mediaType: MediaType? = null,
   val resolved: List<ResolvedProviderTarget> = emptyList(),
-  val unmappedTargets: Int = 0
+  val unmappedTargets: Int = 0,
+  val fallbackToDefault: Boolean = false
 ) {
   /** true se esiste almeno un binding confermato: abilita l'override sul catalogo nativo. */
   val hasConfirmedBindings: Boolean get() = resolved.isNotEmpty()
@@ -75,7 +88,8 @@ data class ProviderCatalogPlan(
 
 /**
  * Pianificatore puro: trasforma i cataloghi dichiarati dagli addon in un piano di
- * caricamento per provider, usando SOLO binding confermati.
+ * caricamento per provider, usando SOLO binding confermati (dichiarati con
+ * [ProviderCatalogResolver.resolve] oppure iniettati da [onBindMissing]).
  *
  * È deliberatamente una funzione pura (nessuna rete, nessun singleton): tutto il
  * decisione di associazione è verificabile in test JVM.
@@ -92,6 +106,12 @@ data class ProviderCatalogPlan(
  * 5. **Cataloghi non interrogabili senza argomenti** (richiedono `search`) o con
  *    `genre` obbligatorio senza opzioni sono scartati: non possono alimentare un
  *    catalogo Provider.
+ * 6. **Binding iniettato**: solo se il resolver non ha una dichiarazione per la
+ *    chiave può intervenire [onBindMissing], che il chiamante usa SOLO per
+ *    (a) il match sui cataloghi di un addon di catalogo personalizzato attivo e
+ *    (b) il fallback Cinemeta quando nessun addon personalizzato è attivo
+ *    (vedi [ProviderCatalogSourcePolicy]). Un binding iniettato sbagliato per
+ *    provider o per chiave viene scartato dalla stessa difesa del punto 4.
  */
 object ProviderCatalogPlanner {
 
@@ -99,7 +119,9 @@ object ProviderCatalogPlanner {
     providerId: String,
     targets: List<StremioCatalogTarget>,
     resolver: ProviderCatalogResolver,
-    mediaType: MediaType? = null
+    mediaType: MediaType? = null,
+    onBindMissing: (StremioCatalogTarget) -> ProviderBinding? = { null },
+    platformExtra: (StremioCatalogTarget) -> Map<String, String> = { emptyMap() }
   ): ProviderCatalogPlan {
     val normalizedProviderId = providerId.trim().lowercase()
     var unmapped = 0
@@ -117,14 +139,18 @@ object ProviderCatalogPlanner {
           unmapped++
           return@mapNotNull null
         }
-        // 3. Solo binding confermati: il resolver non può sintetizzare nulla.
-        val binding = resolver.resolve(key)
+        // 3. Prima la dichiarazione (USER/REGISTRY); il resolver non sintetizza nulla.
+        // 6. Solo se assente interviene il binding iniettato dal chiamante.
+        val binding = resolver.resolve(key) ?: onBindMissing(target)
         if (binding == null) {
           unmapped++
           return@mapNotNull null
         }
-        // 4. Difesa: binding dichiarato per un altro provider.
-        if (binding.normalizedProviderId != normalizedProviderId) {
+        // 4. Difesa: il binding (dichiarato o iniettato) deve riferirsi a QUESTO
+        //    provider e a QUESTA chiave, mai a un altro catalogo o piattaforma.
+        if (binding.normalizedProviderId != normalizedProviderId ||
+          binding.key.stableId != key.stableId
+        ) {
           unmapped++
           return@mapNotNull null
         }
@@ -134,7 +160,11 @@ object ProviderCatalogPlanner {
         if (definition.isExtraRequired(EXTRA_GENRE) && definition.genreOptions().isEmpty()) {
           return@mapNotNull null
         }
-        ResolvedProviderTarget(target = target, binding = binding)
+        ResolvedProviderTarget(
+          target = target,
+          binding = binding,
+          platformExtra = platformExtra(target)
+        )
       }
       // Ordine stabile: multi-addon riproducibile tra build diverse.
       .sortedWith(compareBy({ it.target.addonId }, { it.type }, { it.target.catalogId }))
@@ -148,15 +178,27 @@ object ProviderCatalogPlanner {
   }
 
   /**
-   * `genre` obbligatorio con opzioni disponibili: si usa la prima opzione come valore
-   * neutro, così l'endpoint resta valido. Decide in modo dichiarato dal manifest,
-   * senza supposizioni sul provider.
+   * Extra da inviare per un target risolto.
+   *
+   * 1. **Extra di piattaforma** ([ResolvedProviderTarget.platformExtra]): valori
+   *    dichiarati dal manifest (`provider` / `platform` / `genre`) che nominano il
+   *    provider: senza inviarli il catalogo restituirebbe contenuti di TUTTE le
+   *    piattaforme etichettati come del provider.
+   * 2. **`genre` obbligatorio**: prima opzione dichiarata come valore neutro, così
+   *    l'endpoint resta valido. Decide in modo dichiarato dal manifest, senza
+   *    supposizioni sul provider.
    */
   fun extraFor(target: ResolvedProviderTarget): Map<String, String> {
     val catalog = target.target.catalog
-    if (!catalog.isExtraRequired(EXTRA_GENRE)) return emptyMap()
-    val first = catalog.genreOptions().firstOrNull()?.takeIf { it.isNotBlank() } ?: return emptyMap()
-    return mapOf(EXTRA_GENRE to first)
+    val result = LinkedHashMap<String, String>()
+
+    result.putAll(target.platformExtra)
+
+    if (catalog.isExtraRequired(EXTRA_GENRE) && !result.containsKey(EXTRA_GENRE)) {
+      val first = catalog.genreOptions().firstOrNull()?.takeIf { it.isNotBlank() }
+      if (first != null) result[EXTRA_GENRE] = first
+    }
+    return result
   }
 
   private fun matchesRequestedType(catalogType: String, requested: MediaType?): Boolean {

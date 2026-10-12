@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.net.Uri
 import android.util.Log
 import com.example.data.prefs.DecoderFallbackMode
@@ -9,6 +10,7 @@ import com.example.ui.screens.player.*
 import androidx.media3.datasource.HttpDataSource
 import android.view.KeyEvent
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -47,6 +49,8 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Pause
@@ -61,6 +65,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -94,6 +99,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Dialog
 import com.example.R
 import androidx.media3.common.C
@@ -140,6 +146,7 @@ import com.example.ui.theme.NovaTextSecondary
 import com.example.ui.util.streamUnavailableMessage
 import java.util.Locale
 import com.example.ui.viewmodel.StreamNovaViewModel
+import com.example.ui.viewmodel.StreamResolutionState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -191,6 +198,20 @@ private suspend fun FocusRequester.requestFocusAfterFrame(attempts: Int = 5) {
   }
 }
 
+/**
+ * Risale alla [Activity] ospite anche quando il [Context] è un wrapper
+ * (ContextThemeWrapper/ContextWrapper), così da poter gestire i flag della
+ * finestra (es. [WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON]).
+ */
+internal fun Context.findActivity(): Activity? {
+  var ctx: Context? = this
+  while (ctx is ContextWrapper) {
+    if (ctx is Activity) return ctx
+    ctx = ctx.baseContext
+  }
+  return ctx as? Activity
+}
+
 @OptIn(UnstableApi::class)
 @Composable
 fun PlayerScreen(
@@ -213,11 +234,18 @@ fun PlayerScreen(
     }
 
   val showSourceDialog by viewModel.showSourceDialog.collectAsState()
-  val availableSources by viewModel.availableSources.collectAsState()
+  val streamResolutionState by viewModel.streamResolutionState.collectAsState()
+  val isSwitchingEpisode by viewModel.isSwitchingEpisode.collectAsState()
+  val onlineSubtitles by viewModel.onlineSubtitles.collectAsState()
+  val isOnlineSubtitlesLoading by viewModel.isOnlineSubtitlesLoading.collectAsState()
+
   val media = playbackState.media ?: return
   val episode = playbackState.currentEpisode
 
-  val isSourceSelectionActive = showSourceDialog && availableSources.isNotEmpty()
+  // Selezione sorgente attiva: il flag del dialog basta da solo (anche con lista
+  // vuota). Durante il fallback manuale dell'auto-pick del prossimo episodio la
+  // sessione NON deve mai marcarsi come fallita ne' mostrare la schermata nera.
+  val isSourceSelectionActive = showSourceDialog
 
   val isTvShow = PlayerIntroUtils.isTvShow(
     isTvShow = media.type == MediaType.SERIE_TV,
@@ -239,24 +267,11 @@ fun PlayerScreen(
     "S${currentEp.seasonNumber}E${currentEp.episodeNumber} • ${currentEp.title}"
   } else null
 
-  // Prossimo episodio: calcolato solo se Serie TV ed esiste un episodio successivo
-  val nextEpisode: Episode? = remember(media, currentEp) {
-    if (!isTvShow || currentEp == null) {
-      null
-    } else {
-      val idx = media.episodes.indexOfFirst {
-        it.id == currentEp.id || (it.seasonNumber == currentEp.seasonNumber && it.episodeNumber == currentEp.episodeNumber)
-      }
-      if (idx != -1 && idx + 1 < media.episodes.size) {
-        media.episodes[idx + 1]
-      } else {
-        media.episodes.firstOrNull {
-          (it.seasonNumber == currentEp.seasonNumber && it.episodeNumber == currentEp.episodeNumber + 1) ||
-          (it.seasonNumber == currentEp.seasonNumber + 1 && it.episodeNumber == 1)
-        }
-      }
-    }
-  }
+  // Prossimo episodio: risolto dal ViewModel (stessa stagione E+1, poi stagione
+  // successiva E1). Il ViewModel carica in background gli episodi da TMDB quando
+  // media.episodes è vuota (item da catalogo/Cinemeta), garantendo che il valore
+  // sia disponibile anche riproducendo da "Continua a guardare" o da link riusato.
+  val nextEpisode by viewModel.nextEpisode.collectAsState()
 
   var isBuffering by remember { mutableStateOf(true) }
   var currentPosition by remember { mutableLongStateOf(playbackState.currentPositionMs) }
@@ -315,12 +330,19 @@ fun PlayerScreen(
 
   val anyModalOpen = showAudioModal || showSubtitleModal || showQualityModal || showSpeedModal
 
+  LaunchedEffect(showSubtitleModal) {
+    if (showSubtitleModal) {
+      viewModel.loadOnlineSubtitles(media, currentEp)
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // FOCUS D-PAD / TELECOMANDO TV
   // ---------------------------------------------------------------------------
   val playPauseFocusRequester = remember { FocusRequester() }
   val seekBarFocusRequester = remember { FocusRequester() }
   val skipIntroFocusRequester = remember { FocusRequester() }
+  val nextEpisodeFocusRequester = remember { FocusRequester() }
   val idleFocusRequester = remember { FocusRequester() }
   val focusScope = rememberCoroutineScope()
 
@@ -384,27 +406,33 @@ fun PlayerScreen(
       .setLoadErrorHandlingPolicy(PlayerLoadErrorHandlingPolicy())
   }
 
-  val isHlsStream = run {
-    val url = videoUrl
-    if (url == null) {
-      false
-    } else {
-      val lower = url.lowercase()
-      val path = url.substringBefore('?').substringBefore('#').lowercase()
-      val hint = playbackState.streamProgressive
-      when {
-        path.endsWith(".m3u8") || lower.contains(".m3u8") -> true
-        path.endsWith(".mp4") || path.endsWith(".mkv") ||
-          path.endsWith(".webm") || path.endsWith(".avi") ||
-          // Link Debrid CDN (TorBox) con estensione anche solo in query string:
-          lower.contains(".mp4") || lower.contains(".mkv") || lower.contains(".m4v") -> false
-        // Hint esplicito della sorgente: i link Debrid sbloccati (requestdl) sono
-        // file progressivi anche quando l'URL non ha estensione.
-        hint != null -> !hint
-        playbackState.streamUrl != null -> true
-        else -> false
-      }
+  // Tipo dell'ultimo URL valido (HLS vs progressivo). Durante il passaggio al
+  // prossimo episodio `videoUrl` diventa temporaneamente null mentre la nuova
+  // sorgente viene risolta: il tipo NON deve tornare a `false`, altrimenti il
+  // `remember` che crea ExoPlayer verrebbe invalidato (nuova istanza del player =>
+  // onDispose => reset della risoluzione in corso) e la transizione fallirebbe
+  // con "Stream non disponibile". Manteniamo quindi l'ultimo tipo noto.
+  val lastIsHlsStream = remember { mutableStateOf(false) }
+  fun computeIsHlsStream(url: String): Boolean {
+    val lower = url.lowercase()
+    val path = url.substringBefore('?').substringBefore('#').lowercase()
+    val hint = playbackState.streamProgressive
+    return when {
+      path.endsWith(".m3u8") || lower.contains(".m3u8") -> true
+      path.endsWith(".mp4") || path.endsWith(".mkv") ||
+        path.endsWith(".webm") || path.endsWith(".avi") ||
+        // Link Debrid CDN (TorBox) con estensione anche solo in query string:
+        lower.contains(".mp4") || lower.contains(".mkv") || lower.contains(".m4v") -> false
+      // Hint esplicito della sorgente: i link Debrid sbloccati (requestdl) sono
+      // file progressivi anche quando l'URL non ha estensione.
+      hint != null -> !hint
+      playbackState.streamUrl != null -> true
+      else -> false
     }
+  }
+  val isHlsStream = videoUrl?.let { computeIsHlsStream(it) } ?: lastIsHlsStream.value
+  SideEffect {
+    if (videoUrl != null) lastIsHlsStream.value = computeIsHlsStream(videoUrl)
   }
 
   val playbackMediaSourceFactory = remember(mediaSourceFactory, isHlsStream) {
@@ -448,7 +476,8 @@ fun PlayerScreen(
       playbackSpeedProvider = { currentSpeed },
       audioPassthroughEnabled = playbackSettings.audioPassthroughEnabled,
       extensionRendererModePreference = extMode,
-      dolbyVisionFallbackEnabled = playbackSettings.dolbyVisionFallbackEnabled
+      dolbyVisionFallbackEnabled = playbackSettings.dolbyVisionFallbackEnabled,
+      subtitleOffsetMsProvider = { viewModel.playbackState.value.subtitleOffsetMs }
     )
     val maxHeight = playbackSettings.preferredResolution.targetHeight
     val preferredAudioLangs = mapPreferredAudioLanguages(playbackSettings.preferredAudioLanguage)
@@ -1104,11 +1133,25 @@ fun PlayerScreen(
 
   // Sorgente assente per un titolo TMDB: mostra lo stato di errore, SENZA avviare video demo.
   // La sessione viene marcata come fallita: nessun auto-next da errore di risoluzione.
-  // Ma se siamo in modalita' selezione sorgente (autoplay disattivato), NON e' un errore:
-  // l'utente sta scegliendo la sorgente e il player aspettara' l'URL dopo la selezione.
-  LaunchedEffect(videoUrl) {
+  // Ma se siamo in modalita' selezione sorgente o durante la risoluzione streaming, NON e' un errore:
+  // il player rimarra' in attesa o mostrera' il dialog di selezione sorgente.
+  LaunchedEffect(videoUrl, streamResolutionState, isSourceSelectionActive, isSwitchingEpisode) {
     if (videoUrl == null) {
-      if (!isSourceSelectionActive) {
+      // Risoluzione in corso ("Caricamento episodio successivo..."), selezione
+      // sorgente attiva o transizione al prossimo episodio: mai errore/schermata nera.
+      if (streamResolutionState is StreamResolutionState.Loading ||
+        isSourceSelectionActive ||
+        isSwitchingEpisode
+      ) {
+        isBuffering = true
+        playbackFailed = false
+        playbackErrorMessage = null
+      } else if (streamResolutionState is StreamResolutionState.Error) {
+        isBuffering = false
+        playbackEnded = false
+        playbackFailed = true
+        playbackErrorMessage = (streamResolutionState as StreamResolutionState.Error).message
+      } else {
         isBuffering = false
         playbackEnded = false
         playbackFailed = true
@@ -1116,6 +1159,38 @@ fun PlayerScreen(
       }
     } else {
       playbackErrorMessage = null
+      playbackFailed = false
+    }
+  }
+
+  // Passaggio al prossimo episodio: mette in pausa il video precedente (nessun
+  // azzeramento brusco di ExoPlayer) mentre le nuove sorgenti vengono risolte.
+  LaunchedEffect(isSwitchingEpisode) {
+    if (isSwitchingEpisode) {
+      runCatching { exoPlayer.pause() }
+      isBuffering = true
+      playbackFailed = false
+      playbackErrorMessage = null
+    }
+  }
+
+  // Fire TV / Android TV: durante la riproduzione attiva il salvaschermo di
+  // sistema NON deve partire. Il flag FLAG_KEEP_SCREEN_ON viene applicato alla
+  // finestra dell'Activity finché il video è attivo (in riproduzione, in
+  // buffering o durante il passaggio al prossimo episodio) e rimosso quando il
+  // player è in pausa o esce dalla composizione.
+  val keepScreenOn = isPlaying || isBuffering || isSwitchingEpisode
+  DisposableEffect(keepScreenOn) {
+    val window = context.findActivity()?.window
+    if (window != null) {
+      if (keepScreenOn) {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+      } else {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+      }
+    }
+    onDispose {
+      window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
   }
 
@@ -1226,7 +1301,7 @@ fun PlayerScreen(
     }
     val target = nextEpisode
     if (target != null && !playbackFailed) {
-      Log.i("PlayerScreen", "Auto-advance: countdown scaduto, passaggio a S${target.seasonNumber}E${target.episodeNumber}")
+      Log.i("NextEpisode", "Transizione automatica a S${target.seasonNumber}E${target.episodeNumber}")
       viewModel.saveCurrentPlaybackProgress(exoPlayer.duration.coerceAtLeast(exoPlayer.currentPosition))
       viewModel.playNextEpisode(target)
     }
@@ -1285,6 +1360,13 @@ fun PlayerScreen(
           // ha effettivamente consumato contenuto (no ENDED istantaneo da stream vuoto/rotto).
           if (!playbackFailed && exoPlayer.currentPosition > 0L && exoPlayer.duration > 0L) {
             playbackEnded = true
+            // A STATE_ENDED l'overlay "Prossimo Episodio" si attiva (con countdown a
+            // video fermo se auto-play ON, solo pulsante se OFF) e transizione non lascia
+            // il player bloccato su schermo nero/ultimo fotogramma quando esiste un next.
+            Log.i(
+              "NextEpisode",
+              "STATE_ENDED; next=${nextEpisode?.let { "S${it.seasonNumber}E${it.episodeNumber} ${it.title}" } ?: "NON TROVATO"}, autoPlay=${playbackSettings.autoPlayNextEpisodeEnabled}"
+            )
           }
         }
       }
@@ -1470,7 +1552,12 @@ fun PlayerScreen(
       if (finalPos > 0) {
         viewModel.saveCurrentPlaybackProgress(finalPos)
       }
-      viewModel.resetStreamState()
+      // NON chiamare resetStreamState qui: onDispose scatta anche quando il
+      // player viene RICREATO (es. cambio tipo HLS/progressivo tra episodi o
+      // cambio impostazioni a sessione in corso). Un reset cancellerebbe la
+      // risoluzione delle sorgenti in volo e porterebbe al falso errore
+      // "Stream non disponibile". La pulizia dello stato è già garantita da
+      // closePlayer()/backToBrowsing()/backFromDetail() quando si esce davvero.
       exoPlayer.removeListener(listener)
       exoPlayer.removeAnalyticsListener(diagAnalyticsListener)
       exoPlayer.stop()
@@ -1496,12 +1583,33 @@ fun PlayerScreen(
   val selectedQualityLabelRef by rememberUpdatedState(selectedQualityLabel)
   val detectedResolutionRef by rememberUpdatedState(detectedResolution)
 
+  // Bucket (posizione/5s) dell'ultimo log [NextEpisode] negli ultimi 40s: throttling
+  // a ~5 secondi per non spammare il logcat durante la finestra di fine episodio.
+  var lastNextEpLogBucket by remember { mutableLongStateOf(-1L) }
+
   LaunchedEffect(exoPlayer, isPlaying) {
     while (true) {
       if (exoPlayer.isPlaying) {
         currentPosition = exoPlayer.currentPosition
-        totalDuration = exoPlayer.duration.coerceAtLeast(1L)
+        // player.duration può essere C.TIME_UNSET (-1) o non ancora pronto: in tal
+        // caso si mantengono i valori noti, senza basare overlay/countdown su durate fittizie.
+        val rawDuration = exoPlayer.duration
+        if (rawDuration > 0L && rawDuration != C.TIME_UNSET) {
+          totalDuration = rawDuration
+        }
         viewModel.updatePlaybackPosition(currentPosition, totalDuration, exoPlayer.bufferedPosition)
+        // [NextEpisode] diagnostica negli ultimi 40 secondi (log throttled a ~5s).
+        val remaining = totalDuration - currentPosition
+        if (isTvShow && nextEpisode != null && remaining in 0L..40_000L) {
+          val bucket = currentPosition / 5_000L
+          if (bucket != lastNextEpLogBucket) {
+            lastNextEpLogBucket = bucket
+            Log.i(
+              "NextEpisode",
+              "pos=$currentPosition / dur=$totalDuration, remaining=${remaining}ms, shouldShowPrompt=$isNextEpisodePromptVisible"
+            )
+          }
+        }
         if (selectedQualityLabelRef == "Auto" && detectedResolutionRef.isEmpty()) {
           val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
           val w = exoPlayer.videoFormat?.width ?: exoPlayer.videoSize.width
@@ -1582,7 +1690,7 @@ fun PlayerScreen(
     val target = nextEpisode ?: return
     if (playbackFailed) return
     nextEpisodeCountdownSeconds = 0
-    Log.i("PlayerScreen", "Guarda ora: passaggio manuale a S${target.seasonNumber}E${target.episodeNumber}")
+    Log.i("NextEpisode", "Transizione manuale (Guarda ora) a S${target.seasonNumber}E${target.episodeNumber}")
     viewModel.saveCurrentPlaybackProgress(exoPlayer.duration.coerceAtLeast(exoPlayer.currentPosition))
     viewModel.playNextEpisode(target)
   }
@@ -1643,6 +1751,9 @@ fun PlayerScreen(
   // (3) Ripristino focus dopo chiusura modali
   LaunchedEffect(anyModalOpen, areControlsVisible) {
     if (anyModalOpen || !areControlsVisible) return@LaunchedEffect
+    // Con l'overlay "Prossimo Episodio" visibile il focus resta sul pulsante
+    // "Guarda ora": nessun furto del focus verso i controlli di riproduzione.
+    if (isNextEpisodePromptVisible) return@LaunchedEffect
     delay(200)
     if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
   }
@@ -1733,6 +1844,12 @@ fun PlayerScreen(
 
           // OK / Centro D-Pad
           KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when {
+            // Overlay "Prossimo Episodio" visibile (e focus non sul badge, gia'
+            // gestito da TvFocusableBox): OK/ENTER avvia SUBITO la transizione.
+            isNextEpisodePromptVisible -> {
+              confirmNextEpisode()
+              true
+            }
             !hudShown -> {
               showControls()
               true
@@ -1799,6 +1916,8 @@ fun PlayerScreen(
           isFocusableInTouchMode = false
           descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
           isClickable = false
+          // Il player tiene acceso lo schermo mentre il video è attivo.
+          this.keepScreenOn = true
           this.resizeMode = resizeMode
           layoutParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1809,6 +1928,8 @@ fun PlayerScreen(
       update = { view ->
         view.player = exoPlayer
         view.resizeMode = resizeMode
+        // Fire TV: nessun salvaschermo di sistema mentre il video è attivo.
+        view.keepScreenOn = keepScreenOn
         // FASE 3.3 "Dimensione sottotitoli": applica la dimensione persistente al rendering
         // dei sottotitoli Media3 (SubtitleView di PlayerView). Frazione dell'altezza vista;
         // senza tracce sottotitoli non produce alcun effetto o errore.
@@ -1879,7 +2000,11 @@ fun PlayerScreen(
           )
           Spacer(modifier = Modifier.height(12.dp))
           Text(
-            text = stringResource(R.string.player_loading_stream),
+            text = if (isSwitchingEpisode) {
+              stringResource(R.string.player_loading_next_episode)
+            } else {
+              stringResource(R.string.player_loading_stream)
+            },
             color = NovaTextPrimary,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold
@@ -2287,13 +2412,14 @@ fun PlayerScreen(
 
               // 2. Prossimo Episodio: icona Skip Next (Visibile SOLO se Serie TV e con episodio successivo)
               if (isTvShow && nextEpisode != null) {
+                val skipTarget = nextEpisode
                 PlayerControlIconButton(
                   icon = Icons.Default.SkipNext,
                   contentDescription = stringResource(R.string.player_cd_next_episode),
                   onClick = {
                     kickAutoHide()
                     viewModel.saveCurrentPlaybackProgress(exoPlayer.currentPosition)
-                    viewModel.playNextEpisode(nextEpisode)
+                    if (skipTarget != null) viewModel.playNextEpisode(skipTarget)
                   }
                 )
               }
@@ -2429,13 +2555,15 @@ fun PlayerScreen(
 
     // Overlay "Prossimo Episodio": card in basso a destra con countdown automatico
     // (opzione "Riproduci automaticamente il prossimo episodio" ON) oppure solo
-    // pulsante manuale "Guarda ora" quando l'opzione è OFF.
+    // pulsante manuale "Guarda ora" quando l'opzione è OFF. Esterno a
+    // `if (areControlsVisible)`: si mostra anche (e soprattutto) con OSD nascosto.
     AnimatedVisibility(
       visible = isNextEpisodePromptVisible && nextEpisode != null,
       enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
       exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
       modifier = Modifier
         .align(Alignment.BottomEnd)
+        .zIndex(100f)
         .padding(end = 40.dp, bottom = 40.dp)
     ) {
       NextEpisodePromptCard(
@@ -2447,6 +2575,7 @@ fun PlayerScreen(
         } else {
           null
         },
+        focusRequester = nextEpisodeFocusRequester,
         onWatchNow = {
           kickAutoHide()
           confirmNextEpisode()
@@ -2497,17 +2626,11 @@ fun PlayerScreen(
       } else {
         0
       }
-      TrackSelectionDialog(
+      PlayerSubtitleSelectionDialog(
         title = stringResource(R.string.player_subtitles_dialog_title),
-        options = allOptions,
-        selectedIndex = selectedIndex,
-        headerSwitchLabel = stringResource(R.string.settings_forced_subtitles),
-        headerSwitchChecked = playbackSettings.forcedSubtitlesEnabled,
-        onHeaderSwitchToggle = { enabled ->
-          viewModel.setForcedSubtitlesEnabled(enabled)
-          manualSubtitleSelection = null
-        },
-        onSelect = { idx ->
+        localOptions = allOptions,
+        selectedLocalIndex = selectedIndex,
+        onSelectLocal = { idx ->
           if (idx == 0) {
             manualSubtitleSelection = ManualSubtitleSelection(null, -1)
             PlayerRuntimeControllerTrackSelection.disableSubtitles(exoPlayer)
@@ -2521,6 +2644,48 @@ fun PlayerScreen(
             }
           }
           showSubtitleModal = false
+        },
+        onlineSubtitles = onlineSubtitles,
+        isOnlineLoading = isOnlineSubtitlesLoading,
+        onSelectOnline = { sub ->
+          val currentPos = exoPlayer.currentPosition
+          val wasPlaying = exoPlayer.playWhenReady
+          val config = PlayerSubtitleMediaItemBuilder.toConfiguration(sub)
+          if (config != null) {
+            viewModel.injectOnlineSubtitle(sub)
+            val currentItem = exoPlayer.currentMediaItem
+            if (currentItem != null) {
+              val existing = currentItem.localConfiguration?.subtitleConfigurations.orEmpty()
+              val updatedConfigs = (existing.filter { it.uri != config.uri && it.id != config.id } + config)
+              val newItem = currentItem.buildUpon()
+                .setSubtitleConfigurations(updatedConfigs)
+                .build()
+
+              exoPlayer.setMediaItem(newItem, /* resetPosition = */ false)
+              if (currentPos > 0) {
+                exoPlayer.seekTo(currentPos)
+              }
+              exoPlayer.prepare()
+              exoPlayer.playWhenReady = wasPlaying
+            }
+            val normLang = PlayerSubtitleUtils.normalizeLanguageCode(sub.lang)
+            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+              .buildUpon()
+              .setPreferredTextLanguage(normLang)
+              .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+              .build()
+            manualSubtitleSelection = null
+          }
+          showSubtitleModal = false
+        },
+        offsetMs = playbackState.subtitleOffsetMs,
+        onAdjustOffset = { delta -> viewModel.adjustSubtitleOffsetMs(delta) },
+        onResetOffset = { viewModel.resetSubtitleOffsetMs() },
+        headerSwitchLabel = stringResource(R.string.settings_forced_subtitles),
+        headerSwitchChecked = playbackSettings.forcedSubtitlesEnabled,
+        onHeaderSwitchToggle = { enabled ->
+          viewModel.setForcedSubtitlesEnabled(enabled)
+          manualSubtitleSelection = null
         },
         onDismiss = { showSubtitleModal = false }
       )
@@ -2735,6 +2900,456 @@ fun PlayerControlIconButton(
         tint = if (isFocused) NovaCyanBright else Color.White,
         modifier = Modifier.size(24.dp)
       )
+    }
+  }
+}
+
+@Composable
+fun PlayerSubtitleSelectionDialog(
+  title: String,
+  localOptions: List<String>,
+  selectedLocalIndex: Int,
+  onSelectLocal: (Int) -> Unit,
+  onlineSubtitles: List<com.example.domain.model.Subtitle>,
+  isOnlineLoading: Boolean,
+  onSelectOnline: (com.example.domain.model.Subtitle) -> Unit,
+  offsetMs: Long,
+  onAdjustOffset: (Long) -> Unit,
+  onResetOffset: () -> Unit,
+  headerSwitchLabel: String? = null,
+  headerSwitchChecked: Boolean = false,
+  onHeaderSwitchToggle: ((Boolean) -> Unit)? = null,
+  onDismiss: () -> Unit
+) {
+  val initialFocusRequester = remember { FocusRequester() }
+  LaunchedEffect(Unit) {
+    try {
+      initialFocusRequester.requestFocus()
+    } catch (_: Exception) {
+    }
+  }
+
+  val formattedOffset = remember(offsetMs) {
+    when {
+      offsetMs > 0 -> "+$offsetMs ms"
+      offsetMs < 0 -> "$offsetMs ms"
+      else -> "0 ms"
+    }
+  }
+
+  androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+    Column(
+      modifier = Modifier
+        .width(440.dp)
+        .background(NovaSurface, RoundedCornerShape(20.dp))
+        .border(1.5.dp, NovaCyan, RoundedCornerShape(20.dp))
+        .padding(22.dp)
+    ) {
+      // 1. Titolo e pulsante chiusura
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Icon(
+            imageVector = Icons.Default.ClosedCaption,
+            contentDescription = null,
+            tint = NovaCyanBright,
+            modifier = Modifier.size(22.dp)
+          )
+          Text(
+            text = title,
+            color = NovaTextPrimary,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+          )
+        }
+        Icon(
+          imageVector = Icons.Default.Close,
+          contentDescription = stringResource(R.string.action_close),
+          tint = NovaTextSecondary,
+          modifier = Modifier
+            .size(22.dp)
+            .clickable { onDismiss() }
+        )
+      }
+
+      // 2. Interruttore Sottotitoli Forzati
+      if (headerSwitchLabel != null && onHeaderSwitchToggle != null) {
+        Spacer(modifier = Modifier.height(12.dp))
+        TvFocusableBox(
+          shape = RoundedCornerShape(12.dp),
+          onClick = { onHeaderSwitchToggle(!headerSwitchChecked) },
+          modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(initialFocusRequester)
+        ) { isFocused ->
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .background(
+                if (isFocused) NovaSurfaceVariant else NovaSurface.copy(alpha = 0.6f),
+                RoundedCornerShape(12.dp)
+              )
+              .border(
+                width = 1.dp,
+                color = if (isFocused) NovaCyanBright else Color.White.copy(alpha = 0.12f),
+                shape = RoundedCornerShape(12.dp)
+              )
+              .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = headerSwitchLabel,
+              color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+              fontSize = 13.sp,
+              fontWeight = FontWeight.SemiBold
+            )
+            Text(
+              text = if (headerSwitchChecked) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+              color = if (headerSwitchChecked) NovaGreen else NovaTextMuted,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold
+            )
+          }
+        }
+      }
+
+      Spacer(modifier = Modifier.height(14.dp))
+
+      // 3. Controller Sincronizzazione Offset (+/- 250 ms)
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(NovaSurfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+          .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
+          .padding(12.dp)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Default.Sync,
+              contentDescription = null,
+              tint = NovaCyan,
+              modifier = Modifier.size(16.dp)
+            )
+            Text(
+              text = stringResource(R.string.player_subtitles_sync_title),
+              color = NovaTextSecondary,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.SemiBold
+            )
+          }
+          // Azione rapida "Ripristina (0 ms)"
+          TvFocusableBox(
+            shape = RoundedCornerShape(8.dp),
+            focusedScale = 1.05f,
+            onClick = onResetOffset
+          ) { isFocused ->
+            Text(
+              text = stringResource(R.string.player_subtitles_reset_offset),
+              color = if (isFocused) NovaCyanBright else if (offsetMs != 0L) NovaCyan else NovaTextMuted,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold,
+              modifier = Modifier
+                .background(
+                  if (isFocused) NovaCyan.copy(alpha = 0.2f) else Color.Transparent,
+                  RoundedCornerShape(8.dp)
+                )
+                .border(
+                  width = 1.dp,
+                  color = if (isFocused) NovaCyanBright else Color.Transparent,
+                  shape = RoundedCornerShape(8.dp)
+                )
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+          }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          // Bottone -250 ms
+          TvFocusableBox(
+            shape = RoundedCornerShape(10.dp),
+            focusedScale = 1.06f,
+            onClick = { onAdjustOffset(-250L) },
+            modifier = Modifier.weight(1f)
+          ) { isFocused ->
+            Box(
+              contentAlignment = Alignment.Center,
+              modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                  if (isFocused) NovaCyan.copy(alpha = 0.25f) else NovaSurface,
+                  RoundedCornerShape(10.dp)
+                )
+                .border(
+                  width = 1.dp,
+                  color = if (isFocused) NovaCyanBright else Color.White.copy(alpha = 0.15f),
+                  shape = RoundedCornerShape(10.dp)
+                )
+                .padding(vertical = 8.dp)
+            ) {
+              Text(
+                text = "-250 ms",
+                color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+              )
+            }
+          }
+
+          // Valore corrente formattato
+          Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+              .weight(1.2f)
+              .padding(horizontal = 8.dp)
+          ) {
+            Text(
+              text = formattedOffset,
+              color = if (offsetMs != 0L) NovaCyanBright else NovaTextSecondary,
+              fontSize = 16.sp,
+              fontWeight = FontWeight.ExtraBold
+            )
+          }
+
+          // Bottone +250 ms
+          TvFocusableBox(
+            shape = RoundedCornerShape(10.dp),
+            focusedScale = 1.06f,
+            onClick = { onAdjustOffset(250L) },
+            modifier = Modifier.weight(1f)
+          ) { isFocused ->
+            Box(
+              contentAlignment = Alignment.Center,
+              modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                  if (isFocused) NovaCyan.copy(alpha = 0.25f) else NovaSurface,
+                  RoundedCornerShape(10.dp)
+                )
+                .border(
+                  width = 1.dp,
+                  color = if (isFocused) NovaCyanBright else Color.White.copy(alpha = 0.15f),
+                  shape = RoundedCornerShape(10.dp)
+                )
+                .padding(vertical = 8.dp)
+            ) {
+              Text(
+                text = "+250 ms",
+                color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+              )
+            }
+          }
+        }
+      }
+
+      Spacer(modifier = Modifier.height(14.dp))
+
+      // 4. Sezione Tracce Scrollabili
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(max = 340.dp)
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+      ) {
+        // Header Tracce Integrate
+        Text(
+          text = stringResource(R.string.player_subtitles_local_section),
+          color = NovaTextMuted,
+          fontSize = 12.sp,
+          fontWeight = FontWeight.Bold,
+          modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 4.dp)
+        )
+
+        localOptions.forEachIndexed { index, option ->
+          val isSelected = index == selectedLocalIndex
+          TvFocusableBox(
+            shape = RoundedCornerShape(10.dp),
+            focusedScale = 1.02f,
+            onClick = { onSelectLocal(index) },
+            modifier = Modifier.fillMaxWidth()
+          ) { isFocused ->
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                  if (isSelected) NovaCyan.copy(alpha = 0.2f) else if (isFocused) NovaSurfaceVariant else Color.Transparent,
+                  RoundedCornerShape(10.dp)
+                )
+                .border(
+                  width = 1.dp,
+                  color = if (isFocused) NovaCyanBright else if (isSelected) NovaCyan else Color.Transparent,
+                  shape = RoundedCornerShape(10.dp)
+                )
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = option,
+                color = if (isSelected || isFocused) NovaCyanBright else NovaTextPrimary,
+                fontSize = 13.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+              )
+              if (isSelected) {
+                Icon(
+                  imageVector = Icons.Default.Check,
+                  contentDescription = stringResource(R.string.player_cd_selected),
+                  tint = NovaCyanBright,
+                  modifier = Modifier.size(16.dp)
+                )
+              }
+            }
+          }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Color.White.copy(alpha = 0.08f))
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Header Sottotitoli Online (OpenSubtitles v3)
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 4.dp, top = 4.dp, bottom = 4.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            text = stringResource(R.string.player_subtitles_online_section),
+            color = NovaTextMuted,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+          )
+          if (isOnlineLoading) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(14.dp),
+              color = NovaCyanBright,
+              strokeWidth = 2.dp
+            )
+          }
+        }
+
+        if (isOnlineLoading && onlineSubtitles.isEmpty()) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 12.dp),
+            contentAlignment = Alignment.Center
+          ) {
+            Text(
+              text = stringResource(R.string.player_subtitles_online_loading),
+              color = NovaTextMuted,
+              fontSize = 12.sp
+            )
+          }
+        } else if (!isOnlineLoading && onlineSubtitles.isEmpty()) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 8.dp),
+            contentAlignment = Alignment.Center
+          ) {
+            Text(
+              text = stringResource(R.string.player_subtitles_online_empty),
+              color = NovaTextMuted,
+              fontSize = 12.sp
+            )
+          }
+        } else {
+          onlineSubtitles.forEach { sub ->
+            val langDisplay = sub.getDisplayLanguage()
+            val formatTag = if (sub.url.contains(".vtt", ignoreCase = true)) "VTT" else "SRT"
+            val subLabel = sub.label?.takeIf { it.isNotBlank() } ?: "OpenSubtitles"
+
+            TvFocusableBox(
+              shape = RoundedCornerShape(10.dp),
+              focusedScale = 1.02f,
+              onClick = { onSelectOnline(sub) },
+              modifier = Modifier.fillMaxWidth()
+            ) { isFocused ->
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .background(
+                    if (isFocused) NovaSurfaceVariant else Color.Transparent,
+                    RoundedCornerShape(10.dp)
+                  )
+                  .border(
+                    width = 1.dp,
+                    color = if (isFocused) NovaCyanBright else Color.Transparent,
+                    shape = RoundedCornerShape(10.dp)
+                  )
+                  .padding(horizontal = 14.dp, vertical = 9.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Column(
+                  modifier = Modifier.weight(1f, fill = false),
+                  verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    Text(
+                      text = langDisplay,
+                      color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+                      fontSize = 13.sp,
+                      fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                      text = "[$formatTag]",
+                      color = NovaCyan,
+                      fontSize = 10.sp,
+                      fontWeight = FontWeight.SemiBold
+                    )
+                  }
+                  Text(
+                    text = subLabel,
+                    color = NovaTextSecondary,
+                    fontSize = 11.sp,
+                    maxLines = 1
+                  )
+                }
+                Icon(
+                  imageVector = Icons.Default.CloudDownload,
+                  contentDescription = null,
+                  tint = if (isFocused) NovaCyanBright else NovaTextMuted,
+                  modifier = Modifier.size(16.dp)
+                )
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -2985,7 +3600,9 @@ private fun mapPreferredAudioLanguages(code: String): List<String> = when (code.
  * pulsante "Guarda ora" focalizzabile da D-Pad.
  *
  * Ancoraggio in basso a destra, sfondo scuro semitrasparente e bordo/glow ciano
- * coerenti con il tema Nova (stesso linguaggio visivo di "Salta Intro").
+ * coerenti con il tema Nova (stesso linguaggio visivo di "Salta Intro"). Quando
+ * la card compare il pulsante "Guarda ora" richiede subito il focus D-Pad, cosi'
+ * OK/ENTER lo attiva immediatamente senza attendere lo scadere del timer.
  */
 @Composable
 private fun NextEpisodePromptCard(
@@ -2993,8 +3610,15 @@ private fun NextEpisodePromptCard(
   episodeNumber: Int?,
   episodeTitle: String?,
   countdownSeconds: Int?,
+  focusRequester: FocusRequester,
   onWatchNow: () -> Unit
 ) {
+  // Focus D-Pad immediato sul pulsante d'azione al primo frame disponibile
+  // (riprova finche' la card non e' agganciata al sistema di focus).
+  LaunchedEffect(Unit) {
+    focusRequester.requestFocusAfterFrame()
+  }
+
   val epLabel = if (seasonNumber != null && episodeNumber != null) {
     "S${seasonNumber.toString().padStart(2, '0')}E${episodeNumber.toString().padStart(2, '0')}"
   } else {
@@ -3063,6 +3687,7 @@ private fun NextEpisodePromptCard(
       )
     }
     TvFocusableBox(
+      modifier = Modifier.focusRequester(focusRequester),
       shape = RoundedCornerShape(50),
       onClick = onWatchNow
     ) { isFocused ->

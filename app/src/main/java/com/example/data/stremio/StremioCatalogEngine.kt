@@ -121,6 +121,7 @@ object StremioCatalogEngine {
    */
   fun getAvailableCatalogs(type: String? = null): List<StremioCatalogTarget> {
     val activeAddons = StremioAddonRepository.getActiveAddons()
+      .filterNot { StremioCatalogFilters.isIgnoredAddon(it) }
     return activeAddons.flatMap { addon ->
       val manifest = addon.manifest
       if (type != null && !manifest.supportsCatalogForType(type)) {

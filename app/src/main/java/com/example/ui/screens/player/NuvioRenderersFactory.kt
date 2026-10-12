@@ -30,7 +30,8 @@ class NuvioRenderersFactory(
     private val extensionRendererModePreference: Int = EXTENSION_RENDERER_MODE_ON,
     private val dolbyVisionFallbackEnabled: Boolean = true,
     private val onPlaybackSpeedAwareAudioSinkCreated: ((PlaybackSpeedAwareAudioSink) -> Unit)? = null,
-    private val onFfmpegAudioRendererChanged: ((FfmpegAudioRenderer?) -> Unit)? = null
+    private val onFfmpegAudioRendererChanged: ((FfmpegAudioRenderer?) -> Unit)? = null,
+    private val subtitleOffsetMsProvider: () -> Long = { 0L }
 ) : DefaultRenderersFactory(context) {
 
     init {
@@ -131,6 +132,21 @@ class NuvioRenderersFactory(
 
         val ffmpegRenderers = out.filterIsInstance<FfmpegAudioRenderer>()
         onFfmpegAudioRendererChanged?.invoke(ffmpegRenderers.firstOrNull())
+    }
+
+    override fun buildTextRenderers(
+        context: Context,
+        output: androidx.media3.exoplayer.text.TextOutput,
+        outputLooper: android.os.Looper,
+        extensionRendererMode: Int,
+        out: ArrayList<Renderer>
+    ) {
+        val startIndex = out.size
+        super.buildTextRenderers(context, output, outputLooper, extensionRendererMode, out)
+        if (out.size > startIndex) {
+            val original = out[startIndex]
+            out[startIndex] = SubtitleOffsetRenderer(original, subtitleOffsetMsProvider)
+        }
     }
 
     private fun DefaultRenderersFactory.applyMapDv7ToHevcIfSupported(enabled: Boolean): DefaultRenderersFactory {

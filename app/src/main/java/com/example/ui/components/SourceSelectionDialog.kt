@@ -30,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,11 +51,13 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,11 +65,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.Episode
 import com.example.data.model.MediaItem
+import com.example.data.model.MediaType
 import com.example.data.streaming.CacheState
 import com.example.data.streaming.StreamSource
 import com.example.data.streaming.TorBoxSourceOrdering
@@ -83,16 +86,21 @@ import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import java.util.Locale
 import kotlinx.coroutines.delay
 
 /**
  * Schermata dedicata (full-screen) per la selezione della sorgente TorBox.
  *
  * Sostituisce il vecchio popup modale "Seleziona sorgente (N)": il layout e'
- * organizzato come una schermata di selezione con, a sinistra, la zona media
- * (poster + backdrop + logo originale del titolo, tutti dati gia' presenti nel
- * [MediaItem] risolto) e, a destra, la barra orizzontale dei provider e la lista
+ * organizzato come una schermata a due colonne con, a sinistra, la zona media
+ * (clear logo originale + metadati/badge, centrati, senza poster e SENZA barra
+ * azioni) e, a destra, la barra orizzontale dei provider e la lista
  * verticale degli stream.
+ *
+ * NOTA: i pulsanti rapidi (Riproduci, Cuore, Occhio, Trailer) appartengono
+ * SOLO a [com.example.ui.screens.DetailScreen]: qui sarebbero ridondanti dato
+ * che l'utente sta gia' scegliendo la sorgente di riproduzione.
  *
  * IMPORTANTE: questa schermata e' SOLO UI. Non modifica la discovery, il
  * ranking, l'unlock TorBox ne' la logica di selezione: riceve le [StreamSource]
@@ -105,6 +113,24 @@ import kotlinx.coroutines.delay
  * @param onSelect sorgente scelta: avvia il flusso TorBox esistente (invariato).
  * @param onDismiss chiusura senza avviare la riproduzione.
  */
+@Composable
+fun TorBoxSourceSelectionScreen(
+  sources: List<StreamSource>,
+  target: com.example.ui.viewmodel.SourceDialogTarget?,
+  onSelect: (StreamSource) -> Unit,
+  onDismiss: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  TorBoxSourceSelectionScreen(
+    sources = sources,
+    media = target?.media,
+    episode = target?.episode,
+    onSelect = onSelect,
+    onDismiss = onDismiss,
+    modifier = modifier
+  )
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun TorBoxSourceSelectionScreen(
@@ -147,7 +173,7 @@ fun TorBoxSourceSelectionScreen(
   val allFilterRequester = remember { FocusRequester() }
   val providerRequesters = remember(providers) { providers.map { FocusRequester() } }
   val firstStreamRequester = remember { FocusRequester() }
-  // Requester dedicato alla sorgente consigliata: focus iniziale del dialog.
+  // Requester dedicato alla sorgente consigliata: fallback del focus iniziale.
   val recommendedStreamRequester = remember { FocusRequester() }
 
   // Requester del provider attivo: destinazione di UP dalla lista stream.
@@ -160,12 +186,18 @@ fun TorBoxSourceSelectionScreen(
   // Back: chiude la schermata senza avviare la riproduzione.
   BackHandler { onDismiss() }
 
-  // Punto 1 – Focus iniziale automatico sulla sorgente consigliata (prima cached,
-  // potenzialmente 4K/1080p in cima): l'utente TV preme solo OK/INVIO per avviare
-  // lo stream migliore senza scorrere l'elenco. Il retry copre il primo layout.
+  // Focus iniziale: la colonna sinistra non ha piu' elementi cliccabili (niente
+  // barra azioni), quindi il focus D-pad va subito a destra: prima sulla pillola
+  // "Tutto" dei filtri, con fallback sul primo stream consigliato della lista.
   LaunchedEffect(ordered) {
     repeat(8) {
       withFrameNanos { }
+      try {
+        allFilterRequester.requestFocus()
+        return@LaunchedEffect
+      } catch (_: IllegalStateException) {
+        delay(40)
+      }
       try {
         recommendedStreamRequester.requestFocus()
         return@LaunchedEffect
@@ -219,12 +251,12 @@ fun TorBoxSourceSelectionScreen(
         // impedendo che UP/LEFT sfuggano verso la sidebar sottostante.
         .focusGroup()
     ) {
-      // Zona media: poster + logo/titolo + metadati
+      // Zona media: clear logo + badge metadati (senza barra azioni, centrati).
       MediaInfoPanel(
         media = media,
         episode = episode,
         modifier = Modifier
-          .width(280.dp)
+          .width(320.dp)
           .fillMaxHeight()
       )
 
@@ -322,109 +354,149 @@ private fun MediaBackdrop(media: MediaItem?) {
 }
 
 /**
- * Zona media a sinistra: poster, logo originale (fallback sul titolo testuale) e
- * metadati principali. Ricava tutto dal [MediaItem]/[Episode] gia' disponibili.
+ * Zona media a sinistra: clear logo originale (o titolo testuale in stile display)
+ * e badge metadati (generi, anno, durata, rating), centrati orizzontalmente e
+ * posizionati al centro della meta' superiore della colonna.
+ *
+ * Non contiene pulsanti/controlli cliccabili: la barra azioni
+ * (Riproduci/avorito/Visto/Trailer) vive SOLO in
+ * [com.example.ui.screens.DetailScreen], quindi qui non ci sono nodi che possano
+ * catturare il focus D-pad. Il poster rettangolare e' stato rimosso: resta il
+ * backdrop cinematografico come sfondo della schermata.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MediaInfoPanel(
   media: MediaItem?,
   episode: Episode?,
   modifier: Modifier = Modifier,
 ) {
+  val title = media?.title.orEmpty()
+  val clearLogoUrl = media?.logoUrl?.takeIf { it.isNotBlank() }
+
   Column(modifier = modifier) {
+    // Blocco logo + badge: centrato nella meta' superiore della colonna.
     Box(
       modifier = Modifier
         .fillMaxWidth()
-        .height(300.dp)
-        .clip(RoundedCornerShape(16.dp))
-        .border(1.dp, NovaDivider, RoundedCornerShape(16.dp))
+        .weight(1f),
+      contentAlignment = Alignment.Center
     ) {
-      CardMediaImage(
-        primaryUrl = media?.posterUrl,
-        secondaryUrl = media?.backdropUrl,
-        fallbackRes = media?.posterRes ?: media?.backdropRes ?: R.drawable.banner_dune,
-        contentDescription = media?.title,
-        modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.Crop
-      )
-    }
-
-    Spacer(modifier = Modifier.height(18.dp))
-
-    val title = media?.title.orEmpty()
-    if (!media?.logoUrl.isNullOrBlank()) {
-      SubcomposeAsyncImage(
-        model = ImageRequest.Builder(LocalContext.current)
-          .data(media?.logoUrl)
-          .crossfade(true)
-          .build(),
-        contentDescription = title,
-        contentScale = ContentScale.Fit,
-        alignment = Alignment.CenterStart,
-        modifier = Modifier
-          .fillMaxWidth()
-          .heightIn(min = 40.dp, max = 76.dp),
-        error = {
+      Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        if (clearLogoUrl != null) {
+          AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+              .data(clearLogoUrl)
+              .crossfade(true)
+              .build(),
+            contentDescription = title,
+            contentScale = ContentScale.Fit,
+            alignment = Alignment.Center,
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 80.dp, max = 100.dp)
+          )
+        } else if (title.isNotBlank()) {
           Text(
             text = title,
             color = NovaTextPrimary,
-            fontSize = 24.sp,
+            fontSize = 30.sp,
             fontWeight = FontWeight.Black,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            style = PanelTitleShadow
+          )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Generi (max 3) subito sotto il logo, centrati rispetto alla colonna.
+        val genres = media?.genres.orEmpty()
+        if (genres.isNotEmpty()) {
+          FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            genres.take(3).forEach { genre ->
+              Box(
+                modifier = Modifier
+                  .background(NovaSurfaceVariant.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
+                  .border(1.dp, NovaCyan.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                  .padding(horizontal = 9.dp, vertical = 3.dp)
+              ) {
+                Text(
+                  text = genre,
+                  color = NovaCyanBright,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Medium,
+                  maxLines = 1
+                )
+              }
+            }
+          }
+          Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        // Anno di uscita, durata (o stagioni), classificazione eta' e rating TMDB.
+        if (media != null) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            if (media.year > 0) {
+              QualityBadge(text = media.year.toString())
+            }
+
+            val durationLabel = if (media.type == MediaType.SERIE_TV && (media.seasonsCount ?: 0) > 0) {
+              stringResource(R.string.media_card_seasons_abbr, media.seasonsCount ?: 1)
+            } else {
+              media.formattedDuration
+            }
+            QualityBadge(text = durationLabel)
+
+            media.ageRating?.let { age -> QualityBadge(text = "$age+") }
+
+            val rating = media.tmdbRating?.takeIf { it > 0f }
+            if (rating != null) {
+              QualityBadge(
+                text = String.format(Locale.US, "%.1f", rating),
+                leadingIcon = Icons.Default.Star,
+                leadingIconTint = NovaGold
+              )
+            }
+          }
+        }
+
+        if (episode != null) {
+          Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            text = "S${episode.seasonNumber}E${episode.episodeNumber} • ${episode.title}",
+            color = NovaCyanBright.copy(alpha = 0.9f),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
           )
         }
-      )
-    } else {
-      Text(
-        text = title,
-        color = NovaTextPrimary,
-        fontSize = 24.sp,
-        fontWeight = FontWeight.Black,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis
-      )
-    }
-
-    Spacer(modifier = Modifier.height(10.dp))
-
-    Row(
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-      val year = media?.year
-      if (year != null && year > 0) {
-        Text(
-          text = year.toString(),
-          color = NovaTextSecondary,
-          fontSize = 14.sp,
-          fontWeight = FontWeight.SemiBold
-        )
-        Text(text = "\u2022", color = NovaTextMuted, fontSize = 14.sp)
-      }
-      media?.let {
-        Text(
-          text = it.type.labelItalian,
-          color = NovaTextSecondary,
-          fontSize = 14.sp,
-          fontWeight = FontWeight.SemiBold
-        )
       }
     }
 
-    if (episode != null) {
-      Spacer(modifier = Modifier.height(6.dp))
-      Text(
-        text = "S${episode.seasonNumber}E${episode.episodeNumber} \u2022 ${episode.title}",
-        color = NovaCyanBright.copy(alpha = 0.9f),
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis
-      )
-    }
+    // Meta' inferiore lasciata vuota: nessun controllo, nessuna trappola di focus.
+    Spacer(modifier = Modifier.weight(1f))
   }
 }
+
+/** Ombra proiettata per il titolo testuale di fallback (leggibilita' sul backdrop). */
+private val PanelTitleShadow = TextStyle(
+  shadow = Shadow(color = Color.Black.copy(alpha = 0.7f), blurRadius = 8f)
+)
 
 @Composable
 private fun SourceSelectionHeader(count: Int, onDismiss: () -> Unit) {

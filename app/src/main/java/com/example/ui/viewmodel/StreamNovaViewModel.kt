@@ -77,6 +77,8 @@ import kotlinx.coroutines.flow.update
 /** Tag di log del ViewModel (ricerca sorgenti + playback). */
 private const val TAG = "StreamNovaVM"
 private const val HTTP_TRACE = "HTTP_TRACE"
+/** Messaggio diagnostico quando il trailer non e' recuperabile da TMDB. */
+private const val TRAILER_UNAVAILABLE_MESSAGE = "Trailer non disponibile per questo titolo"
 /** Timeout per l'interrogazione dei cataloghi Stremio durante la ricerca testuale. */
 private const val STREMIO_SEARCH_TIMEOUT_MS = 8_000L
 private var contentIdCounter = 0
@@ -429,6 +431,19 @@ data class SourceDialogTarget(
 typealias SourceSelectionTarget = SourceDialogTarget
 
 /**
+ * Stato della riproduzione del trailer **interna** a StreamNova.
+ *
+ * Il trailer viene mostrato con un player embedded (WebView sull'iframe YouTube) dentro
+ * l'app: nessun Intent viene mai inviato all'app esterna di YouTube.
+ */
+sealed interface TrailerPlaybackState {
+  object Idle : TrailerPlaybackState
+  object Loading : TrailerPlaybackState
+  data class Playing(val youtubeKey: String) : TrailerPlaybackState
+  data class Error(val message: String) : TrailerPlaybackState
+}
+
+/**
  * Pacchetto atomico e immutabile della sessione di riproduzione aperta.
  *
  * Contiene **esclusivamente** i dati del media e dell'episodio effettivamente cliccati
@@ -647,6 +662,14 @@ class StreamNovaViewModel(
   private val _sourceDialogMedia = MutableStateFlow<SourceDialogTarget?>(null)
   val sourceDialogMedia: StateFlow<SourceDialogTarget?> = _sourceDialogMedia.asStateFlow()
   val sourceSelectionTarget: StateFlow<SourceDialogTarget?> = _sourceDialogMedia.asStateFlow()
+
+  /**
+   * Stato del trailer interno: `Idle` quando nessun trailer e' richiesto, `Loading` durante
+   * la ricerca della chiave YouTube su TMDB, `Playing` con la chiave da embeddare in-app.
+   */
+  private val _trailerState = MutableStateFlow<TrailerPlaybackState>(TrailerPlaybackState.Idle)
+  val trailerState: StateFlow<TrailerPlaybackState> = _trailerState.asStateFlow()
+  private var loadTrailerJob: Job? = null
   private var loadStreamJob: Job? = null
 
   /**
@@ -718,7 +741,13 @@ class StreamNovaViewModel(
     val itemCount: Int = 0,
     val confirmedCatalogs: Int = 0,
     /** Copertura del catalogo provider: NONE = TMDB, PARTIAL = merge, FULL = solo Stremio. */
-    val coverage: ProviderCoverage = ProviderCoverage.NONE
+    val coverage: ProviderCoverage = ProviderCoverage.NONE,
+    /**
+     * true se i cataloghi Stremio provengono dal FALLBACK Cinemeta (solo senza
+     * addon di catalogo personalizzati): in merge il catalogo specifico del
+     * provider va PRIMA del fallback.
+     */
+    val fallbackToDefault: Boolean = false
   )
 
   private val _stremioProviderStates = MutableStateFlow<Map<String, StremioProviderCatalogState>>(emptyMap())
@@ -2673,7 +2702,12 @@ class StreamNovaViewModel(
 
     val initialLoad = viewModelScope.launch {
       try {
-        val page = StremioCatalogRepository.loadProviderCatalogForProvider(provider)
+        // ESCLUSIONE RADICALE di Cinemeta: con addon di catalogo personalizzati attivi
+        // (Xperience / Easy Catalog / ...) nessuna riga Cinemeta resta nella pagina del
+        // provider, che deve derivare al 100% dai cataloghi degli addon attivi.
+        val page = StremioCatalogRepository.sanitizeProviderCatalogPage(
+          StremioCatalogRepository.loadProviderCatalogForProvider(provider)
+        )
         val planned = StremioCatalogRepository.providerCoverage(provider)
         // FULL vale SOLO se il fetch effettivo produce item: senza titoli la
         // copertura degrada a PARTIAL e il catalogo TMDB resta disponibile.
@@ -2690,7 +2724,8 @@ class StreamNovaViewModel(
               hasConfirmedBindings = page.hasConfirmedBindings,
               itemCount = page.items.size,
               confirmedCatalogs = page.targets.size,
-              coverage = coverage
+              coverage = coverage,
+              fallbackToDefault = page.fallbackToDefault
             ))
           }
           Log.d(
@@ -2746,6 +2781,80 @@ class StreamNovaViewModel(
     MediaRepository.toggleFavorite(id)
     if (_selectedMedia.value?.id == id) {
       _selectedMedia.update { it?.copy(isFavorite = !it.isFavorite) }
+    }
+    // La schermata di selezione sorgenti mostra lo stesso titolo: il cuore deve
+    // riflettere il nuovo stato anche li', senza ricaricare nulla.
+    syncSourceDialogMedia { current ->
+      if (current.id == id) {
+        current.copy(isFavorite = MediaRepository.getMediaById(id)?.isFavorite ?: !current.isFavorite)
+      } else {
+        current
+      }
+    }
+  }
+
+  /**
+   * Alterna lo stato "visto / non visto" del titolo.
+   *
+   * "Visto" = progresso >= 90% della durata totale ([MediaItem.isWatched]): il toggle
+   * porta il progresso da totale (visto) a zero (non visto), aggiornando in modo
+   * coerente lista catalogo, dettaglio corrente e target della selezione sorgenti.
+   */
+  fun toggleWatched(media: MediaItem) {
+    val current = MediaRepository.getMediaById(media.id) ?: media
+    val targetProgress = if (current.isWatched) 0L else current.totalDurationMs.coerceAtLeast(1L)
+    MediaRepository.updateProgress(current.id, targetProgress)
+    if (_selectedMedia.value?.id == current.id) {
+      _selectedMedia.update { it?.copy(currentProgressMs = targetProgress) }
+    }
+    syncSourceDialogMedia { target ->
+      if (target.id == current.id) target.copy(currentProgressMs = targetProgress) else target
+    }
+  }
+
+  /**
+   * Avvia la riproduzione del trailer **dentro** StreamNova: recupera la chiave YouTube
+   * da TMDB (`videos.results`, priorita' `type == "Trailer"` in italiano, poi inglese) e
+   * passa lo stato a [TrailerPlaybackState.Playing]. Nessun Intent esterno a YouTube.
+   */
+  fun playTrailer(media: MediaItem?) {
+    if (media == null) {
+      _trailerState.value = TrailerPlaybackState.Error(TRAILER_UNAVAILABLE_MESSAGE)
+      return
+    }
+    loadTrailerJob?.cancel()
+    _trailerState.value = TrailerPlaybackState.Loading
+    loadTrailerJob = viewModelScope.launch {
+      val isTv = media.type == MediaType.SERIE_TV
+      val directId = media.tmdbId ?: 0
+      // Titoli catalogati solo con IMDb (es. Cinemeta): si risolve in TMDB prima di chiedere i video.
+      val resolvedId = if (directId > 0) {
+        directId
+      } else {
+        MediaRepository.resolveImdbToTmdbId(media.effectiveImdbId, isTv)
+      }
+      val key = resolvedId?.takeIf { it > 0 }?.let { MediaRepository.fetchTrailerKey(it, isTv) }
+      _trailerState.value = if (key.isNullOrBlank()) {
+        TrailerPlaybackState.Error(TRAILER_UNAVAILABLE_MESSAGE)
+      } else {
+        TrailerPlaybackState.Playing(key)
+      }
+    }
+  }
+
+  /** Chiude il trailer interno e azzera lo stato (BACK o pulsante chiudi). */
+  fun closeTrailer() {
+    loadTrailerJob?.cancel()
+    loadTrailerJob = null
+    _trailerState.value = TrailerPlaybackState.Idle
+  }
+
+  /** Applica [transform] al media del target di selezione sorgenti, se presente. */
+  private fun syncSourceDialogMedia(transform: (MediaItem) -> MediaItem) {
+    val target = _sourceDialogMedia.value ?: return
+    val updated = transform(target.media)
+    if (updated != target.media) {
+      _sourceDialogMedia.value = target.copy(media = updated)
     }
   }
 

@@ -2,14 +2,10 @@ package com.example.data.stremio
 
 import android.util.Log
 import com.squareup.moshi.Moshi
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.runBlocking
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -19,9 +15,20 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.thread
 
 private const val TAG = "AddonSyncServer"
 private const val PORT = 8080
+
+/** Limite massimo delle intestazioni HTTP (16 KB): oltre, la richiesta è malformata. */
+private const val MAX_HEADER_BYTES = 16 * 1024
+
+/** Limite massimo del corpo di una richiesta (64 KB): un Content-Length maggiore viene rifiutato senza leggere. */
+private const val MAX_BODY_BYTES = 64 * 1024
+
+/** Timeout per operazioni di rete su un singolo client: mai attendere all'infinito. */
+private const val CLIENT_TIMEOUT_MS = 10_000
 
 /**
  * Micro-server HTTP locale per la configurazione addon da smartphone.
@@ -32,16 +39,27 @@ private const val PORT = 8080
  *  - `POST /api/addons` → `{"url":"..."}` → installa via [StremioAddonRepository.installAddon];
  *  - `DELETE /api/addons/{id}` → rimuove l'addon.
  *
+ * Contratto HTTP (anti-deadlock):
+ *  - gli header vengono letti riga-per-riga fino alla riga vuota (`\r\n\r\n`), con cap di
+ *    [MAX_HEADER_BYTES]: nessuna attesa infinita per byte che non arrivano;
+ *  - GET/HEAD/DELETE non leggono MAI un corpo, anche se un client stravagante dichiara
+ *    `Content-Length`;
+ *  - il corpo (solo POST) viene letto per esattamente i byte di `Content-Length`
+ *    (cap [MAX_BODY_BYTES]), con supporto `Expect: 100-continue`;
+ *  - ogni risposta dichiara `Content-Length` + `Connection: close`, viene fatta `flush()`
+ *    e il socket del client viene chiuso: il browser sa sempre dove finisce la risposta;
+ *  - ogni client è gestito su un thread dedicato, così un client lento non blocca gli altri.
+ *
  * Il server va avviato con [start] entrando nella schermata addon e arrestato
  * con [stop] alla chiusura. Lo stato è osservabile tramite [serverState] e
  * l'URL raggiungibile tramite [serverUrl] (per il QR Code).
  */
 object AddonSyncServer {
   private val moshi: Moshi = Moshi.Builder().build()
-  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   private var serverSocket: ServerSocket? = null
   private var serverThread: Thread? = null
+  private val clientSockets: MutableSet<Socket> = ConcurrentHashMap.newKeySet()
 
   private val _serverState = MutableStateFlow<ServerState>(ServerState.Idle)
   val serverState: StateFlow<ServerState> = _serverState.asStateFlow()
@@ -70,7 +88,17 @@ object AddonSyncServer {
         while (!socket.isClosed) {
           try {
             val client = socket.accept()
-            scope.launch { handleRequest(client) }
+            clientSockets.add(client)
+            // Thread dedicato per client: un client lento o in attesa non blocca
+            // l'accept loop né gli altri client.
+            thread(isDaemon = true, name = "AddonSyncClient") {
+              try {
+                handleClient(client)
+              } finally {
+                clientSockets.remove(client)
+                closeQuietly(client)
+              }
+            }
           } catch (e: IOException) {
             if (socket.isClosed) break
             Log.w(TAG, "Errore accept: ${e.message}")
@@ -80,7 +108,7 @@ object AddonSyncServer {
         _serverState.value = ServerState.Error(e.localizedMessage ?: "Errore sconosciuto")
         Log.e(TAG, "Errore server", e)
       } finally {
-        try { socket.close() } catch (ignored: Exception) {}
+        closeQuietly(socket)
         if (serverSocket === socket) {
           serverSocket = null
           serverThread = null
@@ -101,72 +129,114 @@ object AddonSyncServer {
     serverThread = null
     _serverUrl.value = null
     _serverState.value = ServerState.Stopped
-    // Chiudere il ServerSocket sblocca accept() e fa terminare il thread.
-    try { socket?.close() } catch (ignored: Exception) {}
+    // Chiude ServerSocket (sblocca accept) e tutti i client aperti (sblocca le letture).
+    closeQuietly(socket)
+    val clients = clientSockets.toList()
+    clientSockets.clear()
+    clients.forEach { closeQuietly(it) }
   }
 
-  private suspend fun handleRequest(socket: Socket) {
+  // ── Ciclo HTTP per singolo client ──────────────────────────────────────────
+
+  private fun handleClient(socket: Socket) {
     try {
-      socket.soTimeout = 15000
+      socket.soTimeout = CLIENT_TIMEOUT_MS
       val input = socket.getInputStream()
       val output = socket.getOutputStream()
 
-      val request = parseHttpRequest(input) ?: run {
-        sendError(output, 400, "Bad Request")
+      val request = try {
+        readRequest(input, output)
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore parsing HTTP: ${e.message}")
+        null
+      }
+
+      if (request == null) {
+        send(output, 400, "text/plain; charset=UTF-8", "Bad Request")
         return
       }
 
-      val response = when {
-        request.path == "/" && request.method == "GET" -> handleIndex()
-        request.path == "/api/addons" && request.method == "GET" -> handleGetAddons()
-        request.path == "/api/addons" && request.method == "POST" -> handleAddAddon(request.body)
-        request.path.startsWith("/api/addons/") && request.method == "DELETE" ->
-          handleRemoveAddon(request.path.removePrefix("/api/addons/"))
-        else -> handleNotFound()
-      }
-
-      sendResponse(output, response)
+      val response = route(request)
+      // Per HEAD si dichiara il Content-Length ma non si invia il corpo (RFC 7230).
+      send(
+        output,
+        response.statusCode,
+        response.contentType,
+        response.body,
+        includeBody = request.method != "HEAD"
+      )
     } catch (e: Exception) {
       Log.e(TAG, "Errore nella gestione richiesta", e)
       try {
-        sendError(socket.getOutputStream(), 500, "Internal Server Error")
+        send(socket.getOutputStream(), 500, "text/plain; charset=UTF-8", "Internal Server Error")
       } catch (ignored: Exception) {}
     } finally {
-      try { socket.close() } catch (ignored: Exception) {}
+      // Il flush della risposta è già stato fatto in send(): chiudere il socket
+      // segnala al browser che la risposta è completa (niente rotellina infinita).
+      try { socket.shutdownOutput() } catch (ignored: Exception) {}
+      closeQuietly(socket)
     }
   }
 
+  private fun route(request: HttpRequest): HttpResponse = when {
+    request.path == "/" &&
+      (request.method == "GET" || request.method == "HEAD") -> handleIndex()
+    request.path == "/api/addons" && request.method == "GET" -> handleGetAddons()
+    request.path == "/api/addons" && request.method == "POST" -> handleAddAddon(request.body)
+    request.path.startsWith("/api/addons/") && request.method == "DELETE" ->
+      handleRemoveAddon(request.path.removePrefix("/api/addons/"))
+    else -> handleNotFound()
+  }
+
   /**
-   * Legge la richiesta HTTP senza buffering: le intestazioni sono letta byte-per-byte
-   * così il corpo (JSON del POST) resta disponibile sullo stream sottostante.
+   * Parsing lineare della richiesta: le intestazioni vengono lette riga-per-riga
+   * fino alla riga vuota (`\r\n\r\n`), senza buffering sullo stream sottostante
+   * (altrimenti i byte del corpo verrebbero consumati dal buffer).
+   *
+   *  - GET/HEAD/DELETE: nessuna lettura di corpo, si risponde subito;
+   *  - POST: supporto `Expect: 100-continue` e lettura di esattamente
+   *    `Content-Length` byte (con cap [MAX_BODY_BYTES]).
    */
-  private fun parseHttpRequest(input: InputStream): HttpRequest? {
-    return try {
-      val requestLine = readLine(input) ?: return null
-      val parts = requestLine.split(" ")
-      if (parts.size < 2) return null
+  private fun readRequest(input: InputStream, output: OutputStream): HttpRequest? {
+    val requestLine = readLine(input) ?: return null
+    val parts = requestLine.split(" ")
+    if (parts.size < 2) return null
 
-      val method = parts[0]
-      val path = percentDecode(parts[1])
+    val method = parts[0].uppercase()
+    val path = percentDecode(parts[1])
 
-      val headers = mutableMapOf<String, String>()
-      while (true) {
-        val line = readLine(input) ?: break
-        if (line.isEmpty()) break
-        val colonIndex = line.indexOf(':')
-        if (colonIndex > 0) {
-          headers[line.substring(0, colonIndex).trim().lowercase()] =
-            line.substring(colonIndex + 1).trim()
-        }
+    var headerBytes = 0
+    val headers = mutableMapOf<String, String>()
+    while (true) {
+      val line = readLine(input) ?: break
+      headerBytes += line.length + 2
+      if (headerBytes > MAX_HEADER_BYTES) return null
+      // Riga vuota = fine delle intestazioni: ci si ferma qui, non si attende altro.
+      if (line.isEmpty()) break
+      val colonIndex = line.indexOf(':')
+      if (colonIndex > 0) {
+        headers[line.substring(0, colonIndex).trim().lowercase()] =
+          line.substring(colonIndex + 1).trim()
       }
-
-      val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
-      val body = if (contentLength > 0) readBody(input, contentLength) else ""
-      HttpRequest(method, path, headers, body)
-    } catch (e: Exception) {
-      Log.w(TAG, "Errore parsing HTTP: ${e.message}")
-      null
     }
+
+    if (method != "POST") {
+      // Nessun corpo per GET/HEAD/DELETE: un Content-Length fantasma non deve
+      // mai mettere il thread in attesa di byte che non arriveranno.
+      return HttpRequest(method, path, headers, "")
+    }
+
+    // Senza "100 Continue" il client resta in attesa e il server in attesa del corpo:
+    // deadlock reciproco (pagina che non finisce mai di caricare).
+    if (headers["expect"].orEmpty().contains("100-continue", ignoreCase = true)) {
+      output.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
+      output.flush()
+    }
+
+    val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
+    if (contentLength <= 0) return HttpRequest(method, path, headers, "")
+    if (contentLength > MAX_BODY_BYTES) return null
+    return HttpRequest(method, path, headers, readBody(input, contentLength))
   }
 
   private fun readLine(input: InputStream): String? {
@@ -182,6 +252,7 @@ object AddonSyncServer {
     }
   }
 
+  /** Legge esattamente [contentLength] byte; un EOF prematuro restituisce quanto letto. */
   private fun readBody(input: InputStream, contentLength: Int): String {
     val bytes = ByteArray(contentLength)
     var read = 0
@@ -193,15 +264,21 @@ object AddonSyncServer {
     return String(bytes, 0, read, StandardCharsets.UTF_8)
   }
 
-  /** Decodifica percent-encoding preservando il `+` letterale (URLDecoder lo trattacome spazio). */
+  /** Decodifica percent-encoding preservando il `+` letterale (URLDecoder lo tratta come spazio). */
   private fun percentDecode(rawPath: String): String = try {
     URLDecoder.decode(rawPath.replace("+", "%2B"), StandardCharsets.UTF_8.name())
   } catch (e: Exception) {
     rawPath
   }
 
+  private fun closeQuietly(closeable: java.io.Closeable?) {
+    try { closeable?.close() } catch (ignored: Exception) {}
+  }
+
+  // ── Endpoint ───────────────────────────────────────────────────────────────
+
   private fun handleIndex(): HttpResponse =
-    HttpResponse(200, "text/html; charset=utf-8", ADDON_SYNC_PAGE)
+    HttpResponse(200, "text/html; charset=UTF-8", ADDON_SYNC_PAGE)
 
   private fun handleGetAddons(): HttpResponse {
     return try {
@@ -209,13 +286,13 @@ object AddonSyncServer {
         """{"id":${jsonString(addon.id)},"name":${jsonString(addon.manifest.displayTitle)},""" +
           """"url":${jsonString(addon.baseUrl)},"enabled":${addon.isEnabled}}"""
       }
-      HttpResponse(200, "application/json", "[$items]")
+      HttpResponse(200, "application/json; charset=UTF-8", "[$items]")
     } catch (e: Exception) {
-      HttpResponse(500, "application/json", errorJson(e.message ?: "Errore sconosciuto"))
+      HttpResponse(500, "application/json; charset=UTF-8", errorJson(e.message ?: "Errore sconosciuto"))
     }
   }
 
-  private suspend fun handleAddAddon(body: String): HttpResponse {
+  private fun handleAddAddon(body: String): HttpResponse {
     return try {
       val parsed = try {
         moshi.adapter(Any::class.java).fromJson(body)
@@ -224,21 +301,21 @@ object AddonSyncServer {
       }
       val url = (parsed as? Map<*, *>)?.get("url") as? String
       if (url.isNullOrBlank()) {
-        return HttpResponse(400, "application/json", errorJson("URL mancante"))
+        return HttpResponse(400, "application/json; charset=UTF-8", errorJson("URL mancante"))
       }
 
-      val addon = StremioAddonRepository.installAddon(url)
+      val addon = runBlocking { StremioAddonRepository.installAddon(url) }
       HttpResponse(
         200,
-        "application/json",
+        "application/json; charset=UTF-8",
         """{"success":true,"name":${jsonString(addon.manifest.displayTitle)}}"""
       )
     } catch (e: IllegalArgumentException) {
-      HttpResponse(400, "application/json", errorJson("URL non valido: ${e.message}"))
+      HttpResponse(400, "application/json; charset=UTF-8", errorJson("URL non valido: ${e.message}"))
     } catch (e: IOException) {
-      HttpResponse(500, "application/json", errorJson("Errore di rete: ${e.message}"))
+      HttpResponse(500, "application/json; charset=UTF-8", errorJson("Errore di rete: ${e.message}"))
     } catch (e: Exception) {
-      HttpResponse(500, "application/json", errorJson(e.message ?: "Errore sconosciuto"))
+      HttpResponse(500, "application/json; charset=UTF-8", errorJson(e.message ?: "Errore sconosciuto"))
     }
   }
 
@@ -247,17 +324,17 @@ object AddonSyncServer {
       val exists = StremioAddonRepository.getInstalledAddons()
         .any { it.id == id || it.baseUrl == id }
       if (!exists) {
-        return HttpResponse(404, "application/json", errorJson("Addon non trovato"))
+        return HttpResponse(404, "application/json; charset=UTF-8", errorJson("Addon non trovato"))
       }
       StremioAddonRepository.removeAddon(id)
-      HttpResponse(200, "application/json", """{"success":true}""")
+      HttpResponse(200, "application/json; charset=UTF-8", """{"success":true}""")
     } catch (e: Exception) {
-      HttpResponse(500, "application/json", errorJson(e.message ?: "Errore sconosciuto"))
+      HttpResponse(500, "application/json; charset=UTF-8", errorJson(e.message ?: "Errore sconosciuto"))
     }
   }
 
   private fun handleNotFound(): HttpResponse =
-    HttpResponse(404, "application/json", errorJson("Not found"))
+    HttpResponse(404, "application/json; charset=UTF-8", errorJson("Not found"))
 
   private fun errorJson(message: String): String =
     """{"success":false,"error":${jsonString(message)}}"""
@@ -277,25 +354,31 @@ object AddonSyncServer {
     append('"')
   }
 
-  private fun sendResponse(output: OutputStream, response: HttpResponse) {
-    val bodyBytes = response.body.toByteArray(StandardCharsets.UTF_8)
-    val head = "HTTP/1.1 ${response.statusCode} ${statusText(response.statusCode)}\r\n" +
-      "Content-Type: ${response.contentType}\r\n" +
-      "Content-Length: ${bodyBytes.size}\r\n" +
-      "Connection: close\r\n\r\n"
-    output.write(head.toByteArray(StandardCharsets.UTF_8))
-    output.write(bodyBytes)
-    output.flush()
-  }
+  // ── Scrittura risposta ─────────────────────────────────────────────────────
 
-  private fun sendError(output: OutputStream, statusCode: Int, message: String) {
-    val msgBytes = message.toByteArray(StandardCharsets.UTF_8)
-    val head = "HTTP/1.1 $statusCode ${statusText(statusCode)}\r\n" +
-      "Content-Type: text/plain\r\n" +
-      "Content-Length: ${msgBytes.size}\r\n" +
-      "Connection: close\r\n\r\n"
+  /**
+   * Invia la risposta completa in un solo blocco: intestazioni con
+   * `Content-Type`, `Content-Length` (in byte UTF-8) e `Connection: close`,
+   * poi il corpo, poi `flush()`. Il socket viene chiuso dal chiamante.
+   */
+  private fun send(
+    output: OutputStream,
+    statusCode: Int,
+    contentType: String,
+    body: String,
+    includeBody: Boolean = true
+  ) {
+    val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
+    val head = buildString {
+      append("HTTP/1.1 ").append(statusCode).append(' ').append(statusText(statusCode)).append("\r\n")
+      append("Content-Type: ").append(contentType).append("\r\n")
+      append("Content-Length: ").append(bodyBytes.size).append("\r\n")
+      append("Connection: close\r\n")
+      append("Cache-Control: no-store\r\n")
+      append("\r\n")
+    }
     output.write(head.toByteArray(StandardCharsets.UTF_8))
-    output.write(msgBytes)
+    if (includeBody) output.write(bodyBytes)
     output.flush()
   }
 

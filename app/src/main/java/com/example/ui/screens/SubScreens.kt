@@ -116,6 +116,7 @@ import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.BackBufferOption
 import com.example.data.prefs.DecoderFallbackMode
 import com.example.data.prefs.InitialBufferOption
+import com.example.data.prefs.LastStreamCacheDuration
 import com.example.data.prefs.PlaybackSettings
 import com.example.data.prefs.PreferredResolution
 import com.example.data.prefs.StreamingEngineMode
@@ -188,12 +189,34 @@ fun CategoryBrowsingScreen(
   val filteredItems = remember(items, selectedFilter) {
     when (selectedFilter) {
       CategoryCatalogFilter.ALL -> items
-      CategoryCatalogFilter.TOP_10 -> items.sortedByDescending { it.rating }.take(10)
-      CategoryCatalogFilter.NETFLIX -> items.filter { it.provider?.contains("netflix", ignoreCase = true) == true }
-      CategoryCatalogFilter.HBO_MAX -> items.filter { it.provider?.contains("hbo", ignoreCase = true) == true }
-      CategoryCatalogFilter.DISNEY_PLUS -> items.filter { it.provider?.contains("disney", ignoreCase = true) == true }
-      CategoryCatalogFilter.PRIME_VIDEO -> items.filter { it.provider?.contains("prime", ignoreCase = true) == true }
-      CategoryCatalogFilter.APPLE_TV -> items.filter { it.provider?.contains("apple", ignoreCase = true) == true }
+      CategoryCatalogFilter.TOP_10 -> items.filter { item ->
+        item.genres.any { it.contains("Top 10", ignoreCase = true) || it.contains("Top10", ignoreCase = true) || it.contains("Top 100", ignoreCase = true) } ||
+        item.provider?.contains("Top 10", ignoreCase = true) == true
+      }.ifEmpty {
+        items.sortedByDescending { it.rating }.take(10)
+      }
+      CategoryCatalogFilter.NETFLIX -> items.filter { item ->
+        item.provider?.contains("netflix", ignoreCase = true) == true ||
+        item.genres.any { it.contains("netflix", ignoreCase = true) }
+      }
+      CategoryCatalogFilter.HBO_MAX -> items.filter { item ->
+        item.provider?.contains("hbo", ignoreCase = true) == true ||
+        item.provider?.contains("max", ignoreCase = true) == true ||
+        item.genres.any { it.contains("hbo", ignoreCase = true) || it.contains("max", ignoreCase = true) }
+      }
+      CategoryCatalogFilter.DISNEY_PLUS -> items.filter { item ->
+        item.provider?.contains("disney", ignoreCase = true) == true ||
+        item.genres.any { it.contains("disney", ignoreCase = true) }
+      }
+      CategoryCatalogFilter.PRIME_VIDEO -> items.filter { item ->
+        item.provider?.contains("prime", ignoreCase = true) == true ||
+        item.provider?.contains("amazon", ignoreCase = true) == true ||
+        item.genres.any { it.contains("prime", ignoreCase = true) || it.contains("amazon", ignoreCase = true) }
+      }
+      CategoryCatalogFilter.APPLE_TV -> items.filter { item ->
+        item.provider?.contains("apple", ignoreCase = true) == true ||
+        item.genres.any { it.contains("apple", ignoreCase = true) }
+      }
       CategoryCatalogFilter.ACTION -> items.filter { item ->
         item.genres.any { g ->
           g.contains("Azione", ignoreCase = true) ||
@@ -1273,6 +1296,7 @@ fun SettingsScreen(
   var showTargetBufferDialog by remember { mutableStateOf(false) }
   var showInitialBufferDialog by remember { mutableStateOf(false) }
   var showBackBufferDialog by remember { mutableStateOf(false) }
+  var showReuseCacheDurationDialog by remember { mutableStateOf(false) }
   var showDecoderFallbackDialog by remember { mutableStateOf(false) }
   var isClearingCache by remember { mutableStateOf(false) }
   var showUpdateResultDialog by remember { mutableStateOf(false) }
@@ -1481,9 +1505,9 @@ fun SettingsScreen(
           SettingsRow(
             icon = Icons.Default.PlayArrow,
             title = stringResource(R.string.settings_autoplay_next_episode),
-            value = if (playbackSettings.autoPlayNextEpisode) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.autoPlayNextEpisode) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAutoPlayNextEpisode(!playbackSettings.autoPlayNextEpisode) }
+            value = if (playbackSettings.autoPlayNextEpisodeEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+            valueColor = if (playbackSettings.autoPlayNextEpisodeEnabled) NovaGreen else NovaTextMuted,
+            onClick = { viewModel?.setAutoPlayNextEpisode(!playbackSettings.autoPlayNextEpisodeEnabled) }
           )
           SettingsRow(
             icon = Icons.Default.Replay,
@@ -1491,6 +1515,33 @@ fun SettingsScreen(
             value = if (playbackSettings.autoResume) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
             valueColor = if (playbackSettings.autoResume) NovaGreen else NovaTextMuted,
             onClick = { viewModel?.setAutoResume(!playbackSettings.autoResume) }
+          )
+        }
+      }
+
+      // ── SELEZIONE FLUSSO ────────────────────────────────────────────────
+      item {
+        SettingsSection(title = stringResource(R.string.settings_sec_stream_selection)) {
+          SettingsRow(
+            icon = Icons.Default.Restore,
+            title = stringResource(R.string.settings_reuse_last_stream),
+            value = if (playbackSettings.reuseLastWorkingStreamEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+            valueColor = if (playbackSettings.reuseLastWorkingStreamEnabled) NovaGreen else NovaTextMuted,
+            onClick = { viewModel?.setReuseLastWorkingStreamEnabled(!playbackSettings.reuseLastWorkingStreamEnabled) }
+          )
+          Text(
+            text = stringResource(R.string.settings_reuse_last_stream_desc),
+            color = NovaTextSecondary,
+            fontSize = 12.sp,
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp, vertical = 4.dp)
+          )
+          SettingsRow(
+            icon = Icons.Default.Speed,
+            title = stringResource(R.string.settings_reuse_last_stream_cache_duration),
+            value = lastStreamCacheDurationLabel(playbackSettings.lastWorkingStreamCacheDurationHours),
+            onClick = { showReuseCacheDurationDialog = true }
           )
         }
       }
@@ -1705,6 +1756,23 @@ fun SettingsScreen(
         showResolutionDialog = false
       },
       onDismiss = { showResolutionDialog = false }
+    )
+  }
+
+  if (showReuseCacheDurationDialog) {
+    val durationOptions = LastStreamCacheDuration.entries
+    val durationLabels = durationOptions.map { lastStreamCacheDurationLabel(it.hours) }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_reuse_last_stream_cache_duration),
+      options = durationLabels,
+      selectedIndex = durationOptions
+        .indexOfFirst { it.hours == playbackSettings.lastWorkingStreamCacheDurationHours }
+        .coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setLastWorkingStreamCacheDurationHours(durationOptions[idx].hours)
+        showReuseCacheDurationDialog = false
+      },
+      onDismiss = { showReuseCacheDurationDialog = false }
     )
   }
 
@@ -2040,6 +2108,20 @@ private fun subtitleSizeLabel(size: SubtitleSize): String = when (size) {
   SubtitleSize.MEDIUM -> stringResource(R.string.sub_size_medium)
   SubtitleSize.LARGE -> stringResource(R.string.sub_size_large)
   SubtitleSize.VERY_LARGE -> stringResource(R.string.sub_size_very_large)
+}
+
+/** Etichetta della durata cache dell'ultimo flusso ("Riusa l'ultimo link"). */
+@Composable
+private fun lastStreamCacheDurationLabel(hours: Int): String {
+  val option = LastStreamCacheDuration.entries.firstOrNull { it.hours == hours }
+    ?: LastStreamCacheDuration.ONE_DAY
+  return when (option) {
+    LastStreamCacheDuration.SIX_HOURS -> stringResource(R.string.reuse_cache_6h)
+    LastStreamCacheDuration.TWELVE_HOURS -> stringResource(R.string.reuse_cache_12h)
+    LastStreamCacheDuration.ONE_DAY -> stringResource(R.string.reuse_cache_1d)
+    LastStreamCacheDuration.THREE_DAYS -> stringResource(R.string.reuse_cache_3d)
+    LastStreamCacheDuration.SEVEN_DAYS -> stringResource(R.string.reuse_cache_7d)
+  }
 }
 
 @Composable

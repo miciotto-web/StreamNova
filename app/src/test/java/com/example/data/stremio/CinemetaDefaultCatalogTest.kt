@@ -124,8 +124,8 @@ class CinemetaDefaultCatalogTest {
     assertEquals(listOf(s1.id, s2.id, s3.id), catalog.allSeries.map { it.id })
 
     // Le righe Cinemeta non vengono soppresse e non ci sono feed TMDB extra.
-    assertFalse(catalog.hasXperienceMovies)
-    assertFalse(catalog.hasXperienceSeries)
+    assertFalse(catalog.hasCustomCatalogMovies)
+    assertFalse(catalog.hasCustomCatalogSeries)
     assertTrue(catalog.forYouMovies.isEmpty())
     assertTrue(catalog.forYouSeries.isEmpty())
     assertTrue(catalog.extraSections.isEmpty())
@@ -192,7 +192,7 @@ class CinemetaDefaultCatalogTest {
   }
 
   @Test
-  fun quandoXperienceEAttivoLeRigheStockCinemetaVengonoSoppresseEPopolatiAllMoviesAllSeries() {
+  fun quandoUnAddonConCataloghiEAttivoLeRigheStockCinemetaVengonoSoppresseEPopolatiAllMoviesAllSeries() {
     val cinemeta = movie("tt1000001", "Popolare Cinemeta")
     val userMovie = movie("tt9999001", "Movie Xperience")
     val userSeries = series("tt9999002", "Series Xperience")
@@ -204,7 +204,7 @@ class CinemetaDefaultCatalogTest {
         section("trending_series", MediaType.SERIE_TV, addonName = "Xperience", items = listOf(userSeries))
       ),
       allMedia = emptyList(),
-      isXperienceActive = true
+      customCatalogAddonsActive = true
     )
 
     // Tutte le righe stock Cinemeta devono essere soppresse
@@ -217,12 +217,12 @@ class CinemetaDefaultCatalogTest {
     assertTrue("forYouMovies deve essere vuoto", catalog.forYouMovies.isEmpty())
     assertTrue("forYouSeries deve essere vuoto", catalog.forYouSeries.isEmpty())
 
-    // Flag Xperience attivi
-    assertTrue(catalog.hasXperienceMovies)
-    assertTrue(catalog.hasXperienceSeries)
-    assertTrue(catalog.hasXperienceCatalogs)
+    // Flag addon personalizzati attivi
+    assertTrue(catalog.hasCustomCatalogMovies)
+    assertTrue(catalog.hasCustomCatalogSeries)
+    assertTrue(catalog.hasCustomCatalogAddons)
 
-    // allMovies e allSeries popolati da Xperience
+    // allMovies e allSeries popolati dall'addon
     assertEquals(listOf(userMovie.id), catalog.allMovies.map { it.id })
     assertEquals(listOf(userSeries.id), catalog.allSeries.map { it.id })
 

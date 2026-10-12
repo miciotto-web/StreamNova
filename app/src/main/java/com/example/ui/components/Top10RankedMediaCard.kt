@@ -55,26 +55,28 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.MediaItem
+import com.example.data.stremio.StremioCatalogMapper
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaTextMuted
 
 /**
- * Geometria della card Top 10.
- * Il numero di classifica e il poster occupano due aree orizzontali distinte,
- * separate da un gap esplicito: nessuna sovrapposizione tra i due elementi.
- *
- * L'area del numero è dimensionata per contenere il rank a due cifre (fino a "10")
- * alla dimensione attuale del font (115.sp), così il numero non invade mai il poster,
- * nemmeno quando il poster è focalizzato e scala.
+ * Spaziatura orizzontale della riga Top 10: garantisce che ogni coppia [Numero + Poster]
+ * risulti chiaramente separata dalla coppia successiva, evitando confusioni ottiche.
  */
-private val Top10RankAreaWidth = 130.dp
-private val Top10RankGapWidth = 16.dp
+internal val Top10RowSpacing = 32.dp
+
+/**
+ * Geometria della card Top 10.
+ * Il numero gigante stilizzato e il poster formano una coppia coesa:
+ * il numero è affiancato al proprio poster con un gap compatto ([Top10RankGapWidth]),
+ * mentre la separazione tra coppie consecutive nella LazyRow è gestita da [Top10RowSpacing].
+ */
+private val Top10RankGapWidth = 8.dp
 private val Top10PosterWidth = 148.dp
 private val Top10PosterHeight = 220.dp
 /** Altezza del blocco numero + poster (il titolo sotto è aggiunto a parte). */
 private val Top10CardHeight = 235.dp
-private val Top10CardWidth = Top10RankAreaWidth + Top10RankGapWidth + Top10PosterWidth
 
 /**
  * Card stile "TOP 10" con numero gigante in stile TV streaming (es. Netflix/HBO style)
@@ -140,122 +142,121 @@ fun Top10RankedMediaCard(
     }
   }
 
-  Column(
+  Row(
     modifier = modifier
-      .width(Top10CardWidth)
       // L'intero blocco (numero + poster + titolo) sale sopra le card vicine quando è a fuoco.
       .zIndex(if (isFocused) 10f else 1f)
       .bringIntoViewRequester(cardBringIntoViewRequester)
       .onFocusChanged { isFocused = it.isFocused }
   ) {
-    Row(
+    // 1. Area riservata al numero di classifica (NON focusable, a ridosso del proprio poster)
+    Box(
       modifier = Modifier
-        .fillMaxWidth()
         .height(Top10CardHeight)
+        .align(Alignment.Top),
+      contentAlignment = Alignment.BottomEnd
     ) {
-      // 1. Area riservata al numero di classifica (NON focusable)
-      Box(
-        modifier = Modifier
-          .width(Top10RankAreaWidth)
-          .fillMaxHeight()
-      ) {
-        // Numero gigante stilizzato della posizione in Top 10
-        Text(
-          text = "$rank",
-          fontSize = 115.sp,
-          fontWeight = FontWeight.Black,
-          fontFamily = FontFamily.SansSerif,
-          color = if (isFocused) NovaCyanBright.copy(alpha = 0.95f) else Color(0xFF2C394E),
-          maxLines = 1,
-          softWrap = false,
-          modifier = Modifier
-            .align(Alignment.BottomStart)
-            .offset(x = (-4).dp, y = 14.dp)
-        )
-      }
-
-      // 2. Gap fisso tra numero di classifica e poster
-      Spacer(modifier = Modifier.width(Top10RankGapWidth))
-
-      // 3. Area poster: unico elemento focusable della card
-      Box(
-        modifier = Modifier
-          .align(Alignment.CenterVertically)
-          .width(Top10PosterWidth)
-          .height(Top10PosterHeight)
-          .graphicsLayer {
-            val s = scaleState.value
-            scaleX = s
-            scaleY = s
-          }
-          .onFocusChanged { isFocused = it.isFocused }
-          .onKeyEvent { keyEvent ->
-            val isConfirm = keyEvent.key == Key.Enter ||
-              keyEvent.key == Key.NumPadEnter ||
-              keyEvent.key == Key.DirectionCenter
-            if (isConfirm && keyEvent.type == KeyEventType.KeyUp) {
-              onClick()
-              true
-            } else {
-              false
-            }
-          }
-          .clickable { onClick() }
-          // Alone Neon PRIMA del clip: si estende oltre i bordi del poster.
-          .drawBehind {
-            drawNeonGlow(
-              cornerRadiusPx = NeonCardCorner.toPx(),
-              color = NovaCyanBright,
-              spreadPx = NeonCardGlowSpread.toPx(),
-              intensity = glowState.value
-            )
-          }
-          .clip(posterShape)
-          .background(NovaCardBg)
-          // Riflesso di vetro SOPRA l'immagine + bordo nitido, dentro il clip.
-          .drawWithContent {
-            drawContent()
-            drawSpecularHighlight(intensity = specularState.value)
-            drawNeonBorder(
-              cornerRadiusPx = NeonCardCorner.toPx(),
-              color = NovaCyanBright,
-              widthPx = NeonCardBorderWidth.toPx(),
-              intensity = glowState.value
-            )
-          }
-      ) {
-        val posterUrl = media.posterUrl ?: media.backdropUrl
-        if (!posterUrl.isNullOrBlank()) {
-          AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-              .data(posterUrl)
-              .crossfade(true)
-              .build(),
-            contentDescription = media.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-          )
-        } else {
-          val fallbackRes = media.posterRes ?: media.backdropRes ?: R.drawable.banner_dune
-          Image(
-            painter = painterResource(id = fallbackRes),
-            contentDescription = media.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-          )
-        }
-      }
+      // Numero gigante stilizzato della posizione in Top 10
+      Text(
+        text = "$rank",
+        fontSize = 115.sp,
+        fontWeight = FontWeight.Black,
+        fontFamily = FontFamily.SansSerif,
+        color = if (isFocused) NovaCyanBright.copy(alpha = 0.95f) else Color(0xFF2C394E),
+        maxLines = 1,
+        softWrap = false,
+        modifier = Modifier.offset(y = 14.dp)
+      )
     }
 
-    Spacer(modifier = Modifier.height(6.dp))
+    // 2. Gap compatto tra numero di classifica e proprio poster
+    Spacer(modifier = Modifier.width(Top10RankGapWidth))
 
-    // 4. Titolo + anno FUORI dal poster: colonna dedicata sotto la locandina,
-    //    allineata alla colonna del poster. Nessuna stellina: la locandina resta pulita.
-    Row(modifier = Modifier.fillMaxWidth()) {
-      Spacer(modifier = Modifier.width(Top10RankAreaWidth + Top10RankGapWidth))
+    // 3. Colonna Poster + Dettagli (titolo e anno SOTTO la locandina)
+    Column(
+      modifier = Modifier.width(Top10PosterWidth)
+    ) {
+      // Area poster: unico elemento focusable della card
+      Box(
+        modifier = Modifier
+          .height(Top10CardHeight)
+          .fillMaxWidth(),
+        contentAlignment = Alignment.Center
+      ) {
+        Box(
+          modifier = Modifier
+            .width(Top10PosterWidth)
+            .height(Top10PosterHeight)
+            .graphicsLayer {
+              val s = scaleState.value
+              scaleX = s
+              scaleY = s
+            }
+            .onFocusChanged { isFocused = it.isFocused }
+            .onKeyEvent { keyEvent ->
+              val isConfirm = keyEvent.key == Key.Enter ||
+                keyEvent.key == Key.NumPadEnter ||
+                keyEvent.key == Key.DirectionCenter
+              if (isConfirm && keyEvent.type == KeyEventType.KeyUp) {
+                onClick()
+                true
+              } else {
+                false
+              }
+            }
+            .clickable { onClick() }
+            // Alone Neon PRIMA del clip: si estende oltre i bordi del poster.
+            .drawBehind {
+              drawNeonGlow(
+                cornerRadiusPx = NeonCardCorner.toPx(),
+                color = NovaCyanBright,
+                spreadPx = NeonCardGlowSpread.toPx(),
+                intensity = glowState.value
+              )
+            }
+            .clip(posterShape)
+            .background(NovaCardBg)
+            // Riflesso di vetro SOPRA l'immagine + bordo nitido, dentro il clip.
+            .drawWithContent {
+              drawContent()
+              drawSpecularHighlight(intensity = specularState.value)
+              drawNeonBorder(
+                cornerRadiusPx = NeonCardCorner.toPx(),
+                color = NovaCyanBright,
+                widthPx = NeonCardBorderWidth.toPx(),
+                intensity = glowState.value
+              )
+            }
+        ) {
+          val posterUrl = StremioCatalogMapper.extractImageUrl(media.posterUrl ?: media.backdropUrl)
+          if (!posterUrl.isNullOrBlank()) {
+            AsyncImage(
+              model = ImageRequest.Builder(LocalContext.current)
+                .data(posterUrl)
+                .crossfade(true)
+                .build(),
+              contentDescription = media.title,
+              contentScale = ContentScale.Crop,
+              modifier = Modifier.fillMaxSize()
+            )
+          } else {
+            val fallbackRes = media.posterRes ?: media.backdropRes ?: R.drawable.banner_dune
+            Image(
+              painter = painterResource(id = fallbackRes),
+              contentDescription = media.title,
+              contentScale = ContentScale.Crop,
+              modifier = Modifier.fillMaxSize()
+            )
+          }
+        }
+      }
+
+      Spacer(modifier = Modifier.height(6.dp))
+
+      // 4. Titolo + anno FUORI dal poster, incolonnati perfettamente sotto la locandina
       Column(
         modifier = Modifier
-          .weight(1f)
+          .fillMaxWidth()
           .padding(end = 4.dp)
       ) {
         Text(
