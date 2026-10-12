@@ -34,10 +34,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
+import kotlinx.coroutines.delay
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
@@ -106,7 +109,8 @@ fun Top10RankedMediaCard(
   rank: Int,
   media: MediaItem,
   onClick: () -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  focusRequester: FocusRequester? = null
 ) {
   // Traccia lo stato di focus del poster per gli elementi non focusable (numero di classifica).
   var isFocused by remember { mutableStateOf(false) }
@@ -129,16 +133,23 @@ fun Top10RankedMediaCard(
   )
   val posterShape = RoundedCornerShape(NeonCardCorner)
 
-  // Richiesta di bring-into-view agganciata al contenitore completo della card (NON focusable):
-  // il poster continua a essere l'unico elemento focalizzabile, ma è il contenitore a definire
-  // l'area che deve risultare visibile durante lo scroll orizzontale della LazyRow.
-  val cardBringIntoViewRequester = remember { BringIntoViewRequester() }
+  val targetMediaId = LocalLastFocusedMediaId.current
+  val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
+  val internalFocusRequester = remember { FocusRequester() }
+  val posterFocusRequester = focusRequester ?: internalFocusRequester
 
-  // Riutilizza TvFocusBringIntoViewSpec (ereditata dalla composizione): nessun nuovo spec,
-  // nessuna modifica alla LazyRow né alla Sidebar.
-  LaunchedEffect(isFocused) {
-    if (isFocused) {
-      cardBringIntoViewRequester.bringIntoView()
+  LaunchedEffect(targetMediaId) {
+    if (targetMediaId != null && targetMediaId == media.id) {
+      try {
+        posterFocusRequester.requestFocus()
+        clearLastFocusedMedia?.invoke()
+      } catch (_: Exception) {
+        delay(32)
+        try {
+          posterFocusRequester.requestFocus()
+          clearLastFocusedMedia?.invoke()
+        } catch (_: Exception) {}
+      }
     }
   }
 
@@ -146,8 +157,6 @@ fun Top10RankedMediaCard(
     modifier = modifier
       // L'intero blocco (numero + poster + titolo) sale sopra le card vicine quando è a fuoco.
       .zIndex(if (isFocused) 10f else 1f)
-      .bringIntoViewRequester(cardBringIntoViewRequester)
-      .onFocusChanged { isFocused = it.isFocused }
   ) {
     // 1. Area riservata al numero di classifica (NON focusable, a ridosso del proprio poster)
     Box(
@@ -187,12 +196,18 @@ fun Top10RankedMediaCard(
           modifier = Modifier
             .width(Top10PosterWidth)
             .height(Top10PosterHeight)
+            .focusRequester(posterFocusRequester)
             .graphicsLayer {
               val s = scaleState.value
               scaleX = s
               scaleY = s
             }
-            .onFocusChanged { isFocused = it.isFocused }
+            .onFocusChanged {
+              isFocused = it.isFocused
+              if (it.isFocused && targetMediaId == media.id) {
+                clearLastFocusedMedia?.invoke()
+              }
+            }
             .onKeyEvent { keyEvent ->
               val isConfirm = keyEvent.key == Key.Enter ||
                 keyEvent.key == Key.NumPadEnter ||
@@ -229,25 +244,15 @@ fun Top10RankedMediaCard(
             }
         ) {
           val posterUrl = StremioCatalogMapper.extractImageUrl(media.posterUrl ?: media.backdropUrl)
-          if (!posterUrl.isNullOrBlank()) {
-            AsyncImage(
-              model = ImageRequest.Builder(LocalContext.current)
-                .data(posterUrl)
-                .crossfade(true)
-                .build(),
-              contentDescription = media.title,
-              contentScale = ContentScale.Crop,
-              modifier = Modifier.fillMaxSize()
-            )
-          } else {
-            val fallbackRes = media.posterRes ?: media.backdropRes ?: R.drawable.banner_dune
-            Image(
-              painter = painterResource(id = fallbackRes),
-              contentDescription = media.title,
-              contentScale = ContentScale.Crop,
-              modifier = Modifier.fillMaxSize()
-            )
-          }
+          val fallbackRes = (media.posterRes ?: media.backdropRes)?.takeIf { it != R.drawable.banner_dune }
+          CardMediaImage(
+            primaryUrl = posterUrl,
+            secondaryUrl = media.backdropUrl,
+            fallbackRes = fallbackRes,
+            contentDescription = media.title,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+          )
         }
       }
 

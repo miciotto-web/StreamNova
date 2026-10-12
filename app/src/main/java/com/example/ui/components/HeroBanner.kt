@@ -39,6 +39,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
@@ -58,6 +63,7 @@ import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaSurfaceVariant
@@ -65,12 +71,18 @@ import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import kotlinx.coroutines.delay
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun HeroBanner(
   items: List<MediaItem>,
   onPlayClick: (MediaItem) -> Unit,
   onInfoClick: (MediaItem) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  playButtonFocusRequester: FocusRequester? = null,
+  detailsButtonFocusRequester: FocusRequester? = null,
+  heroDownFocusRequester: FocusRequester? = null,
+  onPlayButtonFocusChanged: ((Boolean) -> Unit)? = null,
+  onDetailsButtonFocusChanged: ((Boolean) -> Unit)? = null
 ) {
   val safeItems = remember(items) { items.take(9) }
   if (safeItems.isEmpty()) return
@@ -118,13 +130,25 @@ fun HeroBanner(
             modifier = Modifier.fillMaxSize()
           )
         } else {
-          val backdrop = media.backdropRes ?: R.drawable.banner_dune
+          val backdrop = media.backdropRes?.takeIf { it != R.drawable.banner_dune }
+          if (backdrop != null) {
           Image(
             painter = painterResource(id = backdrop),
             contentDescription = media.title,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
           )
+          } else {
+            Box(
+              modifier = Modifier
+                .fillMaxSize()
+                .background(
+                  Brush.verticalGradient(
+                    colors = listOf(Color(0xFF0F172A), NovaBackground)
+                  )
+                )
+            )
+          }
         }
       }
     }
@@ -256,13 +280,27 @@ fun HeroBanner(
           text = stringResource(R.string.action_watch_now),
           icon = Icons.Default.PlayArrow,
           isPrimary = true,
-          onClick = { onPlayClick(currentMedia) }
+          onClick = { onPlayClick(currentMedia) },
+          modifier = Modifier
+            .then(if (playButtonFocusRequester != null) Modifier.focusRequester(playButtonFocusRequester) else Modifier)
+            .focusProperties {
+              if (heroDownFocusRequester != null) down = heroDownFocusRequester
+              up = FocusRequester.Cancel
+            }
+            .onFocusChanged { onPlayButtonFocusChanged?.invoke(it.isFocused) }
         )
         TvPillButton(
           text = stringResource(R.string.action_details),
           icon = Icons.Default.Info,
           isPrimary = false,
-          onClick = { onInfoClick(currentMedia) }
+          onClick = { onInfoClick(currentMedia) },
+          modifier = Modifier
+            .then(if (detailsButtonFocusRequester != null) Modifier.focusRequester(detailsButtonFocusRequester) else Modifier)
+            .focusProperties {
+              if (heroDownFocusRequester != null) down = heroDownFocusRequester
+              up = FocusRequester.Cancel
+            }
+            .onFocusChanged { onDetailsButtonFocusChanged?.invoke(it.isFocused) }
         )
       }
     }

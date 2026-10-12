@@ -20,6 +20,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -51,9 +53,12 @@ import com.example.R
 fun ProviderCard(
     provider: StreamingProvider,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    val internalFocusRequester = remember { FocusRequester() }
+    val effectiveFocusRequester = focusRequester ?: internalFocusRequester
     val scale by animateFloatAsState(
         targetValue = if (isFocused) 1.06f else 1.0f,
         animationSpec = tween(durationMillis = 200),
@@ -65,6 +70,7 @@ fun ProviderCard(
         modifier = modifier
             .width(200.dp)
             .height(112.dp)
+            .focusRequester(effectiveFocusRequester)
             // La card focused deve coprire le card vicine, non venire coperta
             .zIndex(if (isFocused) 10f else 1f)
             .scale(scale)

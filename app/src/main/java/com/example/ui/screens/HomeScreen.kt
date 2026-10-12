@@ -62,9 +62,18 @@ import com.example.ui.theme.NovaTextSecondary
 import com.example.ui.viewmodel.SidebarSection
 import com.example.ui.viewmodel.StreamNovaViewModel
 
+import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusBringIntoViewSpec
+import com.example.ui.components.LocalLastFocusedMediaId
+import com.example.ui.components.LocalClearLastFocusedMedia
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateMapOf
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun HomeScreen(
   viewModel: StreamNovaViewModel,
@@ -77,7 +86,13 @@ fun HomeScreen(
   val homeCatalogs by viewModel.homeCatalogs.collectAsState()
   val handleMediaClick: (MediaItem) -> Unit = onMediaClick ?: { viewModel.openDetail(it) }
 
-  when (currentSection) {
+  val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
+
+  CompositionLocalProvider(
+    LocalLastFocusedMediaId provides lastFocusedMediaId,
+    LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() }
+  ) {
+    when (currentSection) {
     SidebarSection.HOME -> {
       HomeMainBrowsingContent(
         allMedia = allMedia,
@@ -149,8 +164,114 @@ fun HomeScreen(
     }
   }
 }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
+/**
+ * Coordinatore del focus verticale e orizzontale tra righe della Home TV.
+ *
+ * Garantisce una navigazione rigorosa riga-per-riga:
+ * - D-Pad DOWN: scende esattamente alla riga sottostante (memorizzando/ripristinando la colonna).
+ * - D-Pad UP: sale esattamente alla riga soprastante (senza mai saltare righe).
+ * - Isolamento bidirezionale: Hero <-> Providers <-> Prima riga poster.
+ */
+class HomeRowFocusCoordinator(
+  val activeRowKeys: List<String>,
+  val rowItemCounts: Map<String, Int>
+) {
+  val lastFocusedColByRow = mutableStateMapOf<String, Int>()
+  private val cellRequesters = mutableMapOf<Pair<String, Int>, FocusRequester>()
+  val attachedCells = mutableSetOf<Pair<String, Int>>()
+
+  fun getRequester(rowKey: String, colIndex: Int): FocusRequester {
+    return cellRequesters.getOrPut(Pair(rowKey, colIndex)) { FocusRequester() }
+  }
+
+  fun onCellFocused(rowKey: String, colIndex: Int) {
+    lastFocusedColByRow[rowKey] = colIndex
+  }
+
+  fun registerCell(rowKey: String, colIndex: Int) {
+    attachedCells.add(Pair(rowKey, colIndex))
+  }
+
+  fun unregisterCell(rowKey: String, colIndex: Int) {
+    attachedCells.remove(Pair(rowKey, colIndex))
+  }
+
+  fun getNextRowKey(currentRowKey: String): String? {
+    val idx = activeRowKeys.indexOf(currentRowKey)
+    return if (idx in 0 until activeRowKeys.lastIndex) activeRowKeys[idx + 1] else null
+  }
+
+  fun getPrevRowKey(currentRowKey: String): String? {
+    val idx = activeRowKeys.indexOf(currentRowKey)
+    return if (idx > 0) activeRowKeys[idx - 1] else null
+  }
+
+  fun getTargetRequester(targetRowKey: String, preferredCol: Int): FocusRequester? {
+    val count = rowItemCounts[targetRowKey] ?: return null
+    if (count <= 0) return null
+
+    val desiredCol = (lastFocusedColByRow[targetRowKey] ?: preferredCol).coerceIn(0, count - 1)
+
+    // 1. Se la cella desiderata è montata, usala direttamente
+    if (attachedCells.contains(Pair(targetRowKey, desiredCol))) {
+      return getRequester(targetRowKey, desiredCol)
+    }
+
+    // 2. Altrimenti seleziona la cella montata più vicina in quella riga
+    val attachedInRow = attachedCells.filter { it.first == targetRowKey }.map { it.second }
+    if (attachedInRow.isNotEmpty()) {
+      val closestCol = attachedInRow.minByOrNull { kotlin.math.abs(it - desiredCol) } ?: desiredCol
+      return getRequester(targetRowKey, closestCol)
+    }
+
+    // 3. Fallback sul requester della cella desiderata
+    return getRequester(targetRowKey, desiredCol)
+  }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+fun Modifier.rowFocusProperties(
+  coordinator: HomeRowFocusCoordinator,
+  rowKey: String,
+  colIndex: Int
+): Modifier {
+  DisposableEffect(coordinator, rowKey, colIndex) {
+    coordinator.registerCell(rowKey, colIndex)
+    onDispose {
+      coordinator.unregisterCell(rowKey, colIndex)
+    }
+  }
+
+  return this
+    .focusProperties {
+      val nextRowKey = coordinator.getNextRowKey(rowKey)
+      if (nextRowKey != null) {
+        val target = coordinator.getTargetRequester(nextRowKey, colIndex)
+        down = target ?: FocusRequester.Default
+      } else {
+        down = FocusRequester.Cancel
+      }
+
+      val prevRowKey = coordinator.getPrevRowKey(rowKey)
+      if (prevRowKey != null) {
+        val target = coordinator.getTargetRequester(prevRowKey, colIndex)
+        up = target ?: FocusRequester.Default
+      } else {
+        up = FocusRequester.Cancel
+      }
+    }
+    .onFocusChanged { state ->
+      if (state.isFocused) {
+        coordinator.onCellFocused(rowKey, colIndex)
+      }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun HomeMainBrowsingContent(
   allMedia: List<MediaItem>,
@@ -169,17 +290,9 @@ fun HomeMainBrowsingContent(
   }
   var contextMenuMedia by remember { mutableStateOf<MediaItem?>(null) }
 
-  // Regola di priorità: se i cataloghi di addon personalizzati (Xperience, Easy
-  // Catalog, ...) sono attivi per un tipo, le righe stock Cinemeta di quel tipo
-  // vengono escluse dalla Home (per evitare duplicati). Senza addon attivi resta la
-  // base predefinita Cinemeta. Il hub dei Provider resta SEMPRE visibile.
   val hasCustomCatalogMovies = homeCatalogs?.hasCustomCatalogMovies == true
   val hasCustomCatalogSeries = homeCatalogs?.hasCustomCatalogSeries == true
 
-  // Le righe della Home arrivano ESCLUSIVAMENTE dai cataloghi risolti (Cinemeta di
-  // default + addon utente). Nessun fallback ai feed nativi TMDB: se il catalogo di
-  // default non è disponibile la riga resta semplicemente vuota.
-  // Classifica Top 10: limite rigido a 10 card (difensivo, oltre al troncamento alla fonte).
   val top10Movies = remember(homeCatalogs) {
     if (hasCustomCatalogMovies) emptyList()
     else homeCatalogs?.top10Movies?.take(StremioCatalogRepository.HOME_TOP_10_SIZE) ?: emptyList()
@@ -217,54 +330,126 @@ fun HomeMainBrowsingContent(
     }
   }
 
-  val listState = rememberLazyListState()
-
-  // D-pad: quando il focus torna dalla prima riga dei contenuti verso la Hero,
-  // lo scroll automatico della LazyColumn (bring-into-view) lascia la Hero
-  // parzialmente fuori viewport. Manteniamo esplicitamente la lista a posizione 0
-  // finché il focus rimane all'interno dell'item della Hero.
-  var heroHasFocus by remember { mutableStateOf(false) }
-
-  LaunchedEffect(heroHasFocus) {
-    if (!heroHasFocus) return@LaunchedEffect
-    while (heroHasFocus) {
-      if (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0) {
-        listState.scrollToItem(0)
+  // Definizione ordinata di tutte le righe attive della Home
+  val activeRowKeys = remember(
+    dynamicHeroItems.isNotEmpty(),
+    continueWatching,
+    hasCustomCatalogMovies,
+    hasCustomCatalogSeries,
+    top10Movies,
+    top10Series,
+    trendingMovies,
+    trendingSeries,
+    forYouMovies,
+    forYouSeries,
+    popularMovies,
+    popularSeries,
+    homeCatalogs?.extraSections
+  ) {
+    buildList {
+      if (dynamicHeroItems.isNotEmpty()) add("hero_banner")
+      add("section_providers_hub")
+      if (continueWatching.isNotEmpty()) add("section_continue_watching")
+      if (!hasCustomCatalogMovies && top10Movies.isNotEmpty()) add("section_top_10_film")
+      if (!hasCustomCatalogSeries && top10Series.isNotEmpty()) add("section_top_10_serie")
+      if (!hasCustomCatalogMovies && trendingMovies.isNotEmpty()) add("section_trending_film")
+      if (!hasCustomCatalogSeries && trendingSeries.isNotEmpty()) add("section_trending_serie")
+      if (!hasCustomCatalogMovies && forYouMovies.isNotEmpty()) add("section_for_you_film")
+      if (!hasCustomCatalogSeries && forYouSeries.isNotEmpty()) add("section_for_you_serie")
+      if (!hasCustomCatalogMovies && popularMovies.isNotEmpty()) add("section_popolari_film")
+      if (!hasCustomCatalogSeries && popularSeries.isNotEmpty()) add("section_popolari_serie")
+      homeCatalogs?.extraSections?.forEach { extra ->
+        if (extra.items.isNotEmpty()) {
+          add("section_${extra.id}")
+        }
       }
-      withFrameNanos { }
     }
   }
 
-  // Su TV Compose usa di default un bring-into-view "pivot" che riposiziona
-  // l'elemento al 30% del contenitore: a ogni cambio di focus LEFT/RIGHT tra card
-  // della stessa riga provoca un micro-scroll verticale della LazyColumn.
-  // Applichiamo uno spec che non scrolla quando l'elemento è già visibile.
-  CompositionLocalProvider(LocalBringIntoViewSpec provides TvFocusBringIntoViewSpec) {
+  val rowItemCounts = remember(
+    dynamicHeroItems.size,
+    continueWatching.size,
+    top10Movies.size,
+    top10Series.size,
+    trendingMovies.size,
+    trendingSeries.size,
+    forYouMovies.size,
+    forYouSeries.size,
+    popularMovies.size,
+    popularSeries.size,
+    homeCatalogs?.extraSections
+  ) {
+    buildMap {
+      put("hero_banner", 2)
+      put("section_providers_hub", ProviderConstants.ALL.size)
+      put("section_continue_watching", continueWatching.size)
+      put("section_top_10_film", top10Movies.size)
+      put("section_top_10_serie", top10Series.size)
+      put("section_trending_film", trendingMovies.size)
+      put("section_trending_serie", trendingSeries.size)
+      put("section_for_you_film", forYouMovies.size)
+      put("section_for_you_serie", forYouSeries.size)
+      put("section_popolari_film", popularMovies.size)
+      put("section_popolari_serie", popularSeries.size)
+      homeCatalogs?.extraSections?.forEach { extra ->
+        put("section_${extra.id}", extra.items.size)
+      }
+    }
+  }
+
+  val coordinator = remember(activeRowKeys, rowItemCounts) {
+    HomeRowFocusCoordinator(activeRowKeys, rowItemCounts)
+  }
+
+  val listState = rememberLazyListState()
+
+  // D-pad: quando il focus torna dalla prima riga verso la Hero, animiamo la lista a posizione 0
+  var heroHasFocus by remember { mutableStateOf(false) }
+
+  LaunchedEffect(heroHasFocus) {
+    if (heroHasFocus && (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0)) {
+      listState.animateScrollToItem(0)
+    }
+  }
+
+  TvFocusBringIntoView(topOffsetDp = 64.dp) {
   LazyColumn(
     state = listState,
     modifier = modifier
       .fillMaxSize()
       .background(NovaBackground),
-    contentPadding = PaddingValues(bottom = 60.dp)
+    contentPadding = PaddingValues(top = 16.dp, bottom = 60.dp)
   ) {
     // 1. Hero / Banner Principale Cinematografico Dinamico (max 9 titoli)
     if (dynamicHeroItems.isNotEmpty()) {
       item(key = "hero_banner") {
+        DisposableEffect(coordinator) {
+          coordinator.registerCell("hero_banner", 0)
+          coordinator.registerCell("hero_banner", 1)
+          onDispose {
+            coordinator.unregisterCell("hero_banner", 0)
+            coordinator.unregisterCell("hero_banner", 1)
+          }
+        }
         Column(
           modifier = Modifier.onFocusChanged { heroHasFocus = it.hasFocus }
         ) {
           HeroBanner(
             items = dynamicHeroItems,
             onPlayClick = { onPlayClick(it) },
-            onInfoClick = { onMediaClick(it) }
+            onInfoClick = { onMediaClick(it) },
+            playButtonFocusRequester = coordinator.getRequester("hero_banner", 0),
+            detailsButtonFocusRequester = coordinator.getRequester("hero_banner", 1),
+            heroDownFocusRequester = coordinator.getTargetRequester("section_providers_hub", 0),
+            onPlayButtonFocusChanged = { if (it) coordinator.onCellFocused("hero_banner", 0) },
+            onDetailsButtonFocusChanged = { if (it) coordinator.onCellFocused("hero_banner", 1) }
           )
           Spacer(modifier = Modifier.height(16.dp))
         }
       }
     }
 
-    // 2. Hub Streaming Providers (Netflix, HBO, Disney+, Prime Video) — SEMPRE visibile,
-    // anche quando sono attivi cataloghi di addon personalizzati (eccezione obbligatoria).
+    // 2. Hub Streaming Providers (Netflix, HBO, Disney+, Prime Video)
     item(key = "section_providers_hub") {
       CarouselHeader(
         title = stringResource(R.string.home_section_streaming_platforms),
@@ -277,12 +462,14 @@ fun HomeMainBrowsingContent(
         contentPadding = PaddingValues(horizontal = 48.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp)
       ) {
-        items(ProviderConstants.ALL, key = { it.id }) { provider ->
+        itemsIndexed(ProviderConstants.ALL, key = { _, it -> it.id }) { index, provider ->
           ProviderCard(
             provider = provider,
             onClick = {
               onProviderClick(provider)
-            }
+            },
+            modifier = Modifier.rowFocusProperties(coordinator, "section_providers_hub", index),
+            focusRequester = coordinator.getRequester("section_providers_hub", index)
           )
         }
       }
@@ -300,21 +487,19 @@ fun HomeMainBrowsingContent(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-          items(continueWatching, key = { "cw_${it.id}" }) { item ->
+          itemsIndexed(continueWatching, key = { _, it -> "cw_${it.id}" }) { index, item ->
             ContinueWatchingCard(
               media = item,
               onClick = {
-                // Il click semplice su "Continua a guardare" NON apre il Dettaglio:
-                // avvia direttamente il Player riprendendo dal punto salvato
-                // (l'episodio/stagione e la posizione sono ricavati dal MediaItem
-                // e dal progresso persistito in Room dentro openStreamForMedia).
                 Log.d("HomeScreen", "ContinueWatchingCard onClick (resume playback) called for ${item.title}")
                 onPlayClick(item)
               },
               onLongPress = {
                 Log.d("HomeScreen", "ContinueWatchingCard onLongPress called for ${item.title}")
                 contextMenuMedia = item
-              }
+              },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_continue_watching", index),
+              focusRequester = coordinator.getRequester("section_continue_watching", index)
             )
           }
         }
@@ -322,7 +507,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 4. TOP 10 FILM (Card con numero gigante stilizzato) - esclusa se un addon film è attivo
+    // 4. TOP 10 FILM (Card con numero gigante stilizzato)
     if (!hasCustomCatalogMovies && top10Movies.isNotEmpty()) {
       item(key = "section_top_10_film") {
         CarouselHeader(
@@ -337,7 +522,9 @@ fun HomeMainBrowsingContent(
             Top10RankedMediaCard(
               rank = index + 1,
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = { onMediaClick(item) },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_film", index),
+              focusRequester = coordinator.getRequester("section_top_10_film", index)
             )
           }
         }
@@ -345,7 +532,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 5. TOP 10 SERIE (Card con numero gigante stilizzato) - esclusa se un addon serie è attivo
+    // 5. TOP 10 SERIE (Card con numero gigante stilizzato)
     if (!hasCustomCatalogSeries && top10Series.isNotEmpty()) {
       item(key = "section_top_10_serie") {
         CarouselHeader(
@@ -360,7 +547,9 @@ fun HomeMainBrowsingContent(
             Top10RankedMediaCard(
               rank = index + 1,
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = { onMediaClick(item) },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_serie", index),
+              focusRequester = coordinator.getRequester("section_top_10_serie", index)
             )
           }
         }
@@ -368,7 +557,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 6. TRENDING FILM - esclusa se un addon film è attivo
+    // 6. TRENDING FILM
     if (!hasCustomCatalogMovies && trendingMovies.isNotEmpty()) {
       item(key = "section_trending_film") {
         CarouselHeader(
@@ -379,10 +568,12 @@ fun HomeMainBrowsingContent(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-          items(trendingMovies, key = { "trend_m_${it.id}" }) { item ->
+          itemsIndexed(trendingMovies, key = { _, item -> "trend_m_${item.id}" }) { index, item ->
             PosterMediaCard(
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = { onMediaClick(item) },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_trending_film", index),
+              focusRequester = coordinator.getRequester("section_trending_film", index)
             )
           }
         }
@@ -390,7 +581,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 7. TRENDING SERIE - esclusa se un addon serie è attivo
+    // 7. TRENDING SERIE
     if (!hasCustomCatalogSeries && trendingSeries.isNotEmpty()) {
       item(key = "section_trending_serie") {
         CarouselHeader(
@@ -401,10 +592,12 @@ fun HomeMainBrowsingContent(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-          items(trendingSeries, key = { "trend_s_${it.id}" }) { item ->
+          itemsIndexed(trendingSeries, key = { _, item -> "trend_s_${item.id}" }) { index, item ->
             PosterMediaCard(
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = { onMediaClick(item) },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_trending_serie", index),
+              focusRequester = coordinator.getRequester("section_trending_serie", index)
             )
           }
         }
@@ -412,7 +605,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 8. FOR YOU FILM (Consigliati per te - Film) - esclusa se un addon film è attivo
+    // 8. FOR YOU FILM (Consigliati per te - Film)
     if (!hasCustomCatalogMovies && forYouMovies.isNotEmpty()) {
       item(key = "section_for_you_film") {
         CarouselHeader(
@@ -423,10 +616,12 @@ fun HomeMainBrowsingContent(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-          items(forYouMovies, key = { "foryou_m_${it.id}" }) { item ->
+          itemsIndexed(forYouMovies, key = { _, item -> "foryou_m_${item.id}" }) { index, item ->
             StandardMediaCard(
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = { onMediaClick(item) },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_film", index),
+              focusRequester = coordinator.getRequester("section_for_you_film", index)
             )
           }
         }
@@ -434,7 +629,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 9. FOR YOU SERIE (Consigliate per te - Serie TV) - esclusa se un addon serie è attivo
+    // 9. FOR YOU SERIE (Consigliate per te - Serie TV)
     if (!hasCustomCatalogSeries && forYouSeries.isNotEmpty()) {
       item(key = "section_for_you_serie") {
         CarouselHeader(
@@ -445,10 +640,12 @@ fun HomeMainBrowsingContent(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-          items(forYouSeries, key = { "foryou_s_${it.id}" }) { item ->
+          itemsIndexed(forYouSeries, key = { _, item -> "foryou_s_${item.id}" }) { index, item ->
             StandardMediaCard(
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = { onMediaClick(item) },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_serie", index),
+              focusRequester = coordinator.getRequester("section_for_you_serie", index)
             )
           }
         }
@@ -456,7 +653,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 12. POPOLARI FILM - esclusa se un addon film è attivo
+    // 10. POPOLARI FILM
     if (!hasCustomCatalogMovies && popularMovies.isNotEmpty()) {
       item(key = "section_popolari_film") {
         CarouselHeader(
@@ -467,10 +664,12 @@ fun HomeMainBrowsingContent(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-          items(popularMovies, key = { "pop_m_${it.id}" }) { item ->
+          itemsIndexed(popularMovies, key = { _, item -> "pop_m_${item.id}" }) { index, item ->
             PosterMediaCard(
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = { onMediaClick(item) },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_film", index),
+              focusRequester = coordinator.getRequester("section_popolari_film", index)
             )
           }
         }
@@ -478,7 +677,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 15. POPOLARI SERIE - esclusa se un addon serie è attivo
+    // 11. POPOLARI SERIE
     if (!hasCustomCatalogSeries && popularSeries.isNotEmpty()) {
       item(key = "section_popolari_serie") {
         CarouselHeader(
@@ -489,10 +688,12 @@ fun HomeMainBrowsingContent(
           contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-          items(popularSeries, key = { "pop_s_${it.id}" }) { item ->
+          itemsIndexed(popularSeries, key = { _, item -> "pop_s_${item.id}" }) { index, item ->
             PosterMediaCard(
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = { onMediaClick(item) },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_serie", index),
+              focusRequester = coordinator.getRequester("section_popolari_serie", index)
             )
           }
         }
@@ -500,8 +701,7 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // Sezioni catalogo Stremio (addon): si AGGIUNGONO alle righe TMDB, così la Home
-    // mostra l'unione dei cataloghi locali e di quelli degli addon abilitati.
+    // 12. Sezioni catalogo Stremio (addon)
     homeCatalogs?.extraSections?.forEach { extraSec ->
       if (extraSec.items.isNotEmpty()) {
         item(key = "section_${extraSec.id}") {
@@ -513,10 +713,12 @@ fun HomeMainBrowsingContent(
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp)
           ) {
-            items(extraSec.items, key = { "extra_${extraSec.id}_${it.id}" }) { item ->
+            itemsIndexed(extraSec.items, key = { _, item -> "extra_${extraSec.id}_${item.id}" }) { index, item ->
               PosterMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) }
+                onClick = { onMediaClick(item) },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_${extraSec.id}", index),
+                focusRequester = coordinator.getRequester("section_${extraSec.id}", index)
               )
             }
           }

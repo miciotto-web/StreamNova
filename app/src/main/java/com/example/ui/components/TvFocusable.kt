@@ -452,7 +452,8 @@ fun MediaContextMenu(
         CardMediaImage(
           primaryUrl = media.backdropUrl,
           secondaryUrl = media.posterUrl,
-          fallbackRes = media.backdropRes ?: media.posterRes ?: R.drawable.banner_dune,
+          fallbackRes = (media.backdropRes ?: media.posterRes)?.takeIf { it != R.drawable.banner_dune },
+
           contentDescription = media.title,
           modifier = Modifier.fillMaxSize(),
           contentScale = ContentScale.Crop

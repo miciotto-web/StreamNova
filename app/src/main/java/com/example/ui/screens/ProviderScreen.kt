@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,9 +53,17 @@ import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.ProviderCoverage
 import com.example.data.repository.StremioCatalogRepository
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvFocusBringIntoView
+import com.example.ui.components.LocalLastFocusedMediaId
+import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaSurfaceVariant
@@ -87,6 +96,7 @@ fun ProviderScreen(
   onLoadMore: ((isTv: Boolean) -> Unit)? = null
 ) {
   BackHandler { onBackClick() }
+  val lastFocusedMediaId by (viewModel?.lastFocusedMediaId ?: MutableStateFlow(null)).collectAsState()
 
   val stremioProviderMap by (viewModel?.stremioProviderMedia ?: MutableStateFlow(emptyMap())).collectAsState()
   val stremioItems = stremioProviderMap[provider.id].orEmpty()
@@ -252,6 +262,14 @@ fun ProviderScreen(
     )
   }
 
+  val firstGridItemFocusRequester = remember { FocusRequester() }
+  val filterFocusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
+  var lastFocusedFilterIndex by remember { mutableStateOf(0) }
+
+  CompositionLocalProvider(
+    LocalLastFocusedMediaId provides lastFocusedMediaId,
+    LocalClearLastFocusedMedia provides { viewModel?.clearLastFocusedMedia() }
+  ) {
   Column(
     modifier = modifier
       .fillMaxSize()
@@ -315,9 +333,20 @@ fun ProviderScreen(
         .padding(horizontal = 32.dp, vertical = 8.dp),
       horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-      items(filters) { filter ->
+      itemsIndexed(filters) { index, filter ->
         val isSelected = selectedFilter == filter
+        val filterRequester = filterFocusRequesters.getOrPut(index) { FocusRequester() }
         TvFocusableBox(
+          modifier = Modifier
+            .focusRequester(filterRequester)
+            .focusProperties {
+              down = firstGridItemFocusRequester
+            }
+            .onFocusChanged {
+              if (it.isFocused) {
+                lastFocusedFilterIndex = index
+              }
+            },
           shape = RoundedCornerShape(50),
           focusedScale = 1.05f,
           onClick = { selectedFilter = filter }
@@ -390,18 +419,25 @@ fun ProviderScreen(
         }
       }
     } else {
-      TvFocusBringIntoView {
+      TvFocusBringIntoView(topOffsetDp = 48.dp) {
         LazyVerticalGrid(
           state = gridState,
           columns = GridCells.Adaptive(minSize = 150.dp),
-          contentPadding = PaddingValues(start = 32.dp, end = 32.dp, top = 8.dp, bottom = 48.dp),
+          contentPadding = PaddingValues(start = 32.dp, end = 32.dp, top = 24.dp, bottom = 48.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp),
           verticalArrangement = Arrangement.spacedBy(16.dp),
           modifier = Modifier.fillMaxSize()
         ) {
-          items(filteredItems, key = { it.id }) { item ->
+          itemsIndexed(filteredItems, key = { _, it -> it.id }) { index, item ->
             Box(
-              modifier = Modifier.fillMaxWidth(),
+              modifier = Modifier
+                .fillMaxWidth()
+                .then(if (index == 0) Modifier.focusRequester(firstGridItemFocusRequester) else Modifier)
+                .focusProperties {
+                  if (index < 6) {
+                    up = filterFocusRequesters[lastFocusedFilterIndex] ?: FocusRequester.Default
+                  }
+                },
               contentAlignment = Alignment.TopCenter
             ) {
               PosterMediaCard(
@@ -446,6 +482,7 @@ fun ProviderScreen(
       }
     }
   }
+}
 }
 
 /**

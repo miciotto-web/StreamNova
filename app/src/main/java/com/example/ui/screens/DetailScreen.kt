@@ -65,6 +65,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -95,6 +96,7 @@ import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusableBox
+import com.example.ui.components.TvFocusBringIntoViewSpec
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
@@ -272,13 +274,25 @@ fun DetailScreen(
           modifier = Modifier.fillMaxSize()
         )
       } else {
-        val backdropRes = displayMedia.backdropRes ?: R.drawable.banner_lastofus
+        val backdropRes = displayMedia.backdropRes
+        if (backdropRes != null) {
         Image(
           painter = painterResource(id = backdropRes),
           contentDescription = displayMedia.title,
           contentScale = ContentScale.Crop,
           modifier = Modifier.fillMaxSize()
         )
+        } else {
+          Box(
+            modifier = Modifier
+              .fillMaxSize()
+              .background(
+                Brush.verticalGradient(
+                  colors = listOf(Color(0xFF0F172A), NovaBackground)
+                )
+              )
+          )
+        }
       }
 
       // Vignette a doppio asse:
@@ -335,8 +349,15 @@ fun DetailScreen(
     // true quando il focus e' atterrato con certezza su "Riproduci".
     var isPlayFocused by remember { mutableStateOf(false) }
 
-    val ambientBringIntoViewSpec = LocalBringIntoViewSpec.current
-    val guardedBringIntoViewSpec = remember(ambientBringIntoViewSpec) {
+    val density = LocalDensity.current
+    val tvFocusSpec = remember(density) {
+      TvFocusBringIntoViewSpec(
+        parentFraction = 0.3f,
+        topHeaderOffsetPx = with(density) { 64.dp.toPx() },
+        bottomMarginPx = with(density) { 48.dp.toPx() }
+      )
+    }
+    val guardedBringIntoViewSpec = remember(tvFocusSpec) {
       object : BringIntoViewSpec {
         override fun calculateScrollDistance(
           offset: Float,
@@ -348,7 +369,7 @@ fun DetailScreen(
           if (isActionBarFocused) return 0f
           // Scroll consentito solo dopo una pressione di SU/GIU' (vedi key handler).
           if (!isBringIntoViewAllowed) return 0f
-          return ambientBringIntoViewSpec.calculateScrollDistance(offset, size, containerSize)
+          return tvFocusSpec.calculateScrollDistance(offset, size, containerSize)
         }
       }
     }
@@ -1204,13 +1225,25 @@ fun EpisodeRowItem(
             modifier = Modifier.fillMaxSize()
           )
         } else {
-          val thumb = episode.thumbnailRes ?: fallbackBackdropRes ?: R.drawable.banner_lastofus
+          val thumb = episode.thumbnailRes ?: fallbackBackdropRes
+          if (thumb != null) {
           Image(
             painter = painterResource(id = thumb),
             contentDescription = episode.title,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
           )
+          } else {
+            Box(
+              modifier = Modifier
+                .fillMaxSize()
+                .background(
+                  Brush.verticalGradient(
+                    colors = listOf(Color(0xFF1E293B), Color(0xFF0F172A))
+                  )
+                )
+            )
+          }
         }
 
         // Play icon overlay

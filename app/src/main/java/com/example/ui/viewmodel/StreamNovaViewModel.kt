@@ -478,6 +478,21 @@ class StreamNovaViewModel(
   private val _selectedMedia = MutableStateFlow<MediaItem?>(null)
   val selectedMedia: StateFlow<MediaItem?> = _selectedMedia.asStateFlow()
 
+  // Stack di navigazione tra schede di dettaglio (Punto 2: Consigliati e Backstack)
+  private val detailMediaStack = mutableListOf<MediaItem>()
+
+  // Focus retention TV (Punto 3: memorizzazione dell'ultima locandina aperta per ripristino al BACK)
+  private val _lastFocusedMediaId = MutableStateFlow<String?>(null)
+  val lastFocusedMediaId: StateFlow<String?> = _lastFocusedMediaId.asStateFlow()
+
+  fun saveLastFocusedMedia(mediaId: String) {
+    _lastFocusedMediaId.value = mediaId
+  }
+
+  fun clearLastFocusedMedia() {
+    _lastFocusedMediaId.value = null
+  }
+
   val detailUiState: StateFlow<MediaDetailUiState> = MediaRepository.detailUiState
 
   private val _selectedSeasonNumber = MutableStateFlow(1)
@@ -1618,6 +1633,12 @@ class StreamNovaViewModel(
   }
 
   fun openDetail(media: MediaItem) {
+    if (_screenState.value != ScreenState.DETAIL) {
+      detailMediaStack.clear()
+    }
+    if (detailMediaStack.isEmpty() || detailMediaStack.last().id != media.id) {
+      detailMediaStack.add(media)
+    }
     selectSeasonJob?.cancel()
     selectSeasonJob = null
     _selectedMedia.value = media
@@ -2543,13 +2564,57 @@ class StreamNovaViewModel(
   fun playerOpenedFromDetail(): Boolean = screenBeforePlayer == ScreenState.DETAIL
 
   fun backToBrowsing() {
+    detailMediaStack.clear()
     resetStreamState()
     _selectedProvider.value = null
     _selectedMedia.value = null
     _screenState.value = ScreenState.BROWSING
   }
 
+  /**
+   * Gestione gerarchica del ritorno da una scheda di dettaglio (Punto 2: Consigliati e Backstack).
+   * Se l'utente ha aperto titoli a catena dai "Consigliati", risale al film precedente
+   * ripristinandone immediatamente lo stato del film senza mostrare schermate nere.
+   * Se lo stack dei dettagli è esaurito, ritorna alla schermata precedente (Home/Provider)
+   * e restituisce false.
+   */
+  fun popDetail(): Boolean {
+    resetStreamState()
+    selectSeasonJob?.cancel()
+    selectSeasonJob = null
+    _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+    if (detailMediaStack.size > 1) {
+      detailMediaStack.removeLastOrNull()
+      val previousMedia = detailMediaStack.last()
+      _selectedMedia.value = previousMedia
+      _screenState.value = ScreenState.DETAIL
+      val isTv = previousMedia.type == MediaType.SERIE_TV
+      val currentTmdbId = previousMedia.tmdbId
+        ?: previousMedia.id.removePrefix("tmdb_tv_").removePrefix("tmdb_movie_").toIntOrNull()
+      if (currentTmdbId != null && currentTmdbId > 0) {
+        val mediaWithTmdb = if (previousMedia.tmdbId == null) previousMedia.copy(tmdbId = currentTmdbId) else previousMedia
+        _selectedMedia.value = mediaWithTmdb
+        loadDetails(currentTmdbId, isTv, mediaWithTmdb)
+        if (isTv) {
+          val initialSeason = mediaWithTmdb.lastWatchedSeason ?: 1
+          selectSeason(currentTmdbId, initialSeason, mediaWithTmdb)
+        }
+      } else if (previousMedia.id.startsWith("tt", ignoreCase = true)) {
+        val tmdb = previousMedia.tmdbId
+        if (tmdb != null && tmdb > 0) {
+          loadDetails(tmdb, isTv, previousMedia)
+        }
+      }
+      return true
+    } else {
+      detailMediaStack.clear()
+      backFromDetail()
+      return false
+    }
+  }
+
   fun backFromDetail() {
+    detailMediaStack.clear()
     resetStreamState()
     selectSeasonJob?.cancel()
     selectSeasonJob = null

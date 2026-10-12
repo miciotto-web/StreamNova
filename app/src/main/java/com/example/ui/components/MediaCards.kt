@@ -1,27 +1,12 @@
 package com.example.ui.components
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.zIndex
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
@@ -42,22 +28,43 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.annotation.DrawableRes
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
@@ -73,19 +80,87 @@ import com.example.ui.theme.NovaGold
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import kotlinx.coroutines.delay
+
+/** CompositionLocal per il ripristino del focus sull'esatta card all'uscita dal Dettaglio (Punto 3). */
+val LocalLastFocusedMediaId = compositionLocalOf<String?> { null }
+
+/** CompositionLocal per cancellare il target salvato non appena la card riceve il focus. */
+val LocalClearLastFocusedMedia = compositionLocalOf<(() -> Unit)?> { null }
+
+/**
+ * Componente neutro ed elegante per Android TV in sostituzione definitiva di qualsiasi
+ * immagine placeholder generica (es. deserto). Mostra un gradiente scuro moderno, un'icona
+ * stilizzata del film/play al centro e il titolo del contenuto in basso (Punto 4).
+ */
+@Composable
+fun MediaPosterFallback(
+  title: String?,
+  modifier: Modifier = Modifier,
+  isTv: Boolean = false
+) {
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      .background(
+        Brush.verticalGradient(
+          colors = listOf(
+            Color(0xFF1B2333),
+            Color(0xFF111724),
+            Color(0xFF090D15)
+          )
+        )
+      )
+      .padding(horizontal = 8.dp, vertical = 10.dp),
+    contentAlignment = Alignment.Center
+  ) {
+    // Cerchio stilizzato con icona del contenuto al centro
+    Box(
+      modifier = Modifier
+        .size(44.dp)
+        .background(NovaCyan.copy(alpha = 0.12f), CircleShape)
+        .border(1.dp, NovaCyanBright.copy(alpha = 0.35f), CircleShape),
+      contentAlignment = Alignment.Center
+    ) {
+      Icon(
+        imageVector = Icons.Default.PlayArrow,
+        contentDescription = null,
+        tint = NovaCyanBright.copy(alpha = 0.85f),
+        modifier = Modifier.size(24.dp)
+      )
+    }
+
+    // Titolo del film/serie in basso per chiara identificazione del poster
+    if (!title.isNullOrBlank()) {
+      Text(
+        text = title,
+        color = NovaTextSecondary,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+          .align(Alignment.BottomCenter)
+          .padding(bottom = 4.dp)
+      )
+    }
+  }
+}
 
 /**
  * Componente unificato per il caricamento dell'artwork con fallback robusto:
  * 1. Prova prima primaryUrl (es. posterUrl per card verticale, backdropUrl per card orizzontale)
  * 2. Se primaryUrl fallisce o è assente, passa a secondaryUrl (es. backdropUrl / posterUrl TMDB)
- * 3. Se fallisce anche il secondario o entrambi sono vuoti, usa la risorsa locale fallbackRes
- * 4. Evita definitivamente card completamente vuote quando esiste un'immagine TMDB alternativa
+ * 3. Se fallisce anche il secondario o entrambi sono vuoti, usa la risorsa locale valida (se != banner_dune)
+ *    oppure il componente neutro ed elegante [MediaPosterFallback].
+ * 4. NESSUNA immagine generica estranea al film (es. deserto).
  */
 @Composable
 fun CardMediaImage(
   primaryUrl: String?,
   secondaryUrl: String?,
-  @DrawableRes fallbackRes: Int,
+  @DrawableRes fallbackRes: Int? = null,
   contentDescription: String?,
   modifier: Modifier = Modifier,
   contentScale: ContentScale = ContentScale.Crop
@@ -101,17 +176,13 @@ fun CardMediaImage(
     else -> null
   }
 
+  val effectiveFallbackRes = fallbackRes?.takeIf { it != R.drawable.banner_dune }
+
   if (targetUrl != null) {
     SubcomposeAsyncImage(
       model = ImageRequest.Builder(LocalContext.current)
         .data(targetUrl)
         .crossfade(true)
-        .apply {
-          if (primaryFailed || cleanSecondary == null) {
-            error(fallbackRes)
-            fallback(fallbackRes)
-          }
-        }
         .build(),
       contentDescription = contentDescription,
       contentScale = contentScale,
@@ -121,22 +192,43 @@ fun CardMediaImage(
           primaryFailed = true
         }
       },
+      loading = {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(
+              Brush.verticalGradient(
+                colors = listOf(Color(0xFF1B2333), Color(0xFF0F1420))
+              )
+            )
+        )
+      },
       error = {
-        if (primaryFailed || cleanSecondary == null) {
+        if (effectiveFallbackRes != null) {
           Image(
-            painter = painterResource(id = fallbackRes),
+            painter = painterResource(id = effectiveFallbackRes),
             contentDescription = contentDescription,
             contentScale = contentScale,
+            modifier = Modifier.fillMaxSize()
+          )
+        } else {
+          MediaPosterFallback(
+            title = contentDescription,
             modifier = Modifier.fillMaxSize()
           )
         }
       }
     )
-  } else {
+  } else if (effectiveFallbackRes != null) {
     Image(
-      painter = painterResource(id = fallbackRes),
+      painter = painterResource(id = effectiveFallbackRes),
       contentDescription = contentDescription,
       contentScale = contentScale,
+      modifier = modifier
+    )
+  } else {
+    MediaPosterFallback(
+      title = contentDescription,
       modifier = modifier
     )
   }
@@ -184,19 +276,45 @@ fun ContinueWatchingCard(
   media: MediaItem,
   onClick: () -> Unit,
   onLongPress: (() -> Unit)? = null,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  focusRequester: FocusRequester? = null
 ) {
-  val fallbackRes = media.backdropRes ?: media.posterRes ?: R.drawable.banner_dune
+  val fallbackRes = (media.backdropRes ?: media.posterRes)?.takeIf { it != R.drawable.banner_dune }
+  val targetMediaId = LocalLastFocusedMediaId.current
+  val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
+  val internalFocusRequester = remember { FocusRequester() }
+  val cardFocusRequester = focusRequester ?: internalFocusRequester
+
+  LaunchedEffect(targetMediaId) {
+    if (targetMediaId != null && targetMediaId == media.id) {
+      try {
+        cardFocusRequester.requestFocus()
+        clearLastFocusedMedia?.invoke()
+      } catch (_: Exception) {
+        delay(32)
+        try {
+          cardFocusRequester.requestFocus()
+          clearLastFocusedMedia?.invoke()
+        } catch (_: Exception) {}
+      }
+    }
+  }
 
   TvFocusableBox(
     modifier = modifier
       .width(280.dp)
-      .height(158.dp),
+      .height(158.dp)
+      .focusRequester(cardFocusRequester),
     shape = RoundedCornerShape(14.dp),
     focusedScale = 1.05f,
     onClick = onClick,
     onLongPress = onLongPress
   ) { isFocused ->
+    LaunchedEffect(isFocused) {
+      if (isFocused && targetMediaId == media.id) {
+        clearLastFocusedMedia?.invoke()
+      }
+    }
     Box(
       modifier = Modifier
         .fillMaxSize()
@@ -334,9 +452,30 @@ fun ContinueWatchingCard(
 fun StandardMediaCard(
   media: MediaItem,
   onClick: () -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  focusRequester: FocusRequester? = null
 ) {
   var isFocused by remember { mutableStateOf(false) }
+  val targetMediaId = LocalLastFocusedMediaId.current
+  val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
+  val internalFocusRequester = remember { FocusRequester() }
+  val cardFocusRequester = focusRequester ?: internalFocusRequester
+
+  LaunchedEffect(targetMediaId) {
+    if (targetMediaId != null && targetMediaId == media.id) {
+      try {
+        cardFocusRequester.requestFocus()
+        clearLastFocusedMedia?.invoke()
+      } catch (_: Exception) {
+        delay(32)
+        try {
+          cardFocusRequester.requestFocus()
+          clearLastFocusedMedia?.invoke()
+        } catch (_: Exception) {}
+      }
+    }
+  }
+
   val scaleState = animateFloatAsState(
     targetValue = if (isFocused) 1.06f else 1f,
     animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
@@ -357,6 +496,7 @@ fun StandardMediaCard(
   Column(
     modifier = modifier
       .width(220.dp)
+      .focusRequester(cardFocusRequester)
       // La card in focus deve coprire le card vicine
       .zIndex(if (isFocused) 10f else 1f)
       .graphicsLayer {
@@ -364,7 +504,12 @@ fun StandardMediaCard(
         scaleX = s
         scaleY = s
       }
-      .onFocusChanged { isFocused = it.isFocused }
+      .onFocusChanged {
+        isFocused = it.isFocused
+        if (it.isFocused && targetMediaId == media.id) {
+          clearLastFocusedMedia?.invoke()
+        }
+      }
       .onKeyEvent { keyEvent ->
         val isConfirm = keyEvent.key == Key.Enter ||
           keyEvent.key == Key.NumPadEnter ||
@@ -405,7 +550,7 @@ fun StandardMediaCard(
         .fillMaxWidth()
         .height(124.dp)
     ) {
-      val fallbackRes = media.backdropRes ?: media.posterRes ?: R.drawable.banner_dune
+      val fallbackRes = (media.backdropRes ?: media.posterRes)?.takeIf { it != R.drawable.banner_dune }
       CardMediaImage(
         primaryUrl = media.backdropUrl,
         secondaryUrl = media.posterUrl,
@@ -506,9 +651,29 @@ fun StandardMediaCard(
 fun PosterMediaCard(
   media: MediaItem,
   onClick: () -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  focusRequester: FocusRequester? = null
 ) {
   var isFocused by remember { mutableStateOf(false) }
+  val targetMediaId = LocalLastFocusedMediaId.current
+  val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
+  val internalFocusRequester = remember { FocusRequester() }
+  val cardFocusRequester = focusRequester ?: internalFocusRequester
+
+  LaunchedEffect(targetMediaId) {
+    if (targetMediaId != null && targetMediaId == media.id) {
+      try {
+        cardFocusRequester.requestFocus()
+        clearLastFocusedMedia?.invoke()
+      } catch (_: Exception) {
+        delay(32)
+        try {
+          cardFocusRequester.requestFocus()
+          clearLastFocusedMedia?.invoke()
+        } catch (_: Exception) {}
+      }
+    }
+  }
 
   // Stato di scala: 1.0 -> 1.06 al focus, con easing GPU-friendly.
   val scaleState = animateFloatAsState(
@@ -534,6 +699,7 @@ fun PosterMediaCard(
     modifier = Modifier
       .width(150.dp)
       .then(modifier)
+      .focusRequester(cardFocusRequester)
       // La card in focus deve coprire le card vicine
       .zIndex(if (isFocused) 10f else 1f)
       .graphicsLayer {
@@ -541,7 +707,12 @@ fun PosterMediaCard(
         scaleX = s
         scaleY = s
       }
-      .onFocusChanged { isFocused = it.isFocused }
+      .onFocusChanged {
+        isFocused = it.isFocused
+        if (it.isFocused && targetMediaId == media.id) {
+          clearLastFocusedMedia?.invoke()
+        }
+      }
       // OK/Enter della tastiera D-pad -> onClick (consumato prima di clickable)
       .onKeyEvent { keyEvent ->
         val isConfirm = keyEvent.key == Key.Enter ||
@@ -584,7 +755,7 @@ fun PosterMediaCard(
           )
         }
     ) {
-      val fallbackRes = media.posterRes ?: media.backdropRes ?: R.drawable.banner_dune
+      val fallbackRes = (media.posterRes ?: media.backdropRes)?.takeIf { it != R.drawable.banner_dune }
       CardMediaImage(
         primaryUrl = media.posterUrl,
         secondaryUrl = media.backdropUrl,
