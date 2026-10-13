@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.util.AsyncSingleFlight
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -490,6 +491,75 @@ object TorBoxRepository : TorBoxGateway {
   }
 
   /**
+   * Fast-path bingewatching: sblocca il file del nuovo episodio DENTRO lo stesso
+   * torrent di stagione gia' in uso per l'episodio corrente, senza interrogare
+   * nuovamente gli addon.
+   *
+   * Percorsi, in ordine:
+   *  1. il torrent e' gia' presente nell'account (`mylist`, creato dallo sblocco
+   *     dell'episodio precedente) → file reali → match `SxxExx` →
+   *     [requestDirectLink] diretto (nessuna ricreazione del torrent);
+   *  2. altrimenti [TorBoxResolver.resolve] cached-only con selezione per
+   *     stagione/episodio (`filename = null` → solo match per episodio).
+   *
+   * NON tocca [linkCache]: il link dell'episodio corrente resta associato all'hash,
+   * cosi' un rientro sull'episodio precedente continua a usare il proprio link.
+   *
+   * @return URL CDN del file dell'episodio richiesto, oppure null se il torrent
+   *         non contiene l'episodio o lo sblocco fallisce.
+   */
+  internal suspend fun resolveSeasonPackEpisode(infoHash: String, season: Int, episode: Int): String? {
+    val hash = normalizeHash(infoHash)
+    if (hash.isEmpty() || !isConfigured()) return null
+
+    try {
+      // 1) Stesso torrent gia' nell'account (creato allo sblocco dell'episodio corrente).
+      val torrentId = findTorrentId(hash)
+      if (torrentId != null) {
+        val files = getTorrentFiles(torrentId)
+        if (files.isEmpty()) {
+          // Lista file vuota: nessun ulteriore tentativo di rete, fast-path chiuso.
+          Log.w(TAG, "Season pack: lista file vuota per ${hash.take(8)}..., nessun ulteriore tentativo")
+          return null
+        }
+        val file = findEpisodeFile(files, season, episode)
+        if (file == null) {
+          // Episodio non presente nel torrent: il fallback cached-only ripartirebbe
+          // dallo stesso identico torrent, quindi si chiude subito senza rete a vuoto.
+          Log.w(TAG, "Season pack: S${season}E${episode} non trovato nel torrent ${hash.take(8)}..., nessun ulteriore tentativo")
+          return null
+        }
+        val url = requestDirectLink(torrentId, file.id)
+        if (!url.isNullOrBlank()) {
+          Log.i(TAG, "Season pack: stesso torrent (${hash.take(8)}...) -> ${file.name}")
+          return url
+        }
+        Log.w(TAG, "Season pack: requestDirectLink fallito per ${file.name}, nessun ulteriore tentativo")
+        return null
+      }
+
+      // 2) Fallback cached-only con selezione per episodio (ignora comunque linkCache):
+      //    usato solo quando il torrent non e' ancora presente nell'account.
+      setRequestMetadata(season, episode)
+      return when (val result = TorBoxResolver.resolve(hash, filename = null, season = season, episode = episode)) {
+        is TorBoxResolver.ResolveResult.Success -> {
+          Log.i(TAG, "Season pack: risolto '${result.filename}' per S${season}E${episode}")
+          result.url
+        }
+        else -> null
+      }
+    } catch (e: CancellationException) {
+      // Timeout del caller (fast-path): rientro prontissimo, mai sospesi.
+      Log.w(TAG, "Season pack: cancellato (timeout fast-path) per ${hash.take(8)}... S${season}E${episode}")
+      return null
+    } catch (e: Exception) {
+      // Errore di rete/parsing: null immediato, nessuna chiamata a vuoto aggiuntiva.
+      Log.w(TAG, "Season pack: errore per ${hash.take(8)}... S${season}E${episode}: ${e.message}")
+      return null
+    }
+  }
+
+  /**
    * Sblocca un hash **già verificato in cache** (chiamato dopo un
    * [checkCached] multi-hash) senza ripetere la verifica, con il percorso
    * cached-only ([createCachedOnly]: `createtorrent` `add_only_if_cached=true` +
@@ -543,7 +613,7 @@ object TorBoxRepository : TorBoxGateway {
     val reqSeason = currentSeasonEpisode.get()?.first
     val reqEpisode = currentSeasonEpisode.get()?.second
     if (reqSeason != null && reqEpisode != null) {
-      val matched = findEpisodeMatch(videoFiles, reqSeason, reqEpisode)
+      val matched = findEpisodeFile(videoFiles, reqSeason, reqEpisode)
       if (matched != null) {
         Log.d(TAG, "selectFileId: match S${reqSeason}E${reqEpisode} -> ${matched.name}")
         return matched.id
@@ -562,12 +632,35 @@ object TorBoxRepository : TorBoxGateway {
     return fallback?.id ?: -1
   }
 
-  private fun findEpisodeMatch(files: List<TorBoxFile>, season: Int, episode: Int): TorBoxFile? {
+  /**
+   * Cerca all'interno del torrent il file del nuovo episodio (match case-insensitive
+   * sui pattern `SxxExx`, `NxN`, ecc. gia' usati da [buildSeasonEpisodePatterns]).
+   *
+   * Se piu' file corrispondono (es. qualita' multiple per lo stesso episodio),
+   * preferisce quello con piu' token della firma della release corrente
+   * ([preferTokens], es. qualità/codec/gruppo), cosi' il prossimo episodio resta
+   * sulla stessa qualita' del precedente.
+   *
+   * @return il file dell'episodio richiesto, oppure null se il torrent non lo contiene.
+   */
+  internal fun findEpisodeFile(
+    files: List<TorBoxFile>,
+    season: Int,
+    episode: Int,
+    preferTokens: List<String> = emptyList()
+  ): TorBoxFile? {
     val patterns = buildSeasonEpisodePatterns(season, episode)
-    return files.find { file ->
-      val name = file.name?.lowercase() ?: return@find false
+    val matches = files.filter { file ->
+      val name = file.name?.lowercase() ?: return@filter false
       patterns.any { pattern -> name.contains(pattern) }
     }
+    if (matches.isEmpty()) return null
+    val tokens = preferTokens.map { it.trim().lowercase() }.filter { it.isNotBlank() }
+    if (matches.size == 1 || tokens.isEmpty()) return matches.first()
+    return matches.maxByOrNull { file ->
+      val name = file.name?.lowercase() ?: ""
+      tokens.count { token -> name.contains(token) }
+    } ?: matches.first()
   }
 
   private fun buildSeasonEpisodePatterns(season: Int, episode: Int): List<String> {

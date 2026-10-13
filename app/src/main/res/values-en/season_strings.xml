@@ -1,0 +1,4 @@
+<resources>
+    <string name="detail_specials">Specials</string>
+    <string name="detail_season_air_date_format">Season first aired: %s</string>
+</resources>

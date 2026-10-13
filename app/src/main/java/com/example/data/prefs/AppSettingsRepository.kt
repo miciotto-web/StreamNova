@@ -55,6 +55,7 @@ object AppSettingsRepository {
 
   private val KEY_TORBOX_API_KEY = stringPreferencesKey("torbox_api_key")
   private val KEY_OPENSUBTITLES_API_KEY = stringPreferencesKey("opensubtitles_api_key")
+  private val KEY_SIMKL_CLIENT_ID = stringPreferencesKey("simkl_client_id")
   private val KEY_TORBOX_INSTANT_DEBRID = booleanPreferencesKey("torbox_instant_debrid_enabled")
   private val KEY_INSTALLED_ADDONS_JSON = stringPreferencesKey("installed_addons_json")
   private val KEY_USER_PROVIDER_BINDINGS_JSON = stringPreferencesKey("user_provider_bindings_json")
@@ -72,6 +73,8 @@ object AppSettingsRepository {
   val torBoxApiKey: StateFlow<String?> = _torBoxApiKey.asStateFlow()
 
   private val _openSubtitlesApiKey = MutableStateFlow<String?>(null)
+  private val _simklClientId = MutableStateFlow<String?>(null)
+  val simklClientId: StateFlow<String?> = _simklClientId.asStateFlow()
   /** Chiave API OpenSubtitles corrente (null = nessuna chiave salvata). */
   val openSubtitlesApiKey: StateFlow<String?> = _openSubtitlesApiKey.asStateFlow()
 
@@ -125,6 +128,7 @@ object AppSettingsRepository {
   // in memoria dall'utente: la scrittura locale ha sempre precedenza.
   @Volatile private var apiKeyLocalWrite = false
   @Volatile private var openSubtitlesApiKeyLocalWrite = false
+  @Volatile private var simklClientIdLocalWrite = false
   @Volatile private var debridLocalWrite = false
   @Volatile private var addonsLocalWrite = false
   @Volatile private var userBindingsLocalWrite = false
@@ -146,6 +150,9 @@ object AppSettingsRepository {
         }
         if (!openSubtitlesApiKeyLocalWrite) {
           _openSubtitlesApiKey.value = prefs[KEY_OPENSUBTITLES_API_KEY]?.takeIf { it.isNotBlank() }
+        }
+        if (!simklClientIdLocalWrite) {
+          _simklClientId.value = prefs[KEY_SIMKL_CLIENT_ID]?.takeIf { it.isNotBlank() }
         }
         if (!debridLocalWrite) {
           _torBoxInstantDebridEnabled.value = prefs[KEY_TORBOX_INSTANT_DEBRID] ?: true
@@ -220,6 +227,18 @@ object AppSettingsRepository {
    * Salva (o rimuove, con null/blank) la chiave API OpenSubtitles.
    * La scrittura è asincrona: lo [StateFlow] viene aggiornato subito per la UI.
    */
+  fun setSimklClientId(value: String?) {
+    val normalized = value?.trim()?.takeIf { it.isNotBlank() }
+    simklClientIdLocalWrite = true
+    _simklClientId.value = normalized
+    scope.launch {
+      dataStore?.edit { prefs ->
+        if (normalized == null) prefs.remove(KEY_SIMKL_CLIENT_ID)
+        else prefs[KEY_SIMKL_CLIENT_ID] = normalized
+      }
+    }
+  }
+
   fun setOpenSubtitlesApiKey(value: String?) {
     val normalized = value?.trim()?.takeIf { it.isNotBlank() }
     openSubtitlesApiKeyLocalWrite = true

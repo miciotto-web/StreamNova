@@ -85,3 +85,23 @@ data class OpenSubtitlesDownloadResponse(
   @Json(name = "reset_time") val resetTime: String? = null,
   @Json(name = "reset_time_utc") val resetTimeUtc: String? = null
 )
+
+/**
+ * Modello DTO per la risposta dell'addon OpenSubtitles v3 di Stremio:
+ * GET https://opensubtitles-v3.strem.io/subtitles/{type}/{id}.json
+ */
+@JsonClass(generateAdapter = true)
+data class StremioOpenSubtitlesResponse(
+  @Json(name = "subtitles") val subtitles: List<StremioOpenSubtitlesItem>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class StremioOpenSubtitlesItem(
+  @Json(name = "id") val id: String? = null,
+  @Json(name = "url") val url: String? = null,
+  @Json(name = "lang") val lang: String? = null,
+  @Json(name = "label") val label: String? = null,
+  @Json(name = "subtitleFileName") val subtitleFileName: String? = null,
+  @Json(name = "movieReleaseName") val movieReleaseName: String? = null
+)
+

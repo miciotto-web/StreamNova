@@ -71,6 +71,14 @@ import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import kotlinx.coroutines.delay
 
+/**
+ * Banner hero della Home.
+ *
+ * Focus: i pulsanti Play/Info ricevono i requester esterni; [heroDownFocusRequester] collega
+ * il D-pad SU/GIU' dalla hero alla prima riga sottostante. Deve essere passato SOLO un
+ * requester il cui nodo e' montato (o `null`): se nullo si usa `FocusRequester.Default`,
+ * mai un requester non agganciato (crash "FocusRequester is not initialized" al focus search).
+ */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun HeroBanner(
@@ -284,7 +292,7 @@ fun HeroBanner(
           modifier = Modifier
             .then(if (playButtonFocusRequester != null) Modifier.focusRequester(playButtonFocusRequester) else Modifier)
             .focusProperties {
-              if (heroDownFocusRequester != null) down = heroDownFocusRequester
+              down = heroDownFocusRequester ?: FocusRequester.Default
               up = FocusRequester.Cancel
             }
             .onFocusChanged { onPlayButtonFocusChanged?.invoke(it.isFocused) }
@@ -297,7 +305,7 @@ fun HeroBanner(
           modifier = Modifier
             .then(if (detailsButtonFocusRequester != null) Modifier.focusRequester(detailsButtonFocusRequester) else Modifier)
             .focusProperties {
-              if (heroDownFocusRequester != null) down = heroDownFocusRequester
+              down = heroDownFocusRequester ?: FocusRequester.Default
               up = FocusRequester.Cancel
             }
             .onFocusChanged { onDetailsButtonFocusChanged?.invoke(it.isFocused) }

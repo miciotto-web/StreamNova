@@ -39,8 +39,10 @@ object NuvioExoPlayerPerformanceHelper {
     const val NATIVE_ARENA_POOL_BYTES = 512 * NATIVE_ARENA_CHUNK_SIZE
     const val DEFAULT_NUVIO_TARGET_BUFFER_MB = 175
     const val DEFAULT_NUVIO_TARGET_BUFFER_BYTES = DEFAULT_NUVIO_TARGET_BUFFER_MB * 1024 * 1024
-    const val DEFAULT_NUVIO_MIN_BUFFER_MS = 15_000
-    const val DEFAULT_NUVIO_MAX_BUFFER_MS = 45_000
+    const val DEFAULT_NUVIO_MIN_BUFFER_MS = 30_000
+    const val DEFAULT_NUVIO_MAX_BUFFER_MS = 60_000
+    const val BUFFER_FOR_PLAYBACK_MS = 2_500
+    const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5_000
     const val DEFAULT_NUVIO_BACK_BUFFER_MS = 15_000
     const val DEFAULT_NUVIO_INITIAL_BITRATE_ESTIMATE = 50_000_000L     // 50 Mbps
     const val NUVIO_SHARED_POOL_MAX_IDLE = 32
@@ -49,18 +51,6 @@ object NuvioExoPlayerPerformanceHelper {
     const val MIN_BUFFER_MB = 25
 
     // Customization Variables
-    @Volatile
-    var minBufferMs: Int = DEFAULT_NUVIO_MIN_BUFFER_MS
-
-    @Volatile
-    var maxBufferMs: Int = DEFAULT_NUVIO_MAX_BUFFER_MS
-
-    @Volatile
-    var bufferForPlaybackMs: Int = DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS
-
-    @Volatile
-    var bufferForPlaybackAfterRebufferMs: Int = DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
-
     @Volatile
     var backBufferMs: Int = DEFAULT_NUVIO_BACK_BUFFER_MS
 
@@ -85,7 +75,7 @@ object NuvioExoPlayerPerformanceHelper {
 
     private fun effectiveBackBufferMs(): Int {
         if (backBufferMs <= 0) return 0
-        val ceiling = (minBufferMs.toLong() * BACK_BUFFER_TARGET_SHARE_NUM / BACK_BUFFER_TARGET_SHARE_DEN).toInt()
+        val ceiling = (DEFAULT_NUVIO_MIN_BUFFER_MS.toLong() * BACK_BUFFER_TARGET_SHARE_NUM / BACK_BUFFER_TARGET_SHARE_DEN).toInt()
         return backBufferMs.coerceAtMost(ceiling)
     }
 
@@ -97,11 +87,9 @@ object NuvioExoPlayerPerformanceHelper {
         context: Context? = null,
         chunkOverheadMb: Int = 0,
         targetBufferSizeMbOverride: Int? = null,
-        bufferForPlaybackMsOverride: Int? = null,
         backBufferMsOverride: Int? = null
     ): DefaultLoadControl {
         val effectiveTargetMb = targetBufferSizeMbOverride ?: targetBufferSizeMb
-        val effectiveBufferForPlaybackMs = bufferForPlaybackMsOverride ?: bufferForPlaybackMs
         val effectiveBackMs = backBufferMsOverride ?: backBufferMs
 
         return if (enabled) {
@@ -121,22 +109,24 @@ object NuvioExoPlayerPerformanceHelper {
             liveAllocator = allocator
 
             val backBufferToUse = if (effectiveBackMs <= 0) 0 else {
-                val ceiling = (minBufferMs.toLong() * BACK_BUFFER_TARGET_SHARE_NUM / BACK_BUFFER_TARGET_SHARE_DEN).toInt()
+                val ceiling = (DEFAULT_NUVIO_MIN_BUFFER_MS.toLong() * BACK_BUFFER_TARGET_SHARE_NUM / BACK_BUFFER_TARGET_SHARE_DEN).toInt()
                 effectiveBackMs.coerceAtMost(ceiling)
             }
 
             android.util.Log.i(
                 "ExoPerformance",
-                "buildLoadControl: targetBufferSizeMb=$effectiveTargetMb, chunkOverheadMb=$chunkOverheadMb, targetBytes=$targetBufferBytes, initialBufferMs=$effectiveBufferForPlaybackMs, backBufferMs=$backBufferToUse"
+                "buildLoadControl: targetBufferSizeMb=$effectiveTargetMb, chunkOverheadMb=$chunkOverheadMb, targetBytes=$targetBufferBytes, " +
+                    "bufferDurationsMs=$DEFAULT_NUVIO_MIN_BUFFER_MS/$DEFAULT_NUVIO_MAX_BUFFER_MS/" +
+                    "$BUFFER_FOR_PLAYBACK_MS/$BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS, backBufferMs=$backBufferToUse"
             )
             DefaultLoadControl.Builder()
                 .setAllocator(allocator)
                 .setTargetBufferBytes(targetBufferBytes)
                 .setBufferDurationsMs(
-                    minBufferMs,
-                    maxBufferMs,
-                    effectiveBufferForPlaybackMs,
-                    bufferForPlaybackAfterRebufferMs
+                    DEFAULT_NUVIO_MIN_BUFFER_MS,
+                    DEFAULT_NUVIO_MAX_BUFFER_MS,
+                    BUFFER_FOR_PLAYBACK_MS,
+                    BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
                 )
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .setBackBuffer(backBufferToUse, true)
@@ -146,10 +136,10 @@ object NuvioExoPlayerPerformanceHelper {
             DefaultLoadControl.Builder()
                 .setTargetBufferBytes(targetBytes)
                 .setBufferDurationsMs(
-                    DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
-                    70_000,
-                    effectiveBufferForPlaybackMs,
-                    5_000
+                    DEFAULT_NUVIO_MIN_BUFFER_MS,
+                    DEFAULT_NUVIO_MAX_BUFFER_MS,
+                    BUFFER_FOR_PLAYBACK_MS,
+                    BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
                 )
                 .setBackBuffer(effectiveBackMs.coerceAtLeast(0), true)
                 .build()

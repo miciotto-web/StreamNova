@@ -98,7 +98,8 @@ class StreamManager(
     originalTitle: String? = null,
     providerTag: String? = null,
     genres: List<String> = emptyList(),
-    streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB
+    streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB,
+    imdbId: String? = null
   ): Flow<List<StreamSource>> = channelFlow {
     val flowId = ++searchIdCounter
     Log.i(HTTP_TRACE, "[SM] resolveFlow START searchId=$flowId tmdbId=$tmdbId isTv=$isTv S${season}E${episode}")
@@ -250,7 +251,7 @@ class StreamManager(
           try {
             Log.i(HTTP_TRACE, "[SM] StremioAddon source START searchId=$flowId tmdbId=$tmdbId")
             val sources = withTimeout(timeoutMs) {
-              resolveStremioAddonSources(tmdbId, isTv, season, episode)
+              resolveStremioAddonSources(tmdbId, isTv, season, episode, imdbId)
             }
             Log.i(HTTP_TRACE, "[SM] StremioAddon source END searchId=$flowId sources=${sources.size}")
             mergeSources("StremioAddons", sources)
@@ -280,6 +281,8 @@ class StreamManager(
             val sources = withTimeout(timeoutMs) {
               if (provider is AnimeStreamProvider && originalTitle != null) {
                 provider.getStreams(tmdbId, isTv, season, episode, title, originalTitle, year)
+              } else if (provider is TorBoxStreamProvider) {
+                provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
               } else {
                 provider.getStreams(tmdbId, isTv, season, episode, title, year)
               }
@@ -360,9 +363,10 @@ class StreamManager(
     tmdbId: Int,
     isTv: Boolean,
     season: Int?,
-    episode: Int?
+    episode: Int?,
+    imdbId: String? = null
   ): List<StreamSource> {
-    val candidates = addonRepository.fetchStreams(tmdbId, isTv, season, episode)
+    val candidates = addonRepository.fetchStreams(tmdbId, isTv, season, episode, imdbId)
     if (candidates.isEmpty()) {
       Log.i(DIAG_TAG, "DIAG-C origin=StremioAddons result=EMPTY candidates=0")
       return emptyList()
@@ -410,9 +414,10 @@ class StreamManager(
     originalTitle: String? = null,
     providerTag: String? = null,
     genres: List<String> = emptyList(),
-    streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB
+    streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB,
+    imdbId: String? = null
   ): List<StreamSource> {
-    return resolveFlow(tmdbId, isTv, season, episode, title, year, originalTitle, providerTag, genres, streamingEngineMode)
+    return resolveFlow(tmdbId, isTv, season, episode, title, year, originalTitle, providerTag, genres, streamingEngineMode, imdbId)
       .firstOrNull { it.isNotEmpty() }
       ?: emptyList()
   }
@@ -431,6 +436,9 @@ class StreamManager(
     val season = episode?.seasonNumber ?: media.lastWatchedSeason ?: 1
     val epNumber = episode?.episodeNumber ?: media.lastWatchedEpisode ?: 1
     val searchTitle = media.title.ifBlank { media.originalTitle }
+    val effectiveImdb = media.imdbId?.takeIf { it.isNotBlank() }
+      ?: episode?.seriesImdbId?.takeIf { it.isNotBlank() }
+      ?: media.id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
 
     val sources = resolve(
       tmdbId = tmdbId,
@@ -442,20 +450,23 @@ class StreamManager(
       originalTitle = media.originalTitle.takeIf { it.isNotBlank() },
       providerTag = media.provider,
       genres = media.genres,
-      streamingEngineMode = streamingEngineMode
+      streamingEngineMode = streamingEngineMode,
+      imdbId = effectiveImdb
     )
 
-    val best = sources.firstOrNull() ?: return null
-    if (best.infoHash != null && best.streamUrl == null) {
-      TorBoxRepository.setRequestMetadata(episode?.seasonNumber, episode?.episodeNumber)
-      val directUrl = TorBoxRepository.resolveInfoHash(best.infoHash, best.fileIdx)
-      return if (directUrl != null) {
-        best.copy(streamUrl = directUrl)
-      } else {
-        null
+    for (candidate in sources) {
+      if (!candidate.streamUrl.isNullOrBlank()) {
+        return candidate
+      }
+      if (candidate.infoHash != null) {
+        TorBoxRepository.setRequestMetadata(episode?.seasonNumber, episode?.episodeNumber)
+        val directUrl = TorBoxRepository.resolveInfoHash(candidate.infoHash, candidate.fileIdx)
+        if (directUrl != null) {
+          return candidate.copy(streamUrl = directUrl)
+        }
       }
     }
-    return if (!best.streamUrl.isNullOrBlank()) best else null
+    return null
   }
 
   companion object {

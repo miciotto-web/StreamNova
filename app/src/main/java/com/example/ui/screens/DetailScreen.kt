@@ -1,9 +1,12 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
@@ -25,11 +28,13 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -42,6 +47,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -55,12 +61,17 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
@@ -73,6 +84,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
@@ -83,20 +95,28 @@ import com.example.data.model.ExtendedMediaDetails
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.model.ProductionCompany
+import androidx.compose.ui.text.style.TextAlign
 import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.toEpisode
 import com.example.data.repository.MediaRepository
+import com.example.data.repository.SimklRepository
 import com.example.data.stremio.StremioCatalogMapper
 import com.example.ui.components.MediaActionBar
 import com.example.ui.components.MediaActionBarFocus
 import com.example.ui.components.ProviderBadge
 import com.example.ui.components.ProviderConstants
+import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.QualityBadge
-import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.components.TvFocusBringIntoViewSpec
+import com.example.ui.components.TvFocusRow
+import com.example.ui.components.TvFocusAttachment
+import com.example.ui.components.guard
+import com.example.ui.components.tvFocusRequester
+import com.example.ui.theme.NovaAccent
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
@@ -117,7 +137,7 @@ private val DetailTitleShadow = TextStyle(
 enum class DetailTab(val titleRes: Int) {
   EPISODI(R.string.detail_tab_episodes),
   CONSIGLIATI(R.string.detail_tab_recommended),
-  DETTAGLI(R.string.detail_tab_technical_details)
+  PRODUZIONE(R.string.detail_tab_production)
 }
 
 private fun matchesSeries(stateSeriesId: String?, media: MediaItem): Boolean {
@@ -150,6 +170,12 @@ fun DetailScreen(
   onRetry: (() -> Unit)? = null,
   onToggleWatched: ((MediaItem) -> Unit)? = null,
   onPlayTrailer: ((MediaItem) -> Unit)? = null,
+  onCastMemberClick: ((CastMember) -> Unit)? = null,
+  onCompanyClick: ((ProductionCompany) -> Unit)? = null,
+  targetCastMemberId: Int? = null,
+  onClearTargetCastMember: (() -> Unit)? = null,
+  targetCompanyId: Int? = null,
+  onClearTargetCompany: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   // Resolve active media & extended details depending on UI State
@@ -160,24 +186,55 @@ fun DetailScreen(
     else -> media to null
   }
 
-  var selectedTab by remember(displayMedia.id) { mutableIntStateOf(0) }
+
+
   val isTvSeries = displayMedia.type == MediaType.SERIE_TV
   val tabs = if (isTvSeries) {
-    listOf(DetailTab.EPISODI, DetailTab.CONSIGLIATI, DetailTab.DETTAGLI)
+    listOf(DetailTab.EPISODI, DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
   } else {
-    listOf(DetailTab.CONSIGLIATI, DetailTab.DETTAGLI)
+    listOf(DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
   }
 
+  var selectedTab by remember(displayMedia.id) {
+    val initialTab = if (targetCompanyId != null) {
+      tabs.indexOf(DetailTab.PRODUZIONE).coerceAtLeast(0)
+    } else 0
+    mutableIntStateOf(initialTab)
+  }
+
+  LaunchedEffect(targetCompanyId) {
+    if (targetCompanyId != null) {
+      val prodIdx = tabs.indexOf(DetailTab.PRODUZIONE)
+      if (prodIdx >= 0) selectedTab = prodIdx
+    }
+  }
+
+
+
+
+
+
+
   // Calculate available seasons
-  val availableSeasons = remember(displayMedia, extendedDetails) {
-    val maxFromMap = extendedDetails?.seasonEpisodesCount?.keys?.filter { it > 0 }?.maxOrNull()
-      ?: displayMedia.seasonEpisodesCount.keys.filter { it > 0 }.maxOrNull()
-    val totalCount = (extendedDetails?.seasonsCount ?: displayMedia.seasonsCount ?: maxFromMap ?: displayMedia.episodes.map { it.seasonNumber }.maxOrNull() ?: 1).coerceAtLeast(1)
-    (1..totalCount).toList()
+  val availableSeasons = remember(displayMedia, extendedDetails, selectedSeasonNumber) {
+    val knownSeasons = buildSet {
+      addAll(displayMedia.seasonEpisodesCount.keys.filter { it >= 0 })
+      addAll(extendedDetails?.seasonEpisodesCount?.keys.orEmpty().filter { it >= 0 })
+      addAll(displayMedia.episodes.map { it.seasonNumber }.filter { it >= 0 })
+      if (displayMedia.lastWatchedSeason == 0 || selectedSeasonNumber == 0) add(0)
+    }
+    val maxSeasonNumber = knownSeasons.filter { it > 0 }.maxOrNull()
+    val totalCount = maxOf(
+      extendedDetails?.seasonsCount ?: displayMedia.seasonsCount ?: maxSeasonNumber ?: 1,
+      maxSeasonNumber ?: 1
+    ).coerceAtLeast(1)
+    val numberedSeasons = (1..totalCount).toList()
+    if (0 in knownSeasons) listOf(0) + numberedSeasons else numberedSeasons
   }
 
   var localSelectedSeason by remember(displayMedia.id) {
     val initial = displayMedia.lastWatchedSeason?.takeIf { it in availableSeasons }
+      ?: availableSeasons.firstOrNull { it > 0 }
       ?: availableSeasons.firstOrNull()
       ?: 1
     mutableIntStateOf(initial)
@@ -189,6 +246,27 @@ fun DetailScreen(
     localSelectedSeason
   }
 
+  val seasonRowState = rememberLazyListState()
+  val seasonFocusRequesters = remember(displayMedia.id, availableSeasons) {
+    availableSeasons.associateWith { FocusRequester() }
+  }
+  val seasonFocusAttachments = remember(displayMedia.id, availableSeasons) {
+    availableSeasons.associateWith { TvFocusAttachment() }
+  }
+  val firstEpisodeFocusRequester = remember(displayMedia.id) { FocusRequester() }
+  val firstEpisodeFocusAttachment = remember(displayMedia.id) { TvFocusAttachment() }
+  val selectedSeasonRequester = seasonFocusRequesters[activeSeason]
+  val selectedSeasonAttachment = seasonFocusAttachments[activeSeason]
+  val episodeFocusTarget = firstEpisodeFocusAttachment.guard(firstEpisodeFocusRequester)
+    ?: FocusRequester.Default
+  val selectedSeasonFocusTarget = selectedSeasonAttachment.guard(selectedSeasonRequester)
+    ?: FocusRequester.Default
+
+  LaunchedEffect(activeSeason, availableSeasons) {
+    val selectedIndex = availableSeasons.indexOf(activeSeason)
+    if (selectedIndex >= 0) seasonRowState.animateScrollToItem(selectedIndex)
+  }
+
   val isMatchingSeries = matchesSeries(
     when (seasonEpisodesUiState) {
       is SeasonEpisodesUiState.Loading -> seasonEpisodesUiState.seriesId
@@ -198,6 +276,20 @@ fun DetailScreen(
     },
     displayMedia
   )
+
+  var simklWatchedEpisodes by remember(displayMedia.tmdbId, activeSeason) { mutableStateOf<Set<Int>>(emptySet()) }
+  val simklAccount by SimklRepository.accountState.collectAsState()
+  val simklWatchedRevision by SimklRepository.watchedRevision.collectAsState()
+  LaunchedEffect(displayMedia.tmdbId, activeSeason, simklAccount.isLoggedIn, simklWatchedRevision) {
+    simklWatchedEpisodes = emptySet()
+    if (!simklAccount.isLoggedIn) return@LaunchedEffect
+    val tmdbId = displayMedia.tmdbId ?: return@LaunchedEffect
+    simklWatchedEpisodes = SimklRepository.getWatchedEpisodes(tmdbId, activeSeason)
+  }
+
+  val selectedSeasonDetails = (seasonEpisodesUiState as? SeasonEpisodesUiState.Success)
+    ?.takeIf { it.seasonNumber == activeSeason && isMatchingSeries }
+    ?.season
 
   val isSeasonLoading = seasonEpisodesUiState is SeasonEpisodesUiState.Loading && seasonEpisodesUiState.seasonNumber == activeSeason && isMatchingSeries
   val seasonErrorMessage = if (seasonEpisodesUiState is SeasonEpisodesUiState.Error && seasonEpisodesUiState.seasonNumber == activeSeason && isMatchingSeries) {
@@ -393,6 +485,9 @@ fun DetailScreen(
     // non e' ancora agganciato al sistema di focus (no-op silenzioso), quindi si
     // ritenta finche' `onPlayFocusChanged` non conferma che il focus e' sul pulsante.
     LaunchedEffect(displayMedia.id) {
+      if (targetCastMemberId != null || targetCompanyId != null) {
+        return@LaunchedEffect
+      }
       isBringIntoViewAllowed = false
       isActionBarFocused = false
       isPlayFocused = false
@@ -723,7 +818,12 @@ fun DetailScreen(
       // Horizontal Carousel of Main Cast (Foto profilo, attore e ruolo)
       if (castMembers.isNotEmpty()) {
         item {
-          CastCarousel(cast = castMembers)
+          CastCarousel(
+            cast = castMembers,
+            onMemberClick = onCastMemberClick,
+            targetMemberId = targetCastMemberId,
+            onFocusRestored = onClearTargetCastMember
+          )
           Spacer(modifier = Modifier.height(24.dp))
         }
       }
@@ -808,73 +908,85 @@ fun DetailScreen(
               }
 
               // Horizontal scrollable row of season pills
-              LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                contentPadding = PaddingValues(vertical = 4.dp)
-              ) {
-                items(availableSeasons) { seasonNum ->
-                  val isSeasonSelected = seasonNum == activeSeason
-                  val epCount = extendedDetails?.seasonEpisodesCount?.get(seasonNum)
-                    ?: displayMedia.seasonEpisodesCount[seasonNum]
+              TvFocusRow {
+                LazyRow(
+                  state = seasonRowState,
+                  horizontalArrangement = Arrangement.spacedBy(14.dp),
+                  contentPadding = PaddingValues(vertical = 4.dp)
+                ) {
+                  items(availableSeasons, key = { "season_$it" }) { seasonNum ->
+                    val isSeasonSelected = seasonNum == activeSeason
+                    val epCount = extendedDetails?.seasonEpisodesCount?.get(seasonNum)
+                      ?: displayMedia.seasonEpisodesCount[seasonNum]
+                    val seasonRequester = seasonFocusRequesters.getValue(seasonNum)
+                    val seasonAttachment = seasonFocusAttachments.getValue(seasonNum)
 
-                  TvFocusableBox(
-                    shape = RoundedCornerShape(50),
-                    focusedScale = 1.05f,
-                    onClick = {
-                      localSelectedSeason = seasonNum
-                      onSeasonChange?.invoke(displayMedia, seasonNum)
-                    }
-                  ) { isFocused ->
-                    Row(
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    TvFocusableBox(
                       modifier = Modifier
-                        .background(
-                          color = when {
-                            isFocused -> NovaCyan.copy(alpha = 0.35f)
-                            isSeasonSelected -> NovaCyan.copy(alpha = 0.22f)
-                            else -> NovaSurfaceVariant
-                          },
-                          shape = RoundedCornerShape(50)
-                        )
-                        .border(
-                          width = if (isFocused) 2.dp else if (isSeasonSelected) 1.5.dp else 1.dp,
-                          color = when {
-                            isFocused -> NovaCyanBright
-                            isSeasonSelected -> NovaCyan
-                            else -> Color(0xFF1E293B)
-                          },
-                          shape = RoundedCornerShape(50)
-                        )
-                        .padding(horizontal = 18.dp, vertical = 10.dp)
-                    ) {
-                      Text(
-                        text = stringResource(R.string.detail_season_format, seasonNum),
-                        color = when {
-                          isFocused -> NovaCyanBright
-                          isSeasonSelected -> NovaCyanBright
-                          else -> NovaTextSecondary
-                        },
-                        fontSize = 15.sp,
-                        fontWeight = if (isSeasonSelected || isFocused) FontWeight.Bold else FontWeight.Medium
-                      )
-
-                      // Badge with episode count
-                      val badgeText = epCount?.let { stringResource(R.string.detail_episodes_count_badge, it) } ?: "..."
-                      Box(
+                        .tvFocusRequester(seasonRequester, seasonAttachment)
+                        .focusProperties { down = episodeFocusTarget },
+                      shape = RoundedCornerShape(50),
+                      focusedScale = 1.05f,
+                      onClick = {
+                        localSelectedSeason = seasonNum
+                        onSeasonChange?.invoke(displayMedia, seasonNum)
+                      }
+                    ) { isFocused ->
+                      Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier
                           .background(
-                            if (isSeasonSelected || isFocused) NovaCyan.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.45f),
-                            RoundedCornerShape(6.dp)
+                            color = when {
+                              isFocused -> NovaCyan.copy(alpha = 0.35f)
+                              isSeasonSelected -> NovaCyan.copy(alpha = 0.22f)
+                              else -> NovaSurfaceVariant
+                            },
+                            shape = RoundedCornerShape(50)
                           )
-                          .padding(horizontal = 8.dp, vertical = 3.dp)
+                          .border(
+                            width = if (isFocused) 2.dp else if (isSeasonSelected) 1.5.dp else 1.dp,
+                            color = when {
+                              isFocused -> NovaCyanBright
+                              isSeasonSelected -> NovaCyan
+                              else -> Color(0xFF1E293B)
+                            },
+                            shape = RoundedCornerShape(50)
+                          )
+                          .padding(horizontal = 18.dp, vertical = 10.dp)
                       ) {
                         Text(
-                          text = badgeText,
-                          color = if (isSeasonSelected || isFocused) NovaCyanBright else NovaTextMuted,
-                          fontSize = 11.sp,
-                          fontWeight = FontWeight.SemiBold
+                          text = if (seasonNum == 0) {
+                            stringResource(R.string.detail_specials)
+                          } else {
+                            stringResource(R.string.detail_season_format, seasonNum)
+                          },
+                          color = when {
+                            isFocused -> NovaCyanBright
+                            isSeasonSelected -> NovaCyanBright
+                            else -> NovaTextSecondary
+                          },
+                          fontSize = 15.sp,
+                          fontWeight = if (isSeasonSelected || isFocused) FontWeight.Bold else FontWeight.Medium
                         )
+
+                        // Badge with episode count
+                        val badgeText = epCount?.let { stringResource(R.string.detail_episodes_count_badge, it) } ?: "..."
+                        Box(
+                          modifier = Modifier
+                            .background(
+                              if (isSeasonSelected || isFocused) NovaCyan.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.45f),
+                              RoundedCornerShape(6.dp)
+                            )
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                          Text(
+                            text = badgeText,
+                            color = if (isSeasonSelected || isFocused) NovaCyanBright else NovaTextMuted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                          )
+                        }
                       }
                     }
                   }
@@ -898,7 +1010,11 @@ fun DetailScreen(
                   ?: episodesForSeason.size
 
                 Text(
-                  text = stringResource(R.string.detail_season_episodes_status, activeSeason, currentSeasonCount),
+                  text = if (activeSeason == 0) {
+                    "${stringResource(R.string.detail_specials)} • ${stringResource(R.string.detail_episodes_count_badge, currentSeasonCount)}"
+                  } else {
+                    stringResource(R.string.detail_season_episodes_status, activeSeason, currentSeasonCount)
+                  },
                   color = NovaTextPrimary,
                   fontSize = 14.sp,
                   fontWeight = FontWeight.SemiBold
@@ -908,6 +1024,42 @@ fun DetailScreen(
                   color = NovaCyanBright,
                   fontSize = 12.sp,
                   fontWeight = FontWeight.Medium
+                )
+              }
+
+              selectedSeasonDetails?.name
+                ?.takeIf {
+                  val normalized = it.trim()
+                  it.isNotBlank() && activeSeason != 0 &&
+                    !normalized.equals("Season $activeSeason", ignoreCase = true) &&
+                    !normalized.equals("Stagione $activeSeason", ignoreCase = true)
+                }
+                ?.let { seasonName ->
+                  Text(
+                    text = seasonName,
+                    color = NovaTextPrimary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 10.dp)
+                  )
+                }
+              selectedSeasonDetails?.airDate?.takeIf { it.isNotBlank() }?.let { airDate ->
+                Text(
+                  text = stringResource(R.string.detail_season_air_date_format, airDate),
+                  color = NovaTextMuted,
+                  fontSize = 12.sp,
+                  modifier = Modifier.padding(top = 8.dp)
+                )
+              }
+              selectedSeasonDetails?.overview?.takeIf { it.isNotBlank() }?.let { overview ->
+                Text(
+                  text = overview,
+                  color = NovaTextSecondary,
+                  fontSize = 13.sp,
+                  lineHeight = 19.sp,
+                  maxLines = 3,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier.padding(top = 6.dp)
                 )
               }
 
@@ -1001,15 +1153,26 @@ fun DetailScreen(
               }
             }
           } else {
-            items(episodesForSeason, key = { it.id }) { episode ->
+            itemsIndexed(episodesForSeason, key = { _, episode -> episode.id }) { index, episode ->
               EpisodeRowItem(
                 episode = episode,
+                isSimklWatched = episode.episodeNumber in simklWatchedEpisodes,
                 fallbackBackdropUrl = displayMedia.backdropUrl,
                 fallbackBackdropRes = displayMedia.backdropRes,
                 onClick = {
                   onEpisodeClick?.invoke(displayMedia, episode) ?: onPlayClick(displayMedia, episode)
                 },
-                modifier = Modifier.padding(horizontal = 32.dp, vertical = 6.dp)
+                modifier = Modifier
+                  .padding(horizontal = 32.dp, vertical = 6.dp)
+                  .then(
+                    if (index == 0) {
+                      Modifier
+                        .tvFocusRequester(firstEpisodeFocusRequester, firstEpisodeFocusAttachment)
+                        .focusProperties { up = selectedSeasonFocusTarget }
+                    } else {
+                      Modifier
+                    }
+                  )
               )
             }
           }
@@ -1020,24 +1183,32 @@ fun DetailScreen(
               extendedDetails?.similarItems?.takeIf { it.isNotEmpty() }
                 ?: allMedia.filter { it.id != displayMedia.id }
             }
-            LazyRow(
-              contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-              horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-              items(similarRecommendations, key = { "rec_${it.id}" }) { item ->
-                StandardMediaCard(
-                  media = item,
-                  onClick = { onMediaClick?.invoke(item) }
-                )
+            val similarState = rememberLazyListState()
+            TvFocusRow {
+              LazyRow(
+                state = similarState,
+                contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+              ) {
+                items(similarRecommendations, key = { "rec_${it.id}" }) { item ->
+                  PosterMediaCard(
+                    media = item,
+                    onClick = { onMediaClick?.invoke(item) }
+                  )
+                }
               }
             }
           }
         }
-        DetailTab.DETTAGLI -> {
+        DetailTab.PRODUZIONE -> {
           item {
-            TechnicalDetailsCard(
-              media = displayMedia,
-              details = extendedDetails,
+            ProductionSection(
+              companies = extendedDetails?.productionCompanies ?: emptyList(),
+              onCompanyClick = onCompanyClick,
+              targetCompanyId = targetCompanyId,
+              onFocusRestored = onClearTargetCompany,
+
+
               modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
             )
           }
@@ -1051,6 +1222,9 @@ fun DetailScreen(
 @Composable
 fun CastCarousel(
   cast: List<CastMember>,
+  onMemberClick: ((CastMember) -> Unit)? = null,
+  targetMemberId: Int? = null,
+  onFocusRestored: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   Column(modifier = modifier.fillMaxWidth()) {
@@ -1076,12 +1250,21 @@ fun CastCarousel(
 
     Spacer(modifier = Modifier.height(8.dp))
 
-    LazyRow(
-      contentPadding = PaddingValues(horizontal = 32.dp, vertical = 6.dp),
-      horizontalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-      items(cast, key = { "${it.id}_${it.name}" }) { member ->
-        CastMemberCard(member = member)
+    val castState = rememberLazyListState()
+    TvFocusRow {
+      LazyRow(
+        state = castState,
+        contentPadding = PaddingValues(horizontal = 32.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        items(cast, key = { "${it.id}_${it.name}" }) { member ->
+          CastMemberCard(
+            member = member,
+            onClick = { onMemberClick?.invoke(member) },
+            targetMemberId = targetMemberId,
+            onFocusRestored = onFocusRestored
+          )
+        }
       }
     }
   }
@@ -1090,83 +1273,126 @@ fun CastCarousel(
 @Composable
 fun CastMemberCard(
   member: CastMember,
+  onClick: () -> Unit,
+  targetMemberId: Int? = null,
+  onFocusRestored: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
-  TvFocusableBox(
-    shape = RoundedCornerShape(12.dp),
-    focusedScale = 1.05f,
-    onClick = { /* Focusable TV Card */ },
-    modifier = modifier.width(135.dp)
-  ) { isFocused ->
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .background(
-          if (isFocused) NovaSurfaceVariant else NovaCardBg,
-          RoundedCornerShape(12.dp)
-        )
-        .border(
-          width = if (isFocused) 1.5.dp else 1.dp,
-          color = if (isFocused) NovaCyanBright else Color(0xFF1E293B),
-          shape = RoundedCornerShape(12.dp)
-        )
-        .padding(10.dp),
-      horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-      // Profile photo
-      Box(
-        modifier = Modifier
-          .size(76.dp)
-          .clip(CircleShape)
-          .background(Color(0xFF0F172A))
-          .border(
-            width = if (isFocused) 2.dp else 1.dp,
-            color = if (isFocused) NovaCyanBright else Color(0xFF334155),
-            shape = CircleShape
-          ),
-        contentAlignment = Alignment.Center
-      ) {
-        if (!member.profileUrl.isNullOrBlank()) {
-          AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-              .data(member.profileUrl)
-              .crossfade(true)
-              .build(),
-            contentDescription = member.name,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-          )
+  val focusRequester = remember { FocusRequester() }
+  var isFocused by remember { mutableStateOf(false) }
+
+  LaunchedEffect(targetMemberId) {
+    if (targetMemberId != null && targetMemberId == member.id) {
+      try {
+        focusRequester.requestFocus()
+        onFocusRestored?.invoke()
+      } catch (_: Exception) {
+        delay(32)
+        try {
+          focusRequester.requestFocus()
+          onFocusRestored?.invoke()
+        } catch (_: Exception) {}
+      }
+    }
+  }
+
+  val scale by animateFloatAsState(
+    targetValue = if (isFocused) 1.08f else 1f,
+    animationSpec = tween(durationMillis = 180),
+    label = "castMemberScale"
+  )
+
+  // Nessuna cornice esterna: il contenitore resta trasparente e l'unico focus ring
+  // e' il bordo applicato direttamente sul cerchio dell'avatar.
+  Column(
+    modifier = modifier
+      .width(112.dp)
+      .focusRequester(focusRequester)
+      .zIndex(if (isFocused) 10f else 1f)
+      .graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+      }
+      .onFocusChanged { isFocused = it.isFocused }
+      .onKeyEvent { keyEvent ->
+        val isConfirm = keyEvent.key == Key.Enter ||
+          keyEvent.key == Key.NumPadEnter ||
+          keyEvent.key == Key.DirectionCenter
+        if (isConfirm && keyEvent.type == KeyEventType.KeyUp) {
+          onClick()
+          true
         } else {
-          Icon(
-            imageVector = Icons.Default.Person,
-            contentDescription = null,
-            tint = NovaTextMuted,
-            modifier = Modifier.size(36.dp)
-          )
+          false
         }
       }
-
-      Spacer(modifier = Modifier.height(10.dp))
-
-      Text(
-        text = member.name,
-        color = if (isFocused) NovaCyanBright else NovaTextPrimary,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.Bold,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis
-      )
-
-      if (member.character.isNotBlank()) {
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-          text = if (member.character == "Cast principale") stringResource(R.string.cast_main_role) else member.character,
-          color = NovaTextMuted,
-          fontSize = 11.sp,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis
+      .focusable()
+      .padding(vertical = 4.dp),
+    horizontalAlignment = Alignment.CenterHorizontally
+  ) {
+    // Profile photo - cerchio perfetto per TV (96dp), senza cornici o rettangoli esterni
+    Box(
+      modifier = Modifier
+        .size(96.dp)
+        .clip(CircleShape)
+        .background(Color(0xFF0F172A), CircleShape)
+        .border(
+          width = if (isFocused) 2.5.dp else 1.dp,
+          color = if (isFocused) NovaAccent else Color(0xFF334155).copy(alpha = 0.6f),
+          shape = CircleShape
+        ),
+      contentAlignment = Alignment.Center
+    ) {
+      if (!member.profileUrl.isNullOrBlank()) {
+        AsyncImage(
+          model = ImageRequest.Builder(LocalContext.current)
+            .data(member.profileUrl)
+            .crossfade(true)
+            .build(),
+          contentDescription = member.name,
+          contentScale = ContentScale.Crop,
+          modifier = Modifier
+            .fillMaxSize()
+            .clip(CircleShape)
+        )
+      } else {
+        Icon(
+          imageVector = Icons.Default.Person,
+          contentDescription = null,
+          tint = NovaTextMuted,
+          modifier = Modifier.size(44.dp)
         )
       }
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    Text(
+      text = member.name,
+      color = if (isFocused) NovaCyanBright else Color.White,
+      fontSize = 13.sp,
+      fontWeight = FontWeight.Bold,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+      textAlign = TextAlign.Center,
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 2.dp)
+    )
+
+    if (member.character.isNotBlank()) {
+      Spacer(modifier = Modifier.height(2.dp))
+      Text(
+        text = if (member.character == "Cast principale") stringResource(R.string.cast_main_role) else member.character,
+        color = NovaTextSecondary,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Normal,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 2.dp)
+      )
     }
   }
 }
@@ -1175,6 +1401,7 @@ fun CastMemberCard(
 fun EpisodeRowItem(
   episode: Episode,
   onClick: () -> Unit,
+  isSimklWatched: Boolean = false,
   fallbackBackdropUrl: String? = null,
   fallbackBackdropRes: Int? = null,
   modifier: Modifier = Modifier
@@ -1203,14 +1430,14 @@ fun EpisodeRowItem(
       // 16:9 Thumbnail container
       Box(
         modifier = Modifier
-          .width(160.dp)
-          .height(90.dp)
-          .clip(RoundedCornerShape(8.dp))
+          .width(220.dp)
+          .height(124.dp)
+          .clip(RoundedCornerShape(12.dp))
           .background(Color(0xFF0F172A))
           .border(
             width = if (isFocused) 1.5.dp else 1.dp,
             color = if (isFocused) NovaCyan else Color(0xFF334155),
-            shape = RoundedCornerShape(8.dp)
+            shape = RoundedCornerShape(12.dp)
           )
       ) {
         val thumbUrl = episode.thumbnailUrl ?: fallbackBackdropUrl
@@ -1243,6 +1470,21 @@ fun EpisodeRowItem(
                   )
                 )
             )
+          }
+        }
+
+        if (isSimklWatched) {
+          Row(
+            modifier = Modifier
+              .align(Alignment.TopEnd)
+              .padding(6.dp)
+              .background(Color(0xFF059669), RoundedCornerShape(6.dp))
+              .padding(horizontal = 7.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+          ) {
+            Icon(Icons.Default.Check, contentDescription = "Visto su SIMKL", tint = Color.White, modifier = Modifier.size(13.dp))
+            Text("Visto", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
           }
         }
 
@@ -1402,96 +1644,155 @@ fun EpisodeRowItem(
 }
 
 @Composable
-fun TechnicalDetailsCard(
-  media: MediaItem,
-  details: ExtendedMediaDetails?,
+fun ProductionSection(
+  companies: List<ProductionCompany>,
+  onCompanyClick: ((ProductionCompany) -> Unit)? = null,
+  targetCompanyId: Int? = null,
+  onFocusRestored: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
-  Row(
-    modifier = modifier
-      .fillMaxWidth()
-      .background(NovaCardBg, RoundedCornerShape(12.dp))
-      .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(12.dp))
-      .padding(24.dp),
-    horizontalArrangement = Arrangement.spacedBy(24.dp)
+  Column(
+    modifier = modifier.fillMaxWidth()
   ) {
-    // Visual Separation: Official TMDB Poster (2:3 aspect ratio)
-    val posterUrl = StremioCatalogMapper.extractImageUrl(details?.posterUrl ?: media.posterUrl)
-    if (!posterUrl.isNullOrBlank()) {
-      Box(
-        modifier = Modifier
-          .width(160.dp)
-          .height(240.dp)
-          .clip(RoundedCornerShape(8.dp))
-          .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
-      ) {
-        AsyncImage(
-          model = ImageRequest.Builder(LocalContext.current)
-            .data(posterUrl)
-            .crossfade(true)
-            .build(),
-          contentDescription = media.title,
-          contentScale = ContentScale.Crop,
-          modifier = Modifier.fillMaxSize()
-        )
-      }
-    }
-
-    Column(
-      modifier = Modifier.weight(1f),
-      verticalArrangement = Arrangement.spacedBy(10.dp)
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+      modifier = Modifier.padding(bottom = 12.dp)
     ) {
       Text(
-        text = stringResource(R.string.detail_tech_specs_title),
-        color = NovaTextPrimary,
-        fontSize = 18.sp,
-        fontWeight = FontWeight.Bold
+        text = stringResource(R.string.production_section_title),
+        color = NovaTextMuted,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.sp
       )
+    }
 
-      Spacer(modifier = Modifier.height(2.dp))
-
-      DetailRow(
-        label = stringResource(R.string.detail_tech_original_title),
-        value = details?.originalTitle?.takeIf { it.isNotBlank() } ?: media.originalTitle.ifBlank { media.title }
-      )
-      DetailRow(
-        label = stringResource(R.string.detail_tech_director),
-        value = details?.director?.takeIf { it.isNotBlank() } ?: media.director.ifEmpty { stringResource(R.string.detail_tech_international_production) }
-      )
-      DetailRow(
-        label = stringResource(R.string.detail_tech_genres),
-        value = (details?.genres?.takeIf { it.isNotEmpty() } ?: media.genres).joinToString(", ")
-      )
-      if (!details?.tagline.isNullOrBlank()) {
-        DetailRow(label = stringResource(R.string.detail_tech_tagline), value = details?.tagline ?: "")
+    if (companies.isEmpty()) {
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(NovaCardBg, RoundedCornerShape(12.dp))
+          .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(12.dp))
+          .padding(24.dp),
+        contentAlignment = Alignment.Center
+      ) {
+        Text(
+          text = stringResource(R.string.production_empty),
+          color = NovaTextSecondary,
+          fontSize = 14.sp
+        )
       }
-      if (!details?.status.isNullOrBlank()) {
-        DetailRow(label = stringResource(R.string.detail_tech_tmdb_status), value = details?.status ?: "")
+    } else {
+      val companiesState = rememberLazyListState()
+      TvFocusRow {
+        LazyRow(
+          state = companiesState,
+          contentPadding = PaddingValues(vertical = 4.dp),
+          horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+          items(companies, key = { "${it.id}_${it.name}" }) { company ->
+            ProductionCompanyCard(
+              company = company,
+              onClick = { onCompanyClick?.invoke(company) },
+              targetCompanyId = targetCompanyId,
+              onFocusRestored = onFocusRestored
+            )
+          }
+        }
       }
-      DetailRow(label = stringResource(R.string.detail_tech_audio_languages), value = stringResource(R.string.detail_tech_audio_languages_val))
-      DetailRow(label = stringResource(R.string.detail_tech_subtitles), value = stringResource(R.string.detail_tech_subtitles_val))
     }
   }
 }
 
+/**
+ * Badge casa di produzione: container CHIARO (come da riferimento TV) con angoli arrotondati,
+ * cosi' sia i loghi neri (Columbia, Pascal, TSG) sia quelli a colori (Marvel) restano nitidi
+ * su sfondo scuro. Il logo viene renderizzato con colori e grafica ORIGINALI (nessun filtro).
+ * Al focus D-pad: bordo/glow cyan consueto + badge passa a bianco pieno.
+ */
 @Composable
-fun DetailRow(label: String, value: String) {
-  Row(
-    modifier = Modifier.fillMaxWidth(),
-    horizontalArrangement = Arrangement.SpaceBetween
-  ) {
-    Text(
-      text = label,
-      color = NovaTextMuted,
-      fontSize = 13.sp,
-      modifier = Modifier.width(180.dp)
-    )
-    Text(
-      text = value,
-      color = NovaTextSecondary,
-      fontSize = 13.sp,
-      fontWeight = FontWeight.Medium,
-      modifier = Modifier.weight(1f)
-    )
+fun ProductionCompanyCard(
+  company: ProductionCompany,
+  onClick: () -> Unit,
+  targetCompanyId: Int? = null,
+  onFocusRestored: (() -> Unit)? = null,
+  modifier: Modifier = Modifier
+) {
+  val focusRequester = remember { FocusRequester() }
+
+  LaunchedEffect(targetCompanyId) {
+    if (targetCompanyId != null && targetCompanyId == company.id) {
+      try {
+        focusRequester.requestFocus()
+        onFocusRestored?.invoke()
+      } catch (_: Exception) {
+        delay(32)
+        try {
+          focusRequester.requestFocus()
+          onFocusRestored?.invoke()
+        } catch (_: Exception) {}
+      }
+    }
+  }
+
+  TvFocusableBox(
+    shape = RoundedCornerShape(12.dp),
+    focusedScale = 1.08f,
+    onClick = onClick,
+    modifier = modifier.focusRequester(focusRequester)
+  ) { isFocused ->
+    Box(
+      modifier = Modifier
+        .width(180.dp)
+        .height(88.dp)
+        .background(
+          color = if (isFocused) Color.White else Color(0xFFEEEEEE),
+          shape = RoundedCornerShape(12.dp)
+        )
+        .border(
+          width = if (isFocused) 2.dp else 1.dp,
+          color = if (isFocused) NovaCyanBright else Color(0xFFD7DCE5),
+          shape = RoundedCornerShape(12.dp)
+        )
+        .padding(8.dp),
+      contentAlignment = Alignment.Center
+    ) {
+      if (!company.logoUrl.isNullOrBlank()) {
+        AsyncImage(
+          model = ImageRequest.Builder(LocalContext.current)
+            .data(company.logoUrl)
+            .crossfade(true)
+            .build(),
+          contentDescription = company.name,
+          contentScale = ContentScale.Fit,
+          modifier = Modifier.fillMaxSize()
+        )
+      } else {
+        Column(
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.Center
+        ) {
+          Text(
+            text = company.name,
+            color = if (isFocused) NovaCyan else Color(0xFF0F172A),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+          )
+          if (!company.originCountry.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+              text = company.originCountry,
+              color = NovaTextMuted,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Medium
+            )
+          }
+        }
+      }
+    }
   }
 }

@@ -56,7 +56,8 @@ class SeasonEpisodePickerTest {
       name = "Stagione 1",
       seasonNumber = 1,
       overview = "La prima stagione di Arcane",
-      episodes = listOf(sampleEpisode)
+      episodes = listOf(sampleEpisode),
+      airDate = "2021-11-06"
     )
 
     val json = MediaCacheMapper.serializeSeasonDetail(sampleSeason)
@@ -67,6 +68,7 @@ class SeasonEpisodePickerTest {
     val deserialized = MediaCacheMapper.deserializeSeasonDetail(json)
     assertNotNull("Deserialized season should not be null", deserialized)
     assertEquals(1, deserialized?.seasonNumber)
+    assertEquals("2021-11-06", deserialized?.airDate)
     assertEquals(1, deserialized?.episodes?.size)
     assertEquals(101, deserialized?.episodes?.first()?.id)
     assertEquals("Benvenuti nel gioco", deserialized?.episodes?.first()?.name)
@@ -86,9 +88,9 @@ class SeasonEpisodePickerTest {
 
     // Verify tabs computation for movie
     val movieTabs = if (movie.type == MediaType.SERIE_TV) {
-      listOf(DetailTab.EPISODI, DetailTab.CONSIGLIATI, DetailTab.DETTAGLI)
+      listOf(DetailTab.EPISODI, DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
     } else {
-      listOf(DetailTab.CONSIGLIATI, DetailTab.DETTAGLI)
+      listOf(DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
     }
 
     assertFalse("Movie tabs must NOT contain DetailTab.EPISODI", movieTabs.contains(DetailTab.EPISODI))
@@ -109,9 +111,9 @@ class SeasonEpisodePickerTest {
 
     // Verify tabs computation for TV Series
     val tvTabs = if (tvSeries.type == MediaType.SERIE_TV) {
-      listOf(DetailTab.EPISODI, DetailTab.CONSIGLIATI, DetailTab.DETTAGLI)
+      listOf(DetailTab.EPISODI, DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
     } else {
-      listOf(DetailTab.CONSIGLIATI, DetailTab.DETTAGLI)
+      listOf(DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
     }
 
     assertTrue("TV Series tabs MUST contain DetailTab.EPISODI", tvTabs.contains(DetailTab.EPISODI))

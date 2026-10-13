@@ -62,6 +62,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -646,13 +647,19 @@ fun StandardMediaCard(
  * - Bordo nitido luminescente 2.5dp in [NovaCyanBright] sul perimetro.
  * - Riflesso "di vetro" diagonale semitrasparente sul terzo superiore dell'immagine.
  * - Tutto clippato a [RoundedCornerShape] 14dp: immagine, riflesso e bordo non sbordano.
+ *
+ * @param cardWidth larghezza del poster in dp (altezza calcolata = 1.5x, rapporto 2:3).
+ * @param allowBackdropFallback se `false` la card NON usa MAI il backdrop orizzontale (16:9)
+ *   come sostituto della locandina: senza `poster_path` viene mostrato il placeholder neutro.
  */
 @Composable
 fun PosterMediaCard(
   media: MediaItem,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
-  focusRequester: FocusRequester? = null
+  focusRequester: FocusRequester? = null,
+  cardWidth: Dp = 150.dp,
+  allowBackdropFallback: Boolean = true
 ) {
   var isFocused by remember { mutableStateOf(false) }
   val targetMediaId = LocalLastFocusedMediaId.current
@@ -697,7 +704,7 @@ fun PosterMediaCard(
 
   Column(
     modifier = Modifier
-      .width(150.dp)
+      .width(cardWidth)
       .then(modifier)
       .focusRequester(cardFocusRequester)
       // La card in focus deve coprire le card vicine
@@ -727,11 +734,12 @@ fun PosterMediaCard(
       }
       .clickable { onClick() }
   ) {
-    // 1) Poster 150x225: alone Neon, clip arrotondato, riflesso speculare e bordo.
+    // 1) Poster verticale 2:3 (cardWidth x cardWidth * 1.5): alone Neon, clip arrotondato,
+    // riflesso speculare e bordo.
     Box(
       modifier = Modifier
-        .width(150.dp)
-        .height(225.dp)
+        .width(cardWidth)
+        .height(cardWidth * 1.5f)
         // Alone disegnato PRIMA del clip: si estende oltre i bordi della card.
         .drawBehind {
           drawNeonGlow(
@@ -758,7 +766,7 @@ fun PosterMediaCard(
       val fallbackRes = (media.posterRes ?: media.backdropRes)?.takeIf { it != R.drawable.banner_dune }
       CardMediaImage(
         primaryUrl = media.posterUrl,
-        secondaryUrl = media.backdropUrl,
+        secondaryUrl = if (allowBackdropFallback) media.backdropUrl else null,
         fallbackRes = fallbackRes,
         contentDescription = media.title,
         modifier = Modifier.fillMaxSize(),

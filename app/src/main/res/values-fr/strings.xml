@@ -85,6 +85,23 @@
     <string name="detail_tab_episodes">Épisodes</string>
     <string name="detail_tab_recommended">Recommandés</string>
     <string name="detail_tab_technical_details">Détails techniques</string>
+    <string name="detail_tab_production">Production</string>
+    <string name="production_section_title">SOCIÉTÉS DE PRODUCTION</string>
+    <string name="production_empty">Aucune société de production disponible</string>
+    <string name="studio_movies_title">Films du studio</string>
+    <string name="studio_tv_title">Séries TV du studio</string>
+    <string name="studio_header_subtitle">Productions et catalogue du studio</string>
+    <string name="studio_company_overline">Société de production</string>
+    <string name="studio_row_movies_popular">Films • Populaires</string>
+    <string name="studio_row_movies_top_rated">Films • Les mieux notés</string>
+    <string name="studio_row_tv_popular">Séries • Populaires</string>
+    <string name="studio_row_tv_top_rated">Séries • Les mieux notées</string>
+    <string name="person_bio_title">Biographie</string>
+    <string name="person_born_title">Date et lieu de naissance</string>
+    <string name="person_born_format">Né le %1$s (âge %2$d)</string>
+    <string name="person_credits_title">Filmographie</string>
+    <string name="person_credits_empty">Aucun titre trouvé</string>
+    <string name="person_bio_empty">Aucune biographie disponible pour cet artiste.</string>
     <string name="detail_loading_tmdb">Récupération des détails TMDB…</string>
     <string name="detail_partial_error">Détails partiels : %s</string>
     <string name="detail_seasons_episodes_format">%1$d Saisons • %2$d Ép.</string>
@@ -102,6 +119,11 @@
     <string name="cast_main_role">Casting principal</string>
     <string name="detail_duration_min">%d min</string>
     <string name="detail_watched_badge">✓ Vu</string>
+    <string name="detail_trailer_loading">Récupération de la bande-annonce depuis TMDB…</string>
+    <string name="detail_trailer_error">Bande-annonce non disponible pour ce titre</string>
+    <string name="detail_action_trailer">Lire la bande-annonce</string>
+    <string name="detail_action_mark_watched">Marquer comme vu</string>
+    <string name="detail_action_mark_unwatched">Marquer comme non vu</string>
     <string name="detail_air_date_format">Date de diffusion : %s</string>
     <string name="detail_tech_specs_title">Fiche technique et spécifications</string>
     <string name="detail_tech_original_title">Titre original</string>
@@ -209,6 +231,15 @@
      <string name="settings_preferred_audio_language">Langue audio préférée</string>
      <string name="settings_autoplay_next_episode">Lire automatiquement l\'épisode suivant</string>
      <string name="settings_auto_resume">Reprendre automatiquement la lecture</string>
+     <string name="settings_sec_stream_selection">Sélection du flux</string>
+     <string name="settings_reuse_last_stream">Réutiliser le dernier lien</string>
+     <string name="settings_reuse_last_stream_desc">Lire automatiquement le dernier flux fonctionnel pour le même film/épisode si le cache est encore valide.</string>
+     <string name="settings_reuse_last_stream_cache_duration">Durée du cache du dernier lien</string>
+     <string name="reuse_cache_6h">6 heures</string>
+     <string name="reuse_cache_12h">12 heures</string>
+     <string name="reuse_cache_1d">1 jour</string>
+     <string name="reuse_cache_3d">3 jours</string>
+     <string name="reuse_cache_7d">7 jours</string>
      <string name="settings_sec_subtitles">Sous-titres</string>
      <string name="settings_auto_subtitles">Activer automatiquement les sous-titres</string>
      <string name="settings_preferred_subtitle_lang">Langue préférée</string>
@@ -284,6 +315,9 @@
      <string name="player_cd_pause">Pause</string>
      <string name="player_cd_play">Lire</string>
      <string name="player_cd_next_episode">Épisode Suivant</string>
+     <string name="player_next_episode_title">ÉPISODE SUIVANT</string>
+     <string name="player_next_episode_watch_now">REGARDER MAINTENANT</string>
+     <string name="player_next_episode_countdown">Démarre dans %1$d s</string>
      <string name="player_cd_aspect_ratio">Ajuster le format vidéo</string>
      <string name="player_cd_video_quality">Qualité vidéo</string>
      <string name="player_cd_playback_speed">Vitesse de lecture</string>
@@ -292,6 +326,7 @@
      <string name="player_cd_selected">Sélectionné</string>
 
      <string name="player_audio_dialog_title">Sélectionner la Piste Audio</string>
+     <string name="player_track_quick_title">Pistes audio et sous-titres</string>
      <string name="player_audio_default">Audio par défaut</string>
      <string name="player_audio_fallback">Audio</string>
      <string name="player_subtitles_dialog_title">Sélectionner les Sous-titres</string>
@@ -308,6 +343,8 @@
      <string name="player_resize_zoom">Rogner et remplir (Zoom)</string>
 
      <string name="player_http_expired">Flux expiré (401/410)</string>
+     <string name="player_http_timeout">Délai de connexion au flux dépassé. Vérifiez la source et réessayez.</string>
+     <string name="player_invalid_stream">Le fournisseur a renvoyé un flux invalide ou non pris en charge.</string>
      <string name="player_http_not_found">Flux introuvable / supprimé (404)</string>
      <string name="player_http_rate_limit">Trop de requêtes (Limite 429)</string>
      <string name="player_http_server_unavailable">Serveur de flux indisponible (%d)</string>

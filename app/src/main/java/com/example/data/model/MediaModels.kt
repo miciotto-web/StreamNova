@@ -115,9 +115,21 @@ data class MediaItem(
   val progressFraction: Float
     get() = if (totalDurationMs > 0) (currentProgressMs.toFloat() / totalDurationMs.toFloat()).coerceIn(0f, 1f) else 0f
 
+  /** true se il titolo e' considerato "visto" (progresso >= 90% della durata totale). */
+  val isWatched: Boolean
+    get() = totalDurationMs > 0 && currentProgressMs >= (totalDurationMs * 0.9)
+
+  /** true se e' in corso di visione: avviato ma non ancora completato. */
+  val isInProgress: Boolean
+    get() = currentProgressMs > 0L && !isWatched
+
   val effectiveImdbId: String?
     get() = imdbId?.takeIf { it.isNotBlank() }
       ?: id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
+
+  /** Anno da mostrare a schermo: stringa vuota quando non disponibile (mai "0"). */
+  val displayYear: String
+    get() = if (year > 0) year.toString() else ""
 
   val formattedDuration: String
     get() {
@@ -158,6 +170,25 @@ data class CrewMember(
   val department: String? = null
 )
 
+data class ProductionCompany(
+  val id: Int,
+  val name: String,
+  val logoUrl: String? = null,
+  val originCountry: String? = null
+)
+
+data class PersonDetails(
+  val id: Int,
+  val name: String,
+  val biography: String = "",
+  val birthday: String? = null,
+  val deathday: String? = null,
+  val placeOfBirth: String? = null,
+  val profileUrl: String? = null,
+  val knownForDepartment: String? = null,
+  val popularity: Float? = null
+)
+
 data class ExtendedMediaDetails(
   val tmdbId: Int,
   val title: String,
@@ -165,6 +196,12 @@ data class ExtendedMediaDetails(
   val overview: String,
   val backdropUrl: String?,
   val posterUrl: String?,
+  /**
+   * Clear logo originale (immagine trasparente) estratto da `images.logos` con priorita'
+   * lingua italiana, poi inglese, poi il miglior disponibile. `null` se TMDB non ha logo:
+   * in quel caso la UI mostra il titolo testuale in stile display.
+   */
+  val logoUrl: String? = null,
   val releaseYear: Int,
   val rating: Float,
   val voteCount: Int = 0,
@@ -179,7 +216,8 @@ data class ExtendedMediaDetails(
   val similarItems: List<MediaItem> = emptyList(),
   val isTv: Boolean = false,
   val seasonEpisodesCount: Map<Int, Int> = emptyMap(),
-  val ageRating: Int? = null
+  val ageRating: Int? = null,
+  val productionCompanies: List<ProductionCompany> = emptyList()
 )
 
 sealed interface MediaDetailUiState {
@@ -239,6 +277,7 @@ data class SeasonItem(
   val seasonNumber: Int,
   val name: String,
   val overview: String = "",
+  val airDate: String? = null,
   val episodes: List<EpisodeItem> = emptyList()
 )
 

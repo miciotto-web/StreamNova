@@ -110,6 +110,18 @@ object PlayerRuntimeControllerErrorRecovery {
     }
 
     fun toDisplayMessage(error: PlaybackException, context: Context? = null): String {
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT) {
+            return context?.getString(R.string.player_http_timeout)
+                ?: "Stream connection timed out. Check the source and try again."
+        }
+        if (error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ||
+            error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED ||
+            error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
+            error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+        ) {
+            return context?.getString(R.string.player_invalid_stream)
+                ?: "The provider returned an invalid or unsupported stream."
+        }
         val responseException = error.findCause<HttpDataSource.InvalidResponseCodeException>()
         if (responseException != null) {
             val code = responseException.responseCode

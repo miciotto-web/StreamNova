@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Assessment
@@ -74,6 +75,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -111,6 +114,8 @@ import com.example.R
 import com.example.BuildConfig
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.repository.SimklRepository
+import com.example.data.remote.simkl.SimklPinState
 import com.example.data.model.SearchTypeFilter
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.BackBufferOption
@@ -133,9 +138,13 @@ import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusBringIntoView
+import com.example.ui.components.TvFocusAttachment
 import com.example.ui.components.TvFocusableBox
+import com.example.ui.components.guard
+import com.example.ui.components.tvFocusRequester
 import com.example.ui.components.TextInputDialog
 import com.example.ui.components.TvPinDialog
+import com.example.ui.components.QrCodeImage
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCardBgFocused
@@ -712,12 +721,20 @@ fun SearchScreen(
   val filmFilterFocusRequester = remember { FocusRequester() }
   val serieTvFilterFocusRequester = remember { FocusRequester() }
   val contentFirstItemFocusRequester = remember { FocusRequester() }
+  // Traccia l'aggancio del primo poster del contenuto (LazyVerticalGrid): le griglie sono
+  // ramificate (categoria / query / categorie globali) e il primo item NON e' sempre in
+  // composizione; assegnarlo comunque alle focusProperties dei filtri faceva crashare il
+  // focus search del D-pad con "FocusRequester is not initialized".
+  val contentFirstItemAttachment = remember { TvFocusAttachment() }
   val backButtonFocusRequester = remember { FocusRequester() }
 
   val categoryFocusRequesters = remember {
     List(GLOBAL_SEARCH_CATEGORIES.size) { index ->
       if (index == 0) contentFirstItemFocusRequester else FocusRequester()
     }
+  }
+  val categoryAttachments = remember {
+    mutableMapOf<Int, TvFocusAttachment>()
   }
 
   val activeFilterRequester = when (searchFilter) {
@@ -882,7 +899,10 @@ fun SearchScreen(
             .focusRequester(requester)
             .focusProperties {
               up = searchBarFocusRequester
-              down = contentFirstItemFocusRequester
+              // Il primo poster e' in una LazyVerticalGrid ramificata: se non montato
+              // (es. stato default o risultati vuoti) si lascia la ricerca standard.
+              down = contentFirstItemAttachment.guard(contentFirstItemFocusRequester)
+                ?: FocusRequester.Default
               when (filter) {
                 SearchTypeFilter.ALL -> {
                   left = FocusRequester.Cancel
@@ -1076,7 +1096,13 @@ fun SearchScreen(
                 Box(
                   modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (index == 0) Modifier.focusRequester(contentFirstItemFocusRequester) else Modifier)
+                    .then(
+                      if (index == 0) {
+                        Modifier.tvFocusRequester(contentFirstItemFocusRequester, contentFirstItemAttachment)
+                      } else {
+                        Modifier
+                      }
+                    )
                     .focusProperties {
                       if (index < 5) {
                         up = activeFilterRequester
@@ -1137,7 +1163,13 @@ fun SearchScreen(
                 Box(
                   modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (index == 0) Modifier.focusRequester(contentFirstItemFocusRequester) else Modifier)
+                    .then(
+                      if (index == 0) {
+                        Modifier.tvFocusRequester(contentFirstItemFocusRequester, contentFirstItemAttachment)
+                      } else {
+                        Modifier
+                      }
+                    )
                     .focusProperties {
                       if (index < 5) {
                         up = activeFilterRequester
@@ -1183,17 +1215,28 @@ fun SearchScreen(
           ) {
             itemsIndexed(GLOBAL_SEARCH_CATEGORIES, key = { _, it -> it.id }) { index, cat ->
               val requester = if (index < categoryFocusRequesters.size) categoryFocusRequesters[index] else null
+              // Le categorie sono in una LazyVerticalGrid: i requester delle celle fuori
+              // viewport non sono montati e non vanno mai assegnati alle focusProperties.
+              val attachment = categoryAttachments.getOrPut(index) { TvFocusAttachment() }
               TvFocusableBox(
                 modifier = Modifier
-                  .then(if (requester != null) Modifier.focusRequester(requester) else Modifier)
+                  .then(
+                    if (requester != null) {
+                      Modifier.tvFocusRequester(requester, attachment)
+                    } else {
+                      Modifier
+                    }
+                  )
                   .focusProperties {
                     if (index < 4) {
                       up = activeFilterRequester
-                    } else if (index - 4 < categoryFocusRequesters.size) {
-                      up = categoryFocusRequesters[index - 4]
+                    } else {
+                      up = categoryAttachments[index - 4].guard(categoryFocusRequesters[index - 4])
+                        ?: FocusRequester.Default
                     }
                     if (index + 4 < categoryFocusRequesters.size) {
-                      down = categoryFocusRequesters[index + 4]
+                      down = categoryAttachments[index + 4].guard(categoryFocusRequesters[index + 4])
+                        ?: FocusRequester.Default
                     }
                   },
                 shape = RoundedCornerShape(50),
@@ -1300,6 +1343,13 @@ fun SettingsScreen(
   var showDecoderFallbackDialog by remember { mutableStateOf(false) }
   var isClearingCache by remember { mutableStateOf(false) }
   var showUpdateResultDialog by remember { mutableStateOf(false) }
+  val simklAccount by SimklRepository.accountState.collectAsState()
+  val simklScope = rememberCoroutineScope()
+  var simklPin by remember { mutableStateOf<SimklPinState?>(null) }
+  var simklStatus by remember { mutableStateOf<String?>(null) }
+  var simklLoading by remember { mutableStateOf(false) }
+  var showSimklClientIdDialog by remember { mutableStateOf(false) }
+  var simklClientIdDraft by remember { mutableStateOf("") }
 
   // Verifica automatica (una sola volta) della chiave salvata: all'ingresso in
   // Impostazioni l'indicatore diventa verde "Collegato" se la chiave è valida.
@@ -1354,6 +1404,99 @@ fun SettingsScreen(
           fontSize = 13.sp,
           modifier = Modifier.padding(top = 4.dp)
         )
+      }
+
+      // ── ACCOUNT SIMKL ────────────────────────────────────────────────────
+      item {
+        val simklClientId by AppSettingsRepository.simklClientId.collectAsState()
+        SettingsSection(title = "Account SIMKL") {
+          SettingsRow(
+            icon = Icons.Default.VpnKey,
+            title = "Client ID SIMKL",
+            value = simklClientId?.let { "••••${it.takeLast(4)}" } ?: "Non configurato",
+            valueColor = if (simklClientId.isNullOrBlank()) NovaOrange else NovaGreen,
+            onClick = {
+              simklClientIdDraft = simklClientId.orEmpty()
+              showSimklClientIdDialog = true
+            }
+          )
+          if (simklClientId.isNullOrBlank()) {
+            Text(
+              "Crea un client PIN per TV su simkl.com/settings/developer e inserisci il Client ID qui.",
+              color = NovaTextSecondary,
+              fontSize = 12.sp,
+              modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+          }
+          SettingsRow(
+            icon = Icons.Default.CloudDone,
+            title = if (simklAccount.isLoggedIn) "Account collegato" else "Collega SIMKL",
+            value = when {
+              !SimklRepository.hasClientId() -> "Configura SIMKL_CLIENT_ID"
+              simklLoading -> "In attesa di autorizzazione…"
+              simklAccount.isLoggedIn -> simklAccount.username ?: "Collegato"
+              simklPin != null -> "Codice ${simklPin!!.userCode}"
+              else -> "Non collegato"
+            },
+            valueColor = if (simklAccount.isLoggedIn) NovaGreen else NovaCyanBright,
+            onClick = {
+              if (simklAccount.isLoggedIn) {
+                simklScope.launch {
+                  SimklRepository.signOut()
+                  simklStatus = "Account SIMKL scollegato."
+                }
+              } else if (!simklLoading && SimklRepository.hasClientId()) {
+                simklLoading = true
+                simklStatus = null
+                simklScope.launch {
+                  runCatching { SimklRepository.requestDeviceCode() }
+                    .onSuccess { pin ->
+                      simklPin = pin
+                      runCatching { SimklRepository.pollDeviceCode(pin) }
+                        .onSuccess {
+                          simklPin = null
+                          simklStatus = "Account collegato${it.username?.let { name -> ": $name" } ?: ""}."
+                        }
+                        .onFailure { simklStatus = it.localizedMessage ?: "Codice scaduto o errore SIMKL" }
+                    }
+                    .onFailure { simklStatus = it.localizedMessage ?: "Errore SIMKL" }
+                  simklLoading = false
+                }
+              }
+            }
+          )
+          simklPin?.let { pin ->
+            Row(
+              modifier = Modifier.fillMaxWidth().padding(16.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+              QrCodeImage(value = pin.verificationUri, modifier = Modifier.size(136.dp))
+              Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("1. Visita ${pin.verificationUri}", color = NovaTextSecondary, fontSize = 14.sp)
+                Text("2. Inserisci questo codice", color = NovaTextSecondary, fontSize = 14.sp)
+                Text(
+                  pin.userCode,
+                  color = NovaCyanBright,
+                  fontSize = 34.sp,
+                  fontWeight = FontWeight.Black,
+                  letterSpacing = 5.sp
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                  if (simklLoading) CircularProgressIndicator(color = NovaCyanBright, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                  Text(
+                    if (simklLoading) "In attesa dell'autorizzazione…" else "Codice scaduto. Seleziona Collega SIMKL per riprovare.",
+                    color = if (simklLoading) NovaCyanBright else NovaOrange,
+                    fontSize = 13.sp
+                  )
+                }
+              }
+            }
+          }
+          simklStatus?.let {
+            Text(it, color = if (simklAccount.isLoggedIn) NovaGreen else NovaOrange, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+          }
+        }
       }
 
       // ── GENERALE ────────────────────────────────────────────────────────
@@ -1704,6 +1847,22 @@ fun SettingsScreen(
         showUpdateResultDialog = false
         viewModel?.dismissUpdateCheckResult()
       }
+    )
+  }
+
+  if (showSimklClientIdDialog) {
+    TextInputDialog(
+      title = "Client ID SIMKL",
+      hint = "Incolla il Client ID creato nelle impostazioni sviluppatore SIMKL",
+      initialText = simklClientIdDraft,
+      confirmLabel = stringResource(R.string.action_save),
+      onConfirm = { value ->
+        AppSettingsRepository.setSimklClientId(value)
+        simklClientIdDraft = value.trim()
+        showSimklClientIdDialog = false
+        simklStatus = "Client ID SIMKL salvato. Avvia il collegamento account."
+      },
+      onDismiss = { showSimklClientIdDialog = false }
     )
   }
 

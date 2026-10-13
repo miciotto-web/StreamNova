@@ -85,6 +85,23 @@
     <string name="detail_tab_episodes">Episodes</string>
     <string name="detail_tab_recommended">Recommended</string>
     <string name="detail_tab_technical_details">Technical Details</string>
+    <string name="detail_tab_production">Production</string>
+    <string name="production_section_title">PRODUCTION COMPANIES</string>
+    <string name="production_empty">No production companies available</string>
+    <string name="studio_movies_title">Movies by studio</string>
+    <string name="studio_tv_title">TV Shows by studio</string>
+    <string name="studio_header_subtitle">Studio productions and catalog</string>
+    <string name="studio_company_overline">Production company</string>
+    <string name="studio_row_movies_popular">Movies • Popular</string>
+    <string name="studio_row_movies_top_rated">Movies • Top Rated</string>
+    <string name="studio_row_tv_popular">Series • Popular</string>
+    <string name="studio_row_tv_top_rated">Series • Top Rated</string>
+    <string name="person_bio_title">Biography</string>
+    <string name="person_born_title">Date and place of birth</string>
+    <string name="person_born_format">Born: %1$s (age %2$d)</string>
+    <string name="person_credits_title">Filmography</string>
+    <string name="person_credits_empty">No titles found</string>
+    <string name="person_bio_empty">No biography available for this artist.</string>
     <string name="detail_loading_tmdb">Fetching details from TMDB…</string>
     <string name="detail_partial_error">Partial details: %s</string>
     <string name="detail_seasons_episodes_format">%1$d Seasons • %2$d Ep.</string>
@@ -102,6 +119,11 @@
     <string name="cast_main_role">Main Cast</string>
     <string name="detail_duration_min">%d min</string>
     <string name="detail_watched_badge">✓ Watched</string>
+    <string name="detail_trailer_loading">Fetching trailer from TMDB…</string>
+    <string name="detail_trailer_error">Trailer not available for this title</string>
+    <string name="detail_action_trailer">Play trailer</string>
+    <string name="detail_action_mark_watched">Mark as watched</string>
+    <string name="detail_action_mark_unwatched">Mark as unwatched</string>
     <string name="detail_air_date_format">Air date: %s</string>
     <string name="detail_tech_specs_title">Technical Specs &amp; Overview</string>
     <string name="detail_tech_original_title">Original Title</string>
@@ -209,6 +231,15 @@
      <string name="settings_preferred_audio_language">Preferred Audio Language</string>
      <string name="settings_autoplay_next_episode">Autoplay next episode</string>
      <string name="settings_auto_resume">Automatically resume playback</string>
+     <string name="settings_sec_stream_selection">Stream Selection</string>
+     <string name="settings_reuse_last_stream">Reuse last link</string>
+     <string name="settings_reuse_last_stream_desc">Automatically play the last working stream for the same movie/episode if the cache is still valid.</string>
+     <string name="settings_reuse_last_stream_cache_duration">Last link cache duration</string>
+     <string name="reuse_cache_6h">6 hours</string>
+     <string name="reuse_cache_12h">12 hours</string>
+     <string name="reuse_cache_1d">1 day</string>
+     <string name="reuse_cache_3d">3 days</string>
+     <string name="reuse_cache_7d">7 days</string>
      <string name="settings_sec_subtitles">Subtitles</string>
      <string name="settings_auto_subtitles">Automatically enable subtitles</string>
      <string name="settings_preferred_subtitle_lang">Preferred Language</string>
@@ -284,6 +315,9 @@
      <string name="player_cd_pause">Pause</string>
      <string name="player_cd_play">Play</string>
      <string name="player_cd_next_episode">Next Episode</string>
+     <string name="player_next_episode_title">NEXT EPISODE</string>
+     <string name="player_next_episode_watch_now">WATCH NOW</string>
+     <string name="player_next_episode_countdown">Starts in %1$d s</string>
      <string name="player_cd_aspect_ratio">Adjust Aspect Ratio</string>
      <string name="player_cd_video_quality">Video Quality</string>
      <string name="player_cd_playback_speed">Playback Speed</string>
@@ -292,6 +326,7 @@
      <string name="player_cd_selected">Selected</string>
 
      <string name="player_audio_dialog_title">Select Audio Track</string>
+     <string name="player_track_quick_title">Audio and Subtitle Tracks</string>
      <string name="player_audio_default">Default Audio</string>
      <string name="player_audio_fallback">Audio</string>
      <string name="player_subtitles_dialog_title">Select Subtitles</string>
@@ -308,6 +343,8 @@
      <string name="player_resize_zoom">Crop and fill (Zoom)</string>
 
      <string name="player_http_expired">Stream expired (401/410)</string>
+     <string name="player_http_timeout">Stream connection timed out. Check the source and try again.</string>
+     <string name="player_invalid_stream">The provider returned an invalid or unsupported stream.</string>
      <string name="player_http_not_found">Stream not found / removed (404)</string>
      <string name="player_http_rate_limit">Too many requests (Rate limit 429)</string>
      <string name="player_http_server_unavailable">Stream server unavailable (%d)</string>

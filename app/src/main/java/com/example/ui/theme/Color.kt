@@ -22,6 +22,7 @@ val NovaTextSecondary = Color(0xFF94A3B8)
 val NovaTextMuted = Color(0xFF64748B)
 
 // Badges & Accents
+val NovaAccent = NovaCyanBright
 val NovaGold = Color(0xFFFFB800)
 val NovaRed = Color(0xFFFF3B30)
 val NovaGreen = Color(0xFF34C759)

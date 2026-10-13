@@ -16,15 +16,17 @@ import kotlinx.coroutines.withTimeoutOrNull
  * quando disponibili. Esegue il mapping nel modello [Subtitle] e gestisce in modo sicuro
  * errori HTTP, risposte vuote, timeout e risultati senza URL di download valido.
  */
-class OpenSubtitlesSubtitleProvider(
+open class OpenSubtitlesSubtitleProvider(
   private val api: OpenSubtitlesApi = OpenSubtitlesApiClient.api,
-  private val timeoutMs: Long = DEFAULT_TIMEOUT_MS
+  private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+  private val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
+  private val httpClient: okhttp3.OkHttpClient = OpenSubtitlesApiClient.createOkHttpClient()
 ) {
 
   /**
    * Cerca e restituisce i sottotitoli disponibili da OpenSubtitles v3 per un media specifico.
    */
-  suspend fun fetchSubtitles(
+  open suspend fun fetchSubtitles(
     imdbId: String? = null,
     tmdbId: Int? = null,
     title: String? = null,
@@ -32,7 +34,7 @@ class OpenSubtitlesSubtitleProvider(
     seasonNumber: Int? = null,
     episodeNumber: Int? = null,
     languages: List<String> = DEFAULT_LANGUAGES
-  ): List<Subtitle> = withContext(Dispatchers.IO) {
+  ): List<Subtitle> = withContext(ioDispatcher) {
     try {
       withTimeoutOrNull(timeoutMs) {
         val numericImdbId = parseImdbId(imdbId)
@@ -112,7 +114,7 @@ class OpenSubtitlesSubtitleProvider(
   /**
    * Overload comodo per invocazione a partire da un [MediaItem] e relativo [Episode].
    */
-  suspend fun fetchSubtitles(
+  open suspend fun fetchSubtitles(
     mediaItem: MediaItem,
     episode: Episode? = null,
     preferredLanguage: String? = null
@@ -144,6 +146,77 @@ class OpenSubtitlesSubtitleProvider(
     )
   }
 
+  /**
+   * Interroga l'addon OpenSubtitles v3 di Stremio:
+   * GET https://opensubtitles-v3.strem.io/subtitles/{type}/{id}.json
+   * dove {type} è "movie" o "series" e {id} è imdbId (film) o "${imdbId}:${season}:${episode}" (serie).
+   *
+   * Deserializza la risposta estraendo id, lang, url (.srt / .vtt) e ordina l'elenco con priorità:
+   * 1. Italiano (lang = "ita", "it", "Italian")
+   * 2. Inglese (lang = "eng", "en", "English")
+   * 3. Altre lingue disponibili in ordine alfabetico.
+   */
+  open suspend fun fetchFromStremioOpenSubtitles(
+    type: String,
+    id: String
+  ): List<Subtitle> = withContext(ioDispatcher) {
+    val cleanType = type.trim().lowercase()
+    val cleanId = id.trim()
+    if (cleanType.isEmpty() || cleanId.isEmpty()) return@withContext emptyList()
+
+    val url = "https://opensubtitles-v3.strem.io/subtitles/$cleanType/$cleanId.json"
+    try {
+      withTimeoutOrNull(timeoutMs) {
+        val request = okhttp3.Request.Builder()
+          .url(url)
+          .header("User-Agent", OpenSubtitlesApiClient.DEFAULT_USER_AGENT)
+          .header("Accept", "application/json")
+          .build()
+
+        val response = httpClient.newCall(request).execute()
+        if (!response.isSuccessful) {
+          Log.w(TAG, "OpenSubtitles Stremio addon error: HTTP ${response.code} per $url")
+          return@withTimeoutOrNull emptyList()
+        }
+
+        val bodyString = response.body?.string()
+        parseAndSortStremioSubtitles(bodyString)
+      } ?: emptyList()
+    } catch (e: Exception) {
+      Log.w(TAG, "Errore durante fetchFromStremioOpenSubtitles ($url): ${e.message}")
+      emptyList()
+    }
+  }
+
+  /**
+   * Overload comodo di [fetchFromStremioOpenSubtitles] per [MediaItem] e relativo [Episode].
+   */
+  open suspend fun fetchFromStremioOpenSubtitles(
+    mediaItem: MediaItem,
+    episode: Episode? = null
+  ): List<Subtitle> {
+    val isTv = mediaItem.type == MediaType.SERIE_TV
+    val type = if (isTv) "series" else "movie"
+    val imdbId = mediaItem.effectiveImdbId
+      ?: episode?.effectiveImdbId
+      ?: mediaItem.id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(':')
+      ?: episode?.id?.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(':')
+
+    if (imdbId.isNullOrBlank()) {
+      return emptyList()
+    }
+
+    val id = if (isTv) {
+      val season = episode?.seasonNumber ?: mediaItem.lastWatchedSeason ?: 1
+      val ep = episode?.episodeNumber ?: mediaItem.lastWatchedEpisode ?: 1
+      "$imdbId:$season:$ep"
+    } else {
+      imdbId
+    }
+
+    return fetchFromStremioOpenSubtitles(type, id)
+  }
+
   companion object {
     private const val TAG = "OpenSubtitlesProvider"
     private const val DEFAULT_TIMEOUT_MS = 10_000L
@@ -158,5 +231,78 @@ class OpenSubtitlesSubtitleProvider(
       val digits = raw.trim().removePrefix("tt").removePrefix("TT")
       return digits.toIntOrNull()
     }
+
+    /**
+     * Deserializza il JSON della risposta dell'addon Stremio OpenSubtitles v3 ed estrae
+     * i sottotitoli ordinandoli per priorità linguistica (Italiano, Inglese, altre in ordine alfabetico).
+     */
+    fun parseAndSortStremioSubtitles(json: String?): List<Subtitle> {
+      if (json.isNullOrBlank()) return emptyList()
+      return try {
+        val adapter = OpenSubtitlesApiClient.moshi.adapter(StremioOpenSubtitlesResponse::class.java)
+        val parsed = adapter.fromJson(json)
+        val items = parsed?.subtitles.orEmpty().filter {
+          !it.url.isNullOrBlank() && !it.lang.isNullOrBlank()
+        }
+
+        val rawList = items.mapNotNull { item ->
+          val rawUrl = item.url?.trim().orEmpty()
+          if (!rawUrl.startsWith("http://", ignoreCase = true) && !rawUrl.startsWith("https://", ignoreCase = true)) {
+            return@mapNotNull null
+          }
+          val rawId = item.id?.trim()?.ifBlank { null } ?: rawUrl.hashCode().toString()
+          val lang = item.lang?.trim().orEmpty()
+          val label = item.subtitleFileName?.trim()?.ifBlank { null }
+            ?: item.movieReleaseName?.trim()?.ifBlank { null }
+            ?: item.label?.trim()?.ifBlank { null }
+
+          Subtitle(
+            id = "os-$rawId",
+            url = rawUrl,
+            lang = lang,
+            addonName = OpenSubtitlesSubtitleAdapter.PROVIDER_NAME,
+            label = label,
+            isStreamProvided = false
+          )
+        }
+        sortSubtitlesByPriority(rawList)
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore parsing sottotitoli Stremio OpenSubtitles: ${e.message}")
+        emptyList()
+      }
+    }
+
+    /**
+     * Ordina i sottotitoli con priorità:
+     * 1. Italiano (lang = "ita", "it", "Italian")
+     * 2. Inglese (lang = "eng", "en", "English")
+     * 3. Altre lingue disponibili in ordine alfabetico.
+     */
+    fun sortSubtitlesByPriority(subtitles: List<Subtitle>): List<Subtitle> {
+      return subtitles.sortedWith(
+        compareBy<Subtitle> { sub ->
+          when {
+            isItalianLanguage(sub.lang) -> 0
+            isEnglishLanguage(sub.lang) -> 1
+            else -> 2
+          }
+        }.thenBy { sub ->
+          sub.getDisplayLanguage().lowercase()
+        }.thenBy { sub ->
+          sub.label.orEmpty().lowercase()
+        }
+      )
+    }
+
+    fun isItalianLanguage(lang: String): Boolean {
+      val clean = lang.trim().lowercase()
+      return clean == "ita" || clean == "it" || clean == "italian"
+    }
+
+    fun isEnglishLanguage(lang: String): Boolean {
+      val clean = lang.trim().lowercase()
+      return clean == "eng" || clean == "en" || clean == "english"
+    }
   }
 }
+

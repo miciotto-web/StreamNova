@@ -18,12 +18,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +44,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.data.model.MediaDetailUiState
+import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.MediaRepository
 import com.example.data.streaming.StreamResult
@@ -52,19 +55,27 @@ import com.example.ui.components.SidebarNavigation
 import com.example.ui.components.TorBoxSourceSelectionScreen
 import com.example.ui.components.StreamStatusOverlay
 import com.example.ui.components.StreamingProvider
+import com.example.ui.components.LocalLastFocusedMediaId
+import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.navigation.DetailNavArgs
 import com.example.ui.navigation.Screen
 import com.example.ui.screens.DetailScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.PlayerScreen
 import com.example.ui.screens.ProviderScreen
+import com.example.ui.screens.PersonDetailScreen
+import com.example.ui.screens.CompanyDetailScreen
 import com.example.ui.screens.SplashScreen
+import com.example.ui.screens.TrailerErrorOverlay
+import com.example.ui.screens.TrailerLoadingOverlay
+import com.example.ui.screens.TrailerPlayerScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.NovaBackground
 import com.example.ui.viewmodel.ScreenState
 import com.example.ui.viewmodel.SidebarSection
 import com.example.ui.viewmodel.StreamNovaViewModel
 import com.example.ui.viewmodel.StreamResolutionState
+import com.example.ui.viewmodel.TrailerPlaybackState
 import kotlinx.coroutines.delay
 
 /** Finestra temporale del doppio Back sulla Home per uscire dall'app (feedback breve). */
@@ -122,6 +133,7 @@ fun StreamNovaApp(
   val streamResult by viewModel.streamResult.collectAsState()
   val streamResolutionState by viewModel.streamResolutionState.collectAsState()
   val streamingEngineMode by viewModel.streamingEngineMode.collectAsState()
+  val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
 
   // Feedback errore di risoluzione sorgenti (es. timeout o nessuna sorgente):
   // mostra un toast con il messaggio di errore e reimposta lo stato su Idle
@@ -220,10 +232,16 @@ fun StreamNovaApp(
 
         LaunchedEffect(screenState, isSplashActive) {
           if (screenState == ScreenState.BROWSING && !isSplashActive) {
-            if (!isInitialHomeFocusSet || pendingContentFocusRestore) {
+            if (!isInitialHomeFocusSet) {
               isInitialHomeFocusSet = true
-              pendingContentFocusRestore = false
               if (currentSection == SidebarSection.HOME) {
+                try { homeFocusRequester.requestFocus() } catch (_: Exception) {}
+                focusManager.moveFocus(FocusDirection.Down)
+              }
+            } else if (pendingContentFocusRestore) {
+              pendingContentFocusRestore = false
+              // Se non abbiamo un target specifico salvato, esegue il fallback iniziale
+              if (viewModel.lastFocusedMediaId.value == null && currentSection == SidebarSection.HOME) {
                 try { homeFocusRequester.requestFocus() } catch (_: Exception) {}
                 focusManager.moveFocus(FocusDirection.Down)
               }
@@ -293,6 +311,7 @@ fun StreamNovaApp(
               navController.navigate(Screen.Provider.createRoute(provider.id))
             },
             onMediaClick = { media ->
+              viewModel.saveLastFocusedMedia(media.id)
               viewModel.openDetail(media)
               val tmdbId = media.tmdbId ?: 0
               navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
@@ -328,19 +347,29 @@ fun StreamNovaApp(
       ) { backStackEntry ->
         val args = DetailNavArgs.fromBundle(backStackEntry.arguments)
         val selectedMedia by viewModel.selectedMedia.collectAsState()
-        val baseMedia = selectedMedia?.takeIf { (args.tmdbId > 0 && it.tmdbId == args.tmdbId) || args.tmdbId <= 0 }
+        var cachedMedia by remember(backStackEntry.id) { mutableStateOf<MediaItem?>(null) }
+        val currentFromVm = selectedMedia?.takeIf { (args.tmdbId > 0 && it.tmdbId == args.tmdbId) || args.tmdbId <= 0 }
+        if (currentFromVm != null && cachedMedia != currentFromVm) {
+          cachedMedia = currentFromVm
+        }
+        val baseMedia = currentFromVm
+          ?: cachedMedia
           ?: allMedia.find { args.tmdbId > 0 && it.tmdbId == args.tmdbId }
           ?: selectedMedia
 
         val selectedSeasonNumber by viewModel.selectedSeasonNumber.collectAsState()
         val seasonEpisodesUiState by viewModel.seasonEpisodesUiState.collectAsState()
+        val lastFocusedCastMemberId by viewModel.lastFocusedCastMemberId.collectAsState()
+        val lastFocusedCompanyId by viewModel.lastFocusedCompanyId.collectAsState()
 
-        // (3) Back dal Dettaglio: popBackStack verso la Home (o Provider) e azzera lo stato
-        // del ViewModel, così la riga/card viene ripristinata alla navigazione precedente.
+        // (2) Back dal Dettaglio: popBackStack verso la schermata precedente.
+        // Se c'erano dettagli aperti a catena dai Consigliati, risale alla scheda precedente
+        // ripristinandone stato e metadati. Solo quando lo stack è esaurito si torna a Home/Provider.
         BackHandler(enabled = screenState != ScreenState.PLAYER) {
-          viewModel.resetStreamState()
-          pendingContentFocusRestore = true
-          viewModel.backFromDetail()
+          val hasPreviousDetail = viewModel.popDetail()
+          if (!hasPreviousDetail) {
+            pendingContentFocusRestore = true
+          }
           navController.popBackStack()
         }
 
@@ -359,22 +388,30 @@ fun StreamNovaApp(
             else -> baseMedia
           }
 
-          DetailScreen(
+          CompositionLocalProvider(
+            LocalLastFocusedMediaId provides lastFocusedMediaId,
+            LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() }
+          ) {
+            DetailScreen(
             media = currentMedia,
             allMedia = allMedia,
             onBackClick = {
-              viewModel.resetStreamState()
-              pendingContentFocusRestore = true
-              viewModel.backFromDetail()
+              val hasPreviousDetail = viewModel.popDetail()
+              if (!hasPreviousDetail) {
+                pendingContentFocusRestore = true
+              }
               navController.popBackStack()
             },
             onPlayClick = { m, ep -> viewModel.openStreamForMedia(m, ep) },
             onToggleFavorite = { viewModel.toggleFavorite(it) },
+            onToggleWatched = { viewModel.toggleWatched(it) },
+            onPlayTrailer = { viewModel.playTrailer(it) },
             onProviderClick = { provider ->
               viewModel.openProvider(provider)
               navController.navigate(Screen.Provider.createRoute(provider.id))
             },
             onMediaClick = { nextMedia ->
+              viewModel.saveLastFocusedMedia(nextMedia.id)
               viewModel.openDetail(nextMedia)
               val nextTmdbId = nextMedia.tmdbId ?: 0
               navController.navigate(Screen.Detail.createRoute(nextMedia.type, nextTmdbId))
@@ -388,8 +425,21 @@ fun StreamNovaApp(
             onEpisodeClick = { media, episode ->
               viewModel.openStreamForMedia(media, episode)
             },
-            onRetry = { viewModel.retryLoadDetail() }
+            onRetry = { viewModel.retryLoadDetail() },
+            onCastMemberClick = { member ->
+              viewModel.saveLastFocusedCastMember(member.id)
+              navController.navigate(Screen.PersonDetail.createRoute(member.id))
+            },
+            onCompanyClick = { company ->
+              viewModel.saveLastFocusedCompany(company.id)
+              navController.navigate(Screen.CompanyDetail.createRoute(company.id, company.name, company.logoUrl))
+            },
+            targetCastMemberId = lastFocusedCastMemberId,
+            onClearTargetCastMember = { viewModel.clearLastFocusedCastMember() },
+            targetCompanyId = lastFocusedCompanyId,
+            onClearTargetCompany = { viewModel.clearLastFocusedCompany() }
           )
+          }
         }
       }
 
@@ -412,6 +462,54 @@ fun StreamNovaApp(
             navController.popBackStack()
           },
           onMediaClick = { media ->
+            viewModel.saveLastFocusedMedia(media.id)
+            viewModel.openDetail(media)
+            val tmdbId = media.tmdbId ?: 0
+            navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
+          }
+        )
+      }
+
+      composable(
+        route = Screen.PersonDetail.route,
+        arguments = Screen.PersonDetail.arguments
+      ) { backStackEntry ->
+        val personId = backStackEntry.arguments?.getInt(Screen.PersonDetail.ARG_PERSON_ID) ?: 0
+        PersonDetailScreen(
+          personId = personId,
+          viewModel = viewModel,
+          onBackClick = {
+            navController.popBackStack()
+          },
+          onMediaClick = { media ->
+            viewModel.saveLastFocusedMedia(media.id)
+            viewModel.openDetail(media)
+            val tmdbId = media.tmdbId ?: 0
+            navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
+          }
+        )
+      }
+
+      composable(
+        route = Screen.CompanyDetail.route,
+        arguments = Screen.CompanyDetail.arguments
+      ) { backStackEntry ->
+        val companyId = backStackEntry.arguments?.getInt(Screen.CompanyDetail.ARG_COMPANY_ID) ?: 0
+        val encodedName = backStackEntry.arguments?.getString(Screen.CompanyDetail.ARG_COMPANY_NAME).orEmpty()
+        val encodedLogo = backStackEntry.arguments?.getString(Screen.CompanyDetail.ARG_LOGO_URL).orEmpty()
+        val companyName = try { java.net.URLDecoder.decode(encodedName, "UTF-8") } catch (_: Exception) { encodedName }
+        val logoUrl = try { java.net.URLDecoder.decode(encodedLogo, "UTF-8") } catch (_: Exception) { encodedLogo }
+
+        CompanyDetailScreen(
+          companyId = companyId,
+          companyName = companyName.takeIf { it.isNotBlank() },
+          logoUrl = logoUrl.takeIf { it.isNotBlank() },
+          viewModel = viewModel,
+          onBackClick = {
+            navController.popBackStack()
+          },
+          onMediaClick = { media ->
+            viewModel.saveLastFocusedMedia(media.id)
             viewModel.openDetail(media)
             val tmdbId = media.tmdbId ?: 0
             navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
@@ -481,6 +579,18 @@ fun StreamNovaApp(
     // Player Screen overlay when media playback is requested
     if (screenState == ScreenState.PLAYER) {
       PlayerScreen(viewModel = viewModel)
+    }
+
+    // Trailer interno (YouTube embedded): sopra ogni schermata, mai Intent esterno.
+    val trailerState by viewModel.trailerState.collectAsState()
+    when (val trailer = trailerState) {
+      is TrailerPlaybackState.Playing -> TrailerPlayerScreen(
+        youtubeKey = trailer.youtubeKey,
+        onClose = { viewModel.closeTrailer() }
+      )
+      is TrailerPlaybackState.Error -> TrailerErrorOverlay(onClose = { viewModel.closeTrailer() })
+      is TrailerPlaybackState.Loading -> TrailerLoadingOverlay(onClose = { viewModel.closeTrailer() })
+      TrailerPlaybackState.Idle -> Unit
     }
 
     if (isSplashActive) {

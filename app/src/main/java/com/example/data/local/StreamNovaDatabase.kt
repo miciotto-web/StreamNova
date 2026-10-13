@@ -12,9 +12,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     TmdbResponseCacheEntity::class,
     CachedMediaItemEntity::class,
     CatalogProgressEntity::class,
-    EpisodeProgressEntity::class
+    EpisodeProgressEntity::class,
+    LastWorkingStreamEntity::class
   ],
-  version = 6,
+  version = 7,
   exportSchema = false
 )
 abstract class StreamNovaDatabase : RoomDatabase() {
@@ -23,6 +24,7 @@ abstract class StreamNovaDatabase : RoomDatabase() {
   abstract fun cachedMediaDao(): CachedMediaDao
   abstract fun catalogProgressDao(): CatalogProgressDao
   abstract fun episodeProgressDao(): EpisodeProgressDao
+  abstract fun lastWorkingStreamDao(): LastWorkingStreamDao
 
   companion object {
 
@@ -96,6 +98,29 @@ abstract class StreamNovaDatabase : RoomDatabase() {
       }
     }
 
+    /**
+     * v6 -> v7: aggiunta della tabella `last_working_streams`, cache locale dell'ultimo
+     * flusso funzionante per film/episodio (funzione "Riusa l'ultimo link").
+     */
+    private val MIGRATION_6_7 = object : Migration(6, 7) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+          "CREATE TABLE IF NOT EXISTS `last_working_streams` (" +
+            "`mediaId` TEXT NOT NULL, " +
+            "`seasonNumber` INTEGER NOT NULL, " +
+            "`episodeNumber` INTEGER NOT NULL, " +
+            "`streamUrl` TEXT NOT NULL, " +
+            "`streamTitle` TEXT, " +
+            "`streamQuality` TEXT, " +
+            "`serverName` TEXT, " +
+            "`headersJson` TEXT, " +
+            "`isProgressive` INTEGER, " +
+            "`cachedAtTimestamp` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`mediaId`, `seasonNumber`, `episodeNumber`))"
+        )
+      }
+    }
+
     @Volatile
     private var INSTANCE: StreamNovaDatabase? = null
 
@@ -107,6 +132,7 @@ abstract class StreamNovaDatabase : RoomDatabase() {
           "streamnova_database.db"
         )
           .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+          .addMigrations(MIGRATION_6_7)
           .fallbackToDestructiveMigration(dropAllTables = true)
           .build()
           .also { INSTANCE = it }

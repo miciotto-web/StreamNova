@@ -6,11 +6,14 @@ import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.R
 import com.example.data.api.TmdbApiService
+import com.example.data.api.TmdbApiClient
 import com.example.data.model.AudioTrack
 import com.example.data.model.Episode
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.model.PersonDetails
+import com.example.data.model.ProductionCompany
 import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.SeasonItem
@@ -52,6 +55,7 @@ import com.example.ui.components.StreamingProvider
 import com.example.ui.screens.player.NextEpisodePromptUtils
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -443,6 +447,33 @@ sealed interface TrailerPlaybackState {
   data class Error(val message: String) : TrailerPlaybackState
 }
 
+sealed interface PersonDetailUiState {
+  object Idle : PersonDetailUiState
+  data class Loading(val personId: Int) : PersonDetailUiState
+  data class Success(
+    val person: PersonDetails,
+    val credits: List<MediaItem>
+  ) : PersonDetailUiState
+  data class Error(val personId: Int, val message: String) : PersonDetailUiState
+}
+
+sealed interface CompanyDetailUiState {
+  object Idle : CompanyDetailUiState
+  data class Loading(val companyId: Int) : CompanyDetailUiState
+  data class Success(
+    val companyId: Int,
+    val companyName: String,
+    val logoUrl: String?,
+    val movies: List<MediaItem>,
+    val tvSeries: List<MediaItem>,
+    val topRatedMovies: List<MediaItem> = emptyList(),
+    val topRatedTvSeries: List<MediaItem> = emptyList(),
+    val originCountry: String? = null,
+    val headquarters: String? = null
+  ) : CompanyDetailUiState
+  data class Error(val companyId: Int, val message: String) : CompanyDetailUiState
+}
+
 /**
  * Pacchetto atomico e immutabile della sessione di riproduzione aperta.
  *
@@ -491,6 +522,97 @@ class StreamNovaViewModel(
 
   fun clearLastFocusedMedia() {
     _lastFocusedMediaId.value = null
+  }
+
+  // Focus retention TV per Cast (Punto 5, 7)
+  private val _lastFocusedCastMemberId = MutableStateFlow<Int?>(null)
+  val lastFocusedCastMemberId: StateFlow<Int?> = _lastFocusedCastMemberId.asStateFlow()
+
+  fun saveLastFocusedCastMember(id: Int) {
+    _lastFocusedCastMemberId.value = id
+  }
+
+  fun clearLastFocusedCastMember() {
+    _lastFocusedCastMemberId.value = null
+  }
+
+  // Focus retention TV per Produzione (Punto 6)
+  private val _lastFocusedCompanyId = MutableStateFlow<Int?>(null)
+  val lastFocusedCompanyId: StateFlow<Int?> = _lastFocusedCompanyId.asStateFlow()
+
+  fun saveLastFocusedCompany(id: Int) {
+    _lastFocusedCompanyId.value = id
+  }
+
+  fun clearLastFocusedCompany() {
+    _lastFocusedCompanyId.value = null
+  }
+
+  // Scheda Persona (Punto 7)
+  private val _personDetailUiState = MutableStateFlow<PersonDetailUiState>(PersonDetailUiState.Idle)
+  val personDetailUiState: StateFlow<PersonDetailUiState> = _personDetailUiState.asStateFlow()
+
+  fun loadPersonDetails(personId: Int) {
+    viewModelScope.launch(ioDispatcher) {
+      _personDetailUiState.value = PersonDetailUiState.Loading(personId)
+      try {
+        val person = MediaRepository.fetchPersonDetails(personId)
+        val credits = MediaRepository.fetchPersonCombinedCredits(personId)
+        if (person != null) {
+          _personDetailUiState.value = PersonDetailUiState.Success(person, credits)
+        } else {
+          _personDetailUiState.value = PersonDetailUiState.Error(personId, "Dati della persona non disponibili")
+        }
+      } catch (e: Exception) {
+        _personDetailUiState.value = PersonDetailUiState.Error(personId, e.message ?: "Errore caricamento dettagli persona")
+      }
+    }
+  }
+
+  // Scheda Studio / Produzione (Punto 6)
+  private val _companyDetailUiState = MutableStateFlow<CompanyDetailUiState>(CompanyDetailUiState.Idle)
+  val companyDetailUiState: StateFlow<CompanyDetailUiState> = _companyDetailUiState.asStateFlow()
+
+  fun loadCompanyDetails(companyId: Int, companyName: String? = null, logoUrl: String? = null) {
+    viewModelScope.launch(ioDispatcher) {
+      _companyDetailUiState.value = CompanyDetailUiState.Loading(companyId)
+      try {
+        // Catalogo dello studio: popolari e più votati (film e serie) più i dati
+        // anagrafici dello studio, recuperati in parallelo per non allungare l'attesa.
+        val companyDtoDeferred = async { MediaRepository.fetchCompanyDetails(companyId) }
+        val moviesDeferred = async { MediaRepository.fetchMoviesByCompany(companyId) }
+        val topRatedMoviesDeferred = async {
+          MediaRepository.fetchMoviesByCompany(companyId, sortBy = "vote_average.desc", minVoteCount = 50)
+        }
+        val tvSeriesDeferred = async { MediaRepository.fetchTvByCompany(companyId) }
+        val topRatedSeriesDeferred = async {
+          MediaRepository.fetchTvByCompany(companyId, sortBy = "vote_average.desc", minVoteCount = 50)
+        }
+
+        val companyDto = companyDtoDeferred.await()
+        val movies = moviesDeferred.await()
+        val topRatedMovies = topRatedMoviesDeferred.await()
+        val tvSeries = tvSeriesDeferred.await()
+        val topRatedTvSeries = topRatedSeriesDeferred.await()
+
+        val effectiveName = companyName?.takeIf { it.isNotBlank() } ?: companyDto?.name ?: "Studio di Produzione"
+        val effectiveLogo = logoUrl?.takeIf { it.isNotBlank() } ?: companyDto?.logoPath?.let { TmdbApiClient.logoUrl(it) }
+
+        _companyDetailUiState.value = CompanyDetailUiState.Success(
+          companyId = companyId,
+          companyName = effectiveName,
+          logoUrl = effectiveLogo,
+          movies = movies,
+          tvSeries = tvSeries,
+          topRatedMovies = topRatedMovies,
+          topRatedTvSeries = topRatedTvSeries,
+          originCountry = companyDto?.originCountry,
+          headquarters = companyDto?.headquarters
+        )
+      } catch (e: Exception) {
+        _companyDetailUiState.value = CompanyDetailUiState.Error(companyId, e.message ?: "Errore caricamento studio")
+      }
+    }
   }
 
   val detailUiState: StateFlow<MediaDetailUiState> = MediaRepository.detailUiState
@@ -1794,6 +1916,13 @@ class StreamNovaViewModel(
     )
     // Stream del nuovo episodio ormai disponibile: la transizione è conclusa.
     _isSwitchingEpisode.value = false
+
+    Log.d(
+      "[NEXT_EP_DEBUG]",
+      "Stream ottenuto: ${source?.streamUrl} (isSwitching=${_isSwitchingEpisode.value}, " +
+        "episode=S${finalEpisode?.seasonNumber ?: "-"}E${finalEpisode?.episodeNumber ?: "-"}, " +
+        "server=${source?.serverName}, quality=${source?.quality})"
+    )
     // "Prossimo Episodio": risolve (o carica in background) l'episodio successivo
     // e lo espone a PlayerScreen per overlay e auto-advance.
     refreshNextEpisodeForPlayback(finalMedia, finalEpisode)
@@ -1918,6 +2047,11 @@ class StreamNovaViewModel(
    * 3. Avvia la riproduzione del nuovo episodio dalla sua posizione specifica.
    */
   fun playNextEpisode(nextEpisode: Episode) {
+    Log.d(
+      "[NEXT_EP_DEBUG]",
+      "playNextEpisode() chiamato. Target: S${nextEpisode.seasonNumber}E${nextEpisode.episodeNumber} " +
+        "(${nextEpisode.title})"
+    )
     val current = _playbackState.value
     val media = current.media ?: return
     if (current.currentPositionMs > 0L) {
@@ -1948,22 +2082,14 @@ class StreamNovaViewModel(
       seriesImdbId = nextEpisode.seriesImdbId ?: effectiveSeriesImdb
     )
 
+    // === FIX: Pulisci in sicurezza il player vecchio prima di passare all'episodio successivo ===
+    // Interrompi la riproduzione corrente e svuota i media item per evitare stato residuo
     _playbackState.value = current.copy(
       media = enrichedMedia,
       currentEpisode = enrichedNext,
       currentPositionMs = nextSavedPos,
       durationMs = enrichedNext.totalDurationMs,
       streamUrl = null
-    )
-    // Aggiorna il pacchetto atomico alla nuova puntata: i salvataggi successivi non
-    // devono più riferirsi all'episodio precedente.
-    currentSession = PlaybackSession(
-      mediaId = enrichedMedia.id,
-      mediaTitle = enrichedMedia.title,
-      posterUrl = enrichedMedia.posterUrl,
-      isSeries = true,
-      seasonNumber = enrichedNext.seasonNumber,
-      episodeNumber = enrichedNext.episodeNumber
     )
 
     // "Prossimo Episodio": aggiorna subito il next verso l'episodio successivo a quello
@@ -2125,6 +2251,13 @@ class StreamNovaViewModel(
     _isSwitchingEpisode.value = isNextEpisode
     _streamResolutionState.value = StreamResolutionState.Loading
     _streamResult.value = StreamResult.Loading("Ricerca sorgenti in corso...")
+
+    Log.d(
+      "[NEXT_EP_DEBUG]",
+      "Avvio risoluzione stream per: mediaId=${mediaItem.id} " +
+        "S${episode?.seasonNumber ?: "-"} E${episode?.episodeNumber ?: "-"} " +
+        "(isNextEpisode=$isNextEpisode, allowReuse=$allowReuse, switching=${_isSwitchingEpisode.value})"
+    )
 
     val currentDetail = detailUiState.value
     val enrichedMedia = if (currentDetail is MediaDetailUiState.Success) {

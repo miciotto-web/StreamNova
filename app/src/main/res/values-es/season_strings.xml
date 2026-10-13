@@ -1,0 +1,4 @@
+<resources>
+    <string name="detail_specials">Especiales</string>
+    <string name="detail_season_air_date_format">Estreno de temporada: %s</string>
+</resources>

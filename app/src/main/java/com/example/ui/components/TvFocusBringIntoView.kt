@@ -78,6 +78,50 @@ open class TvFocusBringIntoViewSpec(
 }
 
 /**
+ * Bring-into-view neutro per le righe orizzontali (LazyRow) annidate dentro contenitori
+ * verticali protetti da un guard (come [TvFocusBringIntoViewSpec] con `return 0f`).
+ *
+ * Il guard dei sistemi TV azzera `calculateScrollDistance` sui tasti LEFT/RIGHT per tenere la
+ * testata ferma: se lo stesso spec arriva anche alla LazyRow, lo scorrimento orizzontale viene
+ * bloccato e i poster non avanzano mai verso destra. Fornendo questo spec SOLO all'interno della
+ * riga, la LazyRow rivela i poster successivi con lo scorrimento nativo (asse X), mentre il
+ * contenitore verticale esterno resta governato dal proprio guard: la testata non si muove.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+object TvFocusRowBringIntoViewSpec : BringIntoViewSpec {
+
+  override val scrollAnimationSpec: AnimationSpec<Float> =
+    tween(durationMillis = 150, easing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f))
+
+  override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
+    if (size <= 0f || containerSize <= 0f) return 0f
+
+    val trailingEdge = offset + size
+    return when {
+      // Elemento fuori dal bordo iniziale: riportalo in vista (valore negativo).
+      offset < 0f -> offset
+      // Elemento fuori dal bordo finale: scorri in avanti solo quanto basta (positivo).
+      trailingEdge > containerSize -> trailingEdge - containerSize
+      // Gi completamente visibile: nessuno scorrimento, niente sobbalzi.
+      else -> 0f
+    }
+  }
+}
+
+/**
+ * Fornisce [TvFocusRowBringIntoViewSpec] al contenuto: va avvolto attorno a ogni LazyRow
+ * orizzontale collocata dentro uno schermo con guard verticale, affinche' il D-pad LEFT/RIGHT
+ * scorra nativamente la riga fino all'ultimo elemento.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun TvFocusRow(content: @Composable () -> Unit) {
+  CompositionLocalProvider(LocalBringIntoViewSpec provides TvFocusRowBringIntoViewSpec) {
+    content()
+  }
+}
+
+/**
  * Applica [TvFocusBringIntoViewSpec] a un contenitore scrollabile (es. LazyColumn, LazyVerticalGrid).
  */
 @OptIn(ExperimentalFoundationApi::class)

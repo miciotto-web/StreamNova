@@ -58,6 +58,9 @@ data class StreamSource(
   /** Sottotitoli esterni associati a questa sorgente (addon Stremio). */
   val subtitles: List<Subtitle> = emptyList(),
 ) {
+  val title: String
+    get() = releaseTitle?.takeIf { it.isNotBlank() } ?: serverName
+
   val effectiveHeight: Int
     get() = verifiedHeight ?: when {
       quality.contains("4k", ignoreCase = true) || quality.contains("2160") -> 2160

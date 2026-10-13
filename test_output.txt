@@ -1,0 +1,80 @@
+Reusing configuration cache.
+> Task :app:preBuild UP-TO-DATE
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:processDebugGoogleServices UP-TO-DATE
+> Task :app:generateDebugBuildConfig UP-TO-DATE
+> Task :app:generateDebugResources UP-TO-DATE
+> Task :app:javaPreCompileDebug UP-TO-DATE
+> Task :app:packageDebugResources UP-TO-DATE
+> Task :app:mapDebugSourceSetPaths UP-TO-DATE
+> Task :app:processDebugNavigationResources UP-TO-DATE
+> Task :app:parseDebugLocalResources UP-TO-DATE
+> Task :app:generateDebugRFile UP-TO-DATE
+> Task :app:compileDebugNavigationResources UP-TO-DATE
+> Task :app:createDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:kspDebugKotlin UP-TO-DATE
+> Task :app:extractDeepLinksDebug UP-TO-DATE
+> Task :app:mergeDebugResources UP-TO-DATE
+> Task :app:checkDebugAarMetadata UP-TO-DATE
+> Task :app:preDebugUnitTestBuild UP-TO-DATE
+> Task :app:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :app:compileDebugKotlin UP-TO-DATE
+> Task :app:processDebugJavaRes UP-TO-DATE
+> Task :app:processDebugMainManifest FROM-CACHE
+> Task :app:mergeDebugAssets UP-TO-DATE
+> Task :app:processDebugManifest FROM-CACHE
+> Task :app:processDebugManifestForPackage FROM-CACHE
+> Task :app:processDebugUnitTestManifest UP-TO-DATE
+> Task :app:processDebugResources FROM-CACHE
+> Task :app:packageDebugUnitTestForUnitTest UP-TO-DATE
+> Task :app:generateDebugUnitTestConfig UP-TO-DATE
+> Task :app:compileDebugJavaWithJavac UP-TO-DATE
+> Task :app:bundleDebugClassesToCompileJar
+> Task :app:bundleDebugClassesToRuntimeJar
+> Task :app:kspDebugUnitTestKotlin
+
+> Task :app:compileDebugUnitTestKotlin
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/HosterExtractorTest.kt:29:31 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/HosterExtractorTest.kt:45:46 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:45:37 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:46:12 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:46:48 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:47:14 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:52:14 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:52:51 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:53:45 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:56:69 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:66:54 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/NewProvidersTest.kt:68:97 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/StreamPriorityTest.kt:48:55 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/StreamPriorityTest.kt:48:70 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/StreamPriorityTest.kt:49:44 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/StreamPriorityTest.kt:49:58 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/StreamPriorityTest.kt:68:52 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/StreamPriorityTest.kt:81:52 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/streaming/StreamPriorityTest.kt:167:80 'val url: String' is deprecated. Use streamUrl instead.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/stremio/StremioStreamSubtitlesTest.kt:213:16 Check for instance is always 'true'.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/data/stremio/StremioStreamSubtitlesTest.kt:214:16 Check for instance is always 'true'.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/ui/screens/player/PlayerCodecErrorClassifierTest.kt:39:33 'static fun createForRenderer(p0: Throwable, p1: String, p2: Int, p3: Format?, p4: Int, p5: Boolean, p6: Int): ExoPlaybackException' is deprecated. Deprecated in Java.
+w: file:///D:/VSCODE/Progetti/StreamNova/app/src/test/java/com/example/ui/screens/player/SubtitleOffsetRendererTest.kt:17:8 Annotation 'androidx.media3.common.util.UnstableApi' is not annotated with '@RequiresOptIn'. '@OptIn' has no effect.
+
+> Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :app:processDebugUnitTestJavaRes UP-TO-DATE
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by org.robolectric.nativeruntime.DefaultNativeRuntimeLoader in an unnamed module
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+> Task :app:testDebugUnitTest
+
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::arrayBaseOffset has been called by androidx.datastore.preferences.protobuf.UnsafeUtil$MemoryAccessor
+WARNING: Please consider reporting this to the maintainers of class androidx.datastore.preferences.protobuf.UnsafeUtil$MemoryAccessor
+WARNING: sun.misc.Unsafe::arrayBaseOffset will be removed in a future release
+
+> Task :app:finalizeTestRoborazziDebug SKIPPED
+
+BUILD SUCCESSFUL in 1m 41s
+33 actionable tasks: 5 executed, 4 from cache, 24 up-to-date
+Configuration cache entry reused.

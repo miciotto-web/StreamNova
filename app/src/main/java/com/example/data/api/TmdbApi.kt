@@ -92,6 +92,22 @@ data class TmdbGenreDto(
   val name: String
 )
 
+data class TmdbVideoDto(
+  val id: String? = null,
+  val key: String? = null,
+  val name: String? = null,
+  val site: String? = null,
+  val type: String? = null,
+  @Json(name = "iso_639_1") val language: String? = null,
+  val official: Boolean? = null,
+  @Json(name = "published_at") val publishedAt: String? = null
+)
+
+data class TmdbVideosResponseDto(
+  val id: Int? = null,
+  val results: List<TmdbVideoDto>? = emptyList()
+)
+
 /**
  * ID esterni del titolo: serve per ottenere l'**id IMDb** (`tt...`) richiesto
  * dal protocollo Stremio (`idPrefixes: ["tt"]`) per interrogare gli addon.
@@ -160,6 +176,60 @@ data class TmdbTvContentRatingsResponseDto(
   val results: List<TmdbTvContentRatingItemDto>? = emptyList()
 )
 
+data class TmdbProductionCompanyDto(
+  val id: Int,
+  val name: String,
+  @Json(name = "logo_path") val logoPath: String? = null,
+  @Json(name = "origin_country") val originCountry: String? = null
+)
+
+data class TmdbCompanyDetailDto(
+  val id: Int,
+  val name: String,
+  @Json(name = "logo_path") val logoPath: String? = null,
+  val description: String? = null,
+  val headquarters: String? = null,
+  val homepage: String? = null,
+  @Json(name = "origin_country") val originCountry: String? = null
+)
+
+data class TmdbPersonDetailDto(
+  val id: Int,
+  val name: String,
+  val biography: String? = null,
+  val birthday: String? = null,
+  @Json(name = "deathday") val deathday: String? = null,
+  @Json(name = "place_of_birth") val placeOfBirth: String? = null,
+  @Json(name = "profile_path") val profilePath: String? = null,
+  @Json(name = "known_for_department") val knownForDepartment: String? = null,
+  val popularity: Float? = null
+)
+
+data class TmdbPersonCreditItemDto(
+  val id: Int,
+  @Json(name = "media_type") val mediaType: String? = null,
+  val title: String? = null,
+  val name: String? = null,
+  @Json(name = "original_title") val originalTitle: String? = null,
+  @Json(name = "original_name") val originalName: String? = null,
+  @Json(name = "poster_path") val posterPath: String? = null,
+  @Json(name = "backdrop_path") val backdropPath: String? = null,
+  val overview: String? = null,
+  @Json(name = "release_date") val releaseDate: String? = null,
+  @Json(name = "first_air_date") val firstAirDate: String? = null,
+  @Json(name = "vote_average") val voteAverage: Float? = null,
+  val character: String? = null,
+  val job: String? = null,
+  val department: String? = null,
+  val popularity: Float? = null
+)
+
+data class TmdbPersonCombinedCreditsDto(
+  val id: Int? = null,
+  val cast: List<TmdbPersonCreditItemDto>? = emptyList(),
+  val crew: List<TmdbPersonCreditItemDto>? = emptyList()
+)
+
 data class TmdbMovieDetailDto(
   val id: Int,
   val title: String?,
@@ -176,7 +246,8 @@ data class TmdbMovieDetailDto(
   val status: String? = null,
   val credits: TmdbCreditsDto? = null,
   val similar: TmdbPaginatedResponse<TmdbMovieDto>? = null,
-  @Json(name = "release_dates") val releaseDates: TmdbMovieReleaseDatesResponseDto? = null
+  @Json(name = "release_dates") val releaseDates: TmdbMovieReleaseDatesResponseDto? = null,
+  @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList()
 )
 
 data class TmdbTvDetailDto(
@@ -198,7 +269,8 @@ data class TmdbTvDetailDto(
   val credits: TmdbCreditsDto? = null,
   val similar: TmdbPaginatedResponse<TmdbTvDto>? = null,
   val seasons: List<TmdbSeasonInfoDto>? = emptyList(),
-  @Json(name = "content_ratings") val contentRatings: TmdbTvContentRatingsResponseDto? = null
+  @Json(name = "content_ratings") val contentRatings: TmdbTvContentRatingsResponseDto? = null,
+  @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList()
 )
 
 data class TmdbSeasonInfoDto(
@@ -229,7 +301,8 @@ data class TmdbSeasonDetailDto(
   val name: String?,
   @Json(name = "season_number") val seasonNumber: Int,
   val overview: String? = null,
-  val episodes: List<TmdbEpisodeDto>? = emptyList()
+  val episodes: List<TmdbEpisodeDto>? = emptyList(),
+  @Json(name = "air_date") val airDate: String? = null
 )
 
 interface TmdbApiService {
@@ -389,6 +462,29 @@ interface TmdbApiService {
     @Query("include_image_language") languages: String = "it,en,null"
   ): TmdbImagesDto
 
+  // Priorita' ai trailer italiani: `language=it-IT` + `include_video_language=it,en,null`
+  // fanno tornare a TMDB in UNA sola chiamata sia i video in italiano sia quelli
+  // inglesi/privi di lingua (senza `include_video_language` l'API puo' restituire la
+  // sola lingua richiesta). La scelta finale it -> en -> primo avviene lato client
+  // con [TmdbMediaAssets.pickTrailer]. L'interceptor globale NON riscrive `language`
+  // su questi endpoint (controlla `include_video_language`), altrimenti un utente in
+  // lingua inglese perderebbe tutti i video italiani.
+  @GET("movie/{movie_id}/videos")
+  suspend fun getMovieVideos(
+    @Path("movie_id") movieId: Int,
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT",
+    @Query("include_video_language") includeVideoLanguage: String = "it,en,null"
+  ): TmdbVideosResponseDto
+
+  @GET("tv/{tv_id}/videos")
+  suspend fun getTvVideos(
+    @Path("tv_id") tvId: Int,
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT",
+    @Query("include_video_language") includeVideoLanguage: String = "it,en,null"
+  ): TmdbVideosResponseDto
+
   @GET("search/multi")
   suspend fun searchMulti(
     @Query("api_key") apiKey: String,
@@ -415,6 +511,46 @@ interface TmdbApiService {
     @Query("page") page: Int = 1,
     @Query("include_adult") includeAdult: Boolean = false
   ): TmdbPaginatedResponse<TmdbTvDto>
+
+  @GET("discover/movie")
+  suspend fun discoverMoviesByCompany(
+    @Query("api_key") apiKey: String,
+    @Query("with_companies") companyId: String,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1,
+    @Query("vote_count.gte") voteCountGte: Int? = null
+  ): TmdbPaginatedResponse<TmdbMovieDto>
+
+  @GET("discover/tv")
+  suspend fun discoverTvByCompany(
+    @Query("api_key") apiKey: String,
+    @Query("with_companies") companyId: String,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1,
+    @Query("vote_count.gte") voteCountGte: Int? = null
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
+  @GET("person/{person_id}")
+  suspend fun getPersonDetails(
+    @Path("person_id") personId: Int,
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT"
+  ): TmdbPersonDetailDto
+
+  @GET("person/{person_id}/combined_credits")
+  suspend fun getPersonCombinedCredits(
+    @Path("person_id") personId: Int,
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT"
+  ): TmdbPersonCombinedCreditsDto
+
+  @GET("company/{company_id}")
+  suspend fun getCompanyDetails(
+    @Path("company_id") companyId: Int,
+    @Query("api_key") apiKey: String
+  ): TmdbCompanyDetailDto
 }
 
 object TmdbApiClient {
@@ -468,8 +604,12 @@ object TmdbApiClient {
       .addInterceptor { chain ->
         val original = chain.request()
         val originalUrl = original.url
+        // Endpoint video (riconoscibili da `include_video_language`): la lingua va
+        // preservata così com'è stata richiesta (it-IT, o en-US nel fallback), altrimenti
+        // la lingua app riscriverebbe la query e perdremmo i trailer in italiano.
+        val preserveLanguage = originalUrl.queryParameter("include_video_language") != null
         val tmdbLang = AppSettingsRepository.tmdbLanguage()
-        val newUrl = if (originalUrl.queryParameter("language") != null) {
+        val newUrl = if (!preserveLanguage && originalUrl.queryParameter("language") != null) {
           originalUrl.newBuilder()
             .setQueryParameter("language", tmdbLang)
             .build()

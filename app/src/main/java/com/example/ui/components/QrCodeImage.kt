@@ -63,6 +63,37 @@ private suspend fun encodeQrCode(content: String): QrCodeMatrix? = withContext(D
   }
 }
 
+/** QR compatto riutilizzabile per codici di accesso e altri flussi TV. */
+@Composable
+fun QrCodeImage(
+  value: String,
+  modifier: Modifier = Modifier,
+  contentDescription: String? = null
+) {
+  val qr by produceState<QrCodeMatrix?>(initialValue = null, value) {
+    this.value = encodeQrCode(value)
+  }
+  val matrix = qr ?: return
+  Canvas(modifier = modifier.background(QrSurface, RoundedCornerShape(8.dp))) {
+    val moduleSize = size.minDimension / matrix.size
+    val origin = Offset(
+      (size.width - moduleSize * matrix.size) / 2f,
+      (size.height - moduleSize * matrix.size) / 2f
+    )
+    for (y in 0 until matrix.size) {
+      for (x in 0 until matrix.size) {
+        if (matrix.module(x, y)) {
+          drawRect(
+            color = QrModule,
+            topLeft = Offset(origin.x + x * moduleSize, origin.y + y * moduleSize),
+            size = Size(moduleSize, moduleSize)
+          )
+        }
+      }
+    }
+  }
+}
+
 /**
  * Card con QR Code dell'indirizzo del micro-server [AddonSyncServer].
  *

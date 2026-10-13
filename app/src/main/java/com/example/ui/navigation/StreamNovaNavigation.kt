@@ -31,6 +31,38 @@ sealed class Screen(val route: String) {
     )
     fun createRoute(providerId: String): String = "provider/$providerId"
   }
+
+  object PersonDetail : Screen("person/{personId}") {
+    const val ARG_PERSON_ID = "personId"
+    val arguments: List<NamedNavArgument> = listOf(
+      navArgument(ARG_PERSON_ID) { type = NavType.IntType }
+    )
+    fun createRoute(personId: Int): String = "person/$personId"
+  }
+
+  object CompanyDetail : Screen("company/{companyId}?companyName={companyName}&logoUrl={logoUrl}") {
+    const val ARG_COMPANY_ID = "companyId"
+    const val ARG_COMPANY_NAME = "companyName"
+    const val ARG_LOGO_URL = "logoUrl"
+    val arguments: List<NamedNavArgument> = listOf(
+      navArgument(ARG_COMPANY_ID) { type = NavType.IntType },
+      navArgument(ARG_COMPANY_NAME) {
+        type = NavType.StringType
+        nullable = true
+        defaultValue = ""
+      },
+      navArgument(ARG_LOGO_URL) {
+        type = NavType.StringType
+        nullable = true
+        defaultValue = ""
+      }
+    )
+    fun createRoute(companyId: Int, companyName: String? = null, logoUrl: String? = null): String {
+      val encodedName = companyName?.let { java.net.URLEncoder.encode(it, "UTF-8") } ?: ""
+      val encodedLogo = logoUrl?.let { java.net.URLEncoder.encode(it, "UTF-8") } ?: ""
+      return "company/$companyId?companyName=$encodedName&logoUrl=$encodedLogo"
+    }
+  }
 }
 
 data class DetailNavArgs(

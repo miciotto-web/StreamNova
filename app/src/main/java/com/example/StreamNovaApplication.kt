@@ -5,6 +5,8 @@ import com.example.data.local.StreamNovaDatabase
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.SettingsRepository
 import com.example.data.repository.MediaRepository
+import com.example.data.repository.SimklRepository
+import com.example.data.repository.LastWorkingStreamRepository
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.provider.ProviderCatalogResolvers
 import kotlinx.coroutines.CoroutineScope
@@ -24,11 +26,15 @@ class StreamNovaApplication : Application() {
     // Initialize MediaRepository with Room database
     MediaRepository.init(this, db)
 
+    // Cache dell'ultimo flusso funzionante ("Riusa l'ultimo link") sullo stesso DB Room.
+    LastWorkingStreamRepository.init(db)
+
     // Initialize persistent playback settings (DataStore Preferences)
     SettingsRepository.init(this)
 
-    // Preferenze Debrid/TorBox + lista addon Stremio installati (DataStore)
+    // Preferenze Debrid/TorBox, credenziali SIMKL + lista addon Stremio installati (DataStore)
     AppSettingsRepository.init(this)
+    SimklRepository.init(this)
     StremioAddonRepository.init()
     // Contesto per il resolver catalogo -> provider: senza questo la sorgente
     // REGISTRY (res/raw/stremio_provider_bindings.json) resterebbe sempre vuota,

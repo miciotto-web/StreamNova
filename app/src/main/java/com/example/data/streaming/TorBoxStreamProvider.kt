@@ -54,6 +54,31 @@ open class TorBoxStreamProvider(
     episode: Int?,
     title: String?,
     year: Int?
+  ): List<StreamSource> = executeGetStreams(tmdbId, isTv, season, episode, title, year, null)
+
+  open suspend fun getStreams(
+    tmdbId: Int,
+    isTv: Boolean,
+    season: Int?,
+    episode: Int?,
+    title: String?,
+    year: Int?,
+    imdbId: String?
+  ): List<StreamSource> {
+    if (imdbId == null) {
+      return getStreams(tmdbId, isTv, season, episode, title, year)
+    }
+    return executeGetStreams(tmdbId, isTv, season, episode, title, year, imdbId)
+  }
+
+  private suspend fun executeGetStreams(
+    tmdbId: Int,
+    isTv: Boolean,
+    season: Int?,
+    episode: Int?,
+    title: String?,
+    year: Int?,
+    imdbId: String?
   ): List<StreamSource> {
     if (!torBox.isConfigured()) {
       Log.d(TAG, "TorBox non configurato (toggle/chiave): nessuna risoluzione debrid")
@@ -64,7 +89,7 @@ open class TorBoxStreamProvider(
 
     // 1) Candidati provenienti dagli addon Stremio installati (infoHash grezzi).
     try {
-      val addonCandidates = addonRepository.fetchStreams(tmdbId, isTv, season, episode)
+      val addonCandidates = addonRepository.fetchStreams(tmdbId, isTv, season, episode, imdbId)
       candidates += addonCandidates.filter { it.item.infoHash?.isNotBlank() == true }
     } catch (e: Exception) {
       Log.w(TAG, "Lettura candidati dagli addon fallita: ${e.message}")

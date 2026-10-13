@@ -43,8 +43,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -58,6 +56,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -131,7 +131,9 @@ import com.example.data.model.VideoResolution
 import com.example.data.prefs.PreferredResolution
 import com.example.data.prefs.SubtitleBackground
 import com.example.data.repository.MediaRepository
-import com.example.ui.components.TvActionButton
+import com.example.data.repository.SimklEpisodePayload
+import com.example.data.repository.SimklMediaPayload
+import com.example.ui.screens.player.SimklScrobbler
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCyan
@@ -151,7 +153,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Auto-hide dei controlli del player dopo N ms di inattività con il telecomando. */
-private const val CONTROLS_HIDE_DELAY_MS = 5_000L
+private const val CONTROLS_HIDE_DELAY_MS = 4_000L
+
+private fun simklProgressPercent(positionMs: Long, durationMs: Long): Double =
+  if (durationMs > 0L) (positionMs.toDouble() / durationMs.toDouble() * 100.0).coerceIn(0.0, 100.0) else 0.0
 
 /**
  * Tentativi massimi di ripresa dopo un errore di una traccia sottotitoli esterna.
@@ -235,12 +240,22 @@ fun PlayerScreen(
 
   val showSourceDialog by viewModel.showSourceDialog.collectAsState()
   val streamResolutionState by viewModel.streamResolutionState.collectAsState()
-  val isSwitchingEpisode by viewModel.isSwitchingEpisode.collectAsState()
   val onlineSubtitles by viewModel.onlineSubtitles.collectAsState()
   val isOnlineSubtitlesLoading by viewModel.isOnlineSubtitlesLoading.collectAsState()
 
   val media = playbackState.media ?: return
   val episode = playbackState.currentEpisode
+  val simklCoroutineScope = rememberCoroutineScope()
+  val simklMedia = remember(media.id, media.title, media.year, media.tmdbId, media.effectiveImdbId, episode?.seasonNumber, episode?.episodeNumber) {
+    SimklMediaPayload(
+      title = media.title,
+      year = media.year.takeIf { it > 0 },
+      tmdbId = media.tmdbId,
+      imdbId = episode?.effectiveImdbId ?: media.effectiveImdbId,
+      episode = episode?.let { SimklEpisodePayload(it.seasonNumber, it.episodeNumber) }
+    )
+  }
+  val simklScrobbler = remember(simklMedia) { SimklScrobbler(simklCoroutineScope, simklMedia) }
 
   // Selezione sorgente attiva: il flag del dialog basta da solo (anche con lista
   // vuota). Durante il fallback manuale dell'auto-pick del prossimo episodio la
@@ -280,6 +295,15 @@ fun PlayerScreen(
   var areControlsVisible by remember { mutableStateOf(true) }
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
 
+  // FLAG CRITICO: Indica se siamo in fase di transizione verso il prossimo episodio.
+  // Durante questa fase, videoUrl può essere temporaneamente null mentre la nuova
+  // sorgente viene risolta. Non dobbiamo mostrare "Nessuna sorgente disponibile"
+  // ma invece attendere il completamento della risoluzione.
+  // FIX CRITICO: il flag è raccolto DIRETTAMENTE dal StateFlow del ViewModel.
+  // In precedenza era una variabile locale `remember` mai aggiornata (sempre false):
+  // durante il cambio episodio il player non entrava mai in modalità "attesa
+  // risoluzione" e la transizione restava bloccata sul caricamento.
+  val isSwitchingEpisode by viewModel.isSwitchingEpisode.collectAsState()
 
   // Risoluzione video rilevata in tempo reale da ExoPlayer (es. 1080p, 720p, 4K)
   var detectedResolution by remember { mutableStateOf("") }
@@ -317,7 +341,7 @@ fun PlayerScreen(
   var currentSpeed by remember { mutableFloatStateOf(1.0f) }
 
   // Modali
-  var showAudioModal by remember { mutableStateOf(false) }
+  var showTrackQuickPanel by remember { mutableStateOf(false) }
   var showSubtitleModal by remember { mutableStateOf(false) }
   var showQualityModal by remember { mutableStateOf(false) }
   var showSpeedModal by remember { mutableStateOf(false) }
@@ -328,7 +352,7 @@ fun PlayerScreen(
   var manualSubtitleSelection by remember { mutableStateOf<ManualSubtitleSelection?>(null) }
   var manualAudioSelection by remember { mutableStateOf<ManualAudioSelection?>(null) }
 
-  val anyModalOpen = showAudioModal || showSubtitleModal || showQualityModal || showSpeedModal
+  val anyModalOpen = showTrackQuickPanel || showSubtitleModal || showQualityModal || showSpeedModal
 
   LaunchedEffect(showSubtitleModal) {
     if (showSubtitleModal) {
@@ -353,7 +377,7 @@ fun PlayerScreen(
   BackHandler(enabled = anyModalOpen) {
     Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler (modale)")
     Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
-    showAudioModal = false
+    showTrackQuickPanel = false
     showSubtitleModal = false
     showQualityModal = false
     showSpeedModal = false
@@ -372,12 +396,28 @@ fun PlayerScreen(
   // Sorgente riproducibile SOLO se reale. Per un titolo TMDB la mancanza di stream NON
   // deve mai ripiegare su un video demo di un altro contenuto: in quel caso videoUrl = null.
   // Il fallback al video seed è consentito esclusivamente per gli elementi demo reali.
-  val videoUrl: String? = playbackState.streamUrl?.takeIf { it.isNotBlank() }
-    ?: if (MediaRepository.isDemoSeedItem(media.id)) {
-      currentEp?.videoUrl ?: media.videoUrl
-    } else {
-      null
-    }
+  //
+  // IMPORTANTE durante il passaggio all'episodio successivo (isSwitchingEpisode=true):
+  // videoUrl può essere temporaneamente null mentre la nuova sorgente viene risolta
+  // in openStreamForMedia. In questo caso NON mostrare "Nessuna sorgente disponibile"
+  // ma attendere che la risoluzione completi e videoUrl diventi disponibile.
+  // FIX CRITICO: `isSwitchingEpisode` è ora il flag reattivo del ViewModel (raccolto
+  // sopra). L'indirection locale `isCurrentlySwitching` (aggiornata da un
+  // LaunchedEffect con un frame di ritardo) è stata rimossa: durante la transizione
+  // il player deve entrare subito in modalità "attesa risoluzione".
+  val isCurrentlySwitching = isSwitchingEpisode
+  val videoUrl: String? = if (isCurrentlySwitching) {
+    // Durante il cambio episodio: restituisci l'URL corrente se c'è, altrimenti null
+    // per forzare il player ad attendere la risoluzione invece di fallire subito.
+    playbackState.streamUrl?.takeIf { it.isNotBlank() }
+  } else {
+    playbackState.streamUrl?.takeIf { it.isNotBlank() }
+      ?: if (MediaRepository.isDemoSeedItem(media.id)) {
+        currentEp?.videoUrl ?: media.videoUrl
+      } else {
+        null
+      }
+  }
 
   if (media.tmdbId == 318508) {
     Log.d("THE_PITT_PLAYER", "PlayerScreen: media.tmdbId=318508, videoUrl=$videoUrl, streamUrl=${playbackState.streamUrl}, isDemoSeed=${MediaRepository.isDemoSeedItem(media.id)}")
@@ -450,13 +490,47 @@ fun PlayerScreen(
     }
   }
 
+  /**
+   * Caricamento stream UNIFORME su ExoPlayer: usato sia al primo avvio (S1E1, dentro il
+   * `remember` che crea il player) sia al cambio episodio (S1E2..., nel
+   * `LaunchedEffect(currentEpKey, videoUrl, exoPlayer)`).
+   *
+   * Stessa identica sequenza in entrambi i percorsi:
+   * stop() + clearMediaItems() → PlayerSubtitleMediaItemBuilder (headers HTTP e
+   * sottotitoli arrivano dalla DataSource.Factory / MediaSourceFactory del player,
+   * quindi restano quelli della composizione corrente) → setMediaItem() → prepare() →
+   * seekTo() → playWhenReady = true.
+   * Nessun percorso può più divergere dall'altro (né per ordine delle chiamate né per
+   * configurazione della sorgente).
+   */
+  fun loadStreamOnPlayer(player: ExoPlayer, url: String, positionMs: Long, source: String) {
+    Log.d("[NEXT_EP_DEBUG]", "loadStreamOnPlayer($source): stop()+clearMediaItems() su $player")
+    player.stop()
+    player.clearMediaItems()
+    val item = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, stremioSubtitles)
+    Log.d("[NEXT_EP_DEBUG]", "Esecuzione exoPlayer.setMediaItem con: $url")
+    player.setMediaItem(item)
+    player.prepare()
+    player.seekTo(positionMs.coerceAtLeast(0L))
+    player.playWhenReady = true
+    Log.d(
+      "[NEXT_EP_DEBUG]",
+      "Riproduzione avviata: prepare()+playWhenReady=true eseguiti su $player (pos=$positionMs, source=$source)"
+    )
+  }
+
   // Nuvio TrackSelector e ExoPlayer configurati con NuvioRenderersFactory, BitrateAwareLoadControl e Decoder Fallback
+  //
+  // INVARIANTE CRITICO (cambio episodio): le chiavi di questo `remember` NON dipendono
+  // da `videoUrl`, `currentEpKey` o `isSwitchingEpisode`. Durante il passaggio al
+  // prossimo episodio `videoUrl` è temporaneamente null per ~1s: il player deve
+  // restare la STESSA istanza viva e la struttura sottostante (DisposableEffect del
+  // player + AndroidView) deve restare SEMPRE montata, senza alcun `return` anticipato.
   val (trackSelector, exoPlayer) = remember(
     playbackMediaSourceFactory,
     bandwidthMeter,
     playbackSettings.preferredResolution,
     playbackSettings.targetBuffer,
-    playbackSettings.initialBuffer,
     playbackSettings.backBuffer,
     playbackSettings.audioPassthroughEnabled,
     playbackSettings.audioTunnelingEnabled,
@@ -517,7 +591,6 @@ fun PlayerScreen(
     val loadControl = NuvioExoPlayerPerformanceHelper.buildLoadControl(
       context = context,
       targetBufferSizeMbOverride = playbackSettings.targetBuffer.sizeMb,
-      bufferForPlaybackMsOverride = playbackSettings.initialBuffer.durationMs,
       backBufferMsOverride = playbackSettings.backBuffer.durationMs
     )
     val frameRateStrategy = if (playbackSettings.autoFrameRateMatching) {
@@ -548,22 +621,38 @@ fun PlayerScreen(
             "selectUndeterminedTextLanguage=false"
         )
         if (videoUrl != null) {
-          Log.i("PlayerScreen", "Avvio riproduzione NuvioEngine: url=$videoUrl")
-          stop()
-          clearMediaItems()
-          val exoMediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles)
-          setMediaItem(exoMediaItem)
-          prepare()
-          if (playbackState.currentPositionMs > 0) {
-            seekTo(playbackState.currentPositionMs)
-          }
-          playWhenReady = true
+          Log.i("PlayerScreen", if (isCurrentlySwitching) "Avvio riproduzione NuvioEngine (passaggio episodio): url=$videoUrl, attesa risoluzione stream" else "Avvio riproduzione NuvioEngine: url=$videoUrl")
+          // Percorso IDENTICO a quello del cambio episodio (LaunchedEffect qui sotto):
+          // stessa sequenza, stesso MediaItem builder, stessi headers/sottotitoli.
+          loadStreamOnPlayer(
+            player = this,
+            url = videoUrl,
+            positionMs = playbackState.currentPositionMs,
+            source = "creazione-player"
+          )
+        } else if (isCurrentlySwitching) {
+          // Durante il cambio episodio con videoUrl ancora null: mostra stato loading
+          // ma NON mostrare "Nessuna sorgente disponibile". La risoluzione stream è in corso.
+          Log.i("PlayerScreen", "Passaggio episodio: attesa risoluzione stream (videoUrl null in attesa)")
+          // Mostra l'indicatore di caricamento ma non errori
+          playbackErrorMessage = null
+          // Non chiamiamo playWhenReady = true qui perché videoUrl è ancora null;
+          // il player sarà avviato quando videoUrl diventerà disponibile tramite
+          // l'aggiornamento dello stato dal ViewModel (quando la risoluzione stream completa)
         } else {
           Log.i("PlayerScreen", "Nessuna sorgente disponibile per '${media.title}': nessun fallback demo.")
         }
       }
     trackSelector to player
   }
+
+  // Log di tracciamento [NEXT_EP_DEBUG] #4: quale URL e quale istanza di player
+  // arrivano a PlayerScreen ad ogni cambio di stato (episodio/stream/ricreazione player).
+  Log.d(
+    "[NEXT_EP_DEBUG]",
+    "PlayerScreen riceve videoUrl=$videoUrl, player=$exoPlayer, " +
+      "isSwitching=$isSwitchingEpisode, streamUrl=${playbackState.streamUrl}"
+  )
 
   var currentTracksState by remember(exoPlayer) { mutableStateOf(exoPlayer.currentTracks) }
 
@@ -592,8 +681,7 @@ fun PlayerScreen(
   fun formatAudioTrackDisplayName(
     formatLanguage: String?,
     formatLabel: String?,
-    roleFlags: Int,
-    channels: Int = -1
+    roleFlags: Int
   ): String {
     val cleanLang = formatLanguage?.trim()?.lowercase() ?: ""
     val isNonUdenti = (roleFlags and C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND != 0) ||
@@ -648,16 +736,18 @@ fun PlayerScreen(
       extra.add(context.getString(R.string.track_flag_commentary))
     }
 
-    if (channels >= 6) {
-      extra.add("5.1")
-    }
-
     val labelClean = formatLabel?.trim() ?: ""
     val isRedundantLabel = labelClean.isBlank() ||
         labelClean.equals(baseLang, ignoreCase = true) ||
         labelClean.equals("und", ignoreCase = true) ||
         labelClean.equals("default", ignoreCase = true) ||
-        labelClean.equals("main", ignoreCase = true)
+        labelClean.equals("main", ignoreCase = true) ||
+        labelClean.contains("forced", ignoreCase = true) ||
+        labelClean.contains("forzat", ignoreCase = true) ||
+        labelClean.contains("hearing impaired", ignoreCase = true) ||
+        labelClean.contains("non udenti", ignoreCase = true) ||
+        labelClean.contains("sdh", ignoreCase = true) ||
+        labelClean.contains("closed caption", ignoreCase = true)
 
     return when {
       extra.isNotEmpty() -> "$baseLang (${extra.joinToString(", ")})"
@@ -676,7 +766,14 @@ fun PlayerScreen(
           val label = format.label ?: ""
           val roleFlags = format.roleFlags
           val isSelected = group.isTrackSelected(i)
-          val name = formatAudioTrackDisplayName(lang, label, roleFlags, format.channelCount)
+          val name = formatAudioTrackDisplayName(lang, label, roleFlags)
+          val codec = CustomDefaultTrackNameProvider.formatNameFromMime(format.sampleMimeType)
+            ?: CustomDefaultTrackNameProvider.formatNameFromMime(format.codecs)
+            ?: format.codecs
+            ?: format.sampleMimeType
+            ?: "Codec unavailable"
+          val channels = CustomDefaultTrackNameProvider.getChannelLayoutName(format.channelCount)
+            ?: "Channel count unavailable"
           options.add(
             MediaAudioTrackOption(
               group = group,
@@ -684,6 +781,8 @@ fun PlayerScreen(
               language = lang,
               label = label,
               roleFlags = roleFlags,
+              codec = codec,
+              channels = channels,
               displayName = name,
               isSelected = isSelected
             )
@@ -763,25 +862,22 @@ fun PlayerScreen(
         labelClean.equals(baseLang, ignoreCase = true) ||
         labelClean.equals("und", ignoreCase = true) ||
         labelClean.equals("default", ignoreCase = true) ||
-        labelClean.equals("main", ignoreCase = true)
+        labelClean.equals("main", ignoreCase = true) ||
+        labelClean.contains("forced", ignoreCase = true) ||
+        labelClean.contains("forzat", ignoreCase = true) ||
+        labelClean.contains("hearing impaired", ignoreCase = true) ||
+        labelClean.contains("non udenti", ignoreCase = true) ||
+        labelClean.contains("sdh", ignoreCase = true) ||
+        labelClean.contains("closed caption", ignoreCase = true)
 
     val forcedText = context.getString(R.string.track_flag_forced)
     val sdhText = context.getString(R.string.track_flag_sdh)
-    return when {
-      isForced -> {
-        if (baseLang.contains(forcedText, ignoreCase = true) ||
-            baseLang.contains("forced", ignoreCase = true) ||
-            baseLang.contains("forzat", ignoreCase = true)
-        ) {
-          baseLang
-        } else {
-          "$baseLang ($forcedText)"
-        }
-      }
-      isCC -> "$baseLang ($sdhText)"
-      !isRedundantLabel -> "$baseLang - $labelClean"
-      else -> baseLang
+    val flags = buildList {
+      if (isForced) add(forcedText)
+      if (isCC) add(sdhText)
     }
+    val labelSuffix = if (!isRedundantLabel) " - $labelClean" else ""
+    return baseLang + labelSuffix + if (flags.isNotEmpty()) " (${flags.joinToString(", ")})" else ""
   }
 
   fun getAvailableSubtitleOptions(tracks: Tracks = currentTracksState): List<MediaSubtitleTrackOption> {
@@ -796,6 +892,11 @@ fun PlayerScreen(
           val selectionFlags = format.selectionFlags
           val isSelected = group.isTrackSelected(i)
           val name = formatSubtitleTrackDisplayName(lang, label, roleFlags, selectionFlags)
+          val codec = CustomDefaultTrackNameProvider.formatNameFromMime(format.sampleMimeType)
+            ?: CustomDefaultTrackNameProvider.formatNameFromMime(format.codecs)
+            ?: format.codecs
+            ?: format.sampleMimeType
+            ?: "Codec unavailable"
           val isForced = (selectionFlags and C.SELECTION_FLAG_FORCED) != 0 ||
               label.contains("forced", ignoreCase = true) ||
               label.contains("forzat", ignoreCase = true)
@@ -808,6 +909,7 @@ fun PlayerScreen(
               roleFlags = roleFlags,
               selectionFlags = selectionFlags,
               isForced = isForced,
+              codec = codec,
               displayName = name,
               isSelected = isSelected
             )
@@ -1196,7 +1298,11 @@ fun PlayerScreen(
 
   // Se l'URL o l'episodio cambiano dinamicamente (es. click su Prossimo Episodio o Upgrade di qualita' a caldo)
   // oppure quando l'URL diventa disponibile dopo la selezione della sorgente TorBox.
-  LaunchedEffect(currentEpKey, videoUrl) {
+  // FIX CRITICO: `exoPlayer` è ora parte delle chiavi dell'effetto. Senza di esso, una
+  // ricreazione del player (cambio HLS<->progressivo, headers, impostazioni di
+  // riproduzione) lasciava il NUOVO player senza media item: la vista restava ferma
+  // su "Caricamento" con nessun setMediaItem() mai eseguito sull'istanza corrente.
+  LaunchedEffect(currentEpKey, videoUrl, exoPlayer) {
     val url = videoUrl ?: return@LaunchedEffect
     val isEpisodeChange = currentEpKey != lastLoadedEpKey
     val currentUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
@@ -1211,23 +1317,28 @@ fun PlayerScreen(
       }
 
       Log.i("PlayerScreen", "Caricamento stream: url=$url, isEpisodeChange=$isEpisodeChange, pos=$targetPos")
+      Log.d(
+        "[NEXT_EP_DEBUG]",
+        "Ricarico ExoPlayer con nuovo URL: $url (isEpisodeChange=$isEpisodeChange, pos=$targetPos, player=$exoPlayer)"
+      )
       isBuffering = true
       playbackFailed = false
       currentPosition = targetPos
 
-      // Ferma e ripulisce la vecchia istanza di ExoPlayer per evitare STATE_BUFFERING fantasma
-      exoPlayer.stop()
-      exoPlayer.clearMediaItems()
-
-      val item = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, stremioSubtitles)
-      exoPlayer.setMediaItem(item)
-      exoPlayer.prepare()
-      if (targetPos > 0) {
-        exoPlayer.seekTo(targetPos)
-      } else {
-        exoPlayer.seekTo(0L)
-      }
-      exoPlayer.playWhenReady = true
+      // Ferma e ripulisce la vecchia istanza di ExoPlayer per evitare STATE_BUFFERING fantasma:
+      // stessa sequenza IDENTICA usata al primo avvio (S1E1), così headers HTTP,
+      // MediaSourceFactory e gestione sottotitoli non possono divergere.
+      loadStreamOnPlayer(
+        player = exoPlayer,
+        url = url,
+        positionMs = targetPos,
+        source = if (isEpisodeChange) "cambio-episodio" else "cambio-url"
+      )
+    } else {
+      Log.d(
+        "[NEXT_EP_DEBUG]",
+        "Nessun ricaricamento necessario: uri corrente del player ($currentUri) già uguale a $url"
+      )
     }
   }
 
@@ -1315,13 +1426,60 @@ fun PlayerScreen(
     }
   }
 
-  // Release player on dispose & handle events
+  // Sessione Simkl: il SIMKL scrobbler dipende dall'episodio (le chiavi di `simklMedia`
+  // sono seasonNumber/episodeNumber), quindi al cambio episodio ne viene creato uno NUOVO.
+  // Questo effetto (e SOLO questo) chiude la sessione del precedente payload: è separato
+  // dal DisposableEffect del player per non rilasciare mai ExoPlayer durante la transizione.
+  DisposableEffect(simklScrobbler) {
+    val previousScrobbler = simklScrobbler
+    onDispose {
+      // `currentPosition`/`totalDuration` sono MutableState: la chiusura legge i valori
+      // correnti (ultima posizione pollata dell'episodio appena abbandonato) senza
+      // accedere al player, che potrebbe già essere stato rilasciato.
+      Log.d(
+        "[NEXT_EP_DEBUG]",
+        "SimklScrobbler onDispose: stop sessione precedente " +
+          "(${simklMedia.episode?.let { "S${it.season}E${it.number}" } ?: "film"}) pos=$currentPosition"
+      )
+      previousScrobbler.onStop(simklProgressPercent(currentPosition, totalDuration))
+    }
+  }
+
+  // Release player on dispose & handle events.
+  //
+  // FIX CRITICO (cambio episodio): l'UNICA chiave di questo effetto è `exoPlayer`,
+  // cioè esattamente l'istanza prodotta dal `remember` qui sopra, così `onDispose`
+  // (che chiama exoPlayer.release()) scatta SOLO quando il player viene davvero
+  // ricreato o quando PlayerScreen esce dalla composizione.
+  //
+  // In precedenza la chiave era `(exoPlayer, simklScrobbler)`: al passaggio a S1E2
+  // `simklScrobbler` veniva ricreato → l'effetto veniva DISPOSTO → onDispose
+  // rilanciava exoPlayer.release() su un player che il `remember` continuava a
+  // fornire come STESSA istanza. ~1s dopo l'arrivo del nuovo videoUrl,
+  // setMediaItem()/prepare()/playWhenReady venivano chiamati su un ExoPlayer già
+  // rilasciato: le chiamate svanivano silenziosamente (nessun onPlayerError, nessun
+  // onPlaybackStateChanged, polling fermo) e la UI restava bloccata sullo spinner.
+  //
+  // `simklScrobbler` resta sempre aggiornato grazie a rememberUpdatedState, senza
+  // mai invalidare l'effetto. ATTENZIONE: non aggiungere altre chiavi qui e non
+  // inserire `return` anticipati sopra, altrimenti AndroidView + questo effetto
+  // escono dalla composizione durante la transizione.
+  val currentSimklScrobbler by rememberUpdatedState(simklScrobbler)
   DisposableEffect(exoPlayer) {
+    Log.d("[NEXT_EP_DEBUG]", "DisposableEffect player: listener agganciati a $exoPlayer")
     var subtitleErrorRecoveries = 0
     val listener = object : Player.Listener {
       override fun onPlaybackStateChanged(state: Int) {
+        Log.d(
+          "[NEXT_EP_DEBUG]",
+          "onPlaybackStateChanged: state=$state (1=IDLE, 2=BUFFERING, 3=READY, 4=ENDED) playWhenReady=${exoPlayer.playWhenReady}"
+        )
         isBuffering = state == Player.STATE_BUFFERING
         if (state == Player.STATE_READY) {
+          // RESET esplicito a fine caricamento: l'overlay "Caricamento episodio
+          // successivo..." deve sparire appena ExoPlayer è READY e sta riproducendo,
+          // anche quando il cambio episodio ha forzato isBuffering = true.
+          isBuffering = false
           playbackErrorMessage = null
           playbackFailed = false
           // Flusso riprodotto con successo: salvalo come "ultimo funzionante" per il titolo
@@ -1354,11 +1512,15 @@ fun PlayerScreen(
           }
           playerReady = true
           updateIntroWindow()
+          if (exoPlayer.isPlaying) {
+            currentSimklScrobbler.onPlay(simklProgressPercent(exoPlayer.currentPosition, exoPlayer.duration))
+          }
         } else if (state == Player.STATE_ENDED) {
           isBuffering = false
           // Conclusione normale SOLO se la sessione non è fallita e la riproduzione
           // ha effettivamente consumato contenuto (no ENDED istantaneo da stream vuoto/rotto).
           if (!playbackFailed && exoPlayer.currentPosition > 0L && exoPlayer.duration > 0L) {
+            currentSimklScrobbler.onEnded()
             playbackEnded = true
             // A STATE_ENDED l'overlay "Prossimo Episodio" si attiva (con countdown a
             // video fermo se auto-play ON, solo pulsante se OFF) e transizione non lascia
@@ -1445,9 +1607,18 @@ fun PlayerScreen(
 
       override fun onIsPlayingChanged(playing: Boolean) {
         isPlaying = playing
+        Log.d(
+          "[NEXT_EP_DEBUG]",
+          "onIsPlayingChanged: playing=$playing, state=${exoPlayer.playbackState}, pos=${exoPlayer.currentPosition}"
+        )
+        if (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_ENDED) {
+          val progress = simklProgressPercent(exoPlayer.currentPosition, exoPlayer.duration)
+          if (playing) currentSimklScrobbler.onPlay(progress) else currentSimklScrobbler.onPause(progress)
+        }
       }
 
       override fun onPlayerError(error: ExoPlaybackException) {
+        Log.e("[NEXT_EP_DEBUG]", "onPlayerError: ${error.errorCodeName} - ${error.message}", error)
         val displayMsg = PlayerRuntimeControllerErrorRecovery.toDisplayMessage(error, context)
         Log.e("THE_PITT_PLAYER", "Playback Error: ${error.errorCodeName} (${error.errorCode}) - $displayMsg", error)
         // --- DIAGNOSTICA 4K (solo log): errore decoder/renderer + catena cause ---
@@ -1548,6 +1719,7 @@ fun PlayerScreen(
         FrameRateUtils.resetDisplayMode(act)
       }
       val finalPos = exoPlayer.currentPosition
+      currentSimklScrobbler.onStop(simklProgressPercent(finalPos, exoPlayer.duration))
       viewModel.updatePlaybackPosition(finalPos, exoPlayer.duration, exoPlayer.bufferedPosition)
       if (finalPos > 0) {
         viewModel.saveCurrentPlaybackProgress(finalPos)
@@ -1562,6 +1734,9 @@ fun PlayerScreen(
       exoPlayer.removeAnalyticsListener(diagAnalyticsListener)
       exoPlayer.stop()
       exoPlayer.clearMediaItems()
+      // [NEXT_EP_DEBUG] diagnostica rilascio: deve comparire SOLO alla chiusura del
+      // player o alla sua vera ricreazione, MAI durante il cambio episodio.
+      Log.d("[NEXT_EP_DEBUG]", "onDispose: exoPlayer.release() chiamato su $exoPlayer")
       exoPlayer.release()
     }
   }
@@ -1695,12 +1870,19 @@ fun PlayerScreen(
     viewModel.playNextEpisode(target)
   }
 
-  fun seekBy(deltaMs: Long) {
+  fun seekBy(deltaMs: Long, repeatCount: Int = 0) {
+    val repeatMultiplier = when {
+      repeatCount >= 8 -> 5L
+      repeatCount >= 5 -> 3L
+      repeatCount >= 2 -> 2L
+      else -> 1L
+    }
+    val seekDelta = deltaMs * repeatMultiplier
     val durationMs = exoPlayer.duration
     val target = if (durationMs > 0) {
-      (exoPlayer.currentPosition + deltaMs).coerceIn(0L, durationMs)
+      (exoPlayer.currentPosition + seekDelta).coerceIn(0L, durationMs)
     } else {
-      (exoPlayer.currentPosition + deltaMs).coerceAtLeast(0L)
+      (exoPlayer.currentPosition + seekDelta).coerceAtLeast(0L)
     }
     exoPlayer.seekTo(target)
     currentPosition = target
@@ -1788,7 +1970,7 @@ fun PlayerScreen(
           if (native.action == KeyEvent.ACTION_DOWN && native.repeatCount == 0) {
             Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent KEYCODE_BACK down, anyModalOpen=$anyModalOpen")
             if (anyModalOpen) {
-              showAudioModal = false
+              showTrackQuickPanel = false
               showSubtitleModal = false
               showQualityModal = false
               showSpeedModal = false
@@ -1831,13 +2013,13 @@ fun PlayerScreen(
           }
 
           KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-            seekBy(10_000L)
+            seekBy(10_000L, native.repeatCount)
             showControls(focusPrimary = false)
             true
           }
 
           KeyEvent.KEYCODE_MEDIA_REWIND -> {
-            seekBy(-10_000L)
+            seekBy(-10_000L, native.repeatCount)
             showControls(focusPrimary = false)
             true
           }
@@ -1875,17 +2057,21 @@ fun PlayerScreen(
             }
           }
 
-          // Frecce Su / Giù
-          KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> when {
+// Frecce Su / Giù
+          KeyEvent.KEYCODE_DPAD_UP -> {
+            requestFocusOn(seekBarFocusRequester)
+            true
+          }
+          KeyEvent.KEYCODE_DPAD_DOWN -> when {
             !hudShown -> {
-              showControls()
+              showControls(focusPrimary = false)
               true
             }
-            hudHasFocus -> false
-            else -> {
-              showControls()
+            hudHasFocus -> {
+              requestFocusOn(playPauseFocusRequester)
               true
             }
+            else -> false
           }
 
           else -> false
@@ -2013,72 +2199,88 @@ fun PlayerScreen(
       }
     }
 
-    // Errore riproduzione
+    // Errore compatto: mantiene visibili video e controlli per non bloccare il player.
     if (playbackErrorMessage != null) {
       Box(
         modifier = Modifier
-          .fillMaxSize()
-          .background(Color.Black.copy(alpha = 0.92f)),
-        contentAlignment = Alignment.Center
+          .fillMaxWidth()
+          .align(Alignment.TopCenter)
+          .padding(horizontal = 24.dp, vertical = 24.dp)
+          .zIndex(20f),
+        contentAlignment = Alignment.TopCenter
       ) {
-        Column(
-          horizontalAlignment = Alignment.CenterHorizontally,
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
           modifier = Modifier
-            .widthIn(max = 500.dp)
+            .widthIn(max = 820.dp)
             .background(NovaSurface, RoundedCornerShape(16.dp))
-            .border(1.dp, NovaCyanGlow, RoundedCornerShape(16.dp))
-            .padding(32.dp)
+            .border(1.dp, Color(0xFFFF5252).copy(alpha = 0.8f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 18.dp, vertical = 14.dp)
         ) {
           Icon(
             imageVector = Icons.Default.Warning,
             contentDescription = stringResource(R.string.player_cd_playback_error),
             tint = Color(0xFFFF5252),
-            modifier = Modifier.size(54.dp)
+            modifier = Modifier.size(24.dp)
           )
-          Spacer(modifier = Modifier.height(16.dp))
-          Text(
-            text = stringResource(R.string.player_playback_error_title),
-            color = NovaTextPrimary,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold
-          )
-          Spacer(modifier = Modifier.height(8.dp))
-          Text(
-            text = playbackErrorMessage ?: "",
-            color = NovaTextSecondary,
-            fontSize = 14.sp,
-            textAlign = TextAlign.Center
-          )
-          Spacer(modifier = Modifier.height(24.dp))
-          Row(
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+          Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
           ) {
-            // "Riprova" solo se esiste una sorgente riproducibile (nessun fallback demo)
-            if (videoUrl != null) {
-              TvActionButton(
-                text = stringResource(R.string.action_retry),
-                icon = Icons.Default.Refresh,
-                isPrimary = true,
-                onClick = {
-                  playbackErrorMessage = null
-                  isBuffering = true
-                  exoPlayer.setMediaItem(
-                    PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles)
-                  )
-                  exoPlayer.prepare()
-                  exoPlayer.playWhenReady = true
-                }
-              )
-            }
-            TvActionButton(
-              text = stringResource(R.string.player_back_to_catalog),
-              icon = Icons.AutoMirrored.Filled.ArrowBack,
-              isPrimary = false,
-              onClick = {
-                viewModel.resetStreamState()
-                viewModel.closePlayer()
-              }
+            Text(
+              text = stringResource(R.string.player_playback_error_title),
+              color = NovaTextPrimary,
+              fontSize = 14.sp,
+              fontWeight = FontWeight.Bold
             )
+            Text(
+              text = playbackErrorMessage.orEmpty(),
+              color = NovaTextSecondary,
+              fontSize = 12.sp,
+              maxLines = 3,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+          if (videoUrl != null) {
+            TvFocusableBox(
+              shape = RoundedCornerShape(10.dp),
+              focusedScale = 1.04f,
+              onClick = {
+                playbackErrorMessage = null
+                playbackFailed = false
+                isBuffering = true
+                exoPlayer.setMediaItem(
+                  PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl, stremioSubtitles)
+                )
+                exoPlayer.prepare()
+                exoPlayer.playWhenReady = true
+              }
+            ) { isFocused ->
+              Row(
+                modifier = Modifier
+                  .background(
+                    if (isFocused) NovaCyan else NovaSurfaceVariant,
+                    RoundedCornerShape(10.dp)
+                  )
+                  .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Refresh,
+                  contentDescription = null,
+                  tint = if (isFocused) Color.Black else NovaCyanBright,
+                  modifier = Modifier.size(18.dp)
+                )
+                Text(
+                  text = stringResource(R.string.action_retry),
+                  color = if (isFocused) Color.Black else NovaTextPrimary,
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.Bold
+                )
+              }
+            }
           }
         }
       }
@@ -2277,11 +2479,11 @@ fun PlayerScreen(
                   if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
                   when (native.keyCode) {
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
-                      seekBy(-10_000L)
+                      seekBy(-10_000L, native.repeatCount)
                       true
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                      seekBy(10_000L)
+                      seekBy(10_000L, native.repeatCount)
                       true
                     }
                     KeyEvent.KEYCODE_DPAD_UP -> {
@@ -2465,15 +2667,15 @@ fun PlayerScreen(
                 }
               )
 
-              // 7. Audio: icona altoparlante
-              PlayerControlIconButton(
-                icon = Icons.AutoMirrored.Filled.VolumeUp,
-                contentDescription = stringResource(R.string.player_cd_audio_tracks),
-                onClick = {
-                  kickAutoHide()
-                  showAudioModal = true
-                }
-              )
+// 7. Audio: icona altoparlante
+               PlayerControlIconButton(
+                 icon = Icons.Filled.Speaker,
+                 contentDescription = stringResource(R.string.player_cd_audio_tracks),
+                 onClick = {
+                   kickAutoHide()
+                   showTrackQuickPanel = true
+                 }
+               )
             }
 
             // LATO DESTRO: Minutaggio formattato (es. "00:02 / 41:54")
@@ -2583,35 +2785,29 @@ fun PlayerScreen(
       )
     }
 
-    // Modal Audio dinamico con tracce Media3 reali
-    if (showAudioModal) {
+if (showTrackQuickPanel) {
       val audioOptions = getAvailableAudioOptions(currentTracksState)
-      if (audioOptions.isNotEmpty()) {
-        val selectedIdx = audioOptions.indexOfFirst { it.isSelected }.takeIf { it >= 0 } ?: 0
-        TrackSelectionDialog(
-          title = stringResource(R.string.player_audio_dialog_title),
-          options = audioOptions.map { it.displayName },
-          selectedIndex = selectedIdx,
-          onSelect = { idx ->
-            val selectedOption = audioOptions.getOrNull(idx)
-            if (selectedOption != null) {
-              Log.i("PlayerScreen", "Selezione traccia audio Media3: ${selectedOption.displayName} (trackIndex=${selectedOption.trackIndex}, lang=${selectedOption.language})")
-              manualAudioSelection = ManualAudioSelection(selectedOption.group, selectedOption.trackIndex)
-              PlayerRuntimeControllerTrackSelection.selectAudioTrack(exoPlayer, idx)
-            }
-            showAudioModal = false
-          },
-          onDismiss = { showAudioModal = false }
-        )
-      } else {
-        TrackSelectionDialog(
-          title = stringResource(R.string.player_audio_dialog_title),
-          options = listOf(stringResource(R.string.player_audio_default)),
-          selectedIndex = 0,
-          onSelect = { showAudioModal = false },
-          onDismiss = { showAudioModal = false }
-        )
-      }
+      PlayerTrackQuickPanel(
+        audioOptions = audioOptions.mapIndexed { index, option ->
+          PlayerQuickTrackOption(
+            index = index,
+            title = option.displayName,
+            details = "${option.codec} • ${option.channels}",
+            selected = option.isSelected
+          )
+        },
+        onAudioSelected = { index ->
+          val selectedOption = audioOptions.getOrNull(index)
+          if (selectedOption != null) {
+            manualAudioSelection = ManualAudioSelection(selectedOption.group, selectedOption.trackIndex)
+            PlayerRuntimeControllerTrackSelection.selectAudioTrack(exoPlayer, index)
+            selectedOption.language.trim().lowercase().takeIf { it.isNotBlank() && it != "und" }
+              ?.let(viewModel::setPreferredAudioLanguage)
+          }
+          showTrackQuickPanel = false
+        },
+        onDismiss = { showTrackQuickPanel = false }
+      )
     }
 
     // Modal Sottotitoli
@@ -2640,6 +2836,8 @@ fun PlayerScreen(
             if (selectedOption != null) {
               manualSubtitleSelection = ManualSubtitleSelection(selectedOption.group, selectedOption.trackIndex)
               PlayerRuntimeControllerTrackSelection.selectSubtitleTrack(exoPlayer, idx - 1)
+              selectedOption.language.trim().lowercase().takeIf { it.isNotBlank() && it != "und" }
+                ?.let(viewModel::setPreferredSubtitleLanguage)
               Log.i("PlayerScreen", "Selezione traccia sottotitolo Media3: ${selectedOption.displayName} (trackIndex=${selectedOption.trackIndex}, lang=${selectedOption.language})")
             }
           }
@@ -2669,6 +2867,9 @@ fun PlayerScreen(
               exoPlayer.playWhenReady = wasPlaying
             }
             val normLang = PlayerSubtitleUtils.normalizeLanguageCode(sub.lang)
+            if (normLang.isNotBlank() && normLang != "und") {
+              viewModel.setPreferredSubtitleLanguage(normLang)
+            }
             exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
               .buildUpon()
               .setPreferredTextLanguage(normLang)
@@ -3557,6 +3758,8 @@ data class MediaAudioTrackOption(
   val language: String,
   val label: String,
   val roleFlags: Int,
+  val codec: String,
+  val channels: String,
   val displayName: String,
   val isSelected: Boolean
 )
@@ -3569,6 +3772,7 @@ data class MediaSubtitleTrackOption(
   val roleFlags: Int,
   val selectionFlags: Int = 0,
   val isForced: Boolean = false,
+  val codec: String,
   val displayName: String,
   val isSelected: Boolean
 )
@@ -3585,13 +3789,17 @@ data class ManualAudioSelection(
   val trackIndex: Int
 )
 
-private fun mapPreferredAudioLanguages(code: String): List<String> = when (code.trim().lowercase()) {
-  "it" -> listOf("it", "ita")
-  "en" -> listOf("en", "eng")
-  "es" -> listOf("es", "spa")
-  "fr" -> listOf("fr", "fra")
-  "de" -> listOf("de", "deu", "ger")
-  else -> emptyList()
+private fun mapPreferredAudioLanguages(code: String): List<String> {
+  val normalized = code.trim().lowercase()
+  return when (normalized) {
+    "it", "ita" -> listOf("it", "ita")
+    "en", "eng" -> listOf("en", "eng")
+    "es", "spa" -> listOf("es", "spa")
+    "fr", "fra", "fre" -> listOf("fr", "fra", "fre")
+    "de", "deu", "ger" -> listOf("de", "deu", "ger")
+    "", "und" -> emptyList()
+    else -> listOf(normalized, normalized.substringBefore('-')).distinct()
+  }
 }
 
 /**

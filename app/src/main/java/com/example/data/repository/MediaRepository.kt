@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.BuildConfig
 import com.example.R
 import com.example.data.api.TmdbApiClient
+import com.example.data.api.TmdbMediaAssets
 import com.example.data.api.TmdbMovieDto
 import com.example.data.api.TmdbPaginatedResponse
 import com.example.data.api.TmdbTvDto
@@ -33,6 +34,9 @@ import com.example.data.model.MediaType
 import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
+import com.example.data.api.TmdbCompanyDetailDto
+import com.example.data.model.PersonDetails
+import com.example.data.model.ProductionCompany
 import com.example.data.model.VideoResolution
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -58,6 +62,9 @@ object MediaRepository {
   private val episodeProgressMap = ConcurrentHashMap<String, Long>()
   private val detailsSingleFlight = AsyncSingleFlight<ExtendedMediaDetails>()
   private val ageRatingSingleFlight = AsyncSingleFlight<Int?>()
+
+  /** Chiavi YouTube dei trailer gia' risolte nella sessione corrente (solo valori non nulli). */
+  private val trailerKeyCache = ConcurrentHashMap<String, String>()
 
   private val BLOCKED_TMDB_IDS = setOf(318508) // The Pitt Podcast - not the real TV show
 
@@ -650,7 +657,6 @@ object MediaRepository {
       title = "La fine",
       synopsis = "Nel 2077 le bombe nucleari distruggono Los Angeles. Oltre due secoli dopo, Lucy MacLean lascia il pacifico Vault 33 per salvare suo padre rapito.",
       durationMinutes = 74,
-      thumbnailRes = R.drawable.banner_dune,
       thumbnailUrl = "https://image.tmdb.org/t/p/w780/coaPCIqQBPUZsOnJcWZxhaORcDT.jpg",
       videoUrl = URL_OPPENHEIMER,
     ),
@@ -661,7 +667,6 @@ object MediaRepository {
       title = "L'obiettivo",
       synopsis = "Nell'avamposto desolato di Filly, Lucy, lo scudiero Maximus della Confraternita d'Acciaio e il cacciatore di taglie Ghoul convergono sullo stesso scienziato fuggiasco.",
       durationMinutes = 65,
-      thumbnailRes = R.drawable.banner_dune,
       thumbnailUrl = "https://image.tmdb.org/t/p/w780/coaPCIqQBPUZsOnJcWZxhaORcDT.jpg",
       videoUrl = URL_OPPENHEIMER,
     ),
@@ -672,7 +677,6 @@ object MediaRepository {
       title = "La testa",
       synopsis = "Maximus assume l'identità del cavaliere Titus nella potente armatura atomica T-60. Il Ghoul porta Lucy attraverso le pericolose terre contaminate.",
       durationMinutes = 56,
-      thumbnailRes = R.drawable.banner_dune,
       thumbnailUrl = "https://image.tmdb.org/t/p/w780/coaPCIqQBPUZsOnJcWZxhaORcDT.jpg",
       videoUrl = URL_OPPENHEIMER,
     ),
@@ -683,7 +687,6 @@ object MediaRepository {
       title = "I ghoul",
       synopsis = "Lucy sperimenta la cruda realtà del commercio di organi nella Zona Contaminata, mentre Norm indaga sugli oscuri segreti del Vault 32.",
       durationMinutes = 48,
-      thumbnailRes = R.drawable.banner_dune,
       thumbnailUrl = "https://image.tmdb.org/t/p/w780/coaPCIqQBPUZsOnJcWZxhaORcDT.jpg",
       videoUrl = URL_OPPENHEIMER,
     ),
@@ -694,6 +697,13 @@ object MediaRepository {
 
   private val _detailUiState = MutableStateFlow<MediaDetailUiState>(MediaDetailUiState.Idle)
   val detailUiState: StateFlow<MediaDetailUiState> = _detailUiState.asStateFlow()
+
+  /**
+   * Generazione del caricamento dettaglio corrente. Serve a scartare le risposte HTTP
+   * arrivate in ritardo per un media aperto prima, che altrimenti sovrascriverebbero i
+   * metadati del media effettivamente visualizzato (contaminazione metadati).
+   */
+  private val detailLoadGeneration = java.util.concurrent.atomic.AtomicInteger(0)
 
   val featuredHero: MediaItem
     get() = _mediaList.value.firstOrNull { it.id == "dune_2" } ?: getInitialMedia().first()
@@ -1291,18 +1301,28 @@ object MediaRepository {
     val wantedType = if (isTv) MediaType.SERIE_TV else MediaType.FILM
     val existingBase = baseMedia ?: _mediaList.value.find { it.tmdbId == tmdbId && it.type == wantedType }
 
+    // Ogni nuova richiesta invalida le precedenti in volo: una risposta arrivata in
+    // ritardo per un media aperto prima non deve sovrascrivere lo stato corrente.
+    val generation = detailLoadGeneration.incrementAndGet()
+
     if (tmdbId <= 0) {
-      _detailUiState.value = MediaDetailUiState.Error(
-        baseMedia = existingBase,
-        message = "Identificatore TMDB non disponibile per questo contenuto"
-      )
+      if (generation == detailLoadGeneration.get()) {
+        _detailUiState.value = MediaDetailUiState.Error(
+          baseMedia = existingBase,
+          message = "Identificatore TMDB non disponibile per questo contenuto"
+        )
+      }
       return
     }
 
-    _detailUiState.value = MediaDetailUiState.Loading(existingBase)
+    if (generation == detailLoadGeneration.get()) {
+      _detailUiState.value = MediaDetailUiState.Loading(existingBase)
+    }
 
     try {
       val details = fetchExtendedDetails(tmdbId, isTv, existingBase)
+      // Richiesta superata da una più recente: scarta il risultato in ritardo.
+      if (generation != detailLoadGeneration.get()) return
       val enrichedMedia = (existingBase ?: detailsToMediaItem(details)).copy(
         synopsis = if (details.overview.isNotBlank()) details.overview else existingBase?.synopsis ?: "",
         genres = if (details.genres.isNotEmpty()) details.genres else existingBase?.genres ?: emptyList(),
@@ -1311,22 +1331,27 @@ object MediaRepository {
         durationMinutes = if (details.durationMinutes > 0) details.durationMinutes else existingBase?.durationMinutes ?: 120,
         seasonsCount = details.seasonsCount ?: existingBase?.seasonsCount,
         rating = if (details.rating > 0f) details.rating else existingBase?.rating ?: 8.0f,
-        backdropUrl = details.backdropUrl ?: existingBase?.backdropUrl,
-        posterUrl = details.posterUrl ?: existingBase?.posterUrl,
-        seasonEpisodesCount = if (details.seasonEpisodesCount.isNotEmpty()) details.seasonEpisodesCount else (existingBase?.seasonEpisodesCount ?: emptyMap()),
-        ageRating = details.ageRating ?: existingBase?.ageRating
-      )
-      _detailUiState.value = MediaDetailUiState.Success(enrichedMedia, details)
+      backdropUrl = details.backdropUrl ?: existingBase?.backdropUrl,
+      posterUrl = details.posterUrl ?: existingBase?.posterUrl,
+      logoUrl = details.logoUrl ?: existingBase?.logoUrl,
+      seasonEpisodesCount = if (details.seasonEpisodesCount.isNotEmpty()) details.seasonEpisodesCount else (existingBase?.seasonEpisodesCount ?: emptyMap()),
+      ageRating = details.ageRating ?: existingBase?.ageRating
+    )
+    _detailUiState.value = MediaDetailUiState.Success(enrichedMedia, details)
 
-      // Se ageRating è stato arricchito o valorizzato, aggiorna lo stato in-memory e la riga Room
-      if (enrichedMedia.ageRating != null && existingBase?.ageRating != enrichedMedia.ageRating) {
-        _mediaList.update { list ->
-          list.map { if (it.id == enrichedMedia.id) enrichedMedia else it }
-        }
-        database?.cachedMediaDao()?.insertOrUpdate(enrichedMedia.toEntity())
+    // Aggiorna lo stato in-memory e la riga Room quando un arricchimento e' nuovo:
+    // rating d'eta' o clear logo arrivati da TMDB non devono essere persi alla riapertura.
+    val needsPersist = (enrichedMedia.ageRating != null && existingBase?.ageRating != enrichedMedia.ageRating) ||
+      (enrichedMedia.logoUrl != null && existingBase?.logoUrl != enrichedMedia.logoUrl)
+    if (needsPersist) {
+      _mediaList.update { list ->
+        list.map { if (it.id == enrichedMedia.id) enrichedMedia else it }
       }
+      database?.cachedMediaDao()?.insertOrUpdate(enrichedMedia.toEntity())
+    }
     } catch (e: Exception) {
       Log.e("MediaRepository", "Errore nel caricamento dettagli TMDB ($tmdbId): ${e.message}", e)
+      if (generation != detailLoadGeneration.get()) return
       if (existingBase != null) {
         _detailUiState.value = MediaDetailUiState.Error(
           baseMedia = existingBase,
@@ -1367,8 +1392,9 @@ object MediaRepository {
                 Log.d("MediaRepository", "TMDB Details Cache HIT ma manca seasonEpisodesCount -> refresh da rete [$cacheKey]")
               } else {
                 Log.d("MediaRepository", "TMDB Details Cache HIT [$cacheKey]")
+                val logoUrl = resolveLogoUrl(tmdbId, isTv, deserialized.logoUrl ?: baseMedia?.logoUrl)
                 if (deserialized.ageRating != null) {
-                  return@run deserialized
+                  return@run deserialized.copy(logoUrl = logoUrl)
                 }
                 // Se la cache precedente non aveva release_dates/content_ratings, recuperiamo il rating dall'endpoint dedicato
                 val fetchedRating = try {
@@ -1382,7 +1408,10 @@ object MediaRepository {
                 } catch (_: Exception) {
                   null
                 }
-                return@run deserialized.copy(ageRating = fetchedRating ?: baseMedia?.ageRating)
+                return@run deserialized.copy(
+                  ageRating = fetchedRating ?: baseMedia?.ageRating,
+                  logoUrl = logoUrl
+                )
               }
             }
           }
@@ -1428,7 +1457,286 @@ object MediaRepository {
         }
       }
 
-      details
+      // 4. Clear logo (images.logos) con priorita' it -> en -> miglior disponibile.
+      //    Decorativo e non bloccante: in caso di errore si conserva il logo gia' noto.
+      details.copy(
+        logoUrl = details.logoUrl ?: resolveLogoUrl(tmdbId, isTv, baseMedia?.logoUrl)
+      )
+    }
+  }
+
+  suspend fun fetchMoviesByCompany(
+    companyId: Int,
+    page: Int = 1,
+    sortBy: String = "popularity.desc",
+    minVoteCount: Int? = null
+  ): List<MediaItem> = withContext(Dispatchers.IO) {
+    try {
+      val apiKey = getEffectiveApiKey()
+      val response = TmdbApiClient.service.discoverMoviesByCompany(
+        apiKey = apiKey,
+        companyId = companyId.toString(),
+        sortBy = sortBy,
+        page = page,
+        voteCountGte = minVoteCount
+      )
+      val currentList = _mediaList.value
+      response.results.map { movieToMediaItem(it, currentList) }
+    } catch (e: Exception) {
+      Log.e("MediaRepository", "Errore discoverMoviesByCompany($companyId): ${e.message}")
+      emptyList()
+    }
+  }
+
+  suspend fun fetchTvByCompany(
+    companyId: Int,
+    page: Int = 1,
+    sortBy: String = "popularity.desc",
+    minVoteCount: Int? = null
+  ): List<MediaItem> = withContext(Dispatchers.IO) {
+    try {
+      val apiKey = getEffectiveApiKey()
+      val response = TmdbApiClient.service.discoverTvByCompany(
+        apiKey = apiKey,
+        companyId = companyId.toString(),
+        sortBy = sortBy,
+        page = page,
+        voteCountGte = minVoteCount
+      )
+      val currentList = _mediaList.value
+      response.results.map { tvToMediaItem(it, currentList) }
+    } catch (e: Exception) {
+      Log.e("MediaRepository", "Errore discoverTvByCompany($companyId): ${e.message}")
+      emptyList()
+    }
+  }
+
+  suspend fun fetchCompanyDetails(companyId: Int): TmdbCompanyDetailDto? = withContext(Dispatchers.IO) {
+    try {
+      val apiKey = getEffectiveApiKey()
+      TmdbApiClient.service.getCompanyDetails(companyId, apiKey)
+    } catch (e: Exception) {
+      Log.e("MediaRepository", "Errore getCompanyDetails($companyId): ${e.message}")
+      null
+    }
+  }
+
+  suspend fun fetchPersonDetails(personId: Int): PersonDetails? = withContext(Dispatchers.IO) {
+    try {
+      val apiKey = getEffectiveApiKey()
+      val dto = TmdbApiClient.service.getPersonDetails(personId, apiKey)
+      PersonDetails(
+        id = dto.id,
+        name = dto.name,
+        biography = dto.biography.orEmpty(),
+        birthday = dto.birthday,
+        deathday = dto.deathday,
+        placeOfBirth = dto.placeOfBirth,
+        profileUrl = TmdbApiClient.profileUrl(dto.profilePath, size = "h632"),
+        knownForDepartment = dto.knownForDepartment,
+        popularity = dto.popularity
+      )
+    } catch (e: Exception) {
+      Log.e("MediaRepository", "Errore fetchPersonDetails($personId): ${e.message}")
+      null
+    }
+  }
+
+  suspend fun fetchPersonCombinedCredits(personId: Int): List<MediaItem> = withContext(Dispatchers.IO) {
+    try {
+      val apiKey = getEffectiveApiKey()
+      val credits = TmdbApiClient.service.getPersonCombinedCredits(personId, apiKey)
+      val currentList = _mediaList.value
+
+      // Unione di cast e ruoli di regia/scrittura rilevanti dalla crew
+      val castItems = credits.cast.orEmpty()
+      val directingItems = credits.crew.orEmpty().filter {
+        it.job.equals("Director", ignoreCase = true) || it.department.equals("Directing", ignoreCase = true)
+      }
+      val allCredits = (castItems + directingItems)
+        .distinctBy { "${it.mediaType}_${it.id}" }
+        .sortedByDescending { it.popularity ?: 0f }
+
+      allCredits.mapNotNull { credit ->
+        val isTv = credit.mediaType.equals("tv", ignoreCase = true)
+        val title = credit.title?.takeIf { it.isNotBlank() }
+          ?: credit.name?.takeIf { it.isNotBlank() }
+          ?: credit.originalTitle
+          ?: credit.originalName
+          ?: return@mapNotNull null
+
+        val year = (credit.releaseDate ?: credit.firstAirDate)?.take(4)?.toIntOrNull() ?: 2024
+        val backdrop = TmdbApiClient.backdropUrl(credit.backdropPath)
+        // Locandina VERTICALE 2:3 (poster_path TMDB, w500): il backdrop orizzontale (16:9)
+        // NON va mai usato come poster, altrimenti le card della filmografia mostrano scene
+        // larghe tagliate al posto delle locandine.
+        val poster = TmdbApiClient.posterUrl(credit.posterPath, size = "w500")
+        val ratingVal = (credit.voteAverage ?: 7.5f).coerceIn(1.0f, 10.0f)
+
+        if (isTv) {
+          val existing = currentList.firstOrNull { it.tmdbId == credit.id && it.type == MediaType.SERIE_TV }
+          MediaItem(
+            id = existing?.id ?: "tmdb_tv_${credit.id}",
+            tmdbId = credit.id,
+            title = title,
+            originalTitle = credit.originalName ?: "",
+            synopsis = credit.overview?.takeIf { it.isNotBlank() } ?: existing?.synopsis ?: "Serie TV disponibile in streaming HD.",
+            videoUrl = existing?.videoUrl ?: URL_LASTOFUS,
+            resolution = VideoResolution.UHD_4K,
+            backdropUrl = backdrop ?: existing?.backdropUrl,
+            posterUrl = poster ?: existing?.posterUrl,
+            type = MediaType.SERIE_TV,
+            year = year,
+            durationMinutes = existing?.durationMinutes ?: 50,
+            rating = ((ratingVal * 10).toInt() / 10f),
+            genres = existing?.genres ?: listOf("Serie TV"),
+            director = existing?.director ?: "Produzione Internazionale",
+            cast = existing?.cast ?: listOf(credit.character ?: "Interprete"),
+            totalDurationMs = 50 * 60 * 1000L
+          )
+        } else {
+          val existing = currentList.firstOrNull { it.tmdbId == credit.id && it.type == MediaType.FILM }
+          MediaItem(
+            id = existing?.id ?: "tmdb_m_${credit.id}",
+            tmdbId = credit.id,
+            title = title,
+            originalTitle = credit.originalTitle ?: "",
+            synopsis = credit.overview?.takeIf { it.isNotBlank() } ?: existing?.synopsis ?: "Disponibile in streaming 4K HDR.",
+            videoUrl = existing?.videoUrl ?: URL_DUNE,
+            resolution = VideoResolution.UHD_4K,
+            backdropUrl = backdrop ?: existing?.backdropUrl,
+            posterUrl = poster ?: existing?.posterUrl,
+            type = MediaType.FILM,
+            year = year,
+            durationMinutes = existing?.durationMinutes ?: 110,
+            rating = ((ratingVal * 10).toInt() / 10f),
+            genres = existing?.genres ?: listOf("Cinema"),
+            director = existing?.director ?: "Produzione Internazionale",
+            cast = existing?.cast ?: listOf(credit.character ?: "Interprete"),
+            totalDurationMs = 110 * 60 * 1000L
+          )
+        }
+      }
+    } catch (e: Exception) {
+      Log.e("MediaRepository", "Errore fetchPersonCombinedCredits($personId): ${e.message}")
+      emptyList()
+    }
+  }
+
+  /**
+   * Recupera l'URL del clear logo del titolo da TMDB (`images` endpoint).
+   *
+   * Priorita' di selezione: lingua italiana, poi inglese, poi il logo con la risoluzione
+   * piu' alta ([TmdbMediaAssets.pickLogo]). L'URL scelto viene cachato in Room (12h) con
+   * una chiave dedicata, cosi' le aperture successive non rifanno la chiamata. Se la rete
+   * fallisce si restituisce il [fallback] (logo gia' presente nel [MediaItem]): il logo e'
+   * decorativo e non deve mai bloccare il caricamento dei dettagli.
+   */
+  private suspend fun resolveLogoUrl(tmdbId: Int, isTv: Boolean, fallback: String? = null): String? {
+    if (tmdbId <= 0) return fallback
+    val cacheKey = if (isTv) "tv_logo_$tmdbId" else "movie_logo_$tmdbId"
+    val db = database
+    var stale: String? = null
+
+    try {
+      val cached = db?.tmdbResponseCacheDao()?.getCache(cacheKey)
+      if (cached != null && cached.jsonResponse.isNotBlank() && !cached.isExpired()) {
+        return cached.jsonResponse
+      }
+      stale = cached?.jsonResponse?.takeIf { it.isNotBlank() }
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Errore lettura cache logo [$cacheKey]: ${e.message}")
+    }
+
+    val fetched = try {
+      val apiKey = getEffectiveApiKey()
+      val images = if (isTv) {
+        TmdbApiClient.service.getTvImages(tmdbId, apiKey)
+      } else {
+        TmdbApiClient.service.getMovieImages(tmdbId, apiKey)
+      }
+      TmdbMediaAssets.pickLogo(images.logos)?.filePath?.let { TmdbApiClient.logoUrl(it) }
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Recupero clear logo TMDB fallito ($tmdbId): ${e.message}")
+      null
+    }
+
+    if (fetched.isNullOrBlank()) return stale ?: fallback
+
+    try {
+      db?.tmdbResponseCacheDao()?.insertCache(
+        TmdbResponseCacheEntity(
+          endpointKey = cacheKey,
+          jsonResponse = fetched,
+          cachedAt = System.currentTimeMillis()
+        )
+      )
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Salvataggio cache logo fallito [$cacheKey]: ${e.message}")
+    }
+    return fetched
+  }
+
+  /**
+   * Chiave YouTube del trailer interno, con priorita' ASSOLUTA all'italiano: prima
+   * `type == "Trailer"` in italiano (poi teaser italiano), poi inglese, poi qualsiasi
+   * lingua ([TmdbMediaAssets.pickTrailerKey]).
+   *
+   * La prima chiede a TMDB `language=it-IT` + `include_video_language=it,en,null`
+   * (video IT ed EN insieme); se non produce nulla (titolo senza trailer italiani)
+   * viene ripetuta la chiamata in `language=en-US` come fallback.
+   *
+   * Restituisce `null` quando TMDB non espone video utilizzabili o l'ID non e' valido: la
+   * UI mostra allora un messaggio "trailer non disponibile" senza mai aprire l'app esterna
+   * di YouTube. Le chiavi riuscite sono memorizzate in memoria per la sessione corrente.
+   */
+  suspend fun fetchTrailerKey(tmdbId: Int, isTv: Boolean): String? = withContext(Dispatchers.IO) {
+    if (tmdbId <= 0) return@withContext null
+    val cacheKey = if (isTv) "tv_$tmdbId" else "movie_$tmdbId"
+    trailerKeyCache[cacheKey]?.let { return@withContext it }
+
+    try {
+      val apiKey = getEffectiveApiKey()
+      // Prima richiesta: video in italiano + inglese/privi di lingua in un'unica
+      // chiamata (`include_video_language=it,en,null`); la priorita' it -> en ->
+      // primo avviene dentro [TmdbMediaAssets.pickTrailerKey].
+      val videos = if (isTv) {
+        TmdbApiClient.service.getTvVideos(tmdbId, apiKey)
+      } else {
+        TmdbApiClient.service.getMovieVideos(tmdbId, apiKey)
+      }
+      var key = TmdbMediaAssets.pickTrailerKey(videos.results)
+
+      // Fallback: nessun video utilizzabile dalla richiesta italiana (titolo senza
+      // trailer in italiano) -> seconda chiamata esplicita in inglese.
+      if (key == null) {
+        val fallbackVideos = if (isTv) {
+          TmdbApiClient.service.getTvVideos(
+            tmdbId,
+            apiKey,
+            language = "en-US",
+            includeVideoLanguage = "en,null"
+          )
+        } else {
+          TmdbApiClient.service.getMovieVideos(
+            tmdbId,
+            apiKey,
+            language = "en-US",
+            includeVideoLanguage = "en,null"
+          )
+        }
+        key = TmdbMediaAssets.pickTrailerKey(fallbackVideos.results)
+      }
+
+      if (key != null) {
+        trailerKeyCache[cacheKey] = key
+      } else {
+        Log.w("MediaRepository", "Nessun trailer YouTube per $cacheKey")
+      }
+      key
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Recupero trailer TMDB fallito ($cacheKey): ${e.message}")
+      null
     }
   }
 
@@ -1476,7 +1784,15 @@ object MediaRepository {
       director = directorName,
       similarItems = similar,
       isTv = false,
-      ageRating = ageRating
+      ageRating = ageRating,
+      productionCompanies = dto.productionCompanies?.map {
+        ProductionCompany(
+          id = it.id,
+          name = it.name,
+          logoUrl = TmdbApiClient.logoUrl(it.logoPath),
+          originCountry = it.originCountry
+        )
+      } ?: emptyList()
     )
   }
 
@@ -1500,8 +1816,8 @@ object MediaRepository {
     val poster = TmdbApiClient.posterUrl(dto.posterPath) ?: baseMedia?.posterUrl
 
     val seasonEpCounts = dto.seasons
-      ?.filter { (it.seasonNumber ?: 0) > 0 }
-      ?.associate { (it.seasonNumber ?: 0) to (it.episodeCount ?: 0) }
+      ?.filter { (it.seasonNumber ?: -1) >= 0 }
+      ?.associate { (it.seasonNumber ?: -1) to (it.episodeCount ?: 0) }
       ?: emptyMap()
 
     val ageRating = AgeRatingClassifier.classifyTvRating(dto.contentRatings)
@@ -1530,7 +1846,15 @@ object MediaRepository {
       similarItems = similar,
       isTv = true,
       seasonEpisodesCount = seasonEpCounts,
-      ageRating = ageRating
+      ageRating = ageRating,
+      productionCompanies = dto.productionCompanies?.map {
+        ProductionCompany(
+          id = it.id,
+          name = it.name,
+          logoUrl = TmdbApiClient.logoUrl(it.logoPath),
+          originCountry = it.originCountry
+        )
+      } ?: emptyList()
     )
   }
 
@@ -1546,6 +1870,7 @@ object MediaRepository {
       qualityTags = listOf("4K", "HDR", "Dolby Atmos", "16+"),
       backdropUrl = details.backdropUrl,
       posterUrl = details.posterUrl,
+      logoUrl = details.logoUrl,
       type = if (details.isTv) MediaType.SERIE_TV else MediaType.FILM,
       year = details.releaseYear,
       durationMinutes = details.durationMinutes,
@@ -1668,6 +1993,7 @@ object MediaRepository {
           seasonNumber = seasonNumber,
           name = "Stagione $seasonNumber",
           overview = "Episodi della stagione $seasonNumber",
+          airDate = existingEpisodes.mapNotNull { it.airDate }.minOrNull(),
           episodes = existingEpisodes.map { ep ->
             EpisodeItem(
               id = ep.id,
@@ -1732,6 +2058,7 @@ object MediaRepository {
       seasonNumber = this.seasonNumber,
       name = this.name?.takeIf { it.isNotBlank() } ?: "Stagione ${this.seasonNumber}",
       overview = this.overview ?: "",
+      airDate = this.airDate,
       episodes = epList
     )
   }
@@ -3020,7 +3347,6 @@ object MediaRepository {
       videoUrl = URL_OPPENHEIMER,
       resolution = VideoResolution.UHD_4K,
       qualityTags = listOf("4K", "Dolby Atmos", "14+"),
-      backdropRes = R.drawable.banner_dune,
       backdropUrl = "https://image.tmdb.org/t/p/w1280/fm6KqXpk3M2HVveHwCrBSSBaO0V.jpg",
       posterUrl = "https://image.tmdb.org/t/p/w780/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg",
       logoUrl = "https://image.tmdb.org/t/p/w500/b07VisHvZb0WzUpA8VB77wfMXwg.png",
@@ -3105,7 +3431,6 @@ object MediaRepository {
       videoUrl = URL_DUNE,
       resolution = VideoResolution.UHD_4K,
       qualityTags = listOf("4K", "HDR10+", "Dolby Atmos", "14+"),
-      backdropRes = R.drawable.banner_dune,
       backdropUrl = "https://image.tmdb.org/t/p/w1280/rvtdN5XkWAfGX6xDuPL6yYS2seK.jpg",
       posterUrl = "https://image.tmdb.org/t/p/w780/kfrNjwHRw0ORsPx8Scr3JJQuy1I.jpg",
       logoUrl = "https://image.tmdb.org/t/p/w500/haibnO2TycgulXD1Fj7b94L9m9E.png",
@@ -3132,7 +3457,6 @@ object MediaRepository {
       videoUrl = URL_DUNE,
       resolution = VideoResolution.UHD_4K,
       qualityTags = listOf("4K", "HDR", "16+"),
-      backdropRes = R.drawable.banner_dune,
       backdropUrl = "https://image.tmdb.org/t/p/w1280/gNdLJU9TxrpGx4dkZidjys3fyy0.jpg",
       posterUrl = "https://image.tmdb.org/t/p/w780/4XJQG11Ytl8mKfgbl2jkoY5ZuFX.jpg",
       logoUrl = "https://image.tmdb.org/t/p/w500/gUoDt6GggEFXVzdyDTyF8ggrEm8.png",
@@ -3159,7 +3483,6 @@ object MediaRepository {
       videoUrl = URL_OPPENHEIMER,
       resolution = VideoResolution.UHD_4K,
       qualityTags = listOf("4K", "HDR", "Dolby Atmos", "18+"),
-      backdropRes = R.drawable.banner_dune,
       backdropUrl = "https://image.tmdb.org/t/p/w1280/coaPCIqQBPUZsOnJcWZxhaORcDT.jpg",
       posterUrl = "https://image.tmdb.org/t/p/w780/c15BtJxCXMrISLVmysdsnZUPQft.jpg",
       logoUrl = "https://image.tmdb.org/t/p/w500/kyhbjHomRagzpNEeyKSssbkPWan.png",
@@ -3188,7 +3511,6 @@ object MediaRepository {
       videoUrl = URL_DUNE,
       resolution = VideoResolution.UHD_4K,
       qualityTags = listOf("4K", "Dolby Atmos", "16+"),
-      backdropRes = R.drawable.banner_dune,
       backdropUrl = "https://image.tmdb.org/t/p/w1280/tOqIwliWMovSIZ9DyvHcHI7p2im.jpg",
       posterUrl = "https://image.tmdb.org/t/p/w780/tVBCG6qHQQaq2doZsOvpGNcwMuP.jpg",
       logoUrl = "https://image.tmdb.org/t/p/w500/jwXk1c2esVoEzVLplPiQubNVyFC.png",

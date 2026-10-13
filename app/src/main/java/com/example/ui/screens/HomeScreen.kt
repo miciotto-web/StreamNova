@@ -181,7 +181,13 @@ class HomeRowFocusCoordinator(
 ) {
   val lastFocusedColByRow = mutableStateMapOf<String, Int>()
   private val cellRequesters = mutableMapOf<Pair<String, Int>, FocusRequester>()
-  val attachedCells = mutableSetOf<Pair<String, Int>>()
+
+  // Mappa OSSERVABILE delle celle montate: chiunque legga lo stato (le focusProperties che
+  // assegnano up/down) si ricompone quando una cella entra/esce dalla composizione, cosi'
+  // un target non resta mai puntato a un nodo smontato. Una mappa "semplice" lasciava
+  // target orfani e il focus search del D-pad scatenava
+  // IllegalStateException "FocusRequester is not initialized".
+  private val attachedCellState = mutableStateMapOf<Pair<String, Int>, Boolean>()
 
   fun getRequester(rowKey: String, colIndex: Int): FocusRequester {
     return cellRequesters.getOrPut(Pair(rowKey, colIndex)) { FocusRequester() }
@@ -192,12 +198,15 @@ class HomeRowFocusCoordinator(
   }
 
   fun registerCell(rowKey: String, colIndex: Int) {
-    attachedCells.add(Pair(rowKey, colIndex))
+    attachedCellState[Pair(rowKey, colIndex)] = true
   }
 
   fun unregisterCell(rowKey: String, colIndex: Int) {
-    attachedCells.remove(Pair(rowKey, colIndex))
+    attachedCellState.remove(Pair(rowKey, colIndex))
   }
+
+  fun isCellAttached(rowKey: String, colIndex: Int): Boolean =
+    attachedCellState.containsKey(Pair(rowKey, colIndex))
 
   fun getNextRowKey(currentRowKey: String): String? {
     val idx = activeRowKeys.indexOf(currentRowKey)
@@ -209,6 +218,13 @@ class HomeRowFocusCoordinator(
     return if (idx > 0) activeRowKeys[idx - 1] else null
   }
 
+  /**
+   * Requester della cella MONTATA piu' vicina alla colonna desiderata nella riga bersaglio.
+   *
+   * Ritorna `null` se la riga bersaglio non ha alcuna cella montata: assegnare un
+   * FocusRequester non agganciato a `focusProperties.down/up` fa esplodere il focus search
+   * del D-pad (`IllegalStateException: FocusRequester is not initialized`).
+   */
   fun getTargetRequester(targetRowKey: String, preferredCol: Int): FocusRequester? {
     val count = rowItemCounts[targetRowKey] ?: return null
     if (count <= 0) return null
@@ -216,19 +232,20 @@ class HomeRowFocusCoordinator(
     val desiredCol = (lastFocusedColByRow[targetRowKey] ?: preferredCol).coerceIn(0, count - 1)
 
     // 1. Se la cella desiderata è montata, usala direttamente
-    if (attachedCells.contains(Pair(targetRowKey, desiredCol))) {
+    if (isCellAttached(targetRowKey, desiredCol)) {
       return getRequester(targetRowKey, desiredCol)
     }
 
-    // 2. Altrimenti seleziona la cella montata più vicina in quella riga
-    val attachedInRow = attachedCells.filter { it.first == targetRowKey }.map { it.second }
-    if (attachedInRow.isNotEmpty()) {
-      val closestCol = attachedInRow.minByOrNull { kotlin.math.abs(it - desiredCol) } ?: desiredCol
-      return getRequester(targetRowKey, closestCol)
-    }
+    // 2. Altrimenti seleziona la cella montata più vicina in quella riga; se la riga non ha
+    //    alcuna cella montata NON restituire mai un requester orfano.
+    val closestAttachedCol = attachedCellState.keys
+      .asSequence()
+      .filter { it.first == targetRowKey }
+      .map { it.second }
+      .minByOrNull { kotlin.math.abs(it - desiredCol) }
+      ?: return null
 
-    // 3. Fallback sul requester della cella desiderata
-    return getRequester(targetRowKey, desiredCol)
+    return getRequester(targetRowKey, closestAttachedCol)
   }
 }
 
@@ -246,20 +263,26 @@ fun Modifier.rowFocusProperties(
     }
   }
 
+  // Target calcolati nel CORPO composable (e non dentro la lambda focusProperties): le
+  // letture dello snapshot del coordinator vengono tracciate dalla composizione chiamante,
+  // quindi montare/smontare una cella del bersaglio ricompone la riga e aggiorna i target.
+  // Se il bersaglio non ha celle montate il target resta null e si lascia a
+  // FocusRequester.Default la ricerca standard del D-pad (MAI un requester non agganciato).
+  val nextRowKey = coordinator.getNextRowKey(rowKey)
+  val downTarget = nextRowKey?.let { coordinator.getTargetRequester(it, colIndex) }
+  val prevRowKey = coordinator.getPrevRowKey(rowKey)
+  val upTarget = prevRowKey?.let { coordinator.getTargetRequester(it, colIndex) }
+
   return this
     .focusProperties {
-      val nextRowKey = coordinator.getNextRowKey(rowKey)
       if (nextRowKey != null) {
-        val target = coordinator.getTargetRequester(nextRowKey, colIndex)
-        down = target ?: FocusRequester.Default
+        down = downTarget ?: FocusRequester.Default
       } else {
         down = FocusRequester.Cancel
       }
 
-      val prevRowKey = coordinator.getPrevRowKey(rowKey)
       if (prevRowKey != null) {
-        val target = coordinator.getTargetRequester(prevRowKey, colIndex)
-        up = target ?: FocusRequester.Default
+        up = upTarget ?: FocusRequester.Default
       } else {
         up = FocusRequester.Cancel
       }
@@ -440,6 +463,9 @@ fun HomeMainBrowsingContent(
             onInfoClick = { onMediaClick(it) },
             playButtonFocusRequester = coordinator.getRequester("hero_banner", 0),
             detailsButtonFocusRequester = coordinator.getRequester("hero_banner", 1),
+            // Null finche' l'hub provider non ha celle montate: HeroBanner lascia allora
+            // il D-pad la ricerca standard (FocusRequester.Default) invece di usare un
+            // requester non agganciato (crash "FocusRequester is not initialized").
             heroDownFocusRequester = coordinator.getTargetRequester("section_providers_hub", 0),
             onPlayButtonFocusChanged = { if (it) coordinator.onCellFocused("hero_banner", 0) },
             onDetailsButtonFocusChanged = { if (it) coordinator.onCellFocused("hero_banner", 1) }

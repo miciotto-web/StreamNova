@@ -57,11 +57,13 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvFocusBringIntoView
+import com.example.ui.components.TvFocusAttachment
+import com.example.ui.components.guard
+import com.example.ui.components.tvFocusRequester
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.components.TvFocusableBox
@@ -263,7 +265,12 @@ fun ProviderScreen(
   }
 
   val firstGridItemFocusRequester = remember { FocusRequester() }
+  // Traccia l'aggancio del primo item della griglia (LazyVerticalGrid): se la griglia e'
+  // vuota/non composta il requester non va assegnato alle focusProperties dei filtri,
+  // altrimenti il focus search del D-pad lancia "FocusRequester is not initialized".
+  val firstGridItemAttachment = remember { TvFocusAttachment() }
   val filterFocusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
+  val filterAttachments = remember { mutableMapOf<Int, TvFocusAttachment>() }
   var lastFocusedFilterIndex by remember { mutableStateOf(0) }
 
   CompositionLocalProvider(
@@ -336,11 +343,14 @@ fun ProviderScreen(
       itemsIndexed(filters) { index, filter ->
         val isSelected = selectedFilter == filter
         val filterRequester = filterFocusRequesters.getOrPut(index) { FocusRequester() }
+        val filterAttachment = filterAttachments.getOrPut(index) { TvFocusAttachment() }
         TvFocusableBox(
           modifier = Modifier
-            .focusRequester(filterRequester)
+            .tvFocusRequester(filterRequester, filterAttachment)
             .focusProperties {
-              down = firstGridItemFocusRequester
+              // Solo se il primo poster e' davvero montato; altrimenti D-pad standard.
+              down = firstGridItemAttachment.guard(firstGridItemFocusRequester)
+                ?: FocusRequester.Default
             }
             .onFocusChanged {
               if (it.isFocused) {
@@ -432,10 +442,20 @@ fun ProviderScreen(
             Box(
               modifier = Modifier
                 .fillMaxWidth()
-                .then(if (index == 0) Modifier.focusRequester(firstGridItemFocusRequester) else Modifier)
+                .then(
+                  if (index == 0) {
+                    Modifier.tvFocusRequester(firstGridItemFocusRequester, firstGridItemAttachment)
+                  } else {
+                    Modifier
+                  }
+                )
                 .focusProperties {
                   if (index < 6) {
-                    up = filterFocusRequesters[lastFocusedFilterIndex] ?: FocusRequester.Default
+                    // Le chips filtro sono in una LazyRow: se la relativa chip non e' montata
+                    // (riga scorrita) non assegnarla, per non passare un requester orfano.
+                    val filterAttachment = filterAttachments[lastFocusedFilterIndex]
+                    val filterRequester = filterFocusRequesters[lastFocusedFilterIndex]
+                    up = filterAttachment.guard(filterRequester) ?: FocusRequester.Default
                   }
                 },
               contentAlignment = Alignment.TopCenter

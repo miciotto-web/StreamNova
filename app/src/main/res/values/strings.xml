@@ -85,6 +85,23 @@
     <string name="detail_tab_episodes">Episodi</string>
     <string name="detail_tab_recommended">Consigliati</string>
     <string name="detail_tab_technical_details">Dettagli Tecnici</string>
+    <string name="detail_tab_production">Produzione</string>
+    <string name="production_section_title">CASE DI PRODUZIONE</string>
+    <string name="production_empty">Nessuna casa di produzione disponibile</string>
+    <string name="studio_movies_title">Film dello studio</string>
+    <string name="studio_tv_title">Serie TV dello studio</string>
+    <string name="studio_header_subtitle">Produzioni e catalogo dello studio</string>
+    <string name="studio_company_overline">Casa di produzione</string>
+    <string name="studio_row_movies_popular">Film • Popolari</string>
+    <string name="studio_row_movies_top_rated">Film • Più votati</string>
+    <string name="studio_row_tv_popular">Serie • Popolari</string>
+    <string name="studio_row_tv_top_rated">Serie • Più votati</string>
+    <string name="person_bio_title">Biografia</string>
+    <string name="person_born_title">Data e luogo di nascita</string>
+    <string name="person_born_format">Nato: %1$s (età %2$d)</string>
+    <string name="person_credits_title">Filmografia</string>
+    <string name="person_credits_empty">Nessun titolo trovato</string>
+    <string name="person_bio_empty">Nessuna biografia disponibile per questo artista.</string>
     <string name="detail_loading_tmdb">Recupero dettagli estesi da TMDB…</string>
     <string name="detail_partial_error">Dettagli parziali: %s</string>
     <string name="detail_seasons_episodes_format">%1$d Stagioni • %2$d Ep.</string>
@@ -102,6 +119,11 @@
     <string name="cast_main_role">Cast principale</string>
     <string name="detail_duration_min">%d min</string>
     <string name="detail_watched_badge">✓ Visto</string>
+    <string name="detail_trailer_loading">Recupero del trailer da TMDB…</string>
+    <string name="detail_trailer_error">Trailer non disponibile per questo titolo</string>
+    <string name="detail_action_trailer">Riproduci trailer</string>
+    <string name="detail_action_mark_watched">Segna come visto</string>
+    <string name="detail_action_mark_unwatched">Segna come non visto</string>
     <string name="detail_air_date_format">Data d\'uscita: %s</string>
     <string name="detail_tech_specs_title">Specifiche Tecniche &amp; Scheda</string>
     <string name="detail_tech_original_title">Titolo Originale</string>
@@ -210,6 +232,15 @@
     <string name="settings_prioritize_italian_audio">Privilegia tracce italiane</string>
     <string name="settings_autoplay_next_episode">Riproduci automaticamente il prossimo episodio</string>
     <string name="settings_auto_resume">Riprendi automaticamente la riproduzione</string>
+    <string name="settings_sec_stream_selection">Selezione Flusso</string>
+    <string name="settings_reuse_last_stream">Riusa l\'ultimo link</string>
+    <string name="settings_reuse_last_stream_desc">Riproduci automaticamente l\'ultimo flusso funzionante per lo stesso film/episodio se la cache è ancora valida.</string>
+    <string name="settings_reuse_last_stream_cache_duration">Durata cache ultimo link</string>
+    <string name="reuse_cache_6h">6 ore</string>
+    <string name="reuse_cache_12h">12 ore</string>
+    <string name="reuse_cache_1d">1 giorno</string>
+    <string name="reuse_cache_3d">3 giorni</string>
+    <string name="reuse_cache_7d">7 giorni</string>
     <string name="settings_sec_subtitles">Sottotitoli</string>
     <string name="settings_auto_subtitles">Abilita automaticamente i sottotitoli</string>
     <string name="settings_preferred_subtitle_lang">Lingua preferita</string>
@@ -310,6 +341,7 @@
 
     <string name="player_format_label">Formato: %s</string>
     <string name="player_loading_stream">Caricamento Stream…</string>
+    <string name="player_loading_next_episode">Caricamento episodio successivo…</string>
     <string name="player_playback_error_title">Errore di Riproduzione</string>
     <string name="player_playback_error_message">Errore playback: %s</string>
     <string name="player_cd_playback_error">Errore Riproduzione</string>
@@ -319,6 +351,9 @@
     <string name="player_cd_pause">Pausa</string>
     <string name="player_cd_play">Riproduci</string>
     <string name="player_cd_next_episode">Prossimo Episodio</string>
+    <string name="player_next_episode_title">PROSSIMO EPISODIO</string>
+    <string name="player_next_episode_watch_now">GUARDA ORA</string>
+    <string name="player_next_episode_countdown">Parte tra %1$d s</string>
     <string name="player_cd_aspect_ratio">Adatta Aspetto Video</string>
     <string name="player_cd_video_quality">Qualità Video</string>
     <string name="player_cd_playback_speed">Velocità di Riproduzione</string>
@@ -327,11 +362,18 @@
     <string name="player_cd_selected">Selezionato</string>
 
     <string name="player_audio_dialog_title">Seleziona Traccia Audio</string>
+    <string name="player_track_quick_title">Tracce Audio e Sottotitoli</string>
     <string name="player_audio_default">Audio Predefinito</string>
     <string name="player_audio_fallback">Audio</string>
     <string name="player_subtitles_dialog_title">Seleziona Sottotitoli</string>
     <string name="player_subtitles_none">Nessuno</string>
     <string name="player_subtitles_unknown">Sconosciuta</string>
+    <string name="player_subtitles_sync_title">Sincronizzazione Offset</string>
+    <string name="player_subtitles_reset_offset">Ripristina (0 ms)</string>
+    <string name="player_subtitles_local_section">Tracce Integrate</string>
+    <string name="player_subtitles_online_section">Sottotitoli Online (OpenSubtitles)</string>
+    <string name="player_subtitles_online_loading">Ricerca su OpenSubtitles v3…</string>
+    <string name="player_subtitles_online_empty">Nessun sottotitolo online trovato</string>
     <string name="player_speed_dialog_title">Velocità di Riproduzione</string>
     <string name="player_speed_normal">1.0x (Normale)</string>
     <string name="player_quality_dialog_title">Seleziona Risoluzione Video</string>
@@ -343,6 +385,8 @@
     <string name="player_resize_zoom">Ritaglia e riempi (Zoom)</string>
 
     <string name="player_http_expired">Stream scaduto (401/410)</string>
+    <string name="player_http_timeout">Timeout connessione allo stream. Verifica la sorgente e riprova.</string>
+    <string name="player_invalid_stream">Il provider ha restituito uno stream non valido o non supportato.</string>
     <string name="player_http_not_found">Stream non trovato / rimosso (404)</string>
     <string name="player_http_rate_limit">Troppe richieste (Rate limit 429)</string>
     <string name="player_http_server_unavailable">Server stream non disponibile (%d)</string>
