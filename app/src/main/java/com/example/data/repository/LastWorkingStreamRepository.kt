@@ -3,6 +3,7 @@ package com.example.data.repository
 import android.util.Log
 import com.example.data.local.LastWorkingStreamEntity
 import com.example.data.local.StreamNovaDatabase
+import com.example.data.prefs.StreamingEngineMode
 import com.example.data.streaming.StreamSource
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
@@ -23,6 +24,13 @@ data class CachedWorkingStream(
   val serverName: String? = null,
   val headers: Map<String, String> = emptyMap(),
   val isProgressive: Boolean? = null,
+  /**
+   * Modalità del motore che ha generato il flusso ([StreamingEngineMode.name]).
+   * Null per le voci salvate prima dell'introduzione del tracciamento: in quel caso
+   * la modalità viene inferita dalla natura della fonte (vedi
+   * [LastWorkingStreamRepository.resolveEngineMode]).
+   */
+  val streamMode: String? = null,
   val cachedAtTimestamp: Long = System.currentTimeMillis()
 ) {
   /** Ricostruisce la sorgente riproducibile del flusso salvato. */
@@ -57,6 +65,23 @@ object LastWorkingStreamRepository {
 
   private const val TAG = "LastStreamCache"
   private const val MILLIS_PER_HOUR = 3_600_000L
+
+  /**
+   * Marker testuali (case-insensitive) riconducibili a una fonte Debrid/torrent.
+   * Usati per inferire la modalità di una voce di cache legacy che non traccia ancora
+   * esplicitamente `streamMode`.
+   */
+  private val DEBRID_TEXT_MARKERS = listOf(
+    "torbox",
+    "real-debrid",
+    "realdebrid",
+    "real debrid",
+    "alldebrid",
+    "premiumize",
+    "debrid",
+    "magnet:",
+    "torrent:"
+  )
 
   @Volatile
   private var database: StreamNovaDatabase? = null
@@ -133,6 +158,7 @@ object LastWorkingStreamRepository {
     serverName: String?,
     headers: Map<String, String>,
     isProgressive: Boolean?,
+    streamMode: String? = null,
     cachedAtTimestamp: Long = System.currentTimeMillis()
   ) {
     if (mediaId.isBlank() || streamUrl.isBlank()) return
@@ -148,6 +174,7 @@ object LastWorkingStreamRepository {
           serverName = serverName?.takeIf { it.isNotBlank() },
           headersJson = encodeHeaders(headers),
           isProgressive = isProgressive,
+          streamMode = streamMode?.takeIf { it.isNotBlank() },
           cachedAtTimestamp = cachedAtTimestamp
         )
       )
@@ -194,6 +221,59 @@ object LastWorkingStreamRepository {
     }
   }
 
+  /** true se almeno uno dei testi contiene un marker Debrid/torrent. */
+  internal fun looksLikeDebridSource(vararg text: String?): Boolean {
+    val haystack = text.filterNotNull().joinToString(" ").lowercase()
+    if (haystack.isBlank()) return false
+    return DEBRID_TEXT_MARKERS.any { haystack.contains(it) }
+  }
+
+  /** Interpreta il nome di una [StreamingEngineMode], ignorando maiuscole e spazi. */
+  internal fun parseEngineMode(name: String?): StreamingEngineMode? =
+    name?.trim()?.takeIf { it.isNotBlank() }?.let { value ->
+      StreamingEngineMode.entries.firstOrNull { it.name.equals(value, ignoreCase = true) }
+    }
+
+  /**
+   * Determina la modalità del motore con cui è stata generata una sorgente **live**,
+   * da registrare insieme al flusso funzionante.
+   *
+   * Precedenza:
+   *  1. Natura intrinseca della sorgente: `infoHash`/magnet/torrent o marker Debrid nel
+   *     server/addon → Debrid.
+   *  2. In assenza di indizi → [fallbackEngineMode] (modalità attiva al momento della
+   *     risoluzione): una fonte HTTP in HTTP resta HTTP, una fonte Debrid in Debrid
+   *     resta Debrid.
+   */
+  fun classifySourceMode(
+    source: StreamSource?,
+    fallbackEngineMode: StreamingEngineMode
+  ): StreamingEngineMode {
+    if (source == null) return fallbackEngineMode
+    if (!source.infoHash.isNullOrBlank()) return StreamingEngineMode.DEBRID_TORBOX
+    if (looksLikeDebridSource(source.streamUrl, source.serverName, source.addonName, source.instantTag)) {
+      return StreamingEngineMode.DEBRID_TORBOX
+    }
+    return fallbackEngineMode
+  }
+
+  /**
+   * Modalità di una voce di cache già risolta.
+   *
+   * Se [CachedWorkingStream.streamMode] è valorizzato (voci nuove) viene rispettato alla
+   * lettera. Per le voci legacy (prima del tracciamento) la modalità viene inferita dalla
+   * natura della fonte; in assenza di indizi si assume HTTP, così una fonte
+   * potenzialmente HTTP non viene mai riusata in modalità Debrid.
+   */
+  fun resolveEngineMode(cached: CachedWorkingStream): StreamingEngineMode {
+    parseEngineMode(cached.streamMode)?.let { return it }
+    return if (looksLikeDebridSource(cached.streamUrl, cached.serverName, cached.streamTitle)) {
+      StreamingEngineMode.DEBRID_TORBOX
+    } else {
+      StreamingEngineMode.HTTP_WEB
+    }
+  }
+
   private fun LastWorkingStreamEntity.toCachedWorkingStream(): CachedWorkingStream =
     CachedWorkingStream(
       mediaId = mediaId,
@@ -205,6 +285,7 @@ object LastWorkingStreamRepository {
       serverName = serverName,
       headers = decodeHeaders(headersJson),
       isProgressive = isProgressive,
+      streamMode = streamMode,
       cachedAtTimestamp = cachedAtTimestamp
     )
 }

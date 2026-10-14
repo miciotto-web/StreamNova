@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     EpisodeProgressEntity::class,
     LastWorkingStreamEntity::class
   ],
-  version = 7,
+  version = 8,
   exportSchema = false
 )
 abstract class StreamNovaDatabase : RoomDatabase() {
@@ -121,6 +121,17 @@ abstract class StreamNovaDatabase : RoomDatabase() {
       }
     }
 
+    /**
+     * v7 -> v8: aggiunta di `streamMode` in `last_working_streams`. Traccia la modalità
+     * del motore (HTTP vs Debrid) che ha generato il flusso salvato: "Continua a guardare"
+     * non deve riusare una fonte appartenente a una modalità diversa da quella attiva.
+     */
+    private val MIGRATION_7_8 = object : Migration(7, 8) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE last_working_streams ADD COLUMN streamMode TEXT")
+      }
+    }
+
     @Volatile
     private var INSTANCE: StreamNovaDatabase? = null
 
@@ -132,7 +143,7 @@ abstract class StreamNovaDatabase : RoomDatabase() {
           "streamnova_database.db"
         )
           .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
-          .addMigrations(MIGRATION_6_7)
+          .addMigrations(MIGRATION_6_7, MIGRATION_7_8)
           .fallbackToDestructiveMigration(dropAllTables = true)
           .build()
           .also { INSTANCE = it }

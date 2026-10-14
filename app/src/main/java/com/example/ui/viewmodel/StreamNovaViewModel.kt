@@ -1109,7 +1109,35 @@ class StreamNovaViewModel(
     AppSettingsRepository.setTorBoxInstantDebridEnabled(enabled)
 
   fun setStreamingEngineMode(mode: StreamingEngineMode) {
+    val changed = AppSettingsRepository.streamingEngineMode.value != mode
     AppSettingsRepository.setStreamingEngineMode(mode)
+    _streamingEngineMode.value = mode
+    if (changed) {
+      // Cambio modalità HTTP <-> Debrid: ogni stream risolto in memoria appartiene alla
+      // modalità precedente e non è più valido. Va invalidato subito, così la prossima
+      // apertura (es. da "Continua a guardare") risolve da zero con i provider corretti.
+      invalidateInMemoryStreamCaches()
+    }
+  }
+
+  /**
+   * Invalida le cache **in memoria** degli stream risolti (sorgenti disponibili, dialog di
+   * selezione, stato/risultato di risoluzione, flusso corrente nel player). La cache
+   * persistente per titolo ("Riusa l'ultimo link") non viene toccata: la sua modalità è
+   * tracciata e viene scartata al momento del riuso in caso di mismatch.
+   */
+  private fun invalidateInMemoryStreamCaches() {
+    Log.i(TAG, "Cambio modalità streaming: invalidazione cache stream in memoria")
+    resetStreamState()
+    _playbackState.value = _playbackState.value.copy(
+      streamUrl = null,
+      streamHeaders = emptyMap(),
+      streamQuality = null,
+      streamServer = null,
+      streamProgressive = null,
+      isReusedStream = false,
+      currentSource = null
+    )
   }
 
   val autoplayEnabled: StateFlow<Boolean> = AppSettingsRepository.autoplayEnabled
@@ -1965,7 +1993,13 @@ class StreamNovaViewModel(
     val episode = state.currentEpisode
     val season = episode?.seasonNumber ?: LastWorkingStreamRepository.NO_EPISODE
     val epNumber = episode?.episodeNumber ?: LastWorkingStreamRepository.NO_EPISODE
-    viewModelScope.launch(Dispatchers.IO) {
+    // Modalità con cui è stata generata la fonte: registrata insieme al flusso, così
+    // "Continua a guardare" può scartare la voce se l'utente cambia modalità (HTTP <-> Debrid).
+    val sourceMode = LastWorkingStreamRepository.classifySourceMode(
+      source = state.currentSource,
+      fallbackEngineMode = AppSettingsRepository.streamingEngineMode.value
+    )
+    viewModelScope.launch(ioDispatcher) {
       LastWorkingStreamRepository.saveStream(
         mediaId = media.id,
         seasonNumber = season,
@@ -1975,7 +2009,8 @@ class StreamNovaViewModel(
         streamQuality = state.streamQuality,
         serverName = state.streamServer,
         headers = state.streamHeaders,
-        isProgressive = state.streamProgressive
+        isProgressive = state.streamProgressive,
+        streamMode = sourceMode.name
       )
     }
   }
@@ -2128,8 +2163,8 @@ class StreamNovaViewModel(
   ): Boolean {
     val settings = SettingsRepository.settings.value
     if (!settings.reuseLastWorkingStreamEnabled) return false
-    // La riproduzione rapida da cache è pensata per la modalità Debrid.
-    if (AppSettingsRepository.streamingEngineMode.value != StreamingEngineMode.DEBRID_TORBOX) return false
+
+    val currentMode = AppSettingsRepository.streamingEngineMode.value
 
     val reqId = requestedMediaId?.takeIf { it.isNotBlank() } ?: media.id
     val season = episode?.seasonNumber ?: LastWorkingStreamRepository.NO_EPISODE
@@ -2150,12 +2185,23 @@ class StreamNovaViewModel(
       return false
     }
 
-    val cached = LastWorkingStreamRepository.getValidStream(
-      mediaId = reqId,
-      seasonNumber = reqSeason,
-      episodeNumber = reqEp,
-      durationHours = settings.lastWorkingStreamCacheDurationHours
-    ) ?: return false
+    // La lettura della cache (Room) non deve MAI far fallire la ricerca: un errore
+    // del DB (schema/migrazione) viene loggato e trattato come "nessuna voce in
+    // cache", cosi' [openStreamForMedia] prosegue con la risoluzione live.
+    val cached = runCatching {
+      LastWorkingStreamRepository.getValidStream(
+        mediaId = reqId,
+        seasonNumber = reqSeason,
+        episodeNumber = reqEp,
+        durationHours = settings.lastWorkingStreamCacheDurationHours
+      )
+    }.onFailure { e ->
+      Log.e(
+        TAG,
+        "Reuse: lettura cache 'ultimo flusso' fallita per $reqId S$reqSeason E$reqEp: ${e.message}",
+        e
+      )
+    }.getOrNull() ?: return false
     if (cached.streamUrl.isBlank()) return false
 
     // Blindatura 3: la voce di cache deve appartenere esattamente al titolo/puntata richiesti.
@@ -2170,6 +2216,24 @@ class StreamNovaViewModel(
       )
       return false
     }
+
+    // SMART SWITCH HTTP <-> DEBRID: la fonte salvata è riusabile SOLO se generata nella
+    // stessa modalità attualmente attiva. In caso di cambio modalità (Continua a guardare
+    // salvato in HTTP ma app in Debrid, o viceversa) la voce viene ignorata: si esegue
+    // una risoluzione completa con i provider della modalità attiva, mantenendo stagione,
+    // episodio e minuto di ripresa (gestiti da [openStreamForMedia]).
+    val cachedMode = LastWorkingStreamRepository.resolveEngineMode(cached)
+    if (cachedMode != currentMode) {
+      Log.i(
+        TAG,
+        "Reuse: scartato, fonte salvata in $cachedMode != modalità attiva $currentMode " +
+          "per $reqId S$reqSeason E$reqEp: nuova risoluzione"
+      )
+      return false
+    }
+
+    // La riproduzione rapida da cache è pensata per la modalità Debrid.
+    if (currentMode != StreamingEngineMode.DEBRID_TORBOX) return false
 
     Log.i(TAG, "Reuse: ultimo flusso valido per $reqId S$reqSeason E$reqEp (${cached.serverName})")
     val source = cached.toStreamSource()
@@ -2339,7 +2403,11 @@ class StreamNovaViewModel(
       // [handleReusedStreamFailure], che richiama questo metodo con `allowReuse = false`.
       // NOTA: la cache è utilizzabile solo se corrisponde esattamente al media e alla
       // puntata richiesti (id esplicito del click + stagione/episodio effettivi).
-      if (allowReuse && tryOpenReusedStream(
+      // Blindatura: qualunque errore del percorso di riuso (accesso DB/schema) non
+      // deve far morire questa coroutine prima di interrogare i provider. In caso di
+      // errore si procede con la risoluzione live.
+      val reused = allowReuse && runCatching {
+        tryOpenReusedStream(
           media = resolvedMediaItem,
           episode = effectiveEpisode,
           generation = currentJobGeneration,
@@ -2347,7 +2415,10 @@ class StreamNovaViewModel(
           requestedSeason = effectiveEpisode?.seasonNumber,
           requestedEpisode = effectiveEpisode?.episodeNumber
         )
-      ) {
+      }.onFailure { e ->
+        Log.e(TAG, "Reuse: apertura stream riusato fallita, si prosegue con la ricerca live: ${e.message}", e)
+      }.getOrDefault(false)
+      if (reused) {
         return@launch
       }
 

@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.data.api.TmdbApiClient
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.repository.MediaRepository
+import com.example.data.streaming.extractors.awaitResponse
 import com.example.data.util.AsyncSingleFlight
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
@@ -12,9 +13,11 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -191,11 +194,19 @@ object StremioAddonRepository {
   private const val CONNECT_TIMEOUT_S = 10L
   private const val READ_TIMEOUT_S = 15L
   /**
-   * Timeout complessivo del fetch stream. Gli addon che fanno scraping in tempo
-   * reale (es. Comet) possono richiedere 8-10 secondi: il valore non deve mai
-   * scendere sotto i 10s. Allineato al [READ_TIMEOUT_S] del client OkHttp.
+   * Timeout per **singolo addon** del fetch stream.
+   *
+   * Deve restare **strettamente sotto** il budget del provider di
+   * [com.example.data.streaming.StreamManager] (`DEFAULT_TIMEOUT_MS` = 15s): se un
+   * addon lento resta in stallo (scraping che non risponde), viene scartato per
+   * tempo e gli altri addon restituiscono comunque i propri candidati. Altrimenti
+   * il piu' lento dei due fa scadere l'intera ricerca e azzera TUTTE le sorgenti,
+   * comprese quelle Debrid risolte da [com.example.data.streaming.TorBoxStreamProvider]
+   * a partire dagli infoHash degli altri addon.
+   * Gli addon che fanno scraping reale (es. Comet) possono richiedere 8-10s:
+   * il valore non deve scendere sotto i 10s.
    */
-  private const val STREAM_FETCH_TIMEOUT_MS = 15_000L
+  private const val STREAM_FETCH_TIMEOUT_MS = 10_000L
   private const val SUBTITLES_TIMEOUT_MS = 15_000L
   /** Suffisso terminale dell'endpoint manifest, rimosso in [normalizeUrl]. */
   private const val MANIFEST_SUFFIX = "/manifest.json"
@@ -559,6 +570,20 @@ object StremioAddonRepository {
               "DIAG-A addon=${diagAddonLabel(addon)} result=OK streams=${mapped.size} infoHash=$withHash url=$withUrl both=$withBoth neither=$withNeither"
             )
             mapped
+          } catch (e: TimeoutCancellationException) {
+            // Addon lento/stallato: viene scartato SOLO questo addon, gli altri
+            // restituiscono comunque i propri candidati (un singolo addon non deve
+            // azzerare l'intera ricerca, ne' bloccare la risoluzione Debrid).
+            Log.w(TAG, "Addon ${addon.manifest.displayTitle} -> timeout ($STREAM_FETCH_TIMEOUT_MS ms)")
+            Log.w(
+              DIAG_TAG,
+              "DIAG-A addon=${diagAddonLabel(addon)} result=TIMEOUT streams=0 error=TimeoutCancellationException"
+            )
+            emptyList()
+          } catch (e: CancellationException) {
+            // Cancellazione esterna (cambio ricerca/cambio schermata): va propagata,
+            // non inghiottita come errore di rete.
+            throw e
           } catch (e: Exception) {
             // DIAG TEMPORANEO: non loggare e.message (puo' contenere l'URL completo dell'endpoint).
             Log.w(TAG, "Addon ${addon.manifest.displayTitle} -> ${e.javaClass.simpleName}")
@@ -635,7 +660,10 @@ object StremioAddonRepository {
       withContext(Dispatchers.IO) {
         val url = "$baseUrl/stream/$path"
         val request = Request.Builder().url(url).header("Accept", "application/json").build()
-        httpClient.newCall(request).execute().use { response ->
+        // [awaitResponse] (invece di `execute()`) rende la chiamata OkHttp
+        // **cancellabile**: cosi' il timeout dell'addon interrompe davvero la
+        // richiesta invece di restare bloccato fino al READ_TIMEOUT del client.
+        httpClient.newCall(request).awaitResponse().use { response ->
           val httpStatus = response.code
           if (!response.isSuccessful) {
             Log.w(

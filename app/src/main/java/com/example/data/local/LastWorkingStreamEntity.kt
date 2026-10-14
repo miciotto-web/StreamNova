@@ -17,6 +17,10 @@ import androidx.room.Entity
  * @param serverName nome del provider/addon di origine.
  * @param headersJson header HTTP (Referer/User-Agent) serializzati in JSON, se presenti.
  * @param isProgressive hint tipo contenuto (true = file progressivo, false = HLS).
+ * @param streamMode modalità del motore che ha generato il flusso
+ *        ([com.example.data.prefs.StreamingEngineMode.name]): `"HTTP_WEB"` oppure
+ *        `"DEBRID_TORBOX"`. Permette a "Continua a guardare" di NON riusare una fonte
+ *        appartenente a una modalità diversa da quella attiva. Null per le voci legacy.
  * @param cachedAtTimestamp istante di salvataggio (System.currentTimeMillis()).
  */
 @Entity(
@@ -33,6 +37,7 @@ data class LastWorkingStreamEntity(
   val serverName: String? = null,
   val headersJson: String? = null,
   val isProgressive: Boolean? = null,
+  val streamMode: String? = null,
   val cachedAtTimestamp: Long = System.currentTimeMillis()
 ) {
   companion object {
