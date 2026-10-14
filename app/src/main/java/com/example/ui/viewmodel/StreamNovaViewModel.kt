@@ -1971,12 +1971,6 @@ class StreamNovaViewModel(
     // Stream del nuovo episodio ormai disponibile: la transizione è conclusa.
     _isSwitchingEpisode.value = false
 
-    Log.d(
-      "[NEXT_EP_DEBUG]",
-      "Stream ottenuto: ${source?.streamUrl} (isSwitching=${_isSwitchingEpisode.value}, " +
-        "episode=S${finalEpisode?.seasonNumber ?: "-"}E${finalEpisode?.episodeNumber ?: "-"}, " +
-        "server=${source?.serverName}, quality=${source?.quality})"
-    )
     // "Prossimo Episodio": risolve (o carica in background) l'episodio successivo
     // e lo espone a PlayerScreen per overlay e auto-advance.
     refreshNextEpisodeForPlayback(finalMedia, finalEpisode)
@@ -2110,13 +2104,8 @@ class StreamNovaViewModel(
    * 2. Recupera la posizione persistita del nuovo episodio (0L se mai iniziato).
    * 3. Avvia la riproduzione del nuovo episodio dalla sua posizione specifica.
    */
-  fun playNextEpisode(nextEpisode: Episode) {
-    Log.d(
-      "[NEXT_EP_DEBUG]",
-      "playNextEpisode() chiamato. Target: S${nextEpisode.seasonNumber}E${nextEpisode.episodeNumber} " +
-        "(${nextEpisode.title})"
-    )
-    val current = _playbackState.value
+   fun playNextEpisode(nextEpisode: Episode) {
+     val current = _playbackState.value
     val media = current.media ?: return
     if (current.currentPositionMs > 0L) {
       saveCurrentPlaybackProgress(current.currentPositionMs)
@@ -2342,17 +2331,10 @@ class StreamNovaViewModel(
     // transizione al prossimo episodio: finché è attivo il player resta in
     // caricamento (spinner "Caricamento episodio successivo...") e non fallisce.
     _isSwitchingEpisode.value = isNextEpisode
-    _streamResolutionState.value = StreamResolutionState.Loading
-    _streamResult.value = StreamResult.Loading("Ricerca sorgenti in corso...")
+     _streamResolutionState.value = StreamResolutionState.Loading
+     _streamResult.value = StreamResult.Loading("Ricerca sorgenti in corso...")
 
-    Log.d(
-      "[NEXT_EP_DEBUG]",
-      "Avvio risoluzione stream per: mediaId=${mediaItem.id} " +
-        "S${episode?.seasonNumber ?: "-"} E${episode?.episodeNumber ?: "-"} " +
-        "(isNextEpisode=$isNextEpisode, allowReuse=$allowReuse, switching=${_isSwitchingEpisode.value})"
-    )
-
-    val currentDetail = detailUiState.value
+     val currentDetail = detailUiState.value
     val enrichedMedia = if (currentDetail is MediaDetailUiState.Success) {
       val candidate = currentDetail.media
       val matches = (mediaItem.tmdbId != null && mediaItem.tmdbId > 0 && candidate.tmdbId == mediaItem.tmdbId) ||
