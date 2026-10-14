@@ -52,6 +52,8 @@ import com.example.data.opensubtitles.OpenSubtitlesSubtitleAdapter
 import com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider
 import com.example.domain.model.Subtitle
 import com.example.ui.components.StreamingProvider
+import com.example.ui.components.ProviderConstants
+import java.util.concurrent.ConcurrentHashMap
 import com.example.ui.screens.player.NextEpisodePromptUtils
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
@@ -68,6 +70,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -503,6 +508,13 @@ class StreamNovaViewModel(
   private val _currentSection = MutableStateFlow(SidebarSection.HOME)
   val currentSection: StateFlow<SidebarSection> = _currentSection.asStateFlow()
 
+  private val _homeScrollToTopEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+  val homeScrollToTopEvent: SharedFlow<Unit> = _homeScrollToTopEvent.asSharedFlow()
+
+  fun requestHomeScrollToTop() {
+    _homeScrollToTopEvent.tryEmit(Unit)
+  }
+
   private val _screenState = MutableStateFlow(ScreenState.BROWSING)
   val screenState: StateFlow<ScreenState> = _screenState.asStateFlow()
 
@@ -552,12 +564,19 @@ class StreamNovaViewModel(
   private val _personDetailUiState = MutableStateFlow<PersonDetailUiState>(PersonDetailUiState.Idle)
   val personDetailUiState: StateFlow<PersonDetailUiState> = _personDetailUiState.asStateFlow()
 
-  fun loadPersonDetails(personId: Int) {
+  fun loadPersonDetails(personId: Int, personName: String? = null) {
     viewModelScope.launch(ioDispatcher) {
       _personDetailUiState.value = PersonDetailUiState.Loading(personId)
       try {
-        val person = MediaRepository.fetchPersonDetails(personId)
-        val credits = MediaRepository.fetchPersonCombinedCredits(personId)
+        val resolvedId = if (personId <= 0 && !personName.isNullOrBlank()) {
+          MediaRepository.searchPersonByName(personName) ?: personId
+        } else {
+          personId
+        }
+        val person = MediaRepository.fetchPersonDetails(resolvedId)
+        val credits = MediaRepository.fetchPersonCombinedCredits(resolvedId)
+
+
         if (person != null) {
           _personDetailUiState.value = PersonDetailUiState.Success(person, credits)
         } else {
@@ -889,6 +908,13 @@ class StreamNovaViewModel(
 
   private val _stremioProviderStates = MutableStateFlow<Map<String, StremioProviderCatalogState>>(emptyMap())
   val stremioProviderStates: StateFlow<Map<String, StremioProviderCatalogState>> = _stremioProviderStates.asStateFlow()
+
+  private val _categoryProviderMedia = MutableStateFlow<Map<Pair<String, Boolean>, List<MediaItem>>>(emptyMap())
+  val categoryProviderMedia: StateFlow<Map<Pair<String, Boolean>, List<MediaItem>>> = _categoryProviderMedia.asStateFlow()
+
+  private val categoryProviderLoadingKeys = ConcurrentHashMap<Pair<String, Boolean>, Boolean>()
+  private val categoryProviderPages = ConcurrentHashMap<Pair<String, Boolean>, Int>()
+  private val categoryProviderHasMore = ConcurrentHashMap<Pair<String, Boolean>, Boolean>()
 
   fun refreshHomeCatalogs(mediaList: List<MediaItem> = allMedia.value) {
     viewModelScope.launch(Dispatchers.IO) {
@@ -2069,9 +2095,12 @@ class StreamNovaViewModel(
     if (session.isSeries) {
       val s = session.seasonNumber ?: current.currentEpisode?.seasonNumber ?: media.lastWatchedSeason ?: 1
       val e = session.episodeNumber ?: current.currentEpisode?.episodeNumber ?: media.lastWatchedEpisode ?: 1
+      // `current.durationMs` e' la durata REALE misurata da ExoPlayer per questo episodio
+      // (tenuta a `> 0` da [updatePlaybackPosition], che ignora `C.TIME_UNSET`). Se il player
+      // non ha ancora fornito una durata valida, il repository NON sovrascrive quella gia' nota.
       MediaRepository.updateEpisodeProgress(session.mediaId, s, e, finalPos, current.durationMs)
     } else {
-      MediaRepository.updateProgress(session.mediaId, finalPos)
+      MediaRepository.updateProgress(session.mediaId, finalPos, current.durationMs)
     }
   }
 
@@ -3126,6 +3155,204 @@ class StreamNovaViewModel(
     _selectedProvider.value = null
     _screenState.value = ScreenState.BROWSING
   }
+
+   /**
+    * Carica i contenuti di una sottocategoria provider per Film o Serie TV.
+    * Se l'addon attivo non possiede il catalogo (es. Cinemeta), esegue il fallback
+    * automatico su TMDB Discover (con logica HBO-specifica: network ID per serie,
+    * watch_region=US per film).
+    */
+   fun loadCategoryProvider(providerId: String, tmdbProviderId: Int, isTv: Boolean) {
+     val key: Pair<String, Boolean> = Pair(providerId, isTv)
+     if (_categoryProviderMedia.value[key] != null || categoryProviderLoadingKeys[key] == true) {
+       return
+     }
+     categoryProviderLoadingKeys[key] = true
+
+     viewModelScope.launch {
+       try {
+         val stremioType = if (isTv) "series" else "movie"
+         val hasStremio = StremioAddonRepository.hasProviderCatalog(providerId, stremioType)
+         val provider = ProviderConstants.ALL.firstOrNull { it.id == providerId }
+
+         if (hasStremio && provider != null) {
+           val mediaType = if (isTv) MediaType.SERIE_TV else MediaType.FILM
+           val stremioPage = StremioCatalogRepository.loadProviderCatalogPage(provider, mediaType)
+           val coverage = StremioCatalogRepository.providerCoverage(provider)
+
+           if (coverage == ProviderCoverage.FULL && stremioPage.items.isNotEmpty()) {
+             _categoryProviderMedia.update { it + (key to stremioPage.items) }
+             categoryProviderHasMore[key] = true
+           } else {
+             // Se copertura PARTIAL o catalogo Stremio parziale, completa con TMDB Discover
+             var tmdbItems = emptyList<MediaItem>()
+             var tmdbHasMore = false
+             if (tmdbProviderId > 0) {
+               val hboFallback = if (MediaRepository.isHboProvider(providerId)) {
+                 if (isTv) {
+                   // Serie TV HBO: usa network IDs (49|3186), senza watch_region
+                   val items = MediaRepository.discoverTvByNetwork(MediaRepository.HBO_NETWORK_IDS, page = 1)
+                   tmdbItems = items
+                   tmdbHasMore = items.size > 0
+                   true
+                 } else {
+                   // Film HBO: usa watch_region=US, provider IDs 384|1899|1825
+                   val items = MediaRepository.discoverMoviesByProvider(
+                     providerId = "384|1899|1825",
+                     isTv = false,
+                     page = 1,
+                     watchRegion = "US"
+                   )
+                   tmdbItems = items
+                   tmdbHasMore = items.size > 0
+                   true
+                 }
+               } else {
+                 false
+               }
+               if (!hboFallback) {
+                 MediaRepository.loadProviderCatalog(tmdbProviderId, isTv, page = 1).collect { tmdbPage ->
+                   tmdbItems = tmdbPage.items
+                   tmdbHasMore = tmdbPage.hasMore
+                   categoryProviderPages[key] = tmdbPage.page
+                 }
+               } else {
+                 categoryProviderPages[key] = 1
+               }
+             }
+             val combined = StremioCatalogRepository.deduplicateCrossSource(stremioPage.items + tmdbItems)
+             _categoryProviderMedia.update { it + (key to combined) }
+             categoryProviderHasMore[key] = tmdbHasMore || stremioPage.items.isNotEmpty()
+           }
+         } else if (tmdbProviderId > 0) {
+           // Fallback TMDB Discover (Cinemeta o addon senza cataloghi provider)
+           categoryProviderPages[key] = 1
+           val hboFallback = if (MediaRepository.isHboProvider(providerId)) {
+             if (isTv) {
+               // Serie TV HBO: usa network IDs (49|3186), senza watch_region
+               val items = MediaRepository.discoverTvByNetwork(MediaRepository.HBO_NETWORK_IDS, page = 1)
+               _categoryProviderMedia.update { it + (key to items) }
+               categoryProviderHasMore[key] = items.size > 0
+               true
+             } else {
+               // Film HBO: usa watch_region=US, provider IDs 384|1899|1825
+               val items = MediaRepository.discoverMoviesByProvider(
+                 providerId = "384|1899|1825",
+                 isTv = false,
+                 page = 1,
+                 watchRegion = "US"
+               )
+               _categoryProviderMedia.update { it + (key to items) }
+               categoryProviderHasMore[key] = items.size > 0
+               true
+             }
+           } else {
+             false
+           }
+           if (!hboFallback) {
+             MediaRepository.loadProviderCatalog(tmdbProviderId, isTv, page = 1).collect { tmdbPage ->
+               _categoryProviderMedia.update { it + (key to tmdbPage.items) }
+               categoryProviderHasMore[key] = tmdbPage.hasMore
+               categoryProviderPages[key] = tmdbPage.page
+             }
+           }
+         }
+       } catch (e: Exception) {
+         Log.w(TAG, "Errore caricamento categoria provider ($providerId, isTv=$isTv): ${e.message}")
+       } finally {
+         categoryProviderLoadingKeys.remove(key)
+       }
+     }
+   }
+
+   /**
+    * Paginazione della sottocategoria provider al raggiungimento della fine della griglia.
+    */
+   fun loadNextCategoryProviderPage(providerId: String, tmdbProviderId: Int, isTv: Boolean) {
+     val key: Pair<String, Boolean> = Pair(providerId, isTv)
+     if (categoryProviderLoadingKeys[key] == true || categoryProviderHasMore[key] == false) {
+       return
+     }
+     categoryProviderLoadingKeys[key] = true
+
+     viewModelScope.launch {
+       try {
+         val stremioType = if (isTv) "series" else "movie"
+         val hasStremio = StremioAddonRepository.hasProviderCatalog(providerId, stremioType)
+         val provider = ProviderConstants.ALL.firstOrNull { it.id == providerId }
+
+         var gotMore = false
+         if (hasStremio && provider != null) {
+           val mediaType = if (isTv) MediaType.SERIE_TV else MediaType.FILM
+           val more = StremioCatalogRepository.paginateProviderCatalog(provider, mediaType)
+           if (more.isNotEmpty()) {
+             _categoryProviderMedia.update { map ->
+               val current = map[key].orEmpty()
+               val combined = StremioCatalogRepository.deduplicateCrossSource(current + more)
+               map + (key to combined)
+             }
+             gotMore = true
+           }
+         }
+
+         // Se Stremio non ha consegnato nuovi elementi o se il catalogo e' supportato da TMDB Discover, pagina TMDB
+         if (!gotMore && tmdbProviderId > 0) {
+           val nextPage = (categoryProviderPages[key] ?: 1) + 1
+           val hboFallback = if (MediaRepository.isHboProvider(providerId)) {
+             if (isTv) {
+               // Serie TV HBO: usa network IDs (49|3186), senza watch_region
+               val items = MediaRepository.discoverTvByNetwork(MediaRepository.HBO_NETWORK_IDS, page = nextPage)
+               if (items.isNotEmpty()) {
+                 _categoryProviderMedia.update { map ->
+                   val current = map[key].orEmpty()
+                   val combined = StremioCatalogRepository.deduplicateCrossSource(current + items)
+                   map + (key to combined)
+                 }
+               }
+               categoryProviderHasMore[key] = items.size > 0
+               true
+             } else {
+               // Film HBO: usa watch_region=US, provider IDs 384|1899|1825
+               val items = MediaRepository.discoverMoviesByProvider(
+                 providerId = "384|1899|1825",
+                 isTv = false,
+                 page = nextPage,
+                 watchRegion = "US"
+               )
+               if (items.isNotEmpty()) {
+                 _categoryProviderMedia.update { map ->
+                   val current = map[key].orEmpty()
+                   val combined = StremioCatalogRepository.deduplicateCrossSource(current + items)
+                   map + (key to combined)
+                 }
+               }
+               categoryProviderHasMore[key] = items.size > 0
+               true
+             }
+           } else {
+             false
+           }
+           if (!hboFallback) {
+             MediaRepository.loadProviderCatalog(tmdbProviderId, isTv, nextPage).collect { tmdbPage ->
+               categoryProviderPages[key] = tmdbPage.page
+               categoryProviderHasMore[key] = tmdbPage.hasMore
+               if (tmdbPage.items.isNotEmpty()) {
+                 _categoryProviderMedia.update { map ->
+                   val current = map[key].orEmpty()
+                   val combined = StremioCatalogRepository.deduplicateCrossSource(current + tmdbPage.items)
+                   map + (key to combined)
+                 }
+               }
+             }
+           }
+         }
+       } catch (e: Exception) {
+         Log.w(TAG, "Errore paginazione categoria provider ($providerId, isTv=$isTv): ${e.message}")
+       } finally {
+         categoryProviderLoadingKeys.remove(key)
+       }
+     }
+   }
 
   fun toggleFavorite(id: String) {
     MediaRepository.toggleFavorite(id)

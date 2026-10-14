@@ -88,9 +88,9 @@ class SeasonEpisodePickerTest {
 
     // Verify tabs computation for movie
     val movieTabs = if (movie.type == MediaType.SERIE_TV) {
-      listOf(DetailTab.EPISODI, DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
+      listOf(DetailTab.EPISODI, DetailTab.PRODUZIONE, DetailTab.ALTRO_COME_QUESTO)
     } else {
-      listOf(DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
+      listOf(DetailTab.PRODUZIONE, DetailTab.ALTRO_COME_QUESTO)
     }
 
     assertFalse("Movie tabs must NOT contain DetailTab.EPISODI", movieTabs.contains(DetailTab.EPISODI))
@@ -111,9 +111,9 @@ class SeasonEpisodePickerTest {
 
     // Verify tabs computation for TV Series
     val tvTabs = if (tvSeries.type == MediaType.SERIE_TV) {
-      listOf(DetailTab.EPISODI, DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
+      listOf(DetailTab.EPISODI, DetailTab.PRODUZIONE, DetailTab.ALTRO_COME_QUESTO)
     } else {
-      listOf(DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
+      listOf(DetailTab.PRODUZIONE, DetailTab.ALTRO_COME_QUESTO)
     }
 
     assertTrue("TV Series tabs MUST contain DetailTab.EPISODI", tvTabs.contains(DetailTab.EPISODI))

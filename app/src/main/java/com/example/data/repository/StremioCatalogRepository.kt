@@ -223,7 +223,7 @@ object StremioCatalogRepository {
    * Converte un tipo Stremio ("movie", "series") nel [MediaType] dell'app.
    */
   fun toMediaType(stremioType: String): MediaType = when (stremioType.lowercase().trim()) {
-    TYPE_SERIES -> MediaType.SERIE_TV
+    TYPE_SERIES, "tv", "show", "tvshow" -> MediaType.SERIE_TV
     else -> MediaType.FILM
   }
 
@@ -1164,21 +1164,16 @@ object StremioCatalogRepository {
     )
     if (customCatalogsActive || plan.hasConfirmedBindings) return plan
 
-    // 2. FALLBACK CONDIZIONALE: nessun addon personalizzato attivo e nessun binding
-    //    dichiarato → i cataloghi di sistema Cinemeta completano la schermata.
-    val fallbackPlan = ProviderCatalogPlanner.plan(
-      providerId = provider.id,
-      targets = systemFallbackTargets(mediaType),
-      resolver = resolver(),
-      mediaType = mediaType,
-      onBindMissing = { target -> ProviderCatalogSourcePolicy.systemDefaultBinding(aliasProvider, target) }
-    )
-    return if (fallbackPlan.resolved.isEmpty()) {
-      plan
-    } else {
-      fallbackPlan.copy(fallbackToDefault = true)
-    }
+    // Nessun catalogo dichiarato o addon personalizzato attivo per questo provider (es. Cinemeta):
+    // Ritorna il piano vuoto così la richiesta ricade sul client TMDB Discover (with_watch_providers).
+    return plan
   }
+
+  /**
+   * Verifica se l'addon attivo possiede un catalogo corrispondente ai token del provider.
+   */
+  fun hasProviderCatalog(providerId: String, mediaType: MediaType? = null): Boolean =
+    StremioAddonRepository.hasProviderCatalog(providerId, toStremioType(mediaType))
 
   /**
    * Target Cinemeta di DEFAULT per il fallback dei provider: cataloghi di sistema
@@ -1289,7 +1284,7 @@ object StremioCatalogRepository {
           val baseExtra = ProviderCatalogPlanner.extraFor(resolved)
           // Riprende dall'offset GIÀ raggiunto dal target: alla prima apertura è 0
           // (fetch senza `skip`), su un eventuale ricaricamento parte dall'ultima pagina.
-          val skip = providerPaging.nextOffset(resolved.targetId)
+          var skip = providerPaging.nextOffset(resolved.targetId)
           val result = if (skip > 0 && resolved.supportsSkip) {
             StremioCatalogEngine.paginateCatalog(
               target = resolved.target,
@@ -1303,11 +1298,46 @@ object StremioCatalogRepository {
             )
           }
           if (result.isSuccess) {
-            // Avanza l'offset della quantità REALMENTE consegnata: senza questa
-            // chiamata la prima `paginateProviderCatalog` rifarebbe `skip=0`,
-            // restando bloccata sulla stessa pagina (20 item) per sempre.
+            val accumulated = mutableListOf<StremioMetaItem>()
+            accumulated.addAll(result.items)
             providerPaging.advance(resolved.targetId, result.items.size)
-            resolved to result.items
+
+            val seenIds = accumulated.mapNotNull { it.id?.trim()?.lowercase() }.toMutableSet()
+            val minTargetItems = 20
+            val maxTargetItems = 30
+            var keepFetching = result.items.isNotEmpty() &&
+              accumulated.size < minTargetItems &&
+              resolved.supportsSkip
+
+            var consecutiveEmptyOrDupe = 0
+            while (keepFetching && consecutiveEmptyOrDupe < 2) {
+              skip = providerPaging.nextOffset(resolved.targetId)
+              val nextResult = StremioCatalogEngine.paginateCatalog(
+                target = resolved.target,
+                skip = skip,
+                baseExtra = baseExtra
+              )
+              if (nextResult.isSuccess && nextResult.items.isNotEmpty()) {
+                val newItems = nextResult.items.filter { item ->
+                  val id = item.id?.trim()?.lowercase()
+                  id == null || seenIds.add(id)
+                }
+                if (newItems.isNotEmpty()) {
+                  accumulated.addAll(newItems)
+                  providerPaging.advance(resolved.targetId, nextResult.items.size)
+                  consecutiveEmptyOrDupe = 0
+                } else {
+                  consecutiveEmptyOrDupe++
+                  providerPaging.advance(resolved.targetId, nextResult.items.size)
+                }
+                if (accumulated.size >= maxTargetItems || nextResult.items.isEmpty()) {
+                  keepFetching = false
+                }
+              } else {
+                keepFetching = false
+              }
+            }
+            resolved to accumulated
           } else {
             Log.w(
               TAG,
@@ -1351,16 +1381,54 @@ object StremioCatalogRepository {
     val fetched = targets.map { resolved ->
       async {
         try {
-          val skip = providerPaging.nextOffset(resolved.targetId)
+          var skip = providerPaging.nextOffset(resolved.targetId)
+          val baseExtra = ProviderCatalogPlanner.extraFor(resolved)
           val result = StremioCatalogEngine.paginateCatalog(
             target = resolved.target,
             skip = skip,
-            baseExtra = ProviderCatalogPlanner.extraFor(resolved)
+            baseExtra = baseExtra
           )
           if (!result.isSuccess) return@async null
-          // L'offset avanza SOLO di ciò che il catalogo ha consegnato.
+
+          val accumulated = mutableListOf<StremioMetaItem>()
+          accumulated.addAll(result.items)
           providerPaging.advance(resolved.targetId, result.items.size)
-          resolved to result.items
+
+          val seenIds = accumulated.mapNotNull { it.id?.trim()?.lowercase() }.toMutableSet()
+          val minTargetItems = 20
+          var keepFetching = result.items.isNotEmpty() &&
+            accumulated.size < minTargetItems &&
+            resolved.supportsSkip
+
+          var consecutiveEmptyOrDupe = 0
+          while (keepFetching && consecutiveEmptyOrDupe < 2) {
+            skip = providerPaging.nextOffset(resolved.targetId)
+            val nextResult = StremioCatalogEngine.paginateCatalog(
+              target = resolved.target,
+              skip = skip,
+              baseExtra = baseExtra
+            )
+            if (nextResult.isSuccess && nextResult.items.isNotEmpty()) {
+              val newItems = nextResult.items.filter { item ->
+                val id = item.id?.trim()?.lowercase()
+                id == null || seenIds.add(id)
+              }
+              if (newItems.isNotEmpty()) {
+                accumulated.addAll(newItems)
+                providerPaging.advance(resolved.targetId, nextResult.items.size)
+                consecutiveEmptyOrDupe = 0
+              } else {
+                consecutiveEmptyOrDupe++
+                providerPaging.advance(resolved.targetId, nextResult.items.size)
+              }
+              if (accumulated.size >= minTargetItems || nextResult.items.isEmpty()) {
+                keepFetching = false
+              }
+            } else {
+              keepFetching = false
+            }
+          }
+          resolved to accumulated
         } catch (e: Exception) {
           Log.w(TAG, "Paginazione fallita per ${resolved.targetId}: ${e.message}")
           null

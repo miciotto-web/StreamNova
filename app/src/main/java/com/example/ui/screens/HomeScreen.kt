@@ -72,6 +72,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateMapOf
+import kotlinx.coroutines.flow.collect
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
@@ -101,6 +102,7 @@ fun HomeScreen(
         onPlayClick = { viewModel.openStreamForMedia(it) },
         onRemoveFromContinueWatching = { viewModel.removeFromContinueWatching(it) },
         onProviderClick = onProviderClick,
+        viewModel = viewModel,
         modifier = modifier
       )
     }
@@ -115,6 +117,8 @@ fun HomeScreen(
       CategoryBrowsingScreen(
         title = stringResource(R.string.category_all_movies),
         items = moviesItems,
+        isTv = false,
+        viewModel = viewModel,
         onMediaClick = handleMediaClick,
         onLoadMore = { viewModel.loadNextMoviesPage() },
         modifier = modifier
@@ -131,6 +135,8 @@ fun HomeScreen(
       CategoryBrowsingScreen(
         title = stringResource(R.string.category_all_tv_series),
         items = seriesItems,
+        isTv = true,
+        viewModel = viewModel,
         onMediaClick = handleMediaClick,
         onLoadMore = { viewModel.loadNextTvPage() },
         modifier = modifier
@@ -303,6 +309,7 @@ fun HomeMainBrowsingContent(
   onPlayClick: (MediaItem) -> Unit,
   onRemoveFromContinueWatching: (String) -> Unit,
   onProviderClick: (StreamingProvider) -> Unit = {},
+  viewModel: StreamNovaViewModel? = null,
   modifier: Modifier = Modifier
 ) {
   // Liste dinamiche dai dati reali TMDB sincronizzati nel repository
@@ -432,6 +439,20 @@ fun HomeMainBrowsingContent(
   LaunchedEffect(heroHasFocus) {
     if (heroHasFocus && (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0)) {
       listState.animateScrollToItem(0)
+    }
+  }
+
+  // Scroll to top automatico cliccando "Home" dalla sidebar (Punto 4)
+  LaunchedEffect(viewModel) {
+    viewModel?.homeScrollToTopEvent?.collect {
+      listState.animateScrollToItem(0)
+      try {
+        if (dynamicHeroItems.isNotEmpty()) {
+          coordinator.getRequester("hero_banner", 0).requestFocus()
+        } else {
+          coordinator.getRequester("section_providers_hub", 0).requestFocus()
+        }
+      } catch (_: Exception) {}
     }
   }
 

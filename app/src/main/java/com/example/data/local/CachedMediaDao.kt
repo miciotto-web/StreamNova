@@ -39,8 +39,23 @@ interface CachedMediaDao {
   @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, lastWatchedAt = :lastWatchedAt WHERE id = :id")
   suspend fun updateProgressWithTimestamp(id: String, progressMs: Long, lastWatchedAt: Long)
 
+  /**
+   * Aggiorna posizione **e** durata reale (misurata dal player) di un film.
+   * La durata e' gia' "mergiata" a monte (mai `<= 0`): vedi `WatchProgress.resolveDuration`.
+   */
+  @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, totalDurationMs = :totalDurationMs, lastWatchedAt = :lastWatchedAt WHERE id = :id")
+  suspend fun updateProgressWithDuration(id: String, progressMs: Long, totalDurationMs: Long, lastWatchedAt: Long)
+
   @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, lastWatchedSeason = :season, lastWatchedEpisode = :episode, lastWatchedAt = :lastWatchedAt WHERE id = :id")
   suspend fun updateTvProgressWithTimestamp(id: String, progressMs: Long, season: Int, episode: Int, lastWatchedAt: Long)
+
+  /**
+   * Aggiorna posizione, stagione/episodio corrente, timestamp e durata dell'**episodio
+   * corrente**: cosi' la card "Continua a guardare" mostra i minuti reali dell'episodio
+   * in corso (mai la durata della serie o di un episodio precedente).
+   */
+  @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, totalDurationMs = :totalDurationMs, lastWatchedSeason = :season, lastWatchedEpisode = :episode, lastWatchedAt = :lastWatchedAt WHERE id = :id")
+  suspend fun updateTvProgressWithDuration(id: String, progressMs: Long, totalDurationMs: Long, season: Int, episode: Int, lastWatchedAt: Long)
 
   @Query("SELECT COUNT(*) FROM cached_media_items")
   suspend fun count(): Int

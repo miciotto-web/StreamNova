@@ -97,7 +97,10 @@ data class StremioCatalogDefinition(
     get() = effectiveType.equals(TYPE_MOVIE, ignoreCase = true)
 
   val isSeries: Boolean
-    get() = effectiveType.equals(TYPE_SERIES, ignoreCase = true)
+    get() = effectiveType.equals(TYPE_SERIES, ignoreCase = true) ||
+      effectiveType.equals("tv", ignoreCase = true) ||
+      effectiveType.equals("show", ignoreCase = true) ||
+      effectiveType.equals("tvshow", ignoreCase = true)
 
   /**
    * Converte [extra] in una lista tipizzata di [StremioCatalogExtra], gestendo sia
@@ -384,7 +387,10 @@ data class StremioMetaItem(
     get() = type.equals(TYPE_MOVIE, ignoreCase = true)
 
   val isSeries: Boolean
-    get() = type.equals(TYPE_SERIES, ignoreCase = true)
+    get() = type.equals(TYPE_SERIES, ignoreCase = true) ||
+      type.equals("tv", ignoreCase = true) ||
+      type.equals("show", ignoreCase = true) ||
+      type.equals("tvshow", ignoreCase = true)
 
   val formattedReleaseInfo: String?
     get() = when (val ri = releaseInfo) {

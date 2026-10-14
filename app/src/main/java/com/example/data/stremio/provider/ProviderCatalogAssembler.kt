@@ -1,6 +1,7 @@
 package com.example.data.stremio.provider
 
 import com.example.data.model.MediaItem
+import com.example.data.model.MediaType
 import com.example.data.stremio.StremioCatalogMapper
 import com.example.data.stremio.StremioMetaItem
 
@@ -62,7 +63,15 @@ object ProviderCatalogAssembler {
         catalogId = result.target.target.catalogId,
         type = result.target.type
       )
-      StremioCatalogMapper.toMediaItemList(result.rawItems, providerName).map { item ->
+      val fallbackMediaType = when (result.target.type.trim().lowercase()) {
+        "series", "tv", "show", "tvshow" -> MediaType.SERIE_TV
+        else -> MediaType.FILM
+      }
+      StremioCatalogMapper.toMediaItemList(
+        items = result.rawItems,
+        addonName = providerName,
+        fallbackType = fallbackMediaType
+      ).map { item ->
         val bucket = provenance.getOrPut(item.id) { mutableListOf() }
         if (origin !in bucket) bucket += origin
         item

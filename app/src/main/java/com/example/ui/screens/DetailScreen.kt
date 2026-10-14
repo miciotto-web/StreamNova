@@ -96,6 +96,7 @@ import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.model.ProductionCompany
+import com.example.data.model.WatchProgress
 import androidx.compose.ui.text.style.TextAlign
 import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.toEpisode
@@ -136,8 +137,10 @@ private val DetailTitleShadow = TextStyle(
 
 enum class DetailTab(val titleRes: Int) {
   EPISODI(R.string.detail_tab_episodes),
-  CONSIGLIATI(R.string.detail_tab_recommended),
-  PRODUZIONE(R.string.detail_tab_production)
+  PRODUZIONE(R.string.detail_tab_production),
+  ALTRO_COME_QUESTO(R.string.detail_tab_more_like_this),
+
+
 }
 
 private fun matchesSeries(stateSeriesId: String?, media: MediaItem): Boolean {
@@ -190,9 +193,9 @@ fun DetailScreen(
 
   val isTvSeries = displayMedia.type == MediaType.SERIE_TV
   val tabs = if (isTvSeries) {
-    listOf(DetailTab.EPISODI, DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
+    listOf(DetailTab.EPISODI, DetailTab.PRODUZIONE, DetailTab.ALTRO_COME_QUESTO)
   } else {
-    listOf(DetailTab.CONSIGLIATI, DetailTab.PRODUZIONE)
+    listOf(DetailTab.PRODUZIONE, DetailTab.ALTRO_COME_QUESTO)
   }
 
   var selectedTab by remember(displayMedia.id) {
@@ -333,11 +336,31 @@ fun DetailScreen(
 
   // Cast members from TMDB extended details or fallback from media item
   val castMembers = remember(displayMedia, extendedDetails) {
-    extendedDetails?.cast?.takeIf { it.isNotEmpty() }
+    val director = extendedDetails?.directorMember
+      ?: if (displayMedia.director.isNotBlank()) {
+        CastMember(
+          id = -1,
+          name = displayMedia.director,
+          character = if (displayMedia.type == MediaType.SERIE_TV) "Creatore" else "Regista",
+          profileUrl = null
+        )
+      } else null
+    val rawCast = extendedDetails?.cast?.takeIf { it.isNotEmpty() }
       ?: displayMedia.cast.mapIndexed { index, name ->
-        CastMember(id = index, name = name, character = "Cast principale", profileUrl = null)
+        CastMember(id = index + 1000, name = name, character = "Cast principale", profileUrl = null)
       }
+    if (director != null) {
+      listOf(director) + rawCast.filter { it.id != director.id && !it.name.equals(director.name, ignoreCase = true) }
+    } else {
+      rawCast
+    }
   }
+
+
+
+
+
+
 
   Box(
     modifier = modifier
@@ -484,15 +507,20 @@ fun DetailScreen(
     // ferma (offset di scroll = 0). `requestFocus()` non lancia eccezioni se il nodo
     // non e' ancora agganciato al sistema di focus (no-op silenzioso), quindi si
     // ritenta finche' `onPlayFocusChanged` non conferma che il focus e' sul pulsante.
-    LaunchedEffect(displayMedia.id) {
-      if (targetCastMemberId != null || targetCompanyId != null) {
+    var hasUserNavigatedAway by remember(displayMedia.id) { mutableStateOf(false) }
+    val isTargetingSubItem = targetCastMemberId != null || targetCompanyId != null
+
+    // Focus iniziale: IMMEDIATAMENTE, ESCLUSIVAMENTE e TASSATIVAMENTE su "Riproduci" (Punto 2).
+    // Finché l'utente non naviga attivamente con il D-pad, il focus resta ancorato su "Riproduci".
+    LaunchedEffect(displayMedia.id, detailUiState, isTargetingSubItem) {
+      if (isTargetingSubItem || hasUserNavigatedAway) {
         return@LaunchedEffect
       }
       isBringIntoViewAllowed = false
       isActionBarFocused = false
       isPlayFocused = false
       listState.scrollToItem(0, 0)
-      repeat(12) {
+      repeat(20) {
         withFrameNanos { } // attende composizione + layout del nodo focusabile
         try {
           playButtonFocusRequester.requestFocus()
@@ -515,6 +543,13 @@ fun DetailScreen(
        .fillMaxSize()
        .onPreviewKeyEvent { event ->
          if (event.type == KeyEventType.KeyDown) {
+           val isNavKey = event.key == Key.DirectionDown ||
+             event.key == Key.DirectionUp ||
+             event.key == Key.DirectionRight ||
+             event.key == Key.DirectionLeft
+           if (isNavKey && isPlayFocused) {
+             hasUserNavigatedAway = true
+           }
            // Sbloccano lo scroll SOLO SU/GIU' (uscita verticale dalla pulsantiera).
            // LEFT/RIGHT e ogni altro tasto non muovono la viewport: il bring-into-view
            // resta azzerato, quindi lo scorrimento orizzontale tra i pulsanti non
@@ -806,7 +841,12 @@ fun DetailScreen(
               onPlayTrailer = { onPlayTrailer?.invoke(displayMedia) },
               focus = actionFocus,
               upTarget = FocusRequester.Cancel,
-              onFocusChanged = { isActionBarFocused = it },
+              onFocusChanged = { focused ->
+                isActionBarFocused = focused
+                if (focused && !hasUserNavigatedAway && !isPlayFocused && !isTargetingSubItem) {
+                  try { playButtonFocusRequester.requestFocus() } catch (_: Exception) {}
+                }
+              },
               onPlayFocusChanged = { isPlayFocused = it }
             )
           }
@@ -1177,13 +1217,43 @@ fun DetailScreen(
             }
           }
         }
-        DetailTab.CONSIGLIATI -> {
+        DetailTab.ALTRO_COME_QUESTO -> {
           item {
-            val similarRecommendations = remember(extendedDetails, allMedia, displayMedia) {
-              extendedDetails?.similarItems?.takeIf { it.isNotEmpty() }
-                ?: allMedia.filter { it.id != displayMedia.id }
+            val currentGenres = extendedDetails?.genres?.takeIf { it.isNotEmpty() } ?: displayMedia.genres
+            val similarRecommendations = remember(extendedDetails, allMedia, displayMedia, currentGenres) {
+              val matched = allMedia.filter { item ->
+                item.id != displayMedia.id &&
+                  (item.tmdbId == null || item.tmdbId != displayMedia.tmdbId) &&
+                  item.genres.any { itemGenre ->
+                    currentGenres.any { it.equals(itemGenre, ignoreCase = true) }
+                  }
+              }.sortedByDescending { item ->
+                val sameTypeBonus = if (item.type == displayMedia.type) 10 else 0
+                val sharedCount = item.genres.count { itemGenre ->
+                  currentGenres.any { it.equals(itemGenre, ignoreCase = true) }
+                }
+                sameTypeBonus + sharedCount * 2 + (item.rating / 2f).toInt()
+              }
+              if (matched.isNotEmpty()) {
+                matched
+              } else {
+                extendedDetails?.similarItems?.takeIf { it.isNotEmpty() }
+                  ?: allMedia.filter { it.id != displayMedia.id && it.type == displayMedia.type }
+              }
             }
+
+
+
+
             val similarState = rememberLazyListState()
+            Text(
+              text = stringResource(R.string.detail_tab_more_like_this),
+              color = NovaTextMuted,
+              fontSize = 13.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = 1.sp,
+              modifier = Modifier.padding(horizontal = 32.dp, vertical = 4.dp)
+            )
             TvFocusRow {
               LazyRow(
                 state = similarState,
@@ -1601,19 +1671,26 @@ fun EpisodeRowItem(
                 )
               }
             } else if (episode.currentProgressMs > 0) {
-              val remainingMs = (episode.totalDurationMs - episode.currentProgressMs).coerceAtLeast(0)
-              val remainingMins = (remainingMs / 60000).toInt()
-              Box(
-                modifier = Modifier
-                  .background(NovaCyan.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
-                  .padding(horizontal = 6.dp, vertical = 2.dp)
-              ) {
-                Text(
-                  text = stringResource(R.string.badge_minutes_remaining, remainingMins),
-                  color = NovaCyanBright,
-                  fontSize = 11.sp,
-                  fontWeight = FontWeight.SemiBold
-                )
+              // Minuti mancanti dai millisecondi reali dell'episodio (fallback runtime TMDB
+              // solo se la durata in millisecondi non e' nota).
+              val remainingMins = WatchProgress.remainingMinutes(
+                totalDurationMs = episode.totalDurationMs,
+                resumePositionMs = episode.currentProgressMs,
+                runtimeMinutes = episode.durationMinutes
+              )
+              if (remainingMins != null) {
+                Box(
+                  modifier = Modifier
+                    .background(NovaCyan.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                  Text(
+                    text = stringResource(R.string.badge_minutes_remaining, remainingMins),
+                    color = NovaCyanBright,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                  )
+                }
               }
             }
           }

@@ -32,12 +32,21 @@ sealed class Screen(val route: String) {
     fun createRoute(providerId: String): String = "provider/$providerId"
   }
 
-  object PersonDetail : Screen("person/{personId}") {
+  object PersonDetail : Screen("person/{personId}?personName={personName}") {
     const val ARG_PERSON_ID = "personId"
+    const val ARG_PERSON_NAME = "personName"
     val arguments: List<NamedNavArgument> = listOf(
-      navArgument(ARG_PERSON_ID) { type = NavType.IntType }
+      navArgument(ARG_PERSON_ID) { type = NavType.IntType },
+      navArgument(ARG_PERSON_NAME) {
+        type = NavType.StringType
+        nullable = true
+        defaultValue = null
+      }
     )
-    fun createRoute(personId: Int): String = "person/$personId"
+    fun createRoute(personId: Int, personName: String? = null): String {
+      val encoded = personName?.let { java.net.URLEncoder.encode(it, "UTF-8") }
+      return if (encoded != null) "person/$personId?personName=$encoded" else "person/$personId"
+    }
   }
 
   object CompanyDetail : Screen("company/{companyId}?companyName={companyName}&logoUrl={logoUrl}") {

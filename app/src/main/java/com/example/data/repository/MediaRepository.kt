@@ -34,6 +34,7 @@ import com.example.data.model.MediaType
 import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
+import com.example.data.model.WatchProgress
 import com.example.data.api.TmdbCompanyDetailDto
 import com.example.data.model.PersonDetails
 import com.example.data.model.ProductionCompany
@@ -883,13 +884,78 @@ object MediaRepository {
    */
   const val MAX_PROVIDER_PAGES = 25
 
-  /** TMDB ID di Crunchyroll: fallback watch_region (IT -> US) e priorita' alle serie TV. */
-  const val CRUNCHYROLL_TMDB_ID = 283
+   /** TMDB ID di Crunchyroll: fallback watch_region (IT -> US) e priorita' alle serie TV. */
+   const val CRUNCHYROLL_TMDB_ID = 283
 
-  /** TMDB ID di Paramount+ (utile per controlli specifici sul catalogo). */
-  const val PARAMOUNT_TMDB_ID = 531
+   /** TMDB ID di Paramount+ (utile per controlli specifici sul catalogo). */
+   const val PARAMOUNT_TMDB_ID = 531
 
-  /**
+   /** Network IDs di TMDB per HBO: 49 = HBO, 3186 = HBO Max */
+   const val HBO_NETWORK_IDS = "49|3186"
+
+   /**
+    * Helper per rilevare se un providerTag corrisponde a HBO (supporta varianti: hbo, hbomax, hbo_max, max).
+    */
+   fun isHboProvider(providerTag: String): Boolean =
+     providerTag.lowercase() in setOf("hbo", "hbomax", "hbo_max", "max")
+
+   /**
+    * Discover serie TV HBO tramite network IDs (49|3186), senza watch_region.
+    */
+   internal suspend fun discoverTvByNetwork(networkIds: String, page: Int): List<MediaItem> =
+     withContext(Dispatchers.IO) {
+       try {
+         val cleanKey = getEffectiveApiKey()
+         val cacheKey = "hbo_tv_p$page"
+         val currentList = _mediaList.value
+         val response = fetchTvWithCache(cacheKey) {
+           TmdbApiClient.service.discoverTvByNetwork(
+             apiKey = cleanKey,
+             networkId = networkIds,
+             sortBy = "popularity.desc",
+             language = "it-IT",
+             page = page
+           )
+         }
+         response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = "hbo") }
+       } catch (e: Exception) {
+         Log.w("MediaRepository", "Discover TV HBO fallito (page=$page): ${e.message}")
+         emptyList()
+       }
+     }
+
+   /**
+    * Discover film HBO tramite provider IDs con watch_region=US.
+    */
+   internal suspend fun discoverMoviesByProvider(
+     providerId: String,
+     isTv: Boolean,
+     page: Int,
+     watchRegion: String
+   ): List<MediaItem> =
+     withContext(Dispatchers.IO) {
+       try {
+         val cleanKey = getEffectiveApiKey()
+         val cacheKey = "hbo_movie_p$page"
+         val currentList = _mediaList.value
+         val response = fetchMoviesWithCache(cacheKey) {
+           TmdbApiClient.service.discoverMoviesByProvider(
+             apiKey = cleanKey,
+             providerId = providerId,
+             region = watchRegion,
+             sortBy = "popularity.desc",
+             language = "it-IT",
+             page = page
+           )
+         }
+         response.results.map { movieToMediaItem(it, currentList, provider = "hbo") }
+       } catch (e: Exception) {
+         Log.w("MediaRepository", "Discover Movies HBO fallito (page=$page): ${e.message}")
+         emptyList()
+       }
+     }
+
+   /**
    * Provider ID REALI di TMDB condivisi da entrambi i cataloghi (Film e Serie TV),
    * interrogati con `with_watch_providers` + `watch_region=IT`.
    */
@@ -1105,12 +1171,29 @@ object MediaRepository {
     return episodeProgressMap["${mediaId}_s${seasonNumber}e${episodeNumber}"] ?: 0L
   }
 
-  fun updateProgress(id: String, progressMs: Long) {
+  /**
+   * Aggiorna il progresso di un **film**.
+   *
+   * @param durationMs durata reale letta da ExoPlayer. Se `<= 0` (`C.TIME_UNSET`/0 prima
+   *        di `STATE_READY` o durante uno switch) NON sovrascrive la durata valida gia'
+   *        memorizzata: la card "Continua a guardare" continua a mostrare i minuti reali.
+   */
+  fun updateProgress(id: String, progressMs: Long, durationMs: Long = 0L) {
     val now = System.currentTimeMillis()
+    // Durata risolta UNA volta: i millisecondi reali del player hanno priorita', altrimenti
+    // si conserva quella gia' nota per il titolo (mai 0/negativa).
+    val resolvedDurationMs = WatchProgress.resolveDuration(
+      _mediaList.value.firstOrNull { it.id == id }?.totalDurationMs ?: 0L,
+      durationMs
+    )
     _mediaList.update { list ->
       list.map { item ->
         if (item.id == id) {
-          item.copy(currentProgressMs = progressMs, lastWatchedAt = now)
+          item.copy(
+            currentProgressMs = progressMs,
+            totalDurationMs = WatchProgress.resolveDuration(item.totalDurationMs, durationMs),
+            lastWatchedAt = now
+          )
         } else {
           item
         }
@@ -1119,7 +1202,11 @@ object MediaRepository {
     val currentDetail = _detailUiState.value
     if (currentDetail is MediaDetailUiState.Success && currentDetail.media.id == id) {
       _detailUiState.value = currentDetail.copy(
-        media = currentDetail.media.copy(currentProgressMs = progressMs, lastWatchedAt = now)
+        media = currentDetail.media.copy(
+          currentProgressMs = progressMs,
+          totalDurationMs = WatchProgress.resolveDuration(currentDetail.media.totalDurationMs, durationMs),
+          lastWatchedAt = now
+        )
       )
     }
     database?.let { db ->
@@ -1127,11 +1214,23 @@ object MediaRepository {
         try {
           val dao = db.cachedMediaDao()
           val existing = dao.getMediaById(id)
+          // La riga persistita e' la fonte di verita' della durata gia' misurata; se assente
+          // o ignota si usa quella risolta in memoria. Mai scrivere 0 al posto di una durata nota.
+          val knownDurationMs = (existing?.totalDurationMs ?: 0L).takeIf { it > 0L }
+            ?: resolvedDurationMs
+          val effectiveDurationMs = WatchProgress.resolveDuration(knownDurationMs, durationMs)
           if (existing != null) {
-            dao.updateProgressWithTimestamp(id, progressMs, now)
+            // Scrive posizione + durata reale (mai azzerata) nella stessa UPDATE atomica.
+            dao.updateProgressWithDuration(id, progressMs, effectiveDurationMs, now)
           } else {
             _mediaList.value.find { it.id == id }?.let { item ->
-              dao.insertOrUpdate(item.copy(currentProgressMs = progressMs, lastWatchedAt = now).toEntity())
+              dao.insertOrUpdate(
+                item.copy(
+                  currentProgressMs = progressMs,
+                  totalDurationMs = WatchProgress.resolveDuration(item.totalDurationMs, durationMs),
+                  lastWatchedAt = now
+                ).toEntity()
+              )
             }
           }
         } catch (e: Exception) {
@@ -1152,15 +1251,43 @@ object MediaRepository {
     episodeProgressMap[key] = progressMs
     val now = System.currentTimeMillis()
 
+    // Durata dell'EPISODIO corrente (mai quella della serie o di un episodio precedente):
+    // millisecondi reali del player se disponibili, altrimenti la durata nota dell'episodio.
+    val knownItemDurationMs = _mediaList.value.firstOrNull { it.id == mediaId }?.totalDurationMs ?: 0L
+    val knownEpisodeDurationMs = _mediaList.value
+      .firstOrNull { it.id == mediaId }
+      ?.episodes
+      ?.find { it.seasonNumber == seasonNumber && it.episodeNumber == episodeNumber }
+      ?.totalDurationMs
+      ?: 0L
+    val effectiveEpisodeDurationMs = if (WatchProgress.isValidDuration(durationMs)) {
+      durationMs
+    } else {
+      // Ripiego sull'episodio, poi sul titolo: mai 0 se esiste una durata gia' nota.
+      knownEpisodeDurationMs.coerceAtLeast(0L).takeIf { it > 0L }
+        ?: knownItemDurationMs.coerceAtLeast(0L)
+    }
+
     _mediaList.update { list ->
       list.map { item ->
         if (item.id == mediaId) {
           val updatedEpisodes = item.episodes.map { ep ->
             if (ep.seasonNumber == seasonNumber && ep.episodeNumber == episodeNumber) {
-              ep.copy(currentProgressMs = progressMs)
+              ep.copy(
+                currentProgressMs = progressMs,
+                totalDurationMs = WatchProgress.resolveDuration(ep.totalDurationMs, durationMs)
+              )
             } else ep
           }
+          // La durata della card e' quella dell'episodio corrente: mai la durata della
+          // serie, mai quella di un episodio precedente (se il player non l'ha ancora
+          // comunicata, `effectiveEpisodeDurationMs` conserva quella nota per QUESTO episodio).
+          val cardDurationMs = effectiveEpisodeDurationMs.takeIf { it > 0L }
+            ?: WatchProgress.resolveDuration(item.totalDurationMs, durationMs)
           item.copy(
+            // La card "Continua a guardare" mostra posizione e durata dell'episodio corrente.
+            currentProgressMs = progressMs,
+            totalDurationMs = cardDurationMs,
             lastWatchedSeason = seasonNumber,
             lastWatchedEpisode = episodeNumber,
             lastWatchedAt = now,
@@ -1176,11 +1303,16 @@ object MediaRepository {
     if (currentDetail is MediaDetailUiState.Success && currentDetail.media.id == mediaId) {
       val updatedEpisodes = currentDetail.media.episodes.map { ep ->
         if (ep.seasonNumber == seasonNumber && ep.episodeNumber == episodeNumber) {
-          ep.copy(currentProgressMs = progressMs)
+          ep.copy(
+            currentProgressMs = progressMs,
+            totalDurationMs = WatchProgress.resolveDuration(ep.totalDurationMs, durationMs)
+          )
         } else ep
       }
       _detailUiState.value = currentDetail.copy(
         media = currentDetail.media.copy(
+          currentProgressMs = progressMs,
+          totalDurationMs = WatchProgress.resolveDuration(currentDetail.media.totalDurationMs, durationMs),
           lastWatchedSeason = seasonNumber,
           lastWatchedEpisode = episodeNumber,
           lastWatchedAt = now,
@@ -1192,16 +1324,32 @@ object MediaRepository {
     database?.let { db ->
       repoScope.launch {
         try {
+          // Conserva la durata reale gia' persistita quando il player non ne fornisce una valida.
+          val existingDurationMs = try {
+            db.episodeProgressDao().getEpisodeProgress(mediaId, seasonNumber, episodeNumber)?.durationMs ?: 0L
+          } catch (e: Exception) {
+            0L
+          }
+          val persistedEpisodeDurationMs = WatchProgress.resolveDuration(existingDurationMs, durationMs)
           db.episodeProgressDao().saveEpisodeProgress(
             EpisodeProgressEntity(
               mediaId = mediaId,
               seasonNumber = seasonNumber,
               episodeNumber = episodeNumber,
               progressMs = progressMs,
-              durationMs = durationMs
+              durationMs = persistedEpisodeDurationMs
             )
           )
-          db.cachedMediaDao().updateTvProgressWithTimestamp(mediaId, progressMs, seasonNumber, episodeNumber, now)
+          // Persiste anche la durata dell'episodio corrente sulla riga del titolo: e' quella
+          // letta dalla card "Continua a guardare" (mai la durata della serie).
+          db.cachedMediaDao().updateTvProgressWithDuration(
+            mediaId,
+            progressMs,
+            effectiveEpisodeDurationMs,
+            seasonNumber,
+            episodeNumber,
+            now
+          )
         } catch (e: Exception) {
           Log.w("MediaRepository", "Failed to update episode progress in Room: ${e.message}")
         }
@@ -1542,6 +1690,18 @@ object MediaRepository {
     }
   }
 
+  suspend fun searchPersonByName(name: String): Int? = withContext(Dispatchers.IO) {
+    try {
+      val apiKey = getEffectiveApiKey()
+      val response = TmdbApiClient.service.searchPerson(apiKey, name)
+      response.results?.firstOrNull()?.id
+    } catch (e: Exception) {
+      Log.e("MediaRepository", "Errore searchPersonByName($name): ${e.message}")
+      null
+    }
+
+  }
+
   suspend fun fetchPersonCombinedCredits(personId: Int): List<MediaItem> = withContext(Dispatchers.IO) {
     try {
       val apiKey = getEffectiveApiKey()
@@ -1551,9 +1711,9 @@ object MediaRepository {
       // Unione di cast e ruoli di regia/scrittura rilevanti dalla crew
       val castItems = credits.cast.orEmpty()
       val directingItems = credits.crew.orEmpty().filter {
-        it.job.equals("Director", ignoreCase = true) || it.department.equals("Directing", ignoreCase = true)
+        it.job.equals("Director", ignoreCase = true) || it.department.equals("Directing", ignoreCase = true) || it.job.equals("Creator", ignoreCase = true) || it.job.equals("Writer", ignoreCase = true) || it.job.equals("Executive Producer", ignoreCase = true)
       }
-      val allCredits = (castItems + directingItems)
+      val allCredits = (directingItems + castItems)
         .distinctBy { "${it.mediaType}_${it.id}" }
         .sortedByDescending { it.popularity ?: 0f }
 
@@ -1750,9 +1910,12 @@ object MediaRepository {
       )
     } ?: emptyList()
 
-    val directorName = dto.credits?.crew?.find { it.job.equals("Director", ignoreCase = true) }?.name
-      ?: dto.credits?.crew?.find { it.department.equals("Directing", ignoreCase = true) }?.name
-      ?: baseMedia?.director ?: ""
+    val directorCrew = dto.credits?.crew?.find { it.job.equals("Director", ignoreCase = true) } ?: dto.credits?.crew?.find { it.department.equals("Directing", ignoreCase = true) }
+    val directorName = directorCrew?.name ?: baseMedia?.director ?: ""
+    val directorMember = directorCrew?.let { CastMember(it.id, it.name, "Regista", TmdbApiClient.profileUrl(it.profilePath)) }
+
+
+
 
     val similar = dto.similar?.results?.map { movieToMediaItem(it, _mediaList.value) } ?: emptyList()
 
@@ -1782,6 +1945,7 @@ object MediaRepository {
         baseMedia?.cast?.mapIndexed { idx, name -> CastMember(idx, name, "Interprete", null) } ?: emptyList()
       },
       director = directorName,
+      directorMember = directorMember,
       similarItems = similar,
       isTv = false,
       ageRating = ageRating,
@@ -1806,9 +1970,20 @@ object MediaRepository {
       )
     } ?: emptyList()
 
-    val directorName = dto.credits?.crew?.find { it.job.equals("Executive Producer", ignoreCase = true) || it.job.equals("Creator", ignoreCase = true) }?.name
-      ?: dto.credits?.crew?.find { it.department.equals("Directing", ignoreCase = true) }?.name
-      ?: baseMedia?.director ?: ""
+    val createdByDto = dto.createdBy?.firstOrNull()
+    val creatorCrew = dto.credits?.crew?.find { it.job.equals("Creator", ignoreCase = true) }
+      ?: dto.credits?.crew?.find { it.job.equals("Executive Producer", ignoreCase = true) }
+      ?: dto.credits?.crew?.find { it.job.equals("Director", ignoreCase = true) }
+      ?: dto.credits?.crew?.find { it.department.equals("Directing", ignoreCase = true) }
+    val directorName = createdByDto?.name ?: creatorCrew?.name ?: baseMedia?.director ?: ""
+    val directorMember = if (createdByDto != null) {
+      CastMember(createdByDto.id, createdByDto.name, "Creatore", TmdbApiClient.profileUrl(createdByDto.profilePath))
+    } else if (creatorCrew != null) {
+      CastMember(creatorCrew.id, creatorCrew.name, if (creatorCrew.job.equals("Director", ignoreCase = true)) "Regista" else "Creatore", TmdbApiClient.profileUrl(creatorCrew.profilePath))
+    } else null
+
+
+
 
     val similar = dto.similar?.results?.map { tvToMediaItem(it, _mediaList.value) } ?: emptyList()
 
@@ -1843,6 +2018,7 @@ object MediaRepository {
         baseMedia?.cast?.mapIndexed { idx, name -> CastMember(idx, name, "Interprete", null) } ?: emptyList()
       },
       director = directorName,
+      directorMember = directorMember,
       similarItems = similar,
       isTv = true,
       seasonEpisodesCount = seasonEpCounts,
@@ -2565,6 +2741,13 @@ object MediaRepository {
   }
 
   /**
+   * Verifica se l'addon Stremio attivo possiede effettivamente un catalogo corrispondente
+   * ai token del provider specificato (es. Xperience) o se serve il fallback TMDB Discover (es. Cinemeta).
+   */
+  fun hasProviderCatalogInActiveAddon(providerId: String, isTv: Boolean): Boolean =
+    com.example.data.stremio.StremioAddonRepository.hasProviderCatalog(providerId, if (isTv) "series" else "movie")
+
+  /**
    * Paginazione remota dei cataloghi provider (Film e Serie TV):
    * - `discover/movie` o `discover/tv` con `with_watch_providers` + `watch_region=IT`,
    * - cache key distinta per provider + tipo + pagina,
@@ -3082,55 +3265,85 @@ object MediaRepository {
    * `min(total_pages, MAX_PROVIDER_PAGES)` o su una pagina vuota.
    * Non esiste più il limite fisso `for (pg in 1..2)`.
    */
-  private suspend fun crawlProviderCatalog(
-    isTv: Boolean,
-    providerIds: String,
-    providerTag: String,
-    apiKey: String,
-    currentList: List<MediaItem>,
-    fetchedItems: MutableMap<String, MediaItem>
-  ) {
-    var page = 1
-    var totalPages = 0
-    while (page <= MAX_PROVIDER_PAGES && (page == 1 || page <= totalPages)) {
-      val cacheKey = providerCacheKey(providerIds, isTv, page)
-      val pageItems: List<MediaItem> = try {
-        if (isTv) {
-          val response = fetchTvWithCache(cacheKey) {
-            TmdbApiClient.service.discoverTvByProvider(
-              apiKey = apiKey,
-              providerId = providerIds,
-              region = "IT",
-              sortBy = "popularity.desc",
-              language = "it-IT",
-              page = page
-            )
-          }
-          totalPages = response.totalPages ?: 0
-          response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = providerTag) }
-        } else {
-          val response = fetchMoviesWithCache(cacheKey) {
-            TmdbApiClient.service.discoverMoviesByProvider(
-              apiKey = apiKey,
-              providerId = providerIds,
-              region = "IT",
-              sortBy = "popularity.desc",
-              language = "it-IT",
-              page = page
-            )
-          }
-          totalPages = response.totalPages ?: 0
-          response.results.map { movieToMediaItem(it, currentList, provider = providerTag) }
-        }
-      } catch (e: Exception) {
-        Log.w(
-          "MediaRepository",
-          "Discover $providerTag (${mediaTypeKey(isTv)}) pagina $page fallita: ${e.message}"
-        )
-        break
-      }
+   private suspend fun crawlProviderCatalog(
+     isTv: Boolean,
+     providerIds: String,
+     providerTag: String,
+     apiKey: String,
+     currentList: List<MediaItem>,
+     fetchedItems: MutableMap<String, MediaItem>
+   ) {
+     val hbo = isHboProvider(providerTag)
+     var page = 1
+     var totalPages = 0
+     while (page <= MAX_PROVIDER_PAGES && (page == 1 || page <= totalPages)) {
+       val cacheKey = providerCacheKey(providerIds, isTv, page)
+       val pageItems: List<MediaItem> = try {
+         if (isTv) {
+           if (hbo) {
+             val response = fetchTvWithCache(cacheKey) {
+               TmdbApiClient.service.discoverTvByNetwork(
+                 apiKey = apiKey,
+                 networkId = HBO_NETWORK_IDS,
+                 sortBy = "popularity.desc",
+                 language = "it-IT",
+                 page = page
+               )
+             }
+             totalPages = response.totalPages ?: 0
+             response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = providerTag) }
+           } else {
+             val response = fetchTvWithCache(cacheKey) {
+               TmdbApiClient.service.discoverTvByProvider(
+                 apiKey = apiKey,
+                 providerId = providerIds,
+                 region = "IT",
+                 sortBy = "popularity.desc",
+                 language = "it-IT",
+                 page = page
+               )
+             }
+             totalPages = response.totalPages ?: 0
+             response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = providerTag) }
+           }
+         } else {
+           if (hbo) {
+             val response = fetchMoviesWithCache(cacheKey) {
+               TmdbApiClient.service.discoverMoviesByProvider(
+                 apiKey = apiKey,
+                 providerId = providerIds,
+                 region = "US",
+                 sortBy = "popularity.desc",
+                 language = "it-IT",
+                 page = page
+               )
+             }
+             totalPages = response.totalPages ?: 0
+             response.results.map { movieToMediaItem(it, currentList, provider = providerTag) }
+           } else {
+             val response = fetchMoviesWithCache(cacheKey) {
+               TmdbApiClient.service.discoverMoviesByProvider(
+                 apiKey = apiKey,
+                 providerId = providerIds,
+                 region = "IT",
+                 sortBy = "popularity.desc",
+                 language = "it-IT",
+                 page = page
+               )
+             }
+             totalPages = response.totalPages ?: 0
+             response.results.map { movieToMediaItem(it, currentList, provider = providerTag) }
+           }
+         }
+       } catch (e: Exception) {
+         Log.w(
+           "MediaRepository",
+           "Discover $providerTag (${mediaTypeKey(isTv)}) pagina $page fallita: ${e.message}"
+         )
+         break
+       }
 
-      if (pageItems.isEmpty()) break
+       if (pageItems.isEmpty()) break
 
       pageItems.forEach { item ->
         val existing = fetchedItems[item.id]

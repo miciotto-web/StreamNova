@@ -73,6 +73,7 @@ import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.model.WatchProgress
 import com.example.data.stremio.StremioCatalogMapper
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
@@ -349,10 +350,16 @@ fun ContinueWatchingCard(
           )
       )
 
-      // Badge "Xm rimanenti" in alto a destra
-      if (media.currentProgressMs > 0 && media.totalDurationMs > 0) {
-        val remainingMs = (media.totalDurationMs - media.currentProgressMs).coerceAtLeast(0)
-        val remainingMins = (remainingMs / 60000).toInt()
+      // Badge "Xm rimanenti" in alto a destra: SEMPRE dai millisecondi reali salvati dal
+      // player (posizione/durata); il runtime TMDB e' solo fallback per record legacy.
+      val remainingMins = if (media.currentProgressMs > 0) {
+        WatchProgress.remainingMinutes(
+          totalDurationMs = media.totalDurationMs,
+          resumePositionMs = media.currentProgressMs,
+          runtimeMinutes = media.durationMinutes
+        )
+      } else null
+      if (remainingMins != null) {
         Box(
           modifier = Modifier
             .align(Alignment.TopEnd)

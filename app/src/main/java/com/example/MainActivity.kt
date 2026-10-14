@@ -184,11 +184,29 @@ fun StreamNovaApp(
       startDestination = Screen.Browsing.route
     ) {
       composable(route = Screen.Browsing.route) {
-        // (4) Sezione laterale != Home -> torna alla Home (mai mentre il player è attivo)
+        // Stato apertura sidebar: false sin dal primo frame.
+        var isSidebarExpanded by remember { mutableStateOf(false) }
+
+        // FocusRequester per la sidebar e mappa per ogni singolo item (Punto 5: memoria focus)
+        val sidebarFocusRequester = remember { FocusRequester() }
+        val sidebarItemFocusRequesters = remember { SidebarSection.entries.associateWith { FocusRequester() } }
+
+        // (4) Sezione laterale != Home -> se la sidebar è chiusa la apre posizionandosi sul pulsante attivo;
+        // se la sidebar è già aperta, torna alla Home
         BackHandler(
           enabled = screenState == ScreenState.BROWSING && currentSection != SidebarSection.HOME
         ) {
-          viewModel.setSection(SidebarSection.HOME)
+          if (!isSidebarExpanded) {
+            isSidebarExpanded = true
+            try {
+              (sidebarItemFocusRequesters[currentSection] ?: sidebarFocusRequester).requestFocus()
+            } catch (_: Exception) {}
+          } else {
+            viewModel.setSection(SidebarSection.HOME)
+            try {
+              (sidebarItemFocusRequesters[SidebarSection.HOME] ?: sidebarFocusRequester).requestFocus()
+            } catch (_: Exception) {}
+          }
         }
 
         // (5) Home -> doppio Back con feedback breve, poi uscita regolare (nessun loop/blocco)
@@ -207,14 +225,6 @@ fun StreamNovaApp(
             Toast.makeText(context, context.getString(R.string.press_back_again_to_exit), Toast.LENGTH_SHORT).show()
           }
         }
-
-        // Stato apertura sidebar: false sin dal primo frame.
-        // Viene impostato a true ESCLUSIVAMENTE quando LEFT rileva che il focus ha
-        // raggiunto il bordo sinistro (nessuna card Home a sinistra).
-        var isSidebarExpanded by remember { mutableStateOf(false) }
-
-        // FocusRequester per la sidebar (usato per spostare il focus al primo item).
-        val sidebarFocusRequester = remember { FocusRequester() }
 
         // FocusRequester per il Box Home (focus iniziale esplicito post-splash).
         val homeFocusRequester = remember { FocusRequester() }
@@ -252,7 +262,7 @@ fun StreamNovaApp(
         LaunchedEffect(isSidebarExpanded) {
           if (isSidebarExpanded) {
             try {
-              sidebarFocusRequester.requestFocus()
+              (sidebarItemFocusRequesters[currentSection] ?: sidebarFocusRequester).requestFocus()
             } catch (_: Exception) {}
           }
         }
@@ -285,7 +295,9 @@ fun StreamNovaApp(
                   // dentro moveFocus(). Apriamo la sidebar e impostiamo il focus sul primo item.
                   sidebarHasFocus -> {
                     isSidebarExpanded = true
-                    try { sidebarFocusRequester.requestFocus() } catch (_: Exception) {}
+                    try {
+                      (sidebarItemFocusRequesters[currentSection] ?: sidebarFocusRequester).requestFocus()
+                    } catch (_: Exception) {}
                     true
                   }
                   // CASO B: focus andato su una card Home a sinistra. Navigazione normale.
@@ -294,7 +306,9 @@ fun StreamNovaApp(
                   // presente, ma lo gestiamo per sicurezza).
                   else -> {
                     isSidebarExpanded = true
-                    try { sidebarFocusRequester.requestFocus() } catch (_: Exception) {}
+                    try {
+                      (sidebarItemFocusRequesters[currentSection] ?: sidebarFocusRequester).requestFocus()
+                    } catch (_: Exception) {}
                     true
                   }
                 }
@@ -325,11 +339,16 @@ fun StreamNovaApp(
           // onFocusChanged ESTERNO aggiorna sidebarHasFocus (solo tracking, NON colapsa la sidebar).
           SidebarNavigation(
             currentSection = currentSection,
-            onSectionSelected = {
-              if (it == SidebarSection.CERCA) {
+            itemFocusRequesters = sidebarItemFocusRequesters,
+            onSectionSelected = { section ->
+              if (section == SidebarSection.HOME) {
+                isSidebarExpanded = false
+                viewModel.requestHomeScrollToTop()
+              }
+              if (section == SidebarSection.CERCA) {
                 isSidebarExpanded = false
               }
-              viewModel.setSection(it)
+              viewModel.setSection(section)
             },
             isSidebarExpanded = isSidebarExpanded,
             onCollapseRequest = { isSidebarExpanded = false },
@@ -428,7 +447,7 @@ fun StreamNovaApp(
             onRetry = { viewModel.retryLoadDetail() },
             onCastMemberClick = { member ->
               viewModel.saveLastFocusedCastMember(member.id)
-              navController.navigate(Screen.PersonDetail.createRoute(member.id))
+              navController.navigate(Screen.PersonDetail.createRoute(member.id, member.name))
             },
             onCompanyClick = { company ->
               viewModel.saveLastFocusedCompany(company.id)
@@ -475,8 +494,10 @@ fun StreamNovaApp(
         arguments = Screen.PersonDetail.arguments
       ) { backStackEntry ->
         val personId = backStackEntry.arguments?.getInt(Screen.PersonDetail.ARG_PERSON_ID) ?: 0
+        val personName = backStackEntry.arguments?.getString(Screen.PersonDetail.ARG_PERSON_NAME)
         PersonDetailScreen(
           personId = personId,
+          personName = personName,
           viewModel = viewModel,
           onBackClick = {
             navController.popBackStack()

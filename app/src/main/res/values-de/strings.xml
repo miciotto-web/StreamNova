@@ -83,7 +83,7 @@
 
     <!-- Detail Screen -->
     <string name="detail_tab_episodes">Episoden</string>
-    <string name="detail_tab_recommended">Empfohlen</string>
+    <string name="detail_tab_more_like_this">Ähnliche Titel</string>
     <string name="detail_tab_technical_details">Technische Daten</string>
     <string name="detail_tab_production">Produktion</string>
     <string name="production_section_title">PRODUKTIONSFIRMEN</string>
@@ -115,7 +115,7 @@
     <string name="detail_season_episodes_status">Staffel %1$d • %2$d Episoden</string>
     <string name="detail_audio_info">Surround-Audio 5.1</string>
     <string name="detail_loading_episodes">Episoden der Staffel %d werden von TMDB geladen…</string>
-    <string name="detail_main_cast">HAUPTBESETZUNG</string>
+    <string name="detail_main_cast">Schöpfer &amp; Besetzung</string>
     <string name="cast_main_role">Hauptbesetzung</string>
     <string name="detail_duration_min">%d Min</string>
     <string name="detail_watched_badge">✓ Gesehen</string>

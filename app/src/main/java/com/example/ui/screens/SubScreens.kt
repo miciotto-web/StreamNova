@@ -77,6 +77,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -167,15 +168,18 @@ import java.io.File
 enum class CategoryCatalogFilter(
   val id: String,
   @StringRes val labelRes: Int? = null,
-  val brandName: String? = null
+  val brandName: String? = null,
+  val tmdbProviderId: Int? = null,
+  val providerId: String? = null
 ) {
   ALL("all", labelRes = R.string.filter_all),
   TOP_10("top_10", labelRes = R.string.filter_top_10),
-  NETFLIX("netflix", brandName = "Netflix"),
-  HBO_MAX("hbo_max", brandName = "HBO Max"),
-  DISNEY_PLUS("disney_plus", brandName = "Disney+"),
-  PRIME_VIDEO("prime_video", brandName = "Prime Video"),
-  APPLE_TV("apple_tv", brandName = "Apple TV+"),
+  NETFLIX("netflix", brandName = "Netflix", tmdbProviderId = 8, providerId = "netflix"),
+  HBO_MAX("hbo_max", brandName = "HBO Max", tmdbProviderId = 384, providerId = "hbo"),
+  DISNEY_PLUS("disney_plus", brandName = "Disney+", tmdbProviderId = 337, providerId = "disney"),
+  PRIME_VIDEO("prime_video", brandName = "Prime Video", tmdbProviderId = 119, providerId = "prime"),
+  APPLE_TV("apple_tv", brandName = "Apple TV+", tmdbProviderId = 350, providerId = "apple"),
+  PARAMOUNT_PLUS("paramount_plus", brandName = "Paramount+", tmdbProviderId = 531, providerId = "paramount"),
   ACTION("action", labelRes = R.string.filter_action),
   SCI_FI("sci_fi", labelRes = R.string.filter_sci_fi),
   DRAMA("drama", labelRes = R.string.filter_drama),
@@ -187,46 +191,49 @@ fun CategoryBrowsingScreen(
   title: String,
   subtitle: String = "",
   items: List<MediaItem>,
+  isTv: Boolean = false,
+  viewModel: StreamNovaViewModel? = null,
   onMediaClick: (MediaItem) -> Unit,
   onLoadMore: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   var selectedFilter by remember { mutableStateOf(CategoryCatalogFilter.ALL) }
+  val gridState = rememberLazyGridState()
+
+  // Reset scroll in cima quando si cambia scheda/filtro
+  LaunchedEffect(selectedFilter) {
+    gridState.scrollToItem(0)
+  }
+
+  val providerCategoryMap by (viewModel?.categoryProviderMedia ?: MutableStateFlow(emptyMap())).collectAsState()
+
+  val currentProviderId = selectedFilter.providerId
+  val currentTmdbProviderId = selectedFilter.tmdbProviderId
+
+  // Caricamento catalogo provider (Stremio o Fallback TMDB Discover)
+  LaunchedEffect(selectedFilter, isTv) {
+    if (currentProviderId != null && currentTmdbProviderId != null && viewModel != null) {
+      viewModel.loadCategoryProvider(currentProviderId, currentTmdbProviderId, isTv)
+    }
+  }
 
   val filters = CategoryCatalogFilter.values()
 
-  val filteredItems = remember(items, selectedFilter) {
-    when (selectedFilter) {
-      CategoryCatalogFilter.ALL -> items
-      CategoryCatalogFilter.TOP_10 -> items.filter { item ->
+  val providerItems = if (currentProviderId != null) {
+    providerCategoryMap[Pair(currentProviderId, isTv)]
+  } else null
+
+  val filteredItems = remember(items, selectedFilter, providerItems) {
+    when {
+      providerItems != null -> providerItems
+      selectedFilter == CategoryCatalogFilter.ALL -> items
+      selectedFilter == CategoryCatalogFilter.TOP_10 -> items.filter { item ->
         item.genres.any { it.contains("Top 10", ignoreCase = true) || it.contains("Top10", ignoreCase = true) || it.contains("Top 100", ignoreCase = true) } ||
         item.provider?.contains("Top 10", ignoreCase = true) == true
       }.ifEmpty {
         items.sortedByDescending { it.rating }.take(10)
       }
-      CategoryCatalogFilter.NETFLIX -> items.filter { item ->
-        item.provider?.contains("netflix", ignoreCase = true) == true ||
-        item.genres.any { it.contains("netflix", ignoreCase = true) }
-      }
-      CategoryCatalogFilter.HBO_MAX -> items.filter { item ->
-        item.provider?.contains("hbo", ignoreCase = true) == true ||
-        item.provider?.contains("max", ignoreCase = true) == true ||
-        item.genres.any { it.contains("hbo", ignoreCase = true) || it.contains("max", ignoreCase = true) }
-      }
-      CategoryCatalogFilter.DISNEY_PLUS -> items.filter { item ->
-        item.provider?.contains("disney", ignoreCase = true) == true ||
-        item.genres.any { it.contains("disney", ignoreCase = true) }
-      }
-      CategoryCatalogFilter.PRIME_VIDEO -> items.filter { item ->
-        item.provider?.contains("prime", ignoreCase = true) == true ||
-        item.provider?.contains("amazon", ignoreCase = true) == true ||
-        item.genres.any { it.contains("prime", ignoreCase = true) || it.contains("amazon", ignoreCase = true) }
-      }
-      CategoryCatalogFilter.APPLE_TV -> items.filter { item ->
-        item.provider?.contains("apple", ignoreCase = true) == true ||
-        item.genres.any { it.contains("apple", ignoreCase = true) }
-      }
-      CategoryCatalogFilter.ACTION -> items.filter { item ->
+      selectedFilter == CategoryCatalogFilter.ACTION -> items.filter { item ->
         item.genres.any { g ->
           g.contains("Azione", ignoreCase = true) ||
           g.contains("Action", ignoreCase = true) ||
@@ -234,7 +241,7 @@ fun CategoryBrowsingScreen(
           g.contains("Adventure", ignoreCase = true)
         }
       }
-      CategoryCatalogFilter.SCI_FI -> items.filter { item ->
+      selectedFilter == CategoryCatalogFilter.SCI_FI -> items.filter { item ->
         item.genres.any { g ->
           g.contains("Fantascienza", ignoreCase = true) ||
           g.contains("Sci-Fi", ignoreCase = true) ||
@@ -242,16 +249,23 @@ fun CategoryBrowsingScreen(
           g.contains("Fantasy", ignoreCase = true)
         }
       }
-      CategoryCatalogFilter.DRAMA -> items.filter { item ->
+      selectedFilter == CategoryCatalogFilter.DRAMA -> items.filter { item ->
         item.genres.any { g ->
           g.contains("Dramma", ignoreCase = true) ||
           g.contains("Drama", ignoreCase = true)
         }
       }
-      CategoryCatalogFilter.COMEDY -> items.filter { item ->
+      selectedFilter == CategoryCatalogFilter.COMEDY -> items.filter { item ->
         item.genres.any { g ->
           g.contains("Commedia", ignoreCase = true) ||
           g.contains("Comedy", ignoreCase = true)
+        }
+      }
+      else -> {
+        val pid = currentProviderId ?: ""
+        items.filter { item ->
+          item.provider?.contains(pid, ignoreCase = true) == true ||
+          item.genres.any { it.contains(pid, ignoreCase = true) }
         }
       }
     }
@@ -313,6 +327,7 @@ fun CategoryBrowsingScreen(
     TvFocusBringIntoView {
       LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 150.dp),
+        state = gridState,
         contentPadding = PaddingValues(bottom = 40.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -321,7 +336,11 @@ fun CategoryBrowsingScreen(
         itemsIndexed(filteredItems, key = { _, item -> item.id }) { index, item ->
           if (index >= filteredItems.size - 6) {
             LaunchedEffect(Unit) {
-              onLoadMore?.invoke()
+              if (currentProviderId != null && currentTmdbProviderId != null && viewModel != null) {
+                viewModel.loadNextCategoryProviderPage(currentProviderId, currentTmdbProviderId, isTv)
+              } else {
+                onLoadMore?.invoke()
+              }
             }
           }
           Box(

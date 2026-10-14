@@ -106,14 +106,15 @@ fun PersonDetailScreen(
   viewModel: StreamNovaViewModel,
   onBackClick: () -> Unit,
   onMediaClick: (MediaItem) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  personName: String? = null
 ) {
   BackHandler { onBackClick() }
 
   val uiState by viewModel.personDetailUiState.collectAsState()
 
-  LaunchedEffect(personId) {
-    viewModel.loadPersonDetails(personId)
+  LaunchedEffect(personId, personName) {
+    viewModel.loadPersonDetails(personId, personName)
   }
 
   val firstItemFocusRequester = remember { FocusRequester() }
@@ -164,7 +165,7 @@ fun PersonDetailScreen(
             )
             TvFocusableBox(
               shape = RoundedCornerShape(8.dp),
-              onClick = { viewModel.loadPersonDetails(personId) }
+              onClick = { viewModel.loadPersonDetails(personId, personName) }
             ) { isFocused ->
               Row(
                 modifier = Modifier

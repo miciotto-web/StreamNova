@@ -1,5 +1,7 @@
 package com.example.data.model
 
+import kotlin.math.ceil
+
 enum class MediaType(val labelItalian: String) {
   FILM("Film"),
   SERIE_TV("Serie TV"),
@@ -61,8 +63,8 @@ data class Episode(
 
   val remainingMinutesText: String
     get() {
-      val remainingMs = (totalDurationMs - currentProgressMs).coerceAtLeast(0)
-      val mins = (remainingMs / 60000).toInt()
+      val mins = WatchProgress.remainingMinutes(totalDurationMs, currentProgressMs, durationMinutes)
+        ?: return ""
       return "${mins}m rimanenti"
     }
 }
@@ -140,13 +142,14 @@ data class MediaItem(
 
   val formattedRemainingOrProgress: String
     get() {
-      if (totalDurationMs <= 0 || currentProgressMs <= 0) return formattedDuration
-      val remainingMs = (totalDurationMs - currentProgressMs).coerceAtLeast(0)
-      val remainingMins = (remainingMs / 60000).toInt()
+      if (currentProgressMs <= 0L) return formattedDuration
+      val remainingMins = WatchProgress.remainingMinutes(totalDurationMs, currentProgressMs, durationMinutes)
+        ?: return formattedDuration
+      val totalDuration = WatchProgress.totalDurationWithFallback(totalDurationMs, durationMinutes)
       val watchedHours = (currentProgressMs / 3600000).toInt()
       val watchedMins = ((currentProgressMs % 3600000) / 60000).toInt()
-      val totalHours = (totalDurationMs / 3600000).toInt()
-      val totalMins = ((totalDurationMs % 3600000) / 60000).toInt()
+      val totalHours = (totalDuration / 3600000).toInt()
+      val totalMins = ((totalDuration % 3600000) / 60000).toInt()
 
       return if (remainingMins < 60) {
         "${remainingMins}m rimanenti"
@@ -213,6 +216,7 @@ data class ExtendedMediaDetails(
   val status: String? = null,
   val cast: List<CastMember> = emptyList(),
   val director: String = "",
+  val directorMember: CastMember? = null,
   val similarItems: List<MediaItem> = emptyList(),
   val isTv: Boolean = false,
   val seasonEpisodesCount: Map<Int, Int> = emptyMap(),
@@ -286,6 +290,60 @@ sealed interface SeasonEpisodesUiState {
   data class Loading(val seasonNumber: Int, val seriesId: String? = null) : SeasonEpisodesUiState
   data class Success(val seasonNumber: Int, val season: SeasonItem, val seriesId: String? = null) : SeasonEpisodesUiState
   data class Error(val seasonNumber: Int, val message: String, val seriesId: String? = null) : SeasonEpisodesUiState
+}
+
+/**
+ * Calcolo dei "minuti rimanenti" per le card di "Continua a guardare" e badge episodio.
+ *
+ * I millisecondi **reali** misurati dal player ([resumePositionMs]/[totalDurationMs]) hanno
+ * priorita' assoluta; il runtime TMDB ([MediaItem.durationMinutes], spesso assente o
+ * impreciso per le serie TV) viene usato **solo** come fallback per i record legacy privi
+ * di durata in millisecondi.
+ */
+object WatchProgress {
+
+  /**
+   * true se una durata dichiarata dal player e' utilizzabile.
+   *
+   * Esclude i valori che ExoPlayer restituisce prima di `STATE_READY` o durante uno
+   * switch: `C.TIME_UNSET` (`Long.MIN_VALUE + 1`, negativo) e `0L`.
+   */
+  fun isValidDuration(durationMs: Long): Boolean = durationMs > 0L
+
+  /**
+   * Durata effettiva da usare nella card: millisecondi reali se noti, altrimenti il
+   * runtime TMDB convertito. `0L` se nessuna delle due fonti e' disponibile.
+   */
+  fun totalDurationWithFallback(totalDurationMs: Long, runtimeMinutes: Int): Long =
+    if (isValidDuration(totalDurationMs)) totalDurationMs
+    else runtimeMinutes.coerceAtLeast(0).toLong() * 60_000L
+
+  /**
+   * Merge di una durata dichiarata dal player con quella gia' nota per lo stesso
+   * titolo/episodio.
+   *
+   * Una durata non valida (`<= 0`, quindi anche `C.TIME_UNSET`) NON sovrascrive **mai**
+   * la durata valida gia' conosciuta: si conserva [existingDurationMs].
+   */
+  fun resolveDuration(existingDurationMs: Long, reportedDurationMs: Long): Long =
+    if (isValidDuration(reportedDurationMs)) reportedDurationMs
+    else existingDurationMs.coerceAtLeast(0L)
+
+  /** Millisecondi mancanti; `null` quando la durata totale non e' nota in alcuna forma. */
+  fun remainingMs(totalDurationMs: Long, resumePositionMs: Long, runtimeMinutes: Int = 0): Long? {
+    val total = totalDurationWithFallback(totalDurationMs, runtimeMinutes)
+    if (total <= 0L) return null
+    return (total - resumePositionMs.coerceAtLeast(0L)).coerceAtLeast(0L)
+  }
+
+  /**
+   * Minuti mancanti arrotondati per **eccesso** (ceil): il tempo realmente ancora da
+   * guardare e' sempre >= al troncamento, coerente con il countdown del player.
+   * `null` quando la durata totale non e' nota.
+   */
+  fun remainingMinutes(totalDurationMs: Long, resumePositionMs: Long, runtimeMinutes: Int = 0): Int? =
+    remainingMs(totalDurationMs, resumePositionMs, runtimeMinutes)
+      ?.let { ms -> ceil(ms / 60_000.0).toInt() }
 }
 
 

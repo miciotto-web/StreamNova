@@ -367,6 +367,46 @@ object StremioAddonRepository {
     getActiveAddons().any { isCustomCatalogAddon(it) }
 
   /**
+   * Token che identificano i cataloghi provider nei manifest Stremio (Xperience, Easy Catalog, ecc.).
+   */
+  val CATALOG_ID_TOKENS: Map<String, Set<String>> = mapOf(
+    "netflix" to setOf("netflix"),
+    "disney" to setOf("disney"),
+    "apple" to setOf("apple"),
+    "prime" to setOf("prime", "amazon"),
+    "paramount" to setOf("paramount"),
+    "hbo" to setOf("hbo", "max")
+  )
+
+  /**
+   * Verifica se tra gli addon attivi non di sistema (escluso Cinemeta) esiste almeno
+   * un catalogo corrispondente ai token del provider specificato per il tipo richiesto ("movie", "series").
+   */
+  fun hasProviderCatalog(providerId: String, type: String? = null): Boolean {
+    val normProvider = providerId.trim().lowercase()
+    val tokens = CATALOG_ID_TOKENS[normProvider] ?: setOf(normProvider)
+
+    val activeCustomAddons = getActiveAddons().filterNot {
+      isSystemAddon(it.id) || StremioCatalogFilters.isIgnoredAddon(it)
+    }
+
+    return activeCustomAddons.any { addon ->
+      val catalogs = if (type != null) {
+        addon.manifest.catalogsForType(type)
+      } else {
+        addon.manifest.validCatalogs()
+      }
+      catalogs.any { cat ->
+        val catId = (cat.id ?: "").lowercase()
+        val catName = (cat.name ?: "").lowercase()
+        tokens.any { token ->
+          catId.contains(token) || catName.contains(token)
+        }
+      }
+    }
+  }
+
+  /**
    * Installa un addon: normalizza l'URL, scarica e valida il manifest e salva
    * l'addon in persistenza.
    *

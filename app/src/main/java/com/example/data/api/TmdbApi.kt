@@ -250,8 +250,15 @@ data class TmdbMovieDetailDto(
   @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList()
 )
 
+data class TmdbCreatedByDto(
+  val id: Int,
+  val name: String,
+  @Json(name = "profile_path") val profilePath: String? = null
+)
+
 data class TmdbTvDetailDto(
   val id: Int,
+  @Json(name = "created_by") val createdBy: List<TmdbCreatedByDto>? = emptyList(),
   val name: String?,
   @Json(name = "original_name") val originalName: String? = null,
   val overview: String? = null,
@@ -511,6 +518,14 @@ interface TmdbApiService {
     @Query("page") page: Int = 1,
     @Query("include_adult") includeAdult: Boolean = false
   ): TmdbPaginatedResponse<TmdbTvDto>
+
+  @GET("search/person")
+  suspend fun searchPerson(
+    @Query("api_key") apiKey: String,
+    @Query("query") query: String,
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbPersonDetailDto>
 
   @GET("discover/movie")
   suspend fun discoverMoviesByCompany(
