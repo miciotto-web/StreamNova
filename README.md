@@ -1,22 +1,35 @@
 <div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+<img width="200" alt="StreamNova Logo" src="app/src/main/res/drawable/streamnova_logo.png" />
 </div>
 
-# Run and deploy your AI Studio app
+# StreamNova 🚀
 
-This contains everything you need to run your app locally.
+**StreamNova** è un'applicazione moderna per **Android TV** sviluppata in **Kotlin** e **Jetpack Compose**, progettata specificamente per offrire un'esperienza di streaming fluida, elegante e ottimizzata per l'uso con il telecomando (D-Pad).
 
-View your app in AI Studio: https://ai.studio/apps/ca1bc1cd-294f-4171-8424-a7e1e5eaa635
+## ✨ Caratteristiche Principali
 
-## Run Locally
+* **⚡ Navigazione Fluida per TV:** Interfaccia reattiva e pulita, progettata nativamente per la navigazione da divano con il D-Pad.
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+* **🔗 Integrazione Debrid Avanzata:** Supporto per lo streaming diretto HTTP ad alte prestazioni tramite servizi Debrid (TorBox e Real-Debrid) con verifica della cache.
 
+* **🎬 Cataloghi e Sincronizzazione:** Sincronizzazione completa tramite account Trakt.tv e cataloghi multimediali ottimizzati (con fix dedicati per provider e reti TV).
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
-7. If you have already published your app in AI Studio, please [request upload key reset](https://support.google.com/googleplay/android-developer/answer/9842756#zippy=%2Crequest-an-upload-key-reset) in Google Play Console.
+* **🎯 Prestazioni e Stabilità:** Un'architettura solida basata su ExoPlayer/Media3 per una riproduzione multimediale impeccabile.
+
+## 🎨 Identità Visiva & Design
+
+StreamNova cura ogni dettaglio grafico per integrarsi alla perfezione con i moderni launcher per TV:
+
+* **Splash Screen Dedicato:** Schermata di avvio pulita con logo geometrico e animazione di caricamento circolare in stile macOS.
+
+* **Sidebar Dinamica:** Header interattivo che mostra l'icona minimalista a barra chiusa e svela il logo completo all'espansione.
+
+* **Banner 16:9 & Icone Perfette:** Tile e banner nativi progettati senza tagli o deformazioni sia su Google TV che su Amazon Fire TV.
+
+## 📥 Download & Installazione
+
+1. Scarica il file **`StreamNova.apk`** dall'ultima release ufficiale.
+
+2. Trasferisci l'APK sul tuo dispositivo TV (tramite app come *Send Files to TV* o un file manager di rete).
+
+3. Apri il file sul dispositivo e procedi all'installazione pulita.
