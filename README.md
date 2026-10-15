@@ -20,7 +20,7 @@
 
 StreamNova cura ogni dettaglio grafico per integrarsi alla perfezione con i moderni launcher per TV:
 
-* **Splash Screen Dedicato:** Schermata di avvio pulita con logo geometrico e animazione di caricamento circolare in stile macOS.
+* **Splash Screen Dedicato:** Schermata di avvio pulita con logo geometrico e animazione di caricamento.
 
 * **Sidebar Dinamica:** Header interattivo che mostra l'icona minimalista a barra chiusa e svela il logo completo all'espansione.
 
