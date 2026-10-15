@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.streamnova.tvapp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "0.1.0"
+    versionCode = 100
+    versionName = "1.0.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     val tmdbEnv = System.getenv("TMDB_API_KEY") ?: "da92702177bb03ed4b4517e58eebb018"

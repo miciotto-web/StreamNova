@@ -74,6 +74,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateMapOf
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.MutableStateFlow
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
@@ -88,7 +89,7 @@ fun HomeScreen(
   val homeCatalogs by viewModel.homeCatalogs.collectAsState()
   val handleMediaClick: (MediaItem) -> Unit = onMediaClick ?: { viewModel.openDetail(it) }
 
-  val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
+  val lastFocusedMediaId by (viewModel?.lastFocusedMediaId ?: MutableStateFlow<String?>(null)).collectAsState()
 
   CompositionLocalProvider(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
@@ -145,6 +146,7 @@ fun HomeScreen(
     }
     SidebarSection.I_MIEI_CONTENUTI -> {
       FavoritesScreen(
+        viewModel = viewModel,
         allMedia = allMedia,
         onMediaClick = handleMediaClick,
         modifier = modifier
@@ -261,7 +263,9 @@ class HomeRowFocusCoordinator(
 fun Modifier.rowFocusProperties(
   coordinator: HomeRowFocusCoordinator,
   rowKey: String,
-  colIndex: Int
+  colIndex: Int,
+  viewModel: StreamNovaViewModel? = null,
+  sectionItems: List<MediaItem> = emptyList()
 ): Modifier {
   DisposableEffect(coordinator, rowKey, colIndex) {
     coordinator.registerCell(rowKey, colIndex)
@@ -297,6 +301,10 @@ fun Modifier.rowFocusProperties(
     .onFocusChanged { state ->
       if (state.isFocused) {
         coordinator.onCellFocused(rowKey, colIndex)
+        // Salva l'indice corrente nel ViewModel per il restore
+        if (rowKey != "hero_banner" && viewModel != null && colIndex < sectionItems.size) {
+          viewModel.saveLastFocusedMedia(sectionItems[colIndex].id, colIndex)
+        }
       }
     }
 }
@@ -434,6 +442,39 @@ fun HomeMainBrowsingContent(
   }
 
   val listState = rememberLazyListState()
+  val lastFocusedMediaId by (viewModel?.lastFocusedMediaId ?: MutableStateFlow<String?>(null)).collectAsState()
+  val lastFocusedIndexFlow = viewModel?.lastFocusedMediaIndex ?: MutableStateFlow<Int?>(null)
+  val itemRequesters = remember { mutableMapOf<String, FocusRequester>() }
+
+  // Focus restoration when returning from detail screen (asincrono con delay di layout)
+  LaunchedEffect(lastFocusedMediaId, homeCatalogs, allMedia) {
+    val mediaId = lastFocusedMediaId ?: return@LaunchedEffect
+    // Find the item in the current catalog
+    val allItems = (homeCatalogs?.allMovies ?: emptyList()) + 
+                    (homeCatalogs?.allSeries ?: emptyList()) +
+                    allMedia
+    val index = allItems.indexOfFirst { it.id == mediaId }
+    if (index >= 0) {
+      // Update the stored index
+      viewModel?.saveLastFocusedMedia(mediaId, index)
+      // Register the requester for this item
+      itemRequesters[mediaId] = FocusRequester()
+    }
+  }
+
+  // Restore focus with delay after scroll (asincrono)
+  LaunchedEffect(lastFocusedIndexFlow.value, listState) {
+    val index = lastFocusedIndexFlow.value ?: return@LaunchedEffect
+    // 1. Scroll alla posizione salvata
+    listState.scrollToItem(index)
+    
+    // 2. Attendi che Compose completi il layout dei figli
+    kotlinx.coroutines.delay(150L)
+    
+    // 3. Richiedi focus sul requester dell'elemento salvato
+    val mediaId = lastFocusedMediaId ?: return@LaunchedEffect
+    itemRequesters[mediaId]?.requestFocus()
+  }
 
   // D-pad: quando il focus torna dalla prima riga verso la Hero, animiamo la lista a posizione 0
   var heroHasFocus by remember { mutableStateOf(false) }
@@ -546,7 +587,13 @@ fun HomeMainBrowsingContent(
                 Log.d("HomeScreen", "ContinueWatchingCard onLongPress called for ${item.title}")
                 contextMenuMedia = item
               },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_continue_watching", index),
+              modifier = Modifier.rowFocusProperties(
+                coordinator = coordinator,
+                rowKey = "section_continue_watching",
+                colIndex = index,
+                viewModel = viewModel,
+                sectionItems = continueWatching
+              ),
               focusRequester = coordinator.getRequester("section_continue_watching", index)
             )
           }
@@ -598,7 +645,7 @@ fun HomeMainBrowsingContent(
               rank = index + 1,
               media = item,
               onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_film", index),
+              modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_film", index, viewModel, top10Movies),
               focusRequester = coordinator.getRequester("section_top_10_film", index)
             )
           }
@@ -623,7 +670,7 @@ fun HomeMainBrowsingContent(
               rank = index + 1,
               media = item,
               onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_serie", index),
+              modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_serie", index, viewModel, top10Series),
               focusRequester = coordinator.getRequester("section_top_10_serie", index)
             )
           }
@@ -647,7 +694,7 @@ fun HomeMainBrowsingContent(
             PosterMediaCard(
               media = item,
               onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_trending_film", index),
+              modifier = Modifier.rowFocusProperties(coordinator, "section_trending_film", index, viewModel, trendingMovies),
               focusRequester = coordinator.getRequester("section_trending_film", index)
             )
           }
@@ -671,7 +718,7 @@ fun HomeMainBrowsingContent(
             PosterMediaCard(
               media = item,
               onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_trending_serie", index),
+              modifier = Modifier.rowFocusProperties(coordinator, "section_trending_serie", index, viewModel, trendingSeries),
               focusRequester = coordinator.getRequester("section_trending_serie", index)
             )
           }
@@ -695,7 +742,7 @@ fun HomeMainBrowsingContent(
             StandardMediaCard(
               media = item,
               onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_film", index),
+              modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_film", index, viewModel, forYouMovies),
               focusRequester = coordinator.getRequester("section_for_you_film", index)
             )
           }
@@ -719,7 +766,7 @@ fun HomeMainBrowsingContent(
             StandardMediaCard(
               media = item,
               onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_serie", index),
+              modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_serie", index, viewModel, forYouSeries),
               focusRequester = coordinator.getRequester("section_for_you_serie", index)
             )
           }
@@ -743,7 +790,7 @@ fun HomeMainBrowsingContent(
             PosterMediaCard(
               media = item,
               onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_film", index),
+              modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_film", index, viewModel, popularMovies),
               focusRequester = coordinator.getRequester("section_popolari_film", index)
             )
           }
@@ -767,7 +814,7 @@ fun HomeMainBrowsingContent(
             PosterMediaCard(
               media = item,
               onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_serie", index),
+              modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_serie", index, viewModel, popularSeries),
               focusRequester = coordinator.getRequester("section_popolari_serie", index)
             )
           }
@@ -792,7 +839,7 @@ fun HomeMainBrowsingContent(
               PosterMediaCard(
                 media = item,
                 onClick = { onMediaClick(item) },
-                modifier = Modifier.rowFocusProperties(coordinator, "section_${extraSec.id}", index),
+                modifier = Modifier.rowFocusProperties(coordinator, "section_${extraSec.id}", index, viewModel, extraSec.items),
                 focusRequester = coordinator.getRequester("section_${extraSec.id}", index)
               )
             }

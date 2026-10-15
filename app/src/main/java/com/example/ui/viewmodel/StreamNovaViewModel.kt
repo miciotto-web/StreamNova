@@ -528,12 +528,20 @@ class StreamNovaViewModel(
   private val _lastFocusedMediaId = MutableStateFlow<String?>(null)
   val lastFocusedMediaId: StateFlow<String?> = _lastFocusedMediaId.asStateFlow()
 
-  fun saveLastFocusedMedia(mediaId: String) {
+  // Tracciamento indice per restore focus asincrono (lazy grid/column)
+  private val _lastFocusedMediaIndex = MutableStateFlow<Int?>(null)
+  val lastFocusedMediaIndex: StateFlow<Int?> = _lastFocusedMediaIndex.asStateFlow()
+
+  fun saveLastFocusedMedia(mediaId: String, index: Int? = null) {
     _lastFocusedMediaId.value = mediaId
+    if (index != null) {
+      _lastFocusedMediaIndex.value = index
+    }
   }
 
   fun clearLastFocusedMedia() {
     _lastFocusedMediaId.value = null
+    _lastFocusedMediaIndex.value = null
   }
 
   // Focus retention TV per Cast (Punto 5, 7)
@@ -931,6 +939,9 @@ class StreamNovaViewModel(
     viewModelScope.launch {
       MediaRepository.loadFromCache()
       refreshCatalog()
+      
+      // Auto-check aggiornamenti all'avvio (senza mostrare popup: solo stato interno)
+      checkForAppUpdates()
       
       // Osserva i cambiamenti della modalità del motore di streaming
       AppSettingsRepository.streamingEngineMode.collect { mode ->

@@ -271,6 +271,30 @@ fun CategoryBrowsingScreen(
     }
   }
 
+  val lastFocusedIndex by (viewModel?.lastFocusedMediaIndex ?: MutableStateFlow<Int?>(null)).collectAsState()
+  val itemRequesters = remember { mutableMapOf<String, FocusRequester>() }
+
+  // Restore focus with delay after scroll (asincrono)
+  LaunchedEffect(lastFocusedIndex, filteredItems.size) {
+    val index = lastFocusedIndex ?: return@LaunchedEffect
+    if (index < filteredItems.size) {
+      // 1. Scroll alla posizione salvata
+      gridState.scrollToItem(index)
+      
+      // 2. Attendi che Compose completi il layout dei figli
+      kotlinx.coroutines.delay(150L)
+      
+      // 3. Richiedi focus sul requester dell'elemento salvato
+      val mediaId = filteredItems[index].id
+      viewModel?.saveLastFocusedMedia(mediaId, index)
+      val requester = itemRequesters[mediaId]
+      if (requester != null) {
+        try {
+          requester.requestFocus()
+        } catch (_: Exception) {}
+      }
+    }
+  }
   Column(
     modifier = modifier
       .fillMaxSize()
@@ -343,13 +367,19 @@ fun CategoryBrowsingScreen(
               }
             }
           }
+          val cardRequester = remember { FocusRequester() }
+          // Registra il requester per item restore asincrono
+          LaunchedEffect(index, item.id) {
+            itemRequesters[item.id] = cardRequester
+          }
           Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.TopCenter
           ) {
             PosterMediaCard(
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = { onMediaClick(item) },
+              focusRequester = cardRequester
             )
           }
         }
@@ -360,12 +390,37 @@ fun CategoryBrowsingScreen(
 
 @Composable
 fun FavoritesScreen(
+  viewModel: StreamNovaViewModel? = null,
   allMedia: List<MediaItem>,
   onMediaClick: (MediaItem) -> Unit,
   modifier: Modifier = Modifier
 ) {
   val favorites = allMedia.filter { it.isFavorite }
+  val gridState = rememberLazyGridState()
+  val lastFocusedIndex by (viewModel?.lastFocusedMediaIndex ?: MutableStateFlow<Int?>(null)).collectAsState()
+  val itemRequesters = remember { mutableMapOf<String, FocusRequester>() }
 
+  // Restore focus with delay after scroll (asincrono)
+  LaunchedEffect(lastFocusedIndex, favorites.size) {
+    val index = lastFocusedIndex ?: return@LaunchedEffect
+    if (index < favorites.size) {
+      // 1. Scroll alla posizione salvata
+      gridState.scrollToItem(index)
+      
+      // 2. Attendi che Compose completi il layout dei figli
+      kotlinx.coroutines.delay(150L)
+      
+      // 3. Richiedi focus sul requester dell'elemento salvato
+      val mediaId = favorites[index].id
+      viewModel?.saveLastFocusedMedia(mediaId, index)
+      val requester = itemRequesters[mediaId]
+      if (requester != null) {
+        try {
+          requester.requestFocus()
+        } catch (_: Exception) {}
+      }
+    }
+  }
   Column(
     modifier = modifier
       .fillMaxSize()
@@ -437,20 +492,27 @@ fun FavoritesScreen(
     } else {
       TvFocusBringIntoView {
         LazyVerticalGrid(
+          state = gridState,
           columns = GridCells.Adaptive(minSize = 150.dp),
           contentPadding = PaddingValues(bottom = 48.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp),
           verticalArrangement = Arrangement.spacedBy(16.dp),
           modifier = Modifier.fillMaxSize()
         ) {
-          items(favorites, key = { "fav_grid_${it.id}" }) { item ->
+          itemsIndexed(favorites, key = { _, it -> "fav_grid_${it.id}" }) { index, item ->
+            val cardRequester = remember { FocusRequester() }
+            // Registra il requester per item restore asincrono
+            LaunchedEffect(index, item.id) {
+              itemRequesters[item.id] = cardRequester
+            }
             Box(
               modifier = Modifier.fillMaxWidth(),
               contentAlignment = Alignment.TopCenter
             ) {
               PosterMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) }
+                onClick = { onMediaClick(item) },
+                focusRequester = cardRequester
               )
             }
           }
