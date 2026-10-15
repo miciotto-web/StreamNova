@@ -6,10 +6,12 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,26 +22,24 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -47,7 +47,13 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -57,6 +63,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
@@ -64,48 +71,98 @@ import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.ui.theme.NovaBackground
-import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
-import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import kotlinx.coroutines.delay
 
+/** Intervallo dell'auto-scorrimento, riavviato da zero a ogni interazione manuale. */
+private const val HERO_AUTO_SCROLL_DELAY_MS = 10_000L
+
+/** Leggero ingrandimento dell'Hero quando ha il focus (stessa lingua visiva delle card). */
+private const val HERO_FOCUSED_SCALE = 1.015f
+
+/** Spazio riservato in basso per la riga dei pallini centrati. */
+private val HERO_DOTS_RESERVED_HEIGHT = 56.dp
+
 /**
- * Banner hero della Home.
+ * Banner hero della Home: superficie unica, grande e pulita.
  *
- * Focus: i pulsanti Play/Info ricevono i requester esterni; [heroDownFocusRequester] collega
- * il D-pad SU/GIU' dalla hero alla prima riga sottostante. Deve essere passato SOLO un
- * requester il cui nodo e' montato (o `null`): se nullo si usa `FocusRequester.Default`,
- * mai un requester non agganciato (crash "FocusRequester is not initialized" al focus search).
+ * Interazione (nessun pulsante interno: l'Hero *e'* il target di focus):
+ * - OK / ENTER: apre la scheda dettaglio del titolo corrente ([onDetailsClick]).
+ * - D-pad RIGHT: poster successivo con wrap-around, il timer dell'auto-scroll riparte da zero.
+ * - D-pad LEFT: poster precedente; sul primissimo poster l'evento NON viene consumato, cosi'
+ *   il focus esce dall'Hero e si posiziona sulla Sidebar (gestito da `MainActivity`).
+ * - D-pad DOWN: scende alla prima riga di contenuti sotto l'Hero ([heroDownFocusRequester]).
+ * - D-pad UP: annullato, l'Hero e' la prima riga della Home.
+ *
+ * Focus: [heroFocusRequester] e' il requester della cella "hero_banner" del coordinatore di
+ * Home; [heroDownFocusRequester] deve essere SOLO un requester il cui nodo e' montato (o
+ * `null`): se nullo si usa `FocusRequester.Default`, mai un requester non agganciato (crash
+ * "FocusRequester is not initialized" al focus search).
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun HeroBanner(
   items: List<MediaItem>,
-  onPlayClick: (MediaItem) -> Unit,
-  onInfoClick: (MediaItem) -> Unit,
+  onDetailsClick: (MediaItem) -> Unit,
   modifier: Modifier = Modifier,
-  playButtonFocusRequester: FocusRequester? = null,
-  detailsButtonFocusRequester: FocusRequester? = null,
+  heroFocusRequester: FocusRequester? = null,
   heroDownFocusRequester: FocusRequester? = null,
-  onPlayButtonFocusChanged: ((Boolean) -> Unit)? = null,
-  onDetailsButtonFocusChanged: ((Boolean) -> Unit)? = null
+  onHeroFocusChanged: ((Boolean) -> Unit)? = null
 ) {
   val safeItems = remember(items) { items.take(9) }
   if (safeItems.isEmpty()) return
 
   var currentIndex by remember(safeItems) { mutableStateOf(0) }
+  var isFocused by remember { mutableStateOf(false) }
 
-  // Auto-scorrimento dinamico ogni 10 secondi
-  LaunchedEffect(safeItems, currentIndex) {
+  // Token di riavvio dell'auto-scroll: ogni scorrimento manuale con il D-pad lo incrementa,
+  // il LaunchedEffect viene cancellato e rilanciato e il `delay` riparte da zero. Un contatore
+  // (e non `System.currentTimeMillis()`) non puo' collidere quando due pressioni cadono nello
+  // stesso millisecondo.
+  var autoScrollRestartToken by remember(safeItems) { mutableLongStateOf(0L) }
+
+  // Auto-scorrimento: il ciclo vive in un `while` dentro lo stesso effetto, quindi il delay si
+  // ripete finche' l'utente non interagisce (cambio token = effetto cancellato e riavviato).
+  // L'indice viene letto al momento del cambio poster, non catturato alla partenza.
+  LaunchedEffect(safeItems, autoScrollRestartToken) {
     if (safeItems.size > 1) {
-      delay(10_000L)
-      currentIndex = (currentIndex + 1) % safeItems.size
+      while (true) {
+        delay(HERO_AUTO_SCROLL_DELAY_MS)
+        currentIndex = HeroCarouselNavigation.nextIndex(currentIndex, safeItems.size)
+      }
     }
   }
 
+  // Stato esposto a MainActivity: il focus sull'Hero e indice/numero di poster decidono se il
+  // D-pad LEFT appartiene al carosello o deve aprire la Sidebar.
+  SideEffect { HeroCarouselState.onCarouselChanged(currentIndex, safeItems.size) }
+  DisposableEffect(Unit) {
+    onDispose { HeroCarouselState.reset() }
+  }
+
+  // Azione comune a Destra e Sinistra: cambia poster e riavvia il timer dell'auto-scroll.
+  val scrollToPoster: (Int) -> Unit = { newIndex ->
+    currentIndex = newIndex
+    autoScrollRestartToken += 1
+  }
+
   val currentMedia = safeItems.getOrElse(currentIndex) { safeItems.first() }
+
+  val heroScale by animateFloatAsState(
+    targetValue = if (isFocused) HERO_FOCUSED_SCALE else 1f,
+    animationSpec = tween(durationMillis = 200),
+    label = "HeroFocusScale"
+  )
+  // Bordo di focus animato (trasparente -> cyan): stesso linguaggio visivo delle card.
+  // Niente ombra portata: su un banner a tutta larghezza l'elevazione disegna una banda
+  // cyan netta sotto l'Hero invece di un alone morbido.
+  val heroBorderColor by animateColorAsState(
+    targetValue = if (isFocused) NovaCyanBright else Color.Transparent,
+    animationSpec = tween(durationMillis = 200),
+    label = "HeroFocusBorder"
+  )
 
   // Ombra leggera di supporto per il titolo: garantisce leggibilità del testo su artwork chiari.
   val titleShadowStyle = TextStyle(
@@ -116,6 +173,38 @@ fun HeroBanner(
     modifier = modifier
       .fillMaxWidth()
       .height(350.dp)
+      .zIndex(if (isFocused) 10f else 1f)
+      .graphicsLayer {
+        scaleX = heroScale
+        scaleY = heroScale
+      }
+      .then(if (heroFocusRequester != null) Modifier.focusRequester(heroFocusRequester) else Modifier)
+      .focusProperties {
+        up = FocusRequester.Cancel
+        down = heroDownFocusRequester ?: FocusRequester.Default
+      }
+      .onFocusChanged {
+        isFocused = it.isFocused
+        HeroCarouselState.onHeroFocusChanged(it.isFocused)
+        onHeroFocusChanged?.invoke(it.isFocused)
+      }
+      // Scorrimento manuale e conferma: i tasti sono consumati PRIMA di clickable, quindi
+      // l'apertura della scheda avviene una sola volta.
+      .onKeyEvent { keyEvent ->
+        handleHeroKeyEvent(
+          keyEvent = keyEvent,
+          currentIndex = currentIndex,
+          itemCount = safeItems.size,
+          onScrollToIndex = scrollToPoster,
+          onConfirm = { onDetailsClick(currentMedia) }
+        )
+      }
+      // Superficie cliccabile (mouse/air-mouse) e focalizzabile con il D-pad. `indication`
+      // nullo: nessun feedback visivo di bordo o alone quando riceve il focus.
+      .clickable(
+        interactionSource = remember { MutableInteractionSource() },
+        indication = null
+      ) { onDetailsClick(currentMedia) }
   ) {
     // Backdrop Image con dissolvenza incrociata cinematografica tra i titoli (~350ms)
     AnimatedContent(
@@ -168,7 +257,7 @@ fun HeroBanner(
     Box(
       modifier = Modifier
         .fillMaxSize()
-        // Orizzontale (sinistra -> destra): protegge titolo, testo e pulsanti a sinistra.
+        // Orizzontale (sinistra -> destra): protegge titolo, testo e metadati a sinistra.
         .background(
           Brush.horizontalGradient(
             colors = listOf(
@@ -195,11 +284,16 @@ fun HeroBanner(
         )
     )
 
-    // Contenuto Principale Sovrapposto
+    // Contenuto Principale Sovrapposto: solo i metadati essenziali del titolo.
     Column(
       modifier = Modifier
         .align(Alignment.BottomStart)
-        .padding(start = 32.dp, bottom = 24.dp, end = 200.dp)
+        .padding(
+          start = 32.dp,
+          // Spazio in basso per i pallini centrati: nessuna sovrapposizione col testo.
+          bottom = HERO_DOTS_RESERVED_HEIGHT,
+          end = 200.dp
+        )
     ) {
       // Titolo / Logo del film o serie TMDB
       if (!currentMedia.logoUrl.isNullOrBlank()) {
@@ -212,13 +306,13 @@ fun HeroBanner(
           contentScale = ContentScale.Fit,
           alignment = Alignment.CenterStart,
           modifier = Modifier
-            .heightIn(min = 40.dp, max = 68.dp)
-            .widthIn(max = 380.dp),
+            .heightIn(min = 44.dp, max = 76.dp)
+            .widthIn(max = 420.dp),
           error = {
             Text(
               text = currentMedia.title,
               color = NovaTextPrimary,
-              fontSize = 32.sp,
+              fontSize = 34.sp,
               fontWeight = FontWeight.ExtraBold,
               letterSpacing = 0.5.sp,
               style = titleShadowStyle
@@ -229,7 +323,7 @@ fun HeroBanner(
         Text(
           text = currentMedia.title,
           color = NovaTextPrimary,
-          fontSize = 32.sp,
+          fontSize = 34.sp,
           fontWeight = FontWeight.ExtraBold,
           letterSpacing = 0.5.sp,
           style = titleShadowStyle
@@ -276,54 +370,15 @@ fun HeroBanner(
         maxLines = 3,
         overflow = TextOverflow.Ellipsis
       )
-
-      Spacer(modifier = Modifier.height(16.dp))
-
-      // Pulsanti a forma di pillola più compatti
-      Row(
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        TvPillButton(
-          text = stringResource(R.string.action_watch_now),
-          icon = Icons.Default.PlayArrow,
-          isPrimary = true,
-          onClick = { onPlayClick(currentMedia) },
-          modifier = Modifier
-            .then(if (playButtonFocusRequester != null) Modifier.focusRequester(playButtonFocusRequester) else Modifier)
-            .focusProperties {
-              down = heroDownFocusRequester ?: FocusRequester.Default
-              up = FocusRequester.Cancel
-            }
-            .onFocusChanged { onPlayButtonFocusChanged?.invoke(it.isFocused) }
-        )
-        TvPillButton(
-          text = stringResource(R.string.action_details),
-          icon = Icons.Default.Info,
-          isPrimary = false,
-          onClick = { onInfoClick(currentMedia) },
-          modifier = Modifier
-            .then(if (detailsButtonFocusRequester != null) Modifier.focusRequester(detailsButtonFocusRequester) else Modifier)
-            .focusProperties {
-              down = heroDownFocusRequester ?: FocusRequester.Default
-              up = FocusRequester.Cancel
-            }
-            .onFocusChanged { onDetailsButtonFocusChanged?.invoke(it.isFocused) }
-        )
-      }
     }
 
-    // Indicatori di Scorrimento posizionati in basso a destra
+    // Indicatori di Scorrimento: pill centrata in basso, unico segnale di posizione nel
+    // carosello ora che i pulsanti non ci sono piu'.
     if (safeItems.size > 1) {
       Row(
         modifier = Modifier
-          .align(Alignment.BottomEnd)
-          .padding(end = 32.dp, bottom = 26.dp)
-          .background(
-            color = Color(0x66000000),
-            shape = RoundedCornerShape(50)
-          )
-          .padding(horizontal = 10.dp, vertical = 6.dp),
+          .align(Alignment.BottomCenter)
+          .padding(bottom = 22.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
       ) {
@@ -346,7 +401,10 @@ fun HeroBanner(
               .width(indicatorWidth)
               .clip(RoundedCornerShape(50))
               .background(indicatorColor)
-              .clickable { currentIndex = index }
+              // Click su un pallino: salto diretto al poster (riavvia il timer). Il pallino
+              // non prende il focus del D-pad, che resta sulla superficie dell'Hero.
+              .focusProperties { canFocus = false }
+              .clickable { scrollToPoster(index) }
           )
         }
       }
@@ -355,39 +413,50 @@ fun HeroBanner(
 }
 
 /**
- * Overload per retrocompatibilità
+ * Tasti del telecomando sull'Hero (superficie unica di focus).
+ *
+ * - OK / ENTER / NumPadEnter: apre la scheda del titolo corrente al rilascio.
+ * - RIGHT: poster successivo con wrap-around.
+ * - LEFT: poster precedente; sul primissimo poster NON viene consumato, cosi' il focus esce
+ *   dall'Hero e si posiziona sulla Sidebar (gestito da `MainActivity`).
+ * - Ogni scorrimento riavvia il timer dell'auto-scroll tramite [onScrollToIndex].
+ *
+ * @return true se l'evento e' stato consumato.
  */
-@Composable
-fun HeroBanner(
-  media: MediaItem,
-  onPlayClick: () -> Unit,
-  onInfoClick: () -> Unit,
-  modifier: Modifier = Modifier
-) {
-  HeroBanner(
-    items = listOf(media),
-    onPlayClick = { onPlayClick() },
-    onInfoClick = { onInfoClick() },
-    modifier = modifier
-  )
-}
+private fun handleHeroKeyEvent(
+  keyEvent: KeyEvent,
+  currentIndex: Int,
+  itemCount: Int,
+  onScrollToIndex: (Int) -> Unit,
+  onConfirm: () -> Unit
+): Boolean {
+  return when (keyEvent.key) {
+    Key.Enter, Key.NumPadEnter, Key.DirectionCenter ->
+      if (keyEvent.type == KeyEventType.KeyUp) {
+        onConfirm()
+        true
+      } else {
+        false
+      }
 
-/**
- * Pulsante a pillola elegante per Hero Banner
- */
-@Composable
-fun TvPillButton(
-  text: String,
-  icon: ImageVector? = null,
-  isPrimary: Boolean = true,
-  onClick: () -> Unit,
-  modifier: Modifier = Modifier
-) {
-  TvActionButton(
-    text = text,
-    icon = icon,
-    isPrimary = isPrimary,
-    onClick = onClick,
-    modifier = modifier
-  )
+    Key.DirectionRight ->
+      if (keyEvent.type == KeyEventType.KeyDown && itemCount > 1) {
+        onScrollToIndex(HeroCarouselNavigation.nextIndex(currentIndex, itemCount))
+        true
+      } else {
+        false
+      }
+
+    Key.DirectionLeft ->
+      if (keyEvent.type == KeyEventType.KeyDown &&
+        HeroCarouselNavigation.canScrollToPrevious(currentIndex, itemCount)
+      ) {
+        onScrollToIndex(HeroCarouselNavigation.previousIndex(currentIndex))
+        true
+      } else {
+        false
+      }
+
+    else -> false
+  }
 }

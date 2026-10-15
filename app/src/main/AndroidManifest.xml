@@ -17,10 +17,10 @@
         android:name=".StreamNovaApplication"
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@drawable/streamnova_launcher_icon"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:banner="@drawable/banner_dune"
+        android:banner="@drawable/tv_banner"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
         <activity

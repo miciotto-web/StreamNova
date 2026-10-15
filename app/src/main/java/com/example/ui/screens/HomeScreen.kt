@@ -28,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -378,8 +379,8 @@ fun HomeMainBrowsingContent(
   ) {
     buildList {
       if (dynamicHeroItems.isNotEmpty()) add("hero_banner")
-      add("section_providers_hub")
       if (continueWatching.isNotEmpty()) add("section_continue_watching")
+      add("section_providers_hub")
       if (!hasCustomCatalogMovies && top10Movies.isNotEmpty()) add("section_top_10_film")
       if (!hasCustomCatalogSeries && top10Series.isNotEmpty()) add("section_top_10_serie")
       if (!hasCustomCatalogMovies && trendingMovies.isNotEmpty()) add("section_trending_film")
@@ -410,7 +411,8 @@ fun HomeMainBrowsingContent(
     homeCatalogs?.extraSections
   ) {
     buildMap {
-      put("hero_banner", 2)
+      // L'Hero e' una superficie unica di focus (nessun pulsante interno).
+      put("hero_banner", 1)
       put("section_providers_hub", ProviderConstants.ALL.size)
       put("section_continue_watching", continueWatching.size)
       put("section_top_10_film", top10Movies.size)
@@ -442,16 +444,40 @@ fun HomeMainBrowsingContent(
     }
   }
 
-  // Scroll to top automatico cliccando "Home" dalla sidebar (Punto 4)
+  // Richiesta di focus sull'Hero ancora in attesa: al primo avvio della Home (e al click su
+  // "Home" dalla Sidebar) i cataloghi TMDB possono non essere ancora arrivati, quindi la hero
+  // non esiste ancora. La richiesta viene completata appena compare, cosi' il focus non resta
+  // su una card provider qualunque.
+  var pendingHeroFocus by remember { mutableStateOf(false) }
+
+  // Letti al momento dell'evento: il coordinatore viene RICREATO quando cambiano le righe
+  // attive (i cataloghi TMDB arrivano dopo la splash) e il collettore resta agganciato una
+  // sola volta. Usando l'istanza catturata alla partenza si chiederebbe il focus a un
+  // FocusRequester mai agganciato ad alcun nodo ("FocusRequester is not initialized").
+  val currentCoordinator by rememberUpdatedState(coordinator)
+  val heroItemsAvailable by rememberUpdatedState(dynamicHeroItems.isNotEmpty())
+
+  // Scroll to top automatico cliccando "Home" dalla sidebar (Punto 4) e focus iniziale
+  // della Home: entrambi devono appoggiarsi sull'Hero, prima cella del contenuto.
   LaunchedEffect(viewModel) {
     viewModel?.homeScrollToTopEvent?.collect {
       listState.animateScrollToItem(0)
       try {
-        if (dynamicHeroItems.isNotEmpty()) {
-          coordinator.getRequester("hero_banner", 0).requestFocus()
+        if (heroItemsAvailable) {
+          currentCoordinator.getRequester("hero_banner", 0).requestFocus()
         } else {
-          coordinator.getRequester("section_providers_hub", 0).requestFocus()
+          pendingHeroFocus = true
+          currentCoordinator.getRequester("section_providers_hub", 0).requestFocus()
         }
+      } catch (_: Exception) {}
+    }
+  }
+
+  LaunchedEffect(pendingHeroFocus, dynamicHeroItems.isNotEmpty()) {
+    if (pendingHeroFocus && dynamicHeroItems.isNotEmpty()) {
+      pendingHeroFocus = false
+      try {
+        currentCoordinator.getRequester("hero_banner", 0).requestFocus()
       } catch (_: Exception) {}
     }
   }
@@ -469,10 +495,8 @@ fun HomeMainBrowsingContent(
       item(key = "hero_banner") {
         DisposableEffect(coordinator) {
           coordinator.registerCell("hero_banner", 0)
-          coordinator.registerCell("hero_banner", 1)
           onDispose {
             coordinator.unregisterCell("hero_banner", 0)
-            coordinator.unregisterCell("hero_banner", 1)
           }
         }
         Column(
@@ -480,50 +504,27 @@ fun HomeMainBrowsingContent(
         ) {
           HeroBanner(
             items = dynamicHeroItems,
-            onPlayClick = { onPlayClick(it) },
-            onInfoClick = { onMediaClick(it) },
-            playButtonFocusRequester = coordinator.getRequester("hero_banner", 0),
-            detailsButtonFocusRequester = coordinator.getRequester("hero_banner", 1),
-            // Null finche' l'hub provider non ha celle montate: HeroBanner lascia allora
+            // OK/Enter e click sull'Hero aprono la scheda del titolo corrente: i pulsanti
+            // azione non esistono piu', l'intero banner e' il target di focus.
+            onDetailsClick = { onMediaClick(it) },
+            heroFocusRequester = coordinator.getRequester("hero_banner", 0),
+            // Hero va prima su "Continua a guardare" se presente, altrimenti su Providers.
+            // Null finche' la destinazione non ha celle montate: HeroBanner lascia allora
             // il D-pad la ricerca standard (FocusRequester.Default) invece di usare un
             // requester non agganciato (crash "FocusRequester is not initialized").
-            heroDownFocusRequester = coordinator.getTargetRequester("section_providers_hub", 0),
-            onPlayButtonFocusChanged = { if (it) coordinator.onCellFocused("hero_banner", 0) },
-            onDetailsButtonFocusChanged = { if (it) coordinator.onCellFocused("hero_banner", 1) }
+            heroDownFocusRequester = if (continueWatching.isNotEmpty()) {
+              coordinator.getTargetRequester("section_continue_watching", 0)
+            } else {
+              coordinator.getTargetRequester("section_providers_hub", 0)
+            },
+            onHeroFocusChanged = { if (it) coordinator.onCellFocused("hero_banner", 0) }
           )
           Spacer(modifier = Modifier.height(16.dp))
         }
       }
     }
 
-    // 2. Hub Streaming Providers (Netflix, HBO, Disney+, Prime Video)
-    item(key = "section_providers_hub") {
-      CarouselHeader(
-        title = stringResource(R.string.home_section_streaming_platforms),
-        badge = stringResource(R.string.home_badge_select_provider)
-      )
-      LazyRow(
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(125.dp),
-        contentPadding = PaddingValues(horizontal = 48.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
-      ) {
-        itemsIndexed(ProviderConstants.ALL, key = { _, it -> it.id }) { index, provider ->
-          ProviderCard(
-            provider = provider,
-            onClick = {
-              onProviderClick(provider)
-            },
-            modifier = Modifier.rowFocusProperties(coordinator, "section_providers_hub", index),
-            focusRequester = coordinator.getRequester("section_providers_hub", index)
-          )
-        }
-      }
-      Spacer(modifier = Modifier.height(16.dp))
-    }
-
-    // 3. "Continua a guardare" (se ci sono titoli iniziati)
+    // 2. "Continua a guardare" (se ci sono titoli iniziati)
     if (continueWatching.isNotEmpty()) {
       item(key = "section_continue_watching") {
         CarouselHeader(
@@ -552,6 +553,33 @@ fun HomeMainBrowsingContent(
         }
         Spacer(modifier = Modifier.height(20.dp))
       }
+    }
+
+    // 3. Hub Streaming Providers (Netflix, HBO, Disney+, Prime Video)
+    item(key = "section_providers_hub") {
+      CarouselHeader(
+        title = stringResource(R.string.home_section_streaming_platforms),
+        badge = stringResource(R.string.home_badge_select_provider)
+      )
+      LazyRow(
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(125.dp),
+        contentPadding = PaddingValues(horizontal = 48.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+      ) {
+        itemsIndexed(ProviderConstants.ALL, key = { _, it -> it.id }) { index, provider ->
+          ProviderCard(
+            provider = provider,
+            onClick = {
+              onProviderClick(provider)
+            },
+            modifier = Modifier.rowFocusProperties(coordinator, "section_providers_hub", index),
+            focusRequester = coordinator.getRequester("section_providers_hub", index)
+          )
+        }
+      }
+      Spacer(modifier = Modifier.height(16.dp))
     }
 
     // 4. TOP 10 FILM (Card con numero gigante stilizzato)

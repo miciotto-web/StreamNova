@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Livello monocromatico (temi Android 13+): usa solo il canale alpha del logo,
+  quindi va bene il PNG trasparente; niente forme piene che diventerebbero un blocco.
+  56dp = arte inquadrata nel safe zone adattivo (cerchio da 66dp).
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="56dp"
+        android:height="56dp"
+        android:gravity="center"
+        android:drawable="@drawable/streamnova_icon" />
+</layer-list>

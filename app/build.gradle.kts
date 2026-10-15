@@ -81,7 +81,7 @@ android {
 }
 
 base {
-  archivesName.set("StreamNova-tv")
+  archivesName.set("StreamNova")
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files

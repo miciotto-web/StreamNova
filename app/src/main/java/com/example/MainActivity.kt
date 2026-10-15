@@ -48,8 +48,9 @@ import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.MediaRepository
 import com.example.data.streaming.StreamResult
-import com.example.ui.components.ProviderConstants
+import com.example.ui.components.HeroCarouselState
 import com.example.ui.components.ModalOverlayState
+import com.example.ui.components.ProviderConstants
 import com.example.ui.components.TvPinDialog
 import com.example.ui.components.SidebarNavigation
 import com.example.ui.components.TorBoxSourceSelectionScreen
@@ -245,8 +246,12 @@ fun StreamNovaApp(
             if (!isInitialHomeFocusSet) {
               isInitialHomeFocusSet = true
               if (currentSection == SidebarSection.HOME) {
-                try { homeFocusRequester.requestFocus() } catch (_: Exception) {}
-                focusManager.moveFocus(FocusDirection.Down)
+                // Focus iniziale sull'Hero, prima cella del contenuto Home: il
+                // moveFocus(Down) da un contenitore a tutto schermo non lo raggiunge mai,
+                // perche' la ricerca geometrica preferisce la card provider piu' vicina al
+                // centro dello schermo. HomeScreen completa la richiesta appena i dati della
+                // hero sono pronti (i cataloghi TMDB arrivano dopo la splash).
+                viewModel.requestHomeScrollToTop()
               }
             } else if (pendingContentFocusRestore) {
               pendingContentFocusRestore = false
@@ -282,9 +287,15 @@ fun StreamNovaApp(
             // sidebarHasFocus è aggiornato SINCRONO dentro moveFocus() (onFocusChanged del
             // modifier esterno scatta prima che moveFocus() ritorni), quindi la lettura
             // immediata dopo moveFocus() rispecchia sempre lo stato reale del focus.
+            //
+            // HeroCarouselState.consumesLeftKey: con il focus su un pulsante dell'Hero e un
+            // poster successivo al primo, il LEFT appartiene al carosello (torna al poster
+            // precedente) e questa intercettazione deve lasciarlo passare. Sul primo poster
+            // resta invece false, quindi il LEFT esce regolarmente verso la Sidebar.
             .onPreviewKeyEvent { keyEvent ->
               if (!ModalOverlayState.isAnyOpen &&
                 !isSidebarExpanded &&
+                !HeroCarouselState.consumesLeftKey &&
                 keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
                 keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT
               ) {

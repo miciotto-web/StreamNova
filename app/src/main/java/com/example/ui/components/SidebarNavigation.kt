@@ -162,39 +162,38 @@ fun SidebarNavigation(
         .padding(vertical = 24.dp, horizontal = 4.dp),
       verticalArrangement = Arrangement.SpaceBetween,
       horizontalAlignment = Alignment.Start
-    ) {
-      // Logo & App Name
-      Column(
-        modifier = Modifier.padding(horizontal = 4.dp),
-        horizontalAlignment = Alignment.Start
-      ) {
-        Box(
-          modifier = Modifier.size(44.dp),
-          contentAlignment = Alignment.Center
-        ) {
-          Image(
-            painter = painterResource(id = R.drawable.ic_streamnova_logo),
-            contentDescription = "StreamNova Logo",
-            modifier = Modifier.size(44.dp),
-            contentScale = ContentScale.Fit
-          )
-        }
+     ) {
+       // Header: icona sempre visibile + testo animato
+       Row(
+         modifier = Modifier.padding(horizontal = 4.dp),
+         verticalAlignment = Alignment.CenterVertically
+       ) {
+         // Icona sempre visibile (sidebar chiusa e aperta)
+         Image(
+           painter = painterResource(id = R.drawable.streamnova_icon),
+           contentDescription = "StreamNova",
+           modifier = Modifier.size(40.dp),
+           contentScale = ContentScale.Fit
+         )
 
-        AnimatedVisibility(
-          visible = isSidebarExpanded,
-          enter = fadeIn(animationSpec = tween(durationMillis = 200)),
-          exit = fadeOut(animationSpec = tween(durationMillis = 150))
-        ) {
-          StreamNovaWordmark(
-            modifier = Modifier.padding(top = 8.dp),
-            fontSize = 18.sp
-          )
-        }
-      }
+         AnimatedVisibility(
+           visible = isSidebarExpanded,
+           enter = fadeIn(animationSpec = tween(durationMillis = 200)),
+           exit = fadeOut(animationSpec = tween(durationMillis = 150))
+         ) {
+           Spacer(modifier = Modifier.width(12.dp))
+           Image(
+             painter = painterResource(id = R.drawable.streamnova_text),
+             contentDescription = "StreamNova",
+             modifier = Modifier.height(22.dp),
+             contentScale = ContentScale.Fit
+           )
+         }
+       }
 
-      Spacer(modifier = Modifier.height(24.dp))
+       Spacer(modifier = Modifier.height(24.dp))
 
-      // Navigation Items
+       // Navigation Items
       Column(
         modifier = Modifier.weight(1f),
         verticalArrangement = Arrangement.spacedBy(8.dp)
