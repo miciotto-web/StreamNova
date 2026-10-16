@@ -26,6 +26,24 @@ StreamNova cura ogni dettaglio grafico per integrarsi alla perfezione con i mode
 
 * **Banner 16:9 & Icone Perfette:** Tile e banner nativi progettati senza tagli o deformazioni sia su Google TV che su Amazon Fire TV.
 
+## 🔑 Configurazione della chiave API TMDB
+
+La chiave TMDB **non è nel repository**. Per compilare con il catalogo TMDB attivo, impostala localmente in uno di questi modi (nessuno dei file è tracciato da Git):
+
+1. **`local.properties`** — aggiungi una riga `TMDB_API_KEY=<la-tua-chiave>` accanto a `sdk.dir`.
+
+2. **Variabile d'ambiente** — prima di avviare Gradle:
+
+```powershell
+$env:TMDB_API_KEY = "<la-tua-chiave>"
+```
+
+3. **File `.env`** — copia `.env.example` in `.env` e compila il valore.
+
+Ottieni una chiave gratuita su [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api). Senza chiave l'app compila e si avvia normalmente: il catalogo TMDB resta semplicemente vuoto.
+
+> Nota: una chiave incorporata nell'APK è estraibile da chiunque. Configurarla fuori dal repository serve a non pubblicarla, non a tenerla segreta nell'app.
+
 ## 📥 Download & Installazione
 
 1. Scarica il file **`StreamNova.apk`** dall'ultima release ufficiale.

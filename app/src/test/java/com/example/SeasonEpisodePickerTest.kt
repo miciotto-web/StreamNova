@@ -18,6 +18,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.experimental.categories.Category
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
@@ -155,7 +156,10 @@ class SeasonEpisodePickerTest {
   }
 
   @Test
+  @Category(TmdbNetworkCategory::class)
   fun testRealTmdbArcaneSeasonsLoading() = runBlocking {
+    // Test di integrazione: chiama il servizio TMDB reale, richiede chiave configurata.
+    TmdbNetwork.assumeConfiguredApiKey()
     // Arcane TMDB ID: 94605
     val season1 = MediaRepository.getSeasonDetails(tvTmdbId = 94605, seasonNumber = 1)
     assertEquals(1, season1.seasonNumber)

@@ -1,5 +1,6 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
 import java.security.KeyStore
+import java.util.Properties
 
 plugins {
   alias(libs.plugins.android.application)
@@ -22,8 +23,19 @@ android {
     versionName = "0.1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    val tmdbEnv = System.getenv("TMDB_API_KEY") ?: "da92702177bb03ed4b4517e58eebb018"
-    buildConfigField("String", "ENV_TMDB_API_KEY", "\"$tmdbEnv\"")
+    // TMDB API key is never hardcoded here: it would be committed and published.
+    // Resolution order: environment variable, then local.properties (git-ignored),
+    // then empty string. With no key the app behaves exactly as before, the TMDB
+    // catalog stays empty instead of failing. Note that a key shipped in the APK is
+    // extractable by anyone: this only keeps it out of the public repository.
+    val localProps = Properties().apply {
+      val localFile = rootProject.file("local.properties")
+      if (localFile.exists()) localFile.inputStream().use { load(it) }
+    }
+    val tmdbKey = (System.getenv("TMDB_API_KEY")
+      ?: localProps.getProperty("TMDB_API_KEY")
+      ?: "").replace("\"", "")
+    buildConfigField("String", "ENV_TMDB_API_KEY", "\"$tmdbKey\"")
   }
 
   signingConfigs {
