@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.security.KeyStore
 
 plugins {
   alias(libs.plugins.android.application)
@@ -29,17 +30,40 @@ android {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
       val keystoreFile = file(keystorePath)
-      if (keystoreFile.exists()) {
-        storeFile = keystoreFile
-        storePassword = System.getenv("STORE_PASSWORD")
-        keyAlias = "upload"
-        keyPassword = System.getenv("KEY_PASSWORD")
-      } else {
-        storeFile = file("${rootDir}/debug.keystore")
-        storePassword = "android"
-        keyAlias = "androiddebugkey"
-        keyPassword = "android"
+      val releaseAlias = "upload"
+      val storeSecret = System.getenv("STORE_PASSWORD")
+      val keySecret = System.getenv("KEY_PASSWORD")
+
+      // Fail fast: only enforced for release tasks, so debug builds and unit tests
+      // keep working without signing credentials. Never fallback to debug.keystore:
+      // a debug-signed artifact must never be passed off as a production release.
+      val isReleaseBuild = gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }
+      if (isReleaseBuild) {
+        val problems = mutableListOf<String>()
+        if (!keystoreFile.exists()) problems += "keystore not found at $keystorePath (set KEYSTORE_PATH or place it at the project root)"
+        if (storeSecret.isNullOrEmpty()) problems += "STORE_PASSWORD is not set"
+        if (keySecret.isNullOrEmpty()) problems += "KEY_PASSWORD is not set"
+        if (problems.isNotEmpty()) {
+          throw GradleException(
+            "StreamNova release signing is not configured:\n" +
+              problems.joinToString("\n") { "  - $it" }
+          )
+        }
+        // Verify the alias really exists before handing the file to AGP,
+        // so a wrong alias fails here instead of inside the packaging task.
+        val probe = KeyStore.getInstance("PKCS12")
+        probe.load(keystoreFile.inputStream(), storeSecret.toCharArray())
+        if (!probe.containsAlias(releaseAlias)) {
+          throw GradleException(
+            "Release signing alias '$releaseAlias' not found in the keystore at $keystorePath"
+          )
+        }
       }
+
+      storeFile = keystoreFile
+      storePassword = storeSecret
+      keyAlias = releaseAlias
+      keyPassword = keySecret
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
