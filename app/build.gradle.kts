@@ -197,7 +197,10 @@ dependencies {
   // Generazione QR Code per la configurazione addon remota (AddonSyncServer)
   implementation("com.google.zxing:core:3.5.3")
   implementation(libs.converter.moshi)
-  implementation(libs.firebase.ai)
+  // Firebase non e' usato da StreamNova: nessun sorgente lo referenzia e senza
+  // google-services.json non esiste auto-inizializzazione. Le dipendenze restano
+  // commentate, non eliminate, per un eventuale uso futuro.
+  // implementation(libs.firebase.ai)
   // Uncomment to use Firestore:
   // implementation(libs.firebase.firestore)
 
@@ -207,8 +210,9 @@ dependencies {
   // implementation(libs.androidx.credentials)
   // implementation(libs.androidx.credentials.play.services)
   // implementation(libs.googleid)
-  implementation(libs.firebase.appcheck.recaptcha)
-  implementation(libs.firebase.appcheck.debug)
+  // App Check e' richiesto insieme a Firebase AI Logic e va riattivato solo se si usano:
+  // implementation(libs.firebase.appcheck.recaptcha)
+  // implementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.logging.interceptor)
