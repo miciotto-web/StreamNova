@@ -76,12 +76,16 @@ android {
       storePassword = storeSecret
       keyAlias = releaseAlias
       keyPassword = keySecret
+      enableV1Signing = true
+      enableV2Signing = true
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
       storePassword = "android"
       keyAlias = "androiddebugkey"
       keyPassword = "android"
+      enableV1Signing = true
+      enableV2Signing = true
     }
   }
 
