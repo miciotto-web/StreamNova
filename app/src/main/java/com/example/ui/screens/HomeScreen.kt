@@ -67,6 +67,7 @@ import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusBringIntoViewSpec
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalClearLastFocusedMedia
+import com.example.ui.components.FOCUS_REST
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -147,7 +148,8 @@ fun HomeScreen(
       FavoritesScreen(
         allMedia = allMedia,
         onMediaClick = handleMediaClick,
-        modifier = modifier
+        modifier = modifier,
+        viewModel = viewModel
       )
     }
     SidebarSection.CERCA -> {
@@ -313,6 +315,13 @@ fun HomeMainBrowsingContent(
   viewModel: StreamNovaViewModel? = null,
   modifier: Modifier = Modifier
 ) {
+  val focusRestoreSignal = remember { mutableStateOf<String?>(null) }
+
+  LaunchedEffect(viewModel) {
+    viewModel?.focusRestoreSignal?.collect { mediaId ->
+      focusRestoreSignal.value = mediaId
+    }
+  }
   // Liste dinamiche dai dati reali TMDB sincronizzati nel repository
   val continueWatching = remember(allMedia) {
     allMedia
@@ -479,6 +488,64 @@ fun HomeMainBrowsingContent(
       try {
         currentCoordinator.getRequester("hero_banner", 0).requestFocus()
       } catch (_: Exception) {}
+    }
+  }
+
+  LaunchedEffect(focusRestoreSignal.value, listState, currentCoordinator) {
+    val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
+    focusRestoreSignal.value = null
+
+    Log.d(FOCUS_REST, "HomeScreen: focus restoration signal ricevuto per mediaId = $mediaId")
+    val mediaItem = allMedia.find { it.id == mediaId } ?: run {
+      Log.w(FOCUS_REST, "HomeScreen: mediaId = $mediaId non trovato in allMedia")
+      return@LaunchedEffect
+    }
+    val sectionKey = when {
+      continueWatching.any { it.id == mediaId } -> "section_continue_watching"
+      top10Movies.any { it.id == mediaId } -> "section_top_10_film"
+      top10Series.any { it.id == mediaId } -> "section_top_10_serie"
+      trendingMovies.any { it.id == mediaId } -> "section_trending_film"
+      trendingSeries.any { it.id == mediaId } -> "section_trending_serie"
+      forYouMovies.any { it.id == mediaId } -> "section_for_you_film"
+      forYouSeries.any { it.id == mediaId } -> "section_for_you_serie"
+      popularMovies.any { it.id == mediaId } -> "section_popolari_film"
+      popularSeries.any { it.id == mediaId } -> "section_popolari_serie"
+      homeCatalogs?.extraSections?.any { section -> section.items.any { it.id == mediaId } } == true -> {
+        homeCatalogs.extraSections.find { section -> section.items.any { it.id == mediaId } }?.let { "section_${it.id}" }
+      }
+      else -> null
+    }
+
+    if (sectionKey != null && rowItemCounts[sectionKey] != null && rowItemCounts[sectionKey]!! > 0) {
+      val index = when (sectionKey) {
+        "section_continue_watching" -> continueWatching.indexOfFirst { it.id == mediaId }
+        "section_top_10_film" -> top10Movies.indexOfFirst { it.id == mediaId }
+        "section_top_10_serie" -> top10Series.indexOfFirst { it.id == mediaId }
+        "section_trending_film" -> trendingMovies.indexOfFirst { it.id == mediaId }
+        "section_trending_serie" -> trendingSeries.indexOfFirst { it.id == mediaId }
+        "section_for_you_film" -> forYouMovies.indexOfFirst { it.id == mediaId }
+        "section_for_you_serie" -> forYouSeries.indexOfFirst { it.id == mediaId }
+        "section_popolari_film" -> popularMovies.indexOfFirst { it.id == mediaId }
+        "section_popolari_serie" -> popularSeries.indexOfFirst { it.id == mediaId }
+        else -> -1
+      }
+
+      if (index >= 0) {
+        val requester = currentCoordinator.getTargetRequester(sectionKey, index)
+        if (requester != null) {
+          Log.d(FOCUS_REST, "HomeScreen: trovata requester per section=$sectionKey index=$index")
+          try {
+            requester.requestFocus()
+            Log.d(FOCUS_REST, "HomeScreen: requestFocus chiamato")
+          } catch (e: Exception) {
+            Log.w(FOCUS_REST, "HomeScreen: requestFocus exception: ${e.message}")
+          }
+        } else {
+          Log.w(FOCUS_REST, "HomeScreen: requester null per section=$sectionKey index=$index")
+        }
+      } else {
+        Log.w(FOCUS_REST, "HomeScreen: index negativo ($index) per mediaId = $mediaId")
+      }
     }
   }
 

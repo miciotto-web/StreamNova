@@ -106,6 +106,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import com.example.ui.components.FOCUS_REST
+import android.util.Log
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.snapshotFlow
@@ -200,6 +202,14 @@ fun CategoryBrowsingScreen(
   var selectedFilter by remember { mutableStateOf(CategoryCatalogFilter.ALL) }
   val gridState = rememberLazyGridState()
 
+  // Focus restoration: riceve il segnale dal ViewModel
+  val focusRestoreSignal = remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(viewModel) {
+    viewModel?.focusRestoreSignal?.collect { mediaId ->
+      focusRestoreSignal.value = mediaId
+    }
+  }
+
   // Reset scroll in cima quando si cambia scheda/filtro
   LaunchedEffect(selectedFilter) {
     gridState.scrollToItem(0)
@@ -268,6 +278,27 @@ fun CategoryBrowsingScreen(
           item.genres.any { it.contains(pid, ignoreCase = true) }
         }
       }
+    }
+  }
+
+  // Consumer il segnale per ripristinare il focus sulla card corretta
+  val focusRequester = remember { FocusRequester() }
+  LaunchedEffect(focusRestoreSignal.value, gridState) {
+    val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
+    Log.d(FOCUS_REST, "CategoryBrowsingScreen: segnale ricevuto per mediaId = $mediaId")
+    focusRestoreSignal.value = null
+
+    val index = filteredItems.indexOfFirst { it.id == mediaId }
+    if (index >= 0) {
+      Log.d(FOCUS_REST, "CategoryBrowsingScreen: trovata card all'indice $index")
+      gridState.scrollToItem(index)
+      kotlinx.coroutines.delay(100)
+      try {
+        focusRequester.requestFocus()
+        Log.d(FOCUS_REST, "CategoryBrowsingScreen: focus richiesto alla card")
+      } catch (_: Exception) {}
+    } else {
+      Log.w(FOCUS_REST, "CategoryBrowsingScreen: mediaId = $mediaId non trovato in filteredItems (size=${filteredItems.size})")
     }
   }
 
@@ -344,7 +375,9 @@ fun CategoryBrowsingScreen(
             }
           }
           Box(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+              .fillMaxWidth()
+              .then(if (index == 0) Modifier.focusRequester(focusRequester) else Modifier),
             contentAlignment = Alignment.TopCenter
           ) {
             PosterMediaCard(
@@ -362,9 +395,39 @@ fun CategoryBrowsingScreen(
 fun FavoritesScreen(
   allMedia: List<MediaItem>,
   onMediaClick: (MediaItem) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  viewModel: StreamNovaViewModel? = null
 ) {
   val favorites = allMedia.filter { it.isFavorite }
+
+  // Focus restoration: riceve il segnale dal ViewModel
+  val focusRestoreSignal = remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(viewModel) {
+    viewModel?.focusRestoreSignal?.collect { mediaId ->
+      focusRestoreSignal.value = mediaId
+    }
+  }
+
+  val gridState = rememberLazyGridState()
+  val focusRequester = remember { FocusRequester() }
+  LaunchedEffect(focusRestoreSignal.value, gridState) {
+    val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
+    Log.d(FOCUS_REST, "FavoritesScreen: segnale ricevuto per mediaId = $mediaId")
+    focusRestoreSignal.value = null
+
+    val index = favorites.indexOfFirst { it.id == mediaId }
+    if (index >= 0) {
+      Log.d(FOCUS_REST, "FavoritesScreen: trovata card all'indice $index")
+      gridState.scrollToItem(index)
+      kotlinx.coroutines.delay(100)
+      try {
+        focusRequester.requestFocus()
+        Log.d(FOCUS_REST, "FavoritesScreen: focus richiesto alla card")
+      } catch (_: Exception) {}
+    } else {
+      Log.w(FOCUS_REST, "FavoritesScreen: mediaId = $mediaId non trovato in favorites (size=${favorites.size})")
+    }
+  }
 
   Column(
     modifier = modifier
@@ -437,15 +500,18 @@ fun FavoritesScreen(
     } else {
       TvFocusBringIntoView {
         LazyVerticalGrid(
+          state = gridState,
           columns = GridCells.Adaptive(minSize = 150.dp),
           contentPadding = PaddingValues(bottom = 48.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp),
           verticalArrangement = Arrangement.spacedBy(16.dp),
           modifier = Modifier.fillMaxSize()
         ) {
-          items(favorites, key = { "fav_grid_${it.id}" }) { item ->
+          itemsIndexed(favorites, key = { index, item -> "fav_grid_${index}_${item.id}" }) { index, item ->
             Box(
-              modifier = Modifier.fillMaxWidth(),
+              modifier = Modifier
+                .fillMaxWidth()
+                .then(if (index == 0) Modifier.focusRequester(focusRequester) else Modifier),
               contentAlignment = Alignment.TopCenter
             ) {
               PosterMediaCard(
@@ -464,12 +530,14 @@ fun FavoritesScreen(
 fun MyContentScreen(
   allMedia: List<MediaItem>,
   onMediaClick: (MediaItem) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  viewModel: StreamNovaViewModel? = null
 ) {
   FavoritesScreen(
     allMedia = allMedia,
     onMediaClick = onMediaClick,
-    modifier = modifier
+    modifier = modifier,
+    viewModel = viewModel
   )
 }
 
@@ -735,6 +803,14 @@ fun SearchScreen(
 
   var isSearchSubmitted by remember { mutableStateOf(false) }
 
+  // Focus restoration: riceve il segnale dal ViewModel
+  val focusRestoreSignal = remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(viewModel) {
+    viewModel.focusRestoreSignal?.collect { mediaId ->
+      focusRestoreSignal.value = mediaId
+    }
+  }
+
   val searchBarFocusRequester = remember { FocusRequester() }
   val tuttiFilterFocusRequester = remember { FocusRequester() }
   val filmFilterFocusRequester = remember { FocusRequester() }
@@ -760,6 +836,28 @@ fun SearchScreen(
     SearchTypeFilter.ALL -> tuttiFilterFocusRequester
     SearchTypeFilter.FILM -> filmFilterFocusRequester
     SearchTypeFilter.SERIE_TV -> serieTvFilterFocusRequester
+  }
+
+  // Consumer il segnale di focus restoration per ripristinare il focus sulla card corretta
+  val gridState = rememberLazyGridState()
+  LaunchedEffect(focusRestoreSignal.value, gridState) {
+    val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
+    Log.d(FOCUS_REST, "SearchScreen: segnale ricevuto per mediaId = $mediaId")
+    focusRestoreSignal.value = null
+
+    // Cerca il mediaId tra i risultati visibili (query results o category results)
+    val index = results.indexOfFirst { it.id == mediaId }
+    if (index >= 0) {
+      Log.d(FOCUS_REST, "SearchScreen: trovata card all'indice $index nei risultati di ricerca")
+      gridState.scrollToItem(index)
+      kotlinx.coroutines.delay(100)
+      try {
+        contentFirstItemFocusRequester.requestFocus()
+        Log.d(FOCUS_REST, "SearchScreen: focus richiesto alla card")
+      } catch (_: Exception) {}
+    } else {
+      Log.w(FOCUS_REST, "SearchScreen: mediaId = $mediaId non trovato in results (size=${results.size})")
+    }
   }
 
   LaunchedEffect(savedCategoryId) {
@@ -1172,6 +1270,7 @@ fun SearchScreen(
         } else {
           TvFocusBringIntoView {
             LazyVerticalGrid(
+              state = gridState,
               columns = GridCells.Adaptive(minSize = 150.dp),
               contentPadding = PaddingValues(bottom = 48.dp),
               horizontalArrangement = Arrangement.spacedBy(16.dp),

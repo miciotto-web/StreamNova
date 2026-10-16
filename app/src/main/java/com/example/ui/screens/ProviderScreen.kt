@@ -33,6 +33,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -65,7 +66,10 @@ import com.example.ui.components.TvFocusAttachment
 import com.example.ui.components.guard
 import com.example.ui.components.tvFocusRequester
 import com.example.ui.components.LocalLastFocusedMediaId
+import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalClearLastFocusedMedia
+import com.example.ui.components.FOCUS_REST
+import com.example.ui.components.scrollToItemVerified
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaSurfaceVariant
@@ -99,6 +103,16 @@ fun ProviderScreen(
 ) {
   BackHandler { onBackClick() }
   val lastFocusedMediaId by (viewModel?.lastFocusedMediaId ?: MutableStateFlow(null)).collectAsState()
+  val focusRestoreToken by (viewModel?.focusRestoreToken ?: MutableStateFlow(0)).collectAsState()
+
+  // Nuovo evento di ripristino a ogni ingresso in questa schermata con un target salvato
+  // (ritorno dal Dettaglio): il token nel ViewModel avanza, quindi le card della griglia
+  // riattivano il tentativo anche quando l'id del target non è cambiato.
+  LaunchedEffect(Unit) {
+    val targetId = viewModel?.lastFocusedMediaId?.value ?: return@LaunchedEffect
+    Log.d(FOCUS_REST, "ProviderScreen: nuovo evento di ripristino per target=$targetId")
+    viewModel.signalFocusRestore(targetId)
+  }
 
   val stremioProviderMap by (viewModel?.stremioProviderMedia ?: MutableStateFlow(emptyMap())).collectAsState()
   val stremioItems = stremioProviderMap[provider.id].orEmpty()
@@ -145,13 +159,6 @@ fun ProviderScreen(
   // Crunchyroll: catalogo dominato da serie TV/anime -> filtro iniziale dedicato
   var selectedFilter by rememberSaveable(provider) {
     mutableStateOf(if (provider.tmdbProviderId == 283) ProviderCatalogFilter.TV_SERIES else ProviderCatalogFilter.ALL)
-  }
-
-  // Reset scroll in cima quando si cambia scheda/filtro
-  LaunchedEffect(selectedFilter) {
-    if (providerMedia.isNotEmpty()) {
-      gridState.scrollToItem(0)
-    }
   }
 
   // Pre-caricamento pagina iniziale al cambio filtro: il ViewModel ignora la chiamata
@@ -256,6 +263,20 @@ fun ProviderScreen(
     }
   }
 
+  // Reset scroll in cima quando si cambia scheda/filtro.
+  // Alla PRIMA composizione con un ripristino pendente il reset viene saltato: la griglia deve
+  // tornare sulla locandina del Dettaglio e un salto in cima interrompe lo scroll di ripristino.
+  val pendingRestoreTargetId by rememberUpdatedState(lastFocusedMediaId)
+  var entryScrollHandled by remember { mutableStateOf(false) }
+  LaunchedEffect(selectedFilter) {
+    val restorePending = !entryScrollHandled &&
+      pendingRestoreTargetId?.let { id -> filteredItems.any { it.id == id } } == true
+    entryScrollHandled = true
+    if (providerMedia.isNotEmpty() && !restorePending) {
+      gridState.scrollToItem(0)
+    }
+  }
+
   // Log di debug: conteggio dei poster effettivamente renderizzati
   LaunchedEffect(filteredItems, selectedFilter) {
     Log.d(
@@ -275,14 +296,43 @@ fun ProviderScreen(
 
   CompositionLocalProvider(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
+    LocalFocusRestoreToken provides focusRestoreToken,
     LocalClearLastFocusedMedia provides { viewModel?.clearLastFocusedMedia() }
   ) {
-  Column(
-    modifier = modifier
-      .fillMaxSize()
-      .background(NovaBackground)
-  ) {
-    // Header con gradiente personalizzato del Provider
+  // Ripristino del focus (percorso Provider): porta nel viewport la locandina target della
+  // griglia e VERIFICA che sia davvero visibile. L'indice è calcolato sulla stessa lista
+  // renderizzata dalla griglia (`filteredItems`), quindi indice di scroll e card coincidono
+  // per costruzione; la verifica rilegge il `layoutInfo` reale invece di assumere l'esito.
+  LaunchedEffect(filteredItems, lastFocusedMediaId) {
+    val mediaId = lastFocusedMediaId ?: return@LaunchedEffect
+    val index = filteredItems.indexOfFirst { it.id == mediaId }
+    if (index < 0) {
+      Log.w(FOCUS_REST, "ProviderScreen: target=$mediaId assente dai ${filteredItems.size} elementi filtrati")
+      return@LaunchedEffect
+    }
+    // Già nel viewport: la card è composta e il suo tentativo di focus è già in corso.
+    if (gridState.layoutInfo.visibleItemsInfo.any { it.index == index }) {
+      Log.d(FOCUS_REST, "ProviderScreen: target=$mediaId già visibile (indice $index)")
+      return@LaunchedEffect
+    }
+    val visible = gridState.scrollToItemVerified(index)
+    val card = filteredItems.getOrNull(index)
+    Log.d(
+      FOCUS_REST,
+      "ProviderScreen: target=$mediaId -> indice $index (${card?.title ?: "?"}), " +
+        "stessa locandina=${card?.id == mediaId}, visibile=$visible"
+    )
+    if (!visible) {
+      Log.w(FOCUS_REST, "ProviderScreen: scroll di ripristino non confermato per indice $index")
+    }
+  }
+
+    Column(
+      modifier = modifier
+        .fillMaxSize()
+        .background(NovaBackground)
+    ) {
+      // Header con gradiente personalizzato del Provider
     Box(
       modifier = Modifier
         .fillMaxWidth()
@@ -462,7 +512,9 @@ fun ProviderScreen(
             ) {
               PosterMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) }
+                onClick = { onMediaClick(item) },
+                // Griglia Provider: ripristino con conferma del focus reale (retry limitati).
+                confirmFocusRestore = true
               )
             }
           }
@@ -502,7 +554,7 @@ fun ProviderScreen(
       }
     }
   }
-}
+  }
 }
 
 /**
