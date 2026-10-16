@@ -1865,17 +1865,26 @@ class StreamNovaViewModel(
             _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
           }
         } else {
-          MediaRepository.setDetailError(
-            media,
-            "Titolo non trovato su TMDB per l'identificatore ${media.id}"
-          )
+          // Metadati assenti ≠ contenuto non riproducibile. Il titolo resta apribile e
+          // avviabile tramite il suo ID IMDb (`${media.id}`): il messaggio lo dice
+          // esplicitamente invece di far sembrare l'errore un blocco.
+          val tmdbConfigured = MediaRepository.isTmdbConfigured()
+          val message = if (!tmdbConfigured) {
+            "Metadati TMDB non disponibili (chiave API non configurata). La riproduzione resta attiva tramite l'identificatore ${media.id}."
+          } else {
+            "Nessun dettaglio TMDB per l'identificatore ${media.id}. La riproduzione resta attiva tramite l'ID IMDb."
+          }
+          Log.w(TAG, "openDetail: risoluzione IMDb->TMDB fallita per ${media.id} (tmdbConfigurato=$tmdbConfigured)")
+          MediaRepository.setDetailError(media, message)
           _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
         }
       }
     } else {
+      // Nessun TMDB ID e nessun ID IMDb: i dettagli estesi non sono recuperabili,
+      // ma la ricerca per titolo resta disponibile, quindi la riproduzione non è esclusa.
       MediaRepository.setDetailError(
         media,
-        "Identificatore TMDB non disponibile per questo contenuto"
+        "Dettagli TMDB non disponibili per questo contenuto: la ricerca delle sorgenti prosegue per titolo."
       )
       _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
     }
@@ -2401,21 +2410,36 @@ class StreamNovaViewModel(
           _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
         }
       }
-      val tmdbId = resolvedMediaItem.tmdbId
-      if (tmdbId == null || tmdbId <= 0) {
+      // Chiavi di ricerca disponibili. L'ID TMDB arricchisce la ricerca ma NON è un
+      // prerequisito per riprodurre: gli addon Stremio e i debrid (Real-Debrid, TorBox)
+      // usano l'identificatore IMDb nativo (`tt...`) e i provider HTTP italiani cercano
+      // per titolo. Un metadata TMDB mancante non deve quindi fermare lo stream.
+      val effectiveTmdbId = resolvedMediaItem.tmdbId?.takeIf { it > 0 } ?: 0
+      val searchTitle = resolvedMediaItem.title.ifBlank { resolvedMediaItem.originalTitle }
+      val effectiveImdb = resolvedMediaItem.effectiveImdbId
+        ?: effectiveEpisode?.effectiveImdbId
+        ?: resolvedMediaItem.id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
+      if (effectiveTmdbId <= 0) {
+        Log.i(TAG, "Risoluzione stream senza ID TMDB (imdb=$effectiveImdb, titolo='$searchTitle'): si prosegue con i motori che usano l'ID nativo")
+      }
+
+      // Unico caso in cui la ricerca viene davvero fermata: nessuna chiave utile.
+      // Senza TMDB, senza IMDb e senza titolo nessun motore può trovare sorgenti.
+      if (effectiveTmdbId <= 0 && effectiveImdb.isNullOrBlank() && searchTitle.isBlank()) {
         withContext(Dispatchers.Main) {
           if (currentJobGeneration != loadStreamGeneration) return@withContext
           _isSwitchingEpisode.value = false
+          val message = "Impossibile identificare il titolo: nessun identificatore IMDb/TMDB né titolo disponibile."
           if (isNextEpisode) {
-            // Nuova puntata non ricercabile (id mancante): mai schermata nera,
+            // Nuova puntata non ricercabile: mai schermata nera,
             // si passa alla selezione manuale delle sorgenti.
             _sourceDialogMedia.value = SourceDialogTarget(baseForResolution, effectiveEpisode)
             _showSourceDialog.value = true
             _streamResolutionState.value = StreamResolutionState.Idle
             _streamResult.value = StreamResult.Idle
           } else {
-            _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
-            _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
+            _streamResolutionState.value = StreamResolutionState.Error(message)
+            _streamResult.value = StreamResult.Error(message)
           }
         }
         return@launch
@@ -2497,17 +2521,11 @@ class StreamNovaViewModel(
         )
       }
 
-      val searchTitle = resolvedMediaItem.title.ifBlank { resolvedMediaItem.originalTitle }
-
-      val effectiveImdb = resolvedMediaItem.effectiveImdbId
-        ?: effectiveEpisode?.effectiveImdbId
-        ?: resolvedMediaItem.id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
-
       var hasOpenedPlayer = false
       var currentBestUrl: String? = null
 
       val resolutionFlow = streamManager.resolveFlow(
-        tmdbId = tmdbId,
+        tmdbId = effectiveTmdbId,
         isTv = isTv,
         season = season,
         episode = epNumber,

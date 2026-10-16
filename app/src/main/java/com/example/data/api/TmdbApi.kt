@@ -1,5 +1,6 @@
 package com.example.data.api
 
+import android.util.Log
 import com.squareup.moshi.Json
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -572,6 +573,16 @@ object TmdbApiClient {
   private const val BASE_URL = "https://api.themoviedb.org/3/"
   const val IMAGE_BASE_URL = "https://image.tmdb.org/t/p/"
 
+  private const val TAG_AUTH = "TmdbAuth"
+
+  /**
+   * Distingue un **Read Access Token v4** (JWT: header base64url `eyJ`, tre segmenti
+   * separati da punto) da una **API key v3** (stringa esadecimale, nessun punto).
+   * Solo il primo va autenticato via header `Authorization: Bearer`.
+   */
+  internal fun looksLikeReadAccessToken(credential: String): Boolean =
+    credential.startsWith("eyJ") && credential.count { it == '.' } == 2
+
   // Helper functions for full TMDB URLs
   fun backdropUrl(path: String?, size: String = "w1280"): String? {
     if (path.isNullOrBlank()) return null
@@ -624,14 +635,40 @@ object TmdbApiClient {
         // la lingua app riscriverebbe la query e perdremmo i trailer in italiano.
         val preserveLanguage = originalUrl.queryParameter("include_video_language") != null
         val tmdbLang = AppSettingsRepository.tmdbLanguage()
-        val newUrl = if (!preserveLanguage && originalUrl.queryParameter("language") != null) {
+        var newUrl = if (!preserveLanguage && originalUrl.queryParameter("language") != null) {
           originalUrl.newBuilder()
             .setQueryParameter("language", tmdbLang)
             .build()
         } else {
           originalUrl
         }
-        chain.proceed(original.newBuilder().url(newUrl).build())
+
+        // Il Read Access Token v4 è un JWT, non una API key v3: va inviato come
+        // `Authorization: Bearer`. Passato in `api_key` farebbe rispondere 401 a
+        // ogni chiamata anche con un token perfettamente valido.
+        val credential = newUrl.queryParameter("api_key").orEmpty()
+        val requestBuilder = original.newBuilder()
+        if (looksLikeReadAccessToken(credential)) {
+          newUrl = newUrl.newBuilder().removeAllQueryParameters("api_key").build()
+          requestBuilder.header("Authorization", "Bearer $credential")
+        } else if (credential.isBlank()) {
+          Log.w(
+            TAG_AUTH,
+            "Richiesta TMDB ${newUrl.encodedPath} senza credenziale (api_key vuota): " +
+              "il server risponderà 401/404 e i metadati resteranno assenti. " +
+              "Configurare TMDB_API_KEY (variabile d'ambiente, local.properties o .env)."
+          )
+        }
+
+        val response = chain.proceed(requestBuilder.url(newUrl).build())
+        if (response.code == 401 || response.code == 403) {
+          Log.w(
+            TAG_AUTH,
+            "TMDB ha risposto HTTP ${response.code} su ${newUrl.encodedPath}: " +
+              "credenziale assente, revocata o di tipo sbagliato (API key v3 o Read Access Token v4)."
+          )
+        }
+        response
       }
       .addInterceptor(
         HttpLoggingInterceptor().apply {

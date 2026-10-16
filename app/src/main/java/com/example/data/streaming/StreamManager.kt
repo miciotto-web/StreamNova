@@ -103,6 +103,14 @@ class StreamManager(
   ): Flow<List<StreamSource>> = channelFlow {
     val flowId = ++searchIdCounter
     Log.i(HTTP_TRACE, "[SM] resolveFlow START searchId=$flowId tmdbId=$tmdbId isTv=$isTv S${season}E${episode}")
+
+    // Senza TMDB ID, IMDb ID e titolo non esiste alcuna chiave di ricerca: nessun
+    // provider o addon può rispondere, quindi si chiude subito con zero sorgenti.
+    val imdbIdClean = imdbId?.trim()?.takeIf { it.isNotBlank() }?.substringBefore(":")
+    if (tmdbId <= 0 && imdbIdClean.isNullOrBlank() && title.isNullOrBlank()) {
+      Log.w(TAG, "resolveFlow: nessuna chiave di ricerca disponibile (tmdbId=$tmdbId, imdbId=$imdbId, titolo vuoto)")
+      return@channelFlow
+    }
     val collected = mutableListOf<StreamSource>()
     val mutex = Mutex()
     var emittedFirst = false
@@ -202,10 +210,22 @@ class StreamManager(
     
     // Se in modalità HTTP_WEB, escludi i provider Debrid e TorBox;
     // in DEBRID_TORBOX esegui esclusivamente TorBoxStreamProvider.
-    val filteredProviders = if (streamingEngineMode == StreamingEngineMode.HTTP_WEB) {
+    val modeProviders = if (streamingEngineMode == StreamingEngineMode.HTTP_WEB) {
       orderedProviders.filterNot { it is TorBoxStreamProvider }
     } else {
       orderedProviders.filter { it is TorBoxStreamProvider }
+    }
+
+    // L'ID TMDB arricchisce la ricerca ma non è un prerequisito per riprodurre:
+    // gli addon Stremio e TorBox interrogano per ID IMDb (`tt...`) e i provider
+    // italiani cercano per titolo. Quando manca si escludono solo i provider che
+    // parlano esclusivamente con le API TMDB, invece di invocarli per farli
+    // fallire su "TMDB ID non valido" e lasciare l'utente senza sorgenti.
+    val missingTmdbId = tmdbId <= 0
+    val filteredProviders = if (missingTmdbId) {
+      modeProviders.filterNot { it.requiresTmdbId() }
+    } else {
+      modeProviders
     }
 
     orderedProviders.forEach { p ->
@@ -213,6 +233,8 @@ class StreamManager(
       val active = filteredProviders.contains(p)
       if (active) {
         Log.i(TAG, "Provider $pName [ATTIVO] per modalità $streamingEngineMode (tmdbId=$tmdbId isTv=$isTv S=$season E=$episode)")
+      } else if (missingTmdbId && modeProviders.contains(p) && p.requiresTmdbId()) {
+        Log.i(TAG, "Provider $pName [SALTATO] richiede un ID TMDB non disponibile (si prosegue con imdbId=$imdbId)")
       } else {
         Log.d(TAG, "Provider $pName [SALTATO] per modalità $streamingEngineMode (escluso dalla configurazione)")
       }
@@ -402,6 +424,15 @@ class StreamManager(
     baseUrl.trimEnd('/').toHttpUrlOrNull()?.host ?: "unknown-host"
 
   /**
+   * Provider che interrogano **esclusivamente** le API TMDB e non hanno alcun
+   * percorso alternativo per ID IMDb o titolo: senza un TMDB ID valido la loro
+   * unica risposta possibile è `TMDB ID non valido`. Vengono disattivati quando
+   * l'ID TMDB manca, mentre Stremio, TorBox e i provider che cercano per titolo
+   * continuano a lavorare.
+   */
+  private fun StreamProvider.requiresTmdbId(): Boolean = providerRequiresTmdbId(this)
+
+  /**
    * Risolve le sorgenti disponibili restituendo il primo risultato non vuoto disponibile (Fast-Start).
    */
   suspend fun resolve(
@@ -431,7 +462,9 @@ class StreamManager(
     episode: Episode? = null,
     streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB
   ): StreamSource? {
-    val tmdbId = media.tmdbId ?: return null
+    // Un ID TMDB mancante NON impedisce la risoluzione: Stremio e TorBox usano
+    // l'ID IMDb e i provider italiani cercano per titolo. Si prosegue con 0.
+    val tmdbId = media.tmdbId?.takeIf { it > 0 } ?: 0
     val isTv = media.type == MediaType.SERIE_TV
     val season = episode?.seasonNumber ?: media.lastWatchedSeason ?: 1
     val epNumber = episode?.episodeNumber ?: media.lastWatchedEpisode ?: 1
@@ -439,6 +472,11 @@ class StreamManager(
     val effectiveImdb = media.imdbId?.takeIf { it.isNotBlank() }
       ?: episode?.seriesImdbId?.takeIf { it.isNotBlank() }
       ?: media.id.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(":")
+
+    if (tmdbId <= 0 && effectiveImdb.isNullOrBlank() && searchTitle.isBlank()) {
+      Log.w(TAG, "resolveBestStream: nessuna chiave di ricerca per ${media.id}")
+      return null
+    }
 
     val sources = resolve(
       tmdbId = tmdbId,
@@ -480,6 +518,21 @@ class StreamManager(
 
     /** Timeout (ms) per l'attesa finale dei job cancellati prima di chiudere il channelFlow. */
     const val JOIN_TIMEOUT_MS = 3_000L
+
+    /**
+     * True se il provider **pretende** un TMDB ID valido (e quindi va escluso quando
+     * manca): VixSrc, 2Embed, SuperEmbed e MultiEmbed costruiscono l'URL del player
+     * solo da `tmdbId` e non hanno un percorso per ID IMDb o titolo.
+     *
+     * Gli altri provider restano utilizzabili senza TMDB: gli addon Stremio e TorBox
+     * interrogano la risorsa `stream` con l'ID IMDb `tt...`, mentre
+     * StreamingCommunity, CB01, Eurostreaming e AnimeStreamProvider cercano per titolo.
+     */
+    fun providerRequiresTmdbId(provider: StreamProvider): Boolean =
+      provider is VixSrcProvider ||
+        provider is MultiEmbedProvider ||
+        provider is TwoEmbedProvider ||
+        provider is SuperEmbedProvider
 
     /** Head-start (ms) concesso ad [AnimeStreamProvider] sugli altri provider per i contenuti anime. */
     const val ANIME_HEAD_START_MS = 700L

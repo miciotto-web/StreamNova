@@ -2334,22 +2334,66 @@ object MediaRepository {
 
   const val DEFAULT_FALLBACK_TMDB_API_KEY = ""
 
+  /**
+   * Credenziale TMDB effettiva: **API key v3** (stringa esadecimale) oppure
+   * **Read Access Token v4** (JWT `eyJ...`). Entrambe sono accettate: il client
+   * HTTP riconosce il token e lo invia come `Authorization: Bearer`, mentre la
+   * API key viaggia nel parametro `api_key` (vedi `TmdbApiClient`).
+   *
+   * Canali, in ordine di priorità:
+   *  1. `BuildConfig.TMDB_API_KEY`, generato dal plugin `secrets` a partire da `.env`;
+   *  2. `BuildConfig.ENV_TMDB_API_KEY`, valorizzato **in fase di build** da
+   *     `TMDB_API_KEY` (variabile d'ambiente o `local.properties`);
+   *  3. variabile d'ambiente letta a runtime (utile solo su JVM/test).
+   *
+   * I placeholder (`DEFAULT_...`) vengono rifiutati: se nessun canale fornisce una
+   * credenziale reale il risultato è la stringa vuota. In quello stato l'app non
+   * deve fingere un titolo "non trovato": i metadati TMDB restano assenti ma la
+   * riproduzione prosegue con l'identificatore IMDb nativo.
+   */
   fun getEffectiveApiKey(): String {
-    val buildKey = BuildConfig.TMDB_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'")
-    if (buildKey.isNotBlank() && buildKey.length >= 20 && !buildKey.startsWith("DEFAULT_")) {
-      return buildKey
+    val candidates = listOf(
+      BuildConfig.TMDB_API_KEY,
+      BuildConfig.ENV_TMDB_API_KEY,
+      System.getenv("TMDB_API_KEY").orEmpty()
+    )
+    candidates.forEach { candidate ->
+      sanitizeTmdbCredential(candidate)?.let { return it }
     }
-    val envBuildConfig = BuildConfig.ENV_TMDB_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'")
-    if (envBuildConfig.isNotBlank() && envBuildConfig.length >= 20 && !envBuildConfig.startsWith("DEFAULT_")) {
-      return envBuildConfig
+    // Una sola volta per processo: `getEffectiveApiKey()` viene chiamato a ogni
+    // richiesta TMDB e un warning ripetuto inonderebbe Logcat.
+    if (missingCredentialWarned.compareAndSet(false, true)) {
+      Log.w(
+        "MediaRepository",
+        "Nessuna credenziale TMDB configurata (BuildConfig.TMDB_API_KEY, BuildConfig.ENV_TMDB_API_KEY e " +
+          "TMDB_API_KEY d'ambiente sono vuote o placeholder): i metadati TMDB resteranno assenti. " +
+          "Impostare TMDB_API_KEY in local.properties o .env e ricompilare."
+      )
     }
-    val envKey = System.getenv("TMDB_API_KEY")?.trim()?.removeSurrounding("\"")?.removeSurrounding("'") ?: ""
-    if (envKey.isNotBlank() && envKey.length >= 20 && !envKey.startsWith("DEFAULT_")) {
-      return envKey
-    }
-    Log.i("MediaRepository", "Uso TMDB API Key predefinita incorporata ($DEFAULT_FALLBACK_TMDB_API_KEY)")
     return DEFAULT_FALLBACK_TMDB_API_KEY
   }
+
+  /** Evita di ripetere il warning "nessuna credenziale TMDB" a ogni richiesta. */
+  private val missingCredentialWarned = java.util.concurrent.atomic.AtomicBoolean(false)
+
+  /** Normalizza e valida una credenziale TMDB scartando vuoti, placeholder e valori troppo corti. */
+  private fun sanitizeTmdbCredential(raw: String?): String? {
+    val clean = raw?.trim()?.removeSurrounding("\"")?.removeSurrounding("'").orEmpty()
+    if (clean.isBlank() || clean.length < 20) return null
+    if (clean.startsWith("DEFAULT_", ignoreCase = true)) return null
+    return clean
+  }
+
+  /**
+   * True quando è disponibile una credenziale TMDB utilizzabile.
+   *
+   * Permette di distinguere due situazioni che l'utente vede diversamente:
+   * **TMDB non configurato** (metadati assenti, ma il titolo è riproducibile
+   * tramite ID IMDb/titolo) da **titolo assente su TMDB** (fatto specifico del
+   * contenuto). Serve anche ai messaggi di errore, che non devono suggerire un
+   * blocco della riproduzione quando il problema è solo di metadati.
+   */
+  fun isTmdbConfigured(): Boolean = getEffectiveApiKey().isNotBlank()
 
   suspend fun verifyTmdbApiKey(apiKey: String = getEffectiveApiKey()): Boolean = withContext(Dispatchers.IO) {
     try {
