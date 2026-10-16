@@ -2641,6 +2641,8 @@ private fun downloadErrorText(reason: DownloadErrorReason): String = when (reaso
     stringResource(R.string.settings_update_dl_error_timeout)
   DownloadErrorReason.HTTP_ERROR ->
     stringResource(R.string.settings_update_dl_error_http)
+  DownloadErrorReason.HOST_NOT_ALLOWED ->
+    stringResource(R.string.settings_update_dl_error_host)
   DownloadErrorReason.INTERRUPTED ->
     stringResource(R.string.settings_update_dl_error_interrupted)
   DownloadErrorReason.FILE_MISSING ->

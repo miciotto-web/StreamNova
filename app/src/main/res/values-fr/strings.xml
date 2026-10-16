@@ -208,6 +208,7 @@
      <string name="settings_update_dl_error_interrupted">Téléchargement interrompu</string>
      <string name="settings_update_dl_error_file">Fichier APK manquant ou vide</string>
      <string name="settings_update_dl_error_space">Espace de stockage insuffisant</string>
+     <string name="settings_update_dl_error_host">Téléchargement bloqué : source non autorisée</string>
      <string name="settings_update_dl_error_generic">Erreur pendant le téléchargement</string>
      <string name="settings_sec_playback_engine">Moteur de Lecture</string>
      <string name="settings_playback_mode">Mode de lecture</string>

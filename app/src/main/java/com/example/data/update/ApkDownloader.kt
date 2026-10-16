@@ -17,10 +17,58 @@ enum class DownloadErrorReason {
   NO_NETWORK,
   TIMEOUT,
   HTTP_ERROR,
+  HOST_NOT_ALLOWED,
   INTERRUPTED,
   FILE_MISSING,
   INSUFFICIENT_SPACE,
   UNKNOWN
+}
+
+/**
+ * Host GitHub autorizzati al download delle release.
+ *
+ * `release-assets.githubusercontent.com` e' l'host a cui GitHub reindirizza
+ * `github.com/.../releases/download/...`: senza questo host l'interceptor di
+ * rete bloccava il redirect e l'utente leggeva un errore HTTP fuorviante.
+ * Elenco esplicito e chiuso: niente wildcard, niente domini generici.
+ */
+internal val ALLOWED_RELEASE_HOSTS = setOf(
+  "github.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+  "api.github.com"
+)
+
+/**
+ * Politica di validazione di un URL di download: HTTPS esclusivo e host
+ * presente nell'elenco consentito.
+ *
+ * L'host viene estratto con [java.net.URI], che separa correttamente
+ * userinfo, porta e percorso: un URL come `https://github.com@evil.example/x`
+ * restituisce `evil.example` e viene quindi respinto, mentre un confronto
+ * testuale sulla stringa grezza potrebbe approvarlo per errore.
+ *
+ * Restituisce false per qualsiasi URL non parsabile: fall closed.
+ */
+internal fun isAllowedReleaseUrl(url: String): Boolean {
+  val uri = try {
+    java.net.URI(url.trim())
+  } catch (_: Exception) {
+    return false
+  }
+  val scheme = uri.scheme?.lowercase()
+  val host = uri.host?.lowercase()?.removeSuffix(".")
+  return scheme == "https" && host != null && host in ALLOWED_RELEASE_HOSTS
+}
+
+/**
+ * Host (non l'URL completo) di una destinazione bloccata, da usare nei log:
+ * non registra query string firmate, token o path.
+ */
+internal fun safeHostForLog(url: String): String = try {
+  java.net.URI(url.trim()).host?.lowercase() ?: "host sconosciuto"
+} catch (_: Exception) {
+  "URL non valido"
 }
 
 /** Errore del download con motivo normalizzato per la UI. */
@@ -52,11 +100,13 @@ class ApkDownloader {
     .readTimeout(30, TimeUnit.SECONDS)
     .callTimeout(15, TimeUnit.MINUTES)
     .addNetworkInterceptor { chain ->
-      val url = chain.request().url
-      if (url.scheme != "https" || url.host !in ALLOWED_HOSTS) {
+      // Valutato su OGNI destinazione effettiva, redirect inclusi: l'header
+      // Location non viene mai accettato alla cieca.
+      val url = chain.request().url.toString()
+      if (!isAllowedReleaseUrl(url)) {
         throw DownloadException(
-          DownloadErrorReason.HTTP_ERROR,
-          "URL non consentito: $url"
+          DownloadErrorReason.HOST_NOT_ALLOWED,
+          "Host non consentito: ${safeHostForLog(url)}"
         )
       }
       chain.proceed(chain.request())
@@ -73,12 +123,10 @@ class ApkDownloader {
     asset: ReleaseAsset,
     onProgress: (Int?) -> Unit
   ): File {
-    if (!asset.downloadUrl.startsWith("https://", ignoreCase = true) ||
-      !isAllowedHost(asset.downloadUrl)
-    ) {
+    if (!isAllowedReleaseUrl(asset.downloadUrl)) {
       throw DownloadException(
-        DownloadErrorReason.HTTP_ERROR,
-        "URL asset non consentito: ${asset.downloadUrl}"
+        DownloadErrorReason.HOST_NOT_ALLOWED,
+        "Host asset non consentito: ${safeHostForLog(asset.downloadUrl)}"
       )
     }
 
@@ -190,19 +238,7 @@ class ApkDownloader {
     else -> DownloadException(DownloadErrorReason.UNKNOWN, error.message ?: "Errore", error)
   }
 
-  private fun isAllowedHost(url: String): Boolean {
-    val host = url.substringAfter("://", "").substringBefore('/').substringBefore(':')
-    return host in ALLOWED_HOSTS
-  }
-
   companion object {
     const val UPDATE_DIR = "updates"
-
-    /** Solo host GitHub ufficiali: la release StreamNova è l'unica sorgente valida. */
-    private val ALLOWED_HOSTS = setOf(
-      "github.com",
-      "objects.githubusercontent.com",
-      "api.github.com"
-    )
   }
 }

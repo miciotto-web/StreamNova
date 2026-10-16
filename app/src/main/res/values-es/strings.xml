@@ -208,6 +208,7 @@
      <string name="settings_update_dl_error_interrupted">Descarga interrumpida</string>
      <string name="settings_update_dl_error_file">Archivo APK ausente o vacío</string>
      <string name="settings_update_dl_error_space">Espacio de almacenamiento insuficiente</string>
+     <string name="settings_update_dl_error_host">Descarga bloqueada: origen no permitido</string>
      <string name="settings_update_dl_error_generic">Error durante la descarga</string>
      <string name="settings_sec_playback_engine">Motor de Reproducción</string>
      <string name="settings_playback_mode">Modo de reproducción</string>

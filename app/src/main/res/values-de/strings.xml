@@ -208,6 +208,7 @@
      <string name="settings_update_dl_error_interrupted">Download abgebrochen</string>
      <string name="settings_update_dl_error_file">APK-Datei fehlt oder ist leer</string>
      <string name="settings_update_dl_error_space">Nicht genügend Speicherplatz</string>
+     <string name="settings_update_dl_error_host">Download blockiert: Quelle nicht zulässig</string>
      <string name="settings_update_dl_error_generic">Fehler beim Download</string>
      <string name="settings_sec_playback_engine">Wiedergabe-Engine</string>
      <string name="settings_playback_mode">Wiedergabemodus</string>

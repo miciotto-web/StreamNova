@@ -205,6 +205,7 @@
      <string name="settings_update_dl_error_network">No connection or connection lost</string>
      <string name="settings_update_dl_error_timeout">Timed out during download</string>
      <string name="settings_update_dl_error_http">Server error during download</string>
+     <string name="settings_update_dl_error_host">Download blocked: source not allowed</string>
      <string name="settings_update_dl_error_interrupted">Download interrupted</string>
      <string name="settings_update_dl_error_file">APK file missing or empty</string>
      <string name="settings_update_dl_error_space">Not enough storage space</string>

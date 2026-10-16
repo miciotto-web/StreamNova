@@ -205,6 +205,7 @@
     <string name="settings_update_dl_error_network">Connessione assente o interrotta</string>
     <string name="settings_update_dl_error_timeout">Tempo scaduto durante il download</string>
     <string name="settings_update_dl_error_http">Errore del server durante il download</string>
+    <string name="settings_update_dl_error_host">Download bloccato: origine non consentita</string>
     <string name="settings_update_dl_error_interrupted">Download interrotto</string>
     <string name="settings_update_dl_error_file">File APK mancante o vuoto</string>
     <string name="settings_update_dl_error_space">Spazio di archiviazione insufficiente</string>
