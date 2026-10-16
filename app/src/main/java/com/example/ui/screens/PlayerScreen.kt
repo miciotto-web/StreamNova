@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -293,6 +294,11 @@ fun PlayerScreen(
   var totalDuration by remember { mutableLongStateOf(playbackState.durationMs.coerceAtLeast(1L)) }
   var isPlaying by remember { mutableStateOf(true) }
   var areControlsVisible by remember { mutableStateOf(true) }
+  // Scrubbing a schermo intero (◀ / ▶ con i controlli nascosti): stato di anteprima
+  // pubblicato dal controller, null quando lo scrubbing non è in corso. Durante lo
+  // scrubbing l'HUD resta fuori schermo e l'unico elemento a video è l'overlay di anteprima.
+  var scrubState by remember { mutableStateOf<PlayerScrubUiState?>(null) }
+  val isScrubbing = scrubState != null
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
 
   // FLAG CRITICO: Indica se siamo in fase di transizione verso il prossimo episodio.
@@ -323,7 +329,9 @@ fun PlayerScreen(
   var nextEpisodeCountdownSeconds by remember { mutableIntStateOf(0) }
 
   // Overlay "Prossimo Episodio": attivo negli ultimi 35 secondi o a STATE_ENDED.
-  val isNextEpisodePromptVisible = NextEpisodePromptUtils.shouldShow(
+  // Durante lo scrubbing resta fuori schermo: nessun overlay e nessun countdown di
+  // auto-avanzamento mentre l'utente sta solo cercando nel contenuto.
+  val isNextEpisodePromptVisible = !isScrubbing && NextEpisodePromptUtils.shouldShow(
     positionMs = currentPosition,
     durationMs = totalDuration,
     playbackEnded = playbackEnded,
@@ -371,6 +379,14 @@ fun PlayerScreen(
   val focusScope = rememberCoroutineScope()
 
   var hudHasFocus by remember { mutableStateOf(false) }
+  // Il focus è dentro la schermata player (HUD, barra o nodo di riposo). Serve a garantire
+  // che il telecomando resti del player: se il focus finisce sui controlli coperti del
+  // catalogo, ◀ / ▶ non arrivano più allo scrubbing.
+  var playerHasFocus by remember { mutableStateOf(false) }
+  // Rilascio del tasto OK che ha confermato lo scrubbing: va consumato in preview, altrimenti
+  // il clickable dello sfondo (tocco per mostrare/nascondere i controlli) aprirebbe l'HUD
+  // subito dopo la conferma.
+  val scrubOkReleasePending = remember { mutableStateOf(false) }
   var hideTimerTick by remember { mutableLongStateOf(0L) }
 
   // BACK gerarchico (livello 1): finché è aperto un modale, il tasto Back chiude SOLO il modale.
@@ -1845,7 +1861,9 @@ fun PlayerScreen(
   val isIntroActive = !isIntroDismissed &&
     PlayerIntroUtils.isButtonVisible(currentPosition, introWindow)
 
-  val hudShown = areControlsVisible || !isPlaying
+  // Durante lo scrubbing l'HUD resta nascosto anche a video in pausa: l'unico elemento a
+  // video è l'overlay di anteprima della posizione.
+  val hudShown = (areControlsVisible || !isPlaying) && !isScrubbing
 
   fun kickAutoHide() {
     hideTimerTick++
@@ -1906,6 +1924,40 @@ fun PlayerScreen(
     areControlsVisible = false
   }
 
+  // ---------------------------------------------------------------------------
+  // SCRUBBING A SCHERMO INTERO CON IL D-PAD (◀ / ▶)
+  //
+  // Con l'HUD a schermo le frecce non vengono consumate da nessuno: restano a Compose,
+  // che sposta il focus fra i controlli (Play, Tracce, Sottotitoli, ...). A video pulito
+  // le frecce aprono lo scrubbing: il video va in pausa, la posizione di anteprima si
+  // sposta di 10 s per pressione e diventa una seek reale solo alla conferma
+  // (COMMIT_DELAY_MS di silenzio oppure OK). BACK annulla senza seek.
+  // ---------------------------------------------------------------------------
+  val scrubScope = rememberCoroutineScope()
+  val scrub = remember(exoPlayer) {
+    PlayerScrubController(scrubScope, exoPlayer) { state -> scrubState = state }
+  }
+
+  /** Pressione (o ripetizione) di ◀ / ▶ a controlli nascosti: apre o prosegue lo scrubbing. */
+  fun onScrubArrowPressed(direction: Int) {
+    scrub.onArrowPressed(direction)
+  }
+
+  /** Conclusione con seek reale (timer di conferma scaduto o OK premuto). */
+  fun commitScrub() {
+    scrub.commit()
+  }
+
+  /** BACK durante lo scrubbing: nessuna seek, si riprende dal punto di partenza. */
+  fun cancelScrub() {
+    scrub.cancel()
+  }
+
+  // Nessun job e nessuna sessione residui quando il player viene ricreato o la schermata esce.
+  DisposableEffect(exoPlayer) {
+    onDispose { scrub.release() }
+  }
+
   // (1) Richiesta focus iniziale
   LaunchedEffect(Unit) {
     if (hudShown) {
@@ -1940,6 +1992,28 @@ fun PlayerScreen(
     if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
   }
 
+  // (4) Il telecomando resta del player. Con i controlli a schermo ◀ / ▶ non vengono
+  // consumate: le muove Compose fra Play, Tracce, Sottotitoli, ... Ai bordi della barra,
+  // però, la ricerca geometrica del focus uscirebbe dalla schermata player verso i
+  // controlli del catalogo coperti dal video, e lì resterebbe: le frecce non arriverebbero
+  // più allo scrubbing. Qui il focus viene riportato sulla superficie visibile del player:
+  // i controlli quando l'HUD è a schermo, il nodo di riposo quando il video è pulito.
+  LaunchedEffect(
+    hudShown,
+    hudHasFocus,
+    playerHasFocus,
+    isScrubbing,
+    anyModalOpen,
+    isNextEpisodePromptVisible
+  ) {
+    if (anyModalOpen || isNextEpisodePromptVisible) return@LaunchedEffect
+    if (hudShown) {
+      if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
+    } else if (!isScrubbing && !playerHasFocus) {
+      idleFocusRequester.requestFocusAfterFrame()
+    }
+  }
+
   // BACK su controlli: se l'overlay "Prossimo Episodio" è visibile, il primo BACK lo
   // nasconde (consente di vedere i titoli di coda senza auto-next); il BACK successivo
   // esce dal player.
@@ -1960,14 +2034,69 @@ fun PlayerScreen(
   Box(
     modifier = modifier
       .fillMaxSize()
+      .onFocusChanged { state -> playerHasFocus = state.hasFocus }
       .background(Color.Black)
+      // Lo scrubbing è gestito in PREVIEW, prima di ogni altro gestore del tasto: il
+      // clickable dello sfondo (tocco per mostrare/nascondere l'HUD) consuma OK/ENTER nel
+      // bubble e intercetterebbe la conferma, e le frecce devono restare allo scrubbing
+      // anche quando il focus è su un controllo coperto dell'HUD.
+      .onPreviewKeyEvent { keyEvent ->
+        val native = keyEvent.nativeKeyEvent
+        val keyCode = native.keyCode
+        val isKeyDown = native.action == KeyEvent.ACTION_DOWN
+        val scrubDirection = PlayerScrub.directionForKeyCode(keyCode)
+
+        // Rilascio dell'OK che ha confermato lo scrubbing: consumato qui, altrimenti il
+        // clickable dello sfondo interpreterebbe il click e aprirebbe i controlli.
+        if (scrubOkReleasePending.value) {
+          scrubOkReleasePending.value = false
+          if (!isKeyDown) return@onPreviewKeyEvent true
+        }
+
+        if (scrub.isScrubbing) {
+          // Con l'anteprima aperta il telecomando appartiene allo scrubbing: ogni pressione
+          // (comprese le ripetizioni del sistema) vale un passo, OK conferma, BACK annulla.
+          when {
+            keyCode == KeyEvent.KEYCODE_BACK -> {
+              if (isKeyDown && native.repeatCount == 0) cancelScrub()
+              return@onPreviewKeyEvent true
+            }
+            keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER -> {
+              if (isKeyDown) {
+                commitScrub()
+                scrubOkReleasePending.value = true
+              }
+              return@onPreviewKeyEvent true
+            }
+            scrubDirection != 0 -> {
+              if (isKeyDown) onScrubArrowPressed(scrubDirection)
+              return@onPreviewKeyEvent true
+            }
+          }
+          // Qualsiasi altro tasto prosegue e conclude lo scrubbing nel gestore del bubble,
+          // confermandone la posizione (l'utente non deve perdere il punto raggiunto).
+          return@onPreviewKeyEvent false
+        }
+
+        // ◀ / ▶ a video pulito: aprono lo scrubbing. Con l'HUD a schermo (o una modale
+        // aperta) l'evento NON viene toccato: resta a Compose, che sposta il focus fra i
+        // controlli a video (Play, Tracce audio, Sottotitoli, ...).
+        if (scrubDirection != 0) {
+          if (hudShown || anyModalOpen) return@onPreviewKeyEvent false
+          if (isKeyDown) onScrubArrowPressed(scrubDirection)
+          return@onPreviewKeyEvent true
+        }
+
+        false
+      }
       .onKeyEvent { keyEvent ->
         val native = keyEvent.nativeKeyEvent
         val keyCode = native.keyCode
+        val isKeyDown = native.action == KeyEvent.ACTION_DOWN
 
         // Gestione BACK telecomando
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-          if (native.action == KeyEvent.ACTION_DOWN && native.repeatCount == 0) {
+          if (isKeyDown && native.repeatCount == 0) {
             Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent KEYCODE_BACK down, anyModalOpen=$anyModalOpen")
             if (anyModalOpen) {
               showTrackQuickPanel = false
@@ -1989,17 +2118,23 @@ fun PlayerScreen(
           return@onKeyEvent true
         }
 
-        if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
+        if (!isKeyDown) return@onKeyEvent false
+
         if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) &&
           native.repeatCount > 0
         ) {
           return@onKeyEvent false
         }
 
-        // Qualsiasi pressione riavvia l'auto-hide
+        // Qualsiasi altro tasto è un comando diverso: uno scrubbing ancora aperto si
+        // conclude confermandone la posizione, perché l'utente non deve perdere il punto
+        // raggiunto con ◀ / ▶.
+        if (scrub.isScrubbing) commitScrub()
+
+        // Qualsiasi pressione riavvia l'auto-hide (le frecce della ricerca sono escluse:
+        // non devono mostrare né prolungare la visibilità dei controlli)
         when (keyCode) {
           KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-          KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
           KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
           KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
           KeyEvent.KEYCODE_MEDIA_REWIND -> kickAutoHide()
@@ -2043,19 +2178,8 @@ fun PlayerScreen(
             else -> false
           }
 
-          // Frecce Sinistra / Destra
-          KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> when {
-            !hudShown -> {
-              showControls()
-              true
-            }
-            hudHasFocus -> false
-            else -> {
-              seekBy(if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -10_000L else 10_000L)
-              requestFocusOn(seekBarFocusRequester)
-              true
-            }
-          }
+          // Frecce Sinistra / Destra: gestite nell'handler di PREVIEW (focus fra i controlli
+          // con l'HUD a schermo, scrubbing a video pulito). Qui restano solo Su / Giù.
 
 // Frecce Su / Giù
           KeyEvent.KEYCODE_DPAD_UP -> {
@@ -2168,8 +2292,9 @@ fun PlayerScreen(
       }
     }
 
-    // Buffering indicator
-    if (isBuffering && playbackErrorMessage == null) {
+    // Buffering indicator: durante lo scrubbing resta fuori schermo
+    // (l'unico elemento a video è l'overlay di anteprima della posizione).
+    if (isBuffering && playbackErrorMessage == null && !isScrubbing) {
       Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -2477,15 +2602,10 @@ fun PlayerScreen(
                 .onKeyEvent { keyEvent ->
                   val native = keyEvent.nativeKeyEvent
                   if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
+                  // Le frecce ◀ / ▶ non sono gestite qui: la barra non deve intercettare
+                  // la ricerca veloce continua (né consumarla con salti di 10 secondi).
+                  // UP/DOWN spostano il focus fra barra, Salta Intro e pulsanti.
                   when (native.keyCode) {
-                    KeyEvent.KEYCODE_DPAD_LEFT -> {
-                      seekBy(-10_000L, native.repeatCount)
-                      true
-                    }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                      seekBy(10_000L, native.repeatCount)
-                      true
-                    }
                     KeyEvent.KEYCODE_DPAD_UP -> {
                       if (isIntroActive) {
                         requestFocusOn(skipIntroFocusRequester)
@@ -2690,9 +2810,11 @@ fun PlayerScreen(
       }
     }
 
-    // 3. Banner "Salta Intro" fluttuante quando l'HUD è nascosto (per serie TV)
+    // 3. Banner "Salta Intro" fluttuante quando l'HUD è nascosto (per serie TV).
+    // Durante lo scrubbing resta fuori schermo: mentre l'utente cerca nel contenuto
+    // l'unico elemento a video è l'overlay di anteprima.
     AnimatedVisibility(
-      visible = isIntroActive && !hudShown,
+      visible = isIntroActive && !hudShown && !isScrubbing,
       enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
       exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
       modifier = Modifier
@@ -2752,6 +2874,22 @@ fun PlayerScreen(
             letterSpacing = 0.5.sp
           )
         }
+      }
+    }
+
+    // Overlay di scrubbing: anteprima della posizione scelta con ◀ / ▶ mentre i controlli
+    // sono nascosti. Visibile solo durante lo scrubbing, senza dissolvenza: la barra deve
+    // comparire e sparire nello stesso frame della pressione, anche a pressioni ravvicinate.
+    val scrubPreview = scrubState
+    if (scrubPreview != null) {
+      Box(
+        modifier = Modifier
+          .align(Alignment.BottomCenter)
+          .zIndex(120f)
+          .padding(bottom = 64.dp),
+        contentAlignment = Alignment.Center
+      ) {
+        PlayerScrubOverlay(state = scrubPreview)
       }
     }
 
@@ -3728,6 +3866,113 @@ fun TrackSelectionDialog(
         }
       }
     }
+  }
+}
+
+/**
+ * Overlay di anteprima dello scrubbing: mostra dove porta la posizione scelta con ◀ / ▶ e
+ * di quanto si è spostata rispetto al punto di partenza. Nessun pulsante e nessun focus:
+ * gli unici comandi sono OK (conferma) e BACK (annulla), quindi i controlli restano
+ * fuori schermo per tutta la durata dello scrubbing.
+ */
+@Composable
+private fun PlayerScrubOverlay(state: PlayerScrubUiState) {
+  val fraction = if (state.durationMs > 0L) {
+    (state.positionMs.toFloat() / state.durationMs.toFloat()).coerceIn(0f, 1f)
+  } else 0f
+
+  Column(
+    modifier = Modifier
+      .widthIn(min = 420.dp, max = 760.dp)
+      .shadow(elevation = 18.dp, shape = RoundedCornerShape(18.dp), spotColor = NovaCyanBright)
+      .background(color = Color(0xE60B111E), shape = RoundedCornerShape(18.dp))
+      .border(width = 1.5.dp, color = NovaCyan.copy(alpha = 0.85f), shape = RoundedCornerShape(18.dp))
+      .padding(horizontal = 26.dp, vertical = 20.dp),
+    verticalArrangement = Arrangement.spacedBy(14.dp)
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Icon(
+          imageVector = if (state.deltaMs >= 0L) Icons.Default.FastForward else Icons.Default.FastRewind,
+          contentDescription = null,
+          tint = NovaCyanBright,
+          modifier = Modifier.size(22.dp)
+        )
+        Text(
+          text = formatScrubDelta(state.deltaMs),
+          color = NovaCyanBright,
+          fontSize = 20.sp,
+          fontWeight = FontWeight.Bold
+        )
+      }
+      Text(
+        text = formatTimePair(state.positionMs, state.durationMs),
+        color = Color.White,
+        fontSize = 18.sp,
+        fontWeight = FontWeight.SemiBold
+      )
+    }
+
+    // Barra di anteprima: stessa forma della timeline dell'HUD, ma senza focus e senza
+    // pulsanti (nessun elemento dello scrubbing è raggiungibile dal D-pad).
+    BoxWithConstraints(
+      modifier = Modifier.fillMaxWidth(),
+      contentAlignment = Alignment.CenterStart
+    ) {
+      val widthPx = maxWidth
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(8.dp)
+          .clip(RoundedCornerShape(4.dp))
+          .background(Color.White.copy(alpha = 0.22f))
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxWidth(fraction)
+            .fillMaxHeight()
+            .background(Brush.horizontalGradient(listOf(NovaCyan, NovaCyanBright)))
+        )
+      }
+      Box(
+        modifier = Modifier
+          .padding(start = ((widthPx - 16.dp) * fraction).coerceAtLeast(0.dp))
+          .size(16.dp)
+          .shadow(elevation = 10.dp, shape = CircleShape, spotColor = NovaCyanBright)
+          .background(NovaCyanBright, CircleShape)
+      )
+    }
+
+    Text(
+      text = stringResource(R.string.player_scrub_hint),
+      color = NovaTextSecondary,
+      fontSize = 12.sp
+    )
+  }
+}
+
+/**
+ * Delta di anteprima formattato con segno rispetto al punto di partenza:
+ * "+00:30", "-10:00", "+01:05:00" (con le ore solo quando servono).
+ */
+private fun formatScrubDelta(deltaMs: Long): String {
+  val sign = if (deltaMs < 0L) "-" else "+"
+  val magnitudeMs = if (deltaMs < 0L) -deltaMs else deltaMs
+  val sec = magnitudeMs / 1000
+  val h = sec / 3600
+  val m = (sec % 3600) / 60
+  val s = sec % 60
+  return if (h > 0) {
+    "%s%02d:%02d:%02d".format(Locale.US, sign, h, m, s)
+  } else {
+    "%s%02d:%02d".format(Locale.US, sign, m, s)
   }
 }
 

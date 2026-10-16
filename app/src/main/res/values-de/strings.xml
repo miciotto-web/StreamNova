@@ -324,6 +324,7 @@
      <string name="player_cd_playback_speed">Wiedergabegeschwindigkeit</string>
      <string name="player_cd_subtitles">Untertitel</string>
      <string name="player_cd_audio_tracks">Audiospuren</string>
+     <string name="player_scrub_hint">OK bestätigt • BACK bricht ab</string>
      <string name="player_cd_selected">Ausgewählt</string>
 
      <string name="player_audio_dialog_title">Audiospur auswählen</string>

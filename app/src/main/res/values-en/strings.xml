@@ -324,6 +324,7 @@
      <string name="player_cd_playback_speed">Playback Speed</string>
      <string name="player_cd_subtitles">Subtitles</string>
      <string name="player_cd_audio_tracks">Audio Tracks</string>
+     <string name="player_scrub_hint">OK to confirm • BACK to cancel</string>
      <string name="player_cd_selected">Selected</string>
 
      <string name="player_audio_dialog_title">Select Audio Track</string>
