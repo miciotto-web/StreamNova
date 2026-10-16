@@ -2,7 +2,6 @@ package com.example.ui.viewmodel
 
 import android.util.Log
 import androidx.lifecycle.ViewModel
-import com.example.ui.components.FOCUS_REST
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.R
@@ -537,23 +536,17 @@ class StreamNovaViewModel(
   val focusRestoreToken: StateFlow<Int> = _focusRestoreToken.asStateFlow()
 
   fun saveLastFocusedMedia(mediaId: String) {
-    Log.d(FOCUS_REST, "saveLastFocusedMedia: $mediaId")
     _lastFocusedMediaId.value = mediaId
   }
 
   fun clearLastFocusedMedia() {
-    Log.d(FOCUS_REST, "clearLastFocusedMedia: value = ${_lastFocusedMediaId.value}")
     _lastFocusedMediaId.value = null
   }
 
   fun signalFocusRestore(mediaId: String) {
-    Log.d(FOCUS_REST, "signalFocusRestore: $mediaId")
     // Incrementa il token per forzare l'attivazione nelle card
     _focusRestoreToken.value = _focusRestoreToken.value + 1
-    val emitted = _focusRestoreSignal.tryEmit(mediaId)
-    if (!emitted) {
-      Log.w(FOCUS_REST, "signalFocusRestore: segnale non emesso (buffer pieno)")
-    }
+    _focusRestoreSignal.tryEmit(mediaId)
   }
 
   // Focus retention TV per Cast (Punto 5, 7)

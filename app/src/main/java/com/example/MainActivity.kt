@@ -79,9 +79,6 @@ import com.example.ui.viewmodel.StreamResolutionState
 import com.example.ui.viewmodel.TrailerPlaybackState
 import kotlinx.coroutines.delay
 
-/** Tag per i log di diagnostica Focus Restoration */
-private const val FOCUS_REST = "FOCUS_REST"
-
 /** Finestra temporale del doppio Back sulla Home per uscire dall'app (feedback breve). */
 private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
 
@@ -245,15 +242,8 @@ fun StreamNovaApp(
         var isInitialHomeFocusSet by remember { mutableStateOf(false) }
 
         LaunchedEffect(screenState, isSplashActive, pendingContentFocusRestore, isInitialHomeFocusSet) {
-          Log.d(FOCUS_REST, "=== LaunchedEffect entered ===")
-          Log.d(FOCUS_REST, "  screenState=$screenState")
-          Log.d(FOCUS_REST, "  isSplashActive=$isSplashActive")
-          Log.d(FOCUS_REST, "  pendingContentFocusRestore=$pendingContentFocusRestore")
-          Log.d(FOCUS_REST, "  isInitialHomeFocusSet=$isInitialHomeFocusSet")
           if (screenState == ScreenState.BROWSING && !isSplashActive) {
-            Log.d(FOCUS_REST, "  BRANCH: BROWSING && !isSplashActive")
             if (!isInitialHomeFocusSet) {
-              Log.d(FOCUS_REST, "  BRANCH: !isInitialHomeFocusSet=true")
               isInitialHomeFocusSet = true
               if (currentSection == SidebarSection.HOME) {
                 // Focus iniziale sull'Hero, prima cella del contenuto Home: il
@@ -264,18 +254,11 @@ fun StreamNovaApp(
                 viewModel.requestHomeScrollToTop()
               }
             } else if (pendingContentFocusRestore) {
-              Log.d(FOCUS_REST, "  BRANCH: pendingContentFocusRestore=true")
-              val lastIdBefore = viewModel.lastFocusedMediaId.value
-              Log.d(FOCUS_REST, "  BEFORE read lastFocusedMediaId: $lastIdBefore")
               pendingContentFocusRestore = false
-              Log.d(FOCUS_REST, "  AFTER setting pendingContentFocusRestore=false")
               // Se abbiamo un target specifico salvato, emetti il segnale di ripristino
               if (viewModel.lastFocusedMediaId.value != null) {
-                Log.d(FOCUS_REST, "  BEFORE signalFocusRestore: id=${viewModel.lastFocusedMediaId.value}")
                 viewModel.signalFocusRestore(viewModel.lastFocusedMediaId.value!!)
-                Log.d(FOCUS_REST, "  AFTER signalFocusRestore called")
               } else {
-                Log.d(FOCUS_REST, "  BRANCH: lastFocusedMediaId is null, using fallback")
                 // Fallback: nessun target salvato, focus generico
                 try { homeFocusRequester.requestFocus() } catch (_: Exception) {}
                 focusManager.moveFocus(FocusDirection.Down)
@@ -416,11 +399,8 @@ fun StreamNovaApp(
         // Se c'erano dettagli aperti a catena dai Consigliati, risale alla scheda precedente
         // ripristinandone stato e metadati. Solo quando lo stack è esaurito si torna a Home/Provider.
         BackHandler(enabled = screenState != ScreenState.PLAYER) {
-          Log.d(FOCUS_REST, "Detail BackHandler: entered")
           val hasPreviousDetail = viewModel.popDetail()
-          Log.d(FOCUS_REST, "Detail BackHandler: hasPreviousDetail = $hasPreviousDetail")
           if (!hasPreviousDetail) {
-            Log.d(FOCUS_REST, "Detail BackHandler: setting pendingContentFocusRestore = true")
             pendingContentFocusRestore = true
           }
           navController.popBackStack()

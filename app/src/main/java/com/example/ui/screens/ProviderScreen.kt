@@ -68,7 +68,6 @@ import com.example.ui.components.tvFocusRequester
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalClearLastFocusedMedia
-import com.example.ui.components.FOCUS_REST
 import com.example.ui.components.scrollToItemVerified
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaBackground
@@ -110,7 +109,6 @@ fun ProviderScreen(
   // riattivano il tentativo anche quando l'id del target non è cambiato.
   LaunchedEffect(Unit) {
     val targetId = viewModel?.lastFocusedMediaId?.value ?: return@LaunchedEffect
-    Log.d(FOCUS_REST, "ProviderScreen: nuovo evento di ripristino per target=$targetId")
     viewModel.signalFocusRestore(targetId)
   }
 
@@ -306,25 +304,10 @@ fun ProviderScreen(
   LaunchedEffect(filteredItems, lastFocusedMediaId) {
     val mediaId = lastFocusedMediaId ?: return@LaunchedEffect
     val index = filteredItems.indexOfFirst { it.id == mediaId }
-    if (index < 0) {
-      Log.w(FOCUS_REST, "ProviderScreen: target=$mediaId assente dai ${filteredItems.size} elementi filtrati")
-      return@LaunchedEffect
-    }
+    if (index < 0) return@LaunchedEffect
     // Già nel viewport: la card è composta e il suo tentativo di focus è già in corso.
-    if (gridState.layoutInfo.visibleItemsInfo.any { it.index == index }) {
-      Log.d(FOCUS_REST, "ProviderScreen: target=$mediaId già visibile (indice $index)")
-      return@LaunchedEffect
-    }
-    val visible = gridState.scrollToItemVerified(index)
-    val card = filteredItems.getOrNull(index)
-    Log.d(
-      FOCUS_REST,
-      "ProviderScreen: target=$mediaId -> indice $index (${card?.title ?: "?"}), " +
-        "stessa locandina=${card?.id == mediaId}, visibile=$visible"
-    )
-    if (!visible) {
-      Log.w(FOCUS_REST, "ProviderScreen: scroll di ripristino non confermato per indice $index")
-    }
+    if (gridState.layoutInfo.visibleItemsInfo.any { it.index == index }) return@LaunchedEffect
+    gridState.scrollToItemVerified(index)
   }
 
     Column(

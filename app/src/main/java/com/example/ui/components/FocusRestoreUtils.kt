@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import android.util.Log
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.mutableStateOf
@@ -82,18 +81,15 @@ suspend fun FocusRequester.requestFocusConfirmed(
     confirmation.reset()
     try {
       requestFocus()
-    } catch (e: Exception) {
+    } catch (_: Exception) {
       // Nodo focus non ancora agganciato: un frame e si ritenta (nessun delay arbitrario).
-      Log.d(FOCUS_REST, "requestFocusConfirmed: tentativo $attempt rifiutato (${e.message})")
       withFrameNanos { }
       continue
     }
     if (confirmation.awaitConfirmed(maxFramesPerAttempt)) {
-      Log.d(FOCUS_REST, "requestFocusConfirmed: focus confermato al tentativo $attempt")
       return true
     }
   }
-  Log.w(FOCUS_REST, "requestFocusConfirmed: focus non confermato dopo $maxAttempts tentativi")
   return false
 }
 
@@ -127,8 +123,7 @@ suspend fun LazyGridState.scrollToItemVerified(
     attempt++
     try {
       scrollToItem(index)
-    } catch (e: Exception) {
-      Log.w(FOCUS_REST, "scrollToItemVerified: scrollToItem($index) fallito (${e.message})")
+    } catch (_: Exception) {
       withFrameNanos { }
       continue
     }
@@ -137,11 +132,6 @@ suspend fun LazyGridState.scrollToItemVerified(
       withFrameNanos { }
     }
     if (layoutInfo.visibleItemsInfo.any { it.index == index }) return true
-    Log.w(
-      FOCUS_REST,
-      "scrollToItemVerified: cella $index non visibile al tentativo $attempt " +
-        "(range visibile = ${layoutInfo.visibleItemsInfo.map { it.index }})"
-    )
   }
   return false
 }

@@ -106,8 +106,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import com.example.ui.components.FOCUS_REST
-import android.util.Log
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.snapshotFlow
@@ -285,20 +283,15 @@ fun CategoryBrowsingScreen(
   val focusRequester = remember { FocusRequester() }
   LaunchedEffect(focusRestoreSignal.value, gridState) {
     val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
-    Log.d(FOCUS_REST, "CategoryBrowsingScreen: segnale ricevuto per mediaId = $mediaId")
     focusRestoreSignal.value = null
 
     val index = filteredItems.indexOfFirst { it.id == mediaId }
     if (index >= 0) {
-      Log.d(FOCUS_REST, "CategoryBrowsingScreen: trovata card all'indice $index")
       gridState.scrollToItem(index)
       kotlinx.coroutines.delay(100)
       try {
         focusRequester.requestFocus()
-        Log.d(FOCUS_REST, "CategoryBrowsingScreen: focus richiesto alla card")
       } catch (_: Exception) {}
-    } else {
-      Log.w(FOCUS_REST, "CategoryBrowsingScreen: mediaId = $mediaId non trovato in filteredItems (size=${filteredItems.size})")
     }
   }
 
@@ -412,20 +405,15 @@ fun FavoritesScreen(
   val focusRequester = remember { FocusRequester() }
   LaunchedEffect(focusRestoreSignal.value, gridState) {
     val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
-    Log.d(FOCUS_REST, "FavoritesScreen: segnale ricevuto per mediaId = $mediaId")
     focusRestoreSignal.value = null
 
     val index = favorites.indexOfFirst { it.id == mediaId }
     if (index >= 0) {
-      Log.d(FOCUS_REST, "FavoritesScreen: trovata card all'indice $index")
       gridState.scrollToItem(index)
       kotlinx.coroutines.delay(100)
       try {
         focusRequester.requestFocus()
-        Log.d(FOCUS_REST, "FavoritesScreen: focus richiesto alla card")
       } catch (_: Exception) {}
-    } else {
-      Log.w(FOCUS_REST, "FavoritesScreen: mediaId = $mediaId non trovato in favorites (size=${favorites.size})")
     }
   }
 
@@ -842,21 +830,16 @@ fun SearchScreen(
   val gridState = rememberLazyGridState()
   LaunchedEffect(focusRestoreSignal.value, gridState) {
     val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
-    Log.d(FOCUS_REST, "SearchScreen: segnale ricevuto per mediaId = $mediaId")
     focusRestoreSignal.value = null
 
     // Cerca il mediaId tra i risultati visibili (query results o category results)
     val index = results.indexOfFirst { it.id == mediaId }
     if (index >= 0) {
-      Log.d(FOCUS_REST, "SearchScreen: trovata card all'indice $index nei risultati di ricerca")
       gridState.scrollToItem(index)
       kotlinx.coroutines.delay(100)
       try {
         contentFirstItemFocusRequester.requestFocus()
-        Log.d(FOCUS_REST, "SearchScreen: focus richiesto alla card")
       } catch (_: Exception) {}
-    } else {
-      Log.w(FOCUS_REST, "SearchScreen: mediaId = $mediaId non trovato in results (size=${results.size})")
     }
   }
 

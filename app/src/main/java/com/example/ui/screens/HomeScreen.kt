@@ -67,7 +67,6 @@ import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusBringIntoViewSpec
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalClearLastFocusedMedia
-import com.example.ui.components.FOCUS_REST
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -495,11 +494,8 @@ fun HomeMainBrowsingContent(
     val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
     focusRestoreSignal.value = null
 
-    Log.d(FOCUS_REST, "HomeScreen: focus restoration signal ricevuto per mediaId = $mediaId")
-    val mediaItem = allMedia.find { it.id == mediaId } ?: run {
-      Log.w(FOCUS_REST, "HomeScreen: mediaId = $mediaId non trovato in allMedia")
-      return@LaunchedEffect
-    }
+    // Il media deve esistere nel catalogo, altrimenti non c'è nulla da ripristinare.
+    allMedia.find { it.id == mediaId } ?: return@LaunchedEffect
     val sectionKey = when {
       continueWatching.any { it.id == mediaId } -> "section_continue_watching"
       top10Movies.any { it.id == mediaId } -> "section_top_10_film"
@@ -533,18 +529,10 @@ fun HomeMainBrowsingContent(
       if (index >= 0) {
         val requester = currentCoordinator.getTargetRequester(sectionKey, index)
         if (requester != null) {
-          Log.d(FOCUS_REST, "HomeScreen: trovata requester per section=$sectionKey index=$index")
           try {
             requester.requestFocus()
-            Log.d(FOCUS_REST, "HomeScreen: requestFocus chiamato")
-          } catch (e: Exception) {
-            Log.w(FOCUS_REST, "HomeScreen: requestFocus exception: ${e.message}")
-          }
-        } else {
-          Log.w(FOCUS_REST, "HomeScreen: requester null per section=$sectionKey index=$index")
+          } catch (_: Exception) {}
         }
-      } else {
-        Log.w(FOCUS_REST, "HomeScreen: index negativo ($index) per mediaId = $mediaId")
       }
     }
   }

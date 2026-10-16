@@ -1,9 +1,7 @@
 package com.example.ui.components
 
-import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import kotlinx.coroutines.launch
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -86,9 +84,6 @@ import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import kotlinx.coroutines.delay
-
-/** Tag univoco per i log di diagnostica Focus Restoration */
-const val FOCUS_REST = "FOCUS_REST"
 
 /** CompositionLocal per il ripristino del focus sull'esatta card all'uscita dal Dettaglio (Punto 3). */
 val LocalLastFocusedMediaId = compositionLocalOf<String?> { null }
@@ -303,7 +298,6 @@ fun ContinueWatchingCard(
   // Reset focusRequested when token changes (new restoration attempt)
   LaunchedEffect(focusRestoreToken) {
     if (focusRequestedToken != null && focusRestoreToken != focusRequestedToken) {
-      Log.d(FOCUS_REST, "ContinueWatchingCard: reset focusRequested per token $focusRestoreToken")
       focusRequestedToken = null
     }
   }
@@ -311,12 +305,10 @@ fun ContinueWatchingCard(
   // Only request focus when target ID matches and we haven't done so yet
   LaunchedEffect(targetMediaId, cardFocusRequester) {
     if (targetMediaId != null && targetMediaId == media.id && focusRequestedToken == null) {
-      Log.d(FOCUS_REST, "ContinueWatchingCard: target match, richiedo focus")
       // Richiedi il focus direttamente - la card si occuperà di cancellare il target
       // solo quando il focus verrà effettivamente acquisito
       cardFocusRequester.requestFocus()
       focusRequestedToken = focusRestoreToken
-      Log.d(FOCUS_REST, "ContinueWatchingCard: richiesta focus inviata")
     }
   }
 
@@ -332,7 +324,6 @@ fun ContinueWatchingCard(
   ) { isFocused ->
     // Clear the target only when focus is actually gained
     if (isFocused && focusRequestedToken != null && targetMediaId == media.id) {
-      Log.d(FOCUS_REST, "ContinueWatchingCard: focus effettivamente acquisito, cancello target")
       clearLastFocusedMedia?.invoke()
       focusRequestedToken = null
     }
@@ -495,7 +486,6 @@ fun StandardMediaCard(
   // Reset focusRequested when token changes (new restoration attempt)
   LaunchedEffect(focusRestoreToken) {
     if (focusRequestedToken != null && focusRestoreToken != focusRequestedToken) {
-      Log.d(FOCUS_REST, "StandardMediaCard: reset focusRequested per token $focusRestoreToken")
       focusRequestedToken = null
     }
   }
@@ -503,12 +493,10 @@ fun StandardMediaCard(
   // Only request focus when target ID matches and we haven't done so yet
   LaunchedEffect(targetMediaId, cardFocusRequester) {
     if (targetMediaId != null && targetMediaId == media.id && focusRequestedToken == null) {
-      Log.d(FOCUS_REST, "StandardMediaCard: target match, richiedo focus")
       // Richiedi il focus direttamente - la card si occuperà di cancellare il target
       // solo quando il focus verrà effettivamente acquisito
       cardFocusRequester.requestFocus()
       focusRequestedToken = focusRestoreToken
-      Log.d(FOCUS_REST, "StandardMediaCard: richiesta focus inviata")
     }
   }
 
@@ -544,7 +532,6 @@ fun StandardMediaCard(
         isFocused = it.isFocused
         // Clear the target only when focus is actually gained
         if (it.isFocused && focusRequestedToken != null && targetMediaId == media.id) {
-          Log.d(FOCUS_REST, "StandardMediaCard: focus effettivamente acquisito, cancello target")
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }
@@ -716,7 +703,6 @@ fun PosterMediaCard(
   // Reset focusRequested when token changes (new restoration attempt)
   LaunchedEffect(focusRestoreToken) {
     if (focusRequestedToken != null && focusRestoreToken != focusRequestedToken) {
-      Log.d(FOCUS_REST, "PosterMediaCard: reset focusRequested per token $focusRestoreToken")
       focusRequestedToken = null
     }
   }
@@ -727,10 +713,8 @@ fun PosterMediaCard(
     if (!confirmFocusRestore &&
       targetMediaId != null && targetMediaId == media.id && focusRequestedToken == null
     ) {
-      Log.d(FOCUS_REST, "PosterMediaCard: ID CORRISPONDENTE - richiedo focus")
       cardFocusRequester.requestFocus()
       focusRequestedToken = focusRestoreToken
-      Log.d(FOCUS_REST, "PosterMediaCard: richiesta focus inviata")
     }
   }
 
@@ -763,10 +747,7 @@ fun PosterMediaCard(
       // la richiesta non genererebbe alcun onFocusChanged e la conferma resterebbe assente.
       val confirmed = isFocused || cardFocusRequester.requestFocusConfirmed(restoreConfirmation)
       if (confirmed) {
-        Log.d(FOCUS_REST, "PosterMediaCard: ripristino confermato su ${media.id}, rilascio target")
         clearLastFocusedMedia?.invoke()
-      } else {
-        Log.w(FOCUS_REST, "PosterMediaCard: ripristino NON confermato su ${media.id}, target mantenuto")
       }
     }
   }
@@ -808,7 +789,6 @@ fun PosterMediaCard(
         if (confirmFocusRestore) restoreConfirmation.onFocusChanged(it.isFocused)
         // Clear the target only when focus is actually gained
         if (it.isFocused && focusRequestedToken != null && targetMediaId == media.id) {
-          Log.d(FOCUS_REST, "PosterMediaCard: focus effettivamente acquisito, cancello target")
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }
