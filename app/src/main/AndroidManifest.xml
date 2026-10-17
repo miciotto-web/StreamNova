@@ -13,14 +13,20 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
+    <!--
+      Icone: il launcher di Fire TV dimensiona l'arte della tile sull'intrinsic size
+      dell'icona, quindi android:icon deve risolvere a risorse density-aware
+      (mipmap-*dpi a 48 dp, icona adattiva da API 26) e non a una PNG singola in
+      drawable/, che viene letta a densità mdpi e riporta una dimensione enorme.
+    -->
     <application
         android:name=".StreamNovaApplication"
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"
-        android:icon="@drawable/streamnova_launcher_icon"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:banner="@drawable/tv_banner"
+        android:banner="@drawable/tv_banner_16x9"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
         <activity

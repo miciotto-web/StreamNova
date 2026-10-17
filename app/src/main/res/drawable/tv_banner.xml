@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!--
-  Banner TV (android:banner): canvas nativo 16:9, sfondo opaco #050E1F e logo centrato
-  con margini interni al 15%. L'asset sta in drawable-nodpi (1280x720 px) così la sua
-  dimensione intrinseca resta 16:9 e la tile del launcher lo adatta senza ritagli.
--->
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@drawable/tv_banner_16x9" />
-</layer-list>

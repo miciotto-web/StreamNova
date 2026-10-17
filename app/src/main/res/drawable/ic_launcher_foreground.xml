@@ -1,18 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Livello principale: icona opaca (nessun canale alpha) con margini di sicurezza.
-  La base a tinta piena garantisce che il foreground non introduca trasparenza.
-  80dp = arte inquadrata nel safe zone adattivo (cerchio da 66dp).
+  Livello foreground dell'icona adattiva.
+
+  La dimensione intrinseca di un layer-list è quella dei drawable figli, non quella
+  dichiarata sugli <item>: per questo il figlio è un asset le cui dimensioni in px sono
+  già quelle della griglia adattiva (432 px in drawable-xxxhdpi = 108 dp esatti).
+  Con un figlio 512 px in drawable/ (= mdpi) il livello dichiarava 512 dp, quasi 5x la
+  griglia: ogni launcher che disegna l'icona adattiva ingrandiva l'arte e la ritagliava
+  in un frammento (verificato sulla tile di Fire TV, che usa android:icon).
+
+  Il logo dentro l'asset occupa 56 dp, dentro il cerchio da 66 dp della safe zone.
+  Sfondo trasparente: il navy lo fornisce ic_launcher_background.
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item>
-        <shape android:shape="rectangle">
-            <solid android:color="@color/splash_background" />
-        </shape>
-    </item>
-    <item
-        android:width="80dp"
-        android:height="80dp"
-        android:gravity="center"
-        android:drawable="@drawable/streamnova_launcher_icon" />
+    <item android:drawable="@drawable/ic_launcher_art_108dp" />
 </layer-list>

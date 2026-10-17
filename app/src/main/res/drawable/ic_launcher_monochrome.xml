@@ -1,13 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Livello monocromatico (temi Android 13+): usa solo il canale alpha del logo,
-  quindi va bene il PNG trasparente; niente forme piene che diventerebbero un blocco.
-  56dp = arte inquadrata nel safe zone adattivo (cerchio da 66dp).
+  Livello monocromatico (temi Android 13+): conta solo il canale alpha, quindi nessuna
+  forma piena che diventerebbe un blocco. Stesso asset della griglia adattiva del
+  foreground (108 dp intrinseci, arte da 56 dp dentro la safe zone).
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:width="56dp"
-        android:height="56dp"
-        android:gravity="center"
-        android:drawable="@drawable/streamnova_icon" />
+    <item android:drawable="@drawable/ic_launcher_art_108dp" />
 </layer-list>
