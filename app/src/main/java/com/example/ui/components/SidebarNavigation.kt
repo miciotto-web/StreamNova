@@ -86,6 +86,21 @@ fun sidebarMenuItems(): List<NavigationMenuItem> = listOf(
 )
 
 /**
+ * Voci del menu laterale effettivamente visibili, dato lo stato delle impostazioni.
+ *
+ * [showAddons] arriva da [com.example.data.prefs.StreamingEngineMode.supportsAddonsSection]:
+ * in modalità Web Streaming (HTTP) la voce "Addon" sparisce del tutto, icona compresa.
+ *
+ * Il filtro agisce sulla LISTA prima del rendering: gli item rimanenti si ricompattano
+ * (la Column usa `Arrangement.spacedBy`, nessuna altezza riservata) e la ricerca
+ * geometrica del focus D-Pad UP/DOWN continua a lavorare su nodi adiacenti, senza
+ * fermarsi su spazi vuoti.
+ */
+fun visibleSidebarMenuItems(showAddons: Boolean): List<NavigationMenuItem> =
+  if (showAddons) sidebarMenuItems()
+  else sidebarMenuItems().filterNot { it.section == SidebarSection.ADDON }
+
+/**
  * Sidebar di navigazione TV.
  *
  * ARCHITETTURA STATO:
@@ -97,6 +112,11 @@ fun sidebarMenuItems(): List<NavigationMenuItem> = listOf(
  *
  * Il focus fisico degli item interni NON modifica mai [isSidebarExpanded].
  * Questo elimina sia il flash all'avvio sia la chiusura accidentale durante UP/DOWN.
+ *
+ * VISIBILITÀ CONDIZIONALE:
+ * - [showAddons] = false rimuove la voce "Addon" dalla lista renderizzata (icona inclusa).
+ *   Il valore arriva dalla modalità di riproduzione corrente e NON è uno stato interno:
+ *   la sidebar resta un componente di sola presentazione.
  */
 @Composable
 fun SidebarNavigation(
@@ -107,6 +127,7 @@ fun SidebarNavigation(
   itemFocusRequesters: Map<SidebarSection, FocusRequester> = remember {
     SidebarSection.entries.associateWith { FocusRequester() }
   },
+  showAddons: Boolean = true,
   modifier: Modifier = Modifier
 ) {
   val focusManager = LocalFocusManager.current
@@ -119,7 +140,7 @@ fun SidebarNavigation(
     label = "SidebarWidth"
   )
 
-  val menuItems = sidebarMenuItems()
+  val menuItems = visibleSidebarMenuItems(showAddons)
 
   // CONTAINER ESTERNO: larghezza animata 60dp <-> 220dp.
   // - `clipToBounds()`: taglia i figli ai bordi correnti del container: durante la

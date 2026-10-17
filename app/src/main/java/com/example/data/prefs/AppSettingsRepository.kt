@@ -35,7 +35,17 @@ data class TorBoxPreferences(
  */
 enum class StreamingEngineMode {
     DEBRID_TORBOX, // Usa ESCLUSIVAMENTE Stremio Addon + TorBox Instant (1080p/4K). Tutti gli scraper HTTP web sono disattivati.
-    HTTP_WEB       // Usa ESCLUSIVAMENTE gli scraper web gratuiti (VixSrc, AnimeSaturn, CB01, ecc.). TorBox disattivato.
+    HTTP_WEB;      // Usa ESCLUSIVAMENTE gli scraper web gratuiti (VixSrc, AnimeSaturn, CB01, ecc.). TorBox disattivato.
+
+    /**
+     * True se in questa modalità l'area "Addon" esiste per l'utente.
+     *
+     * Gli addon Stremio alimentano solo il percorso Debrid: in [HTTP_WEB] non partecipano
+     * alla risoluzione delle sorgenti, quindi la voce (e la schermata) vanno nascoste.
+     * Regola unica riusata da sidebar, routing e reindirizzamento di fallback.
+     */
+    val supportsAddonsSection: Boolean
+        get() = this == DEBRID_TORBOX
 }
 
 private val Context.appSettingsDataStore: DataStore<Preferences> by preferencesDataStore(

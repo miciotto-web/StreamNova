@@ -948,6 +948,7 @@ class StreamNovaViewModel(
       // Osserva i cambiamenti della modalità del motore di streaming
       AppSettingsRepository.streamingEngineMode.collect { mode ->
         _streamingEngineMode.value = mode
+        fallbackFromUnavailableSection()
       }
     }
     viewModelScope.launch {
@@ -1746,6 +1747,21 @@ class StreamNovaViewModel(
   fun setSection(section: SidebarSection) {
     _currentSection.value = section
     _screenState.value = ScreenState.BROWSING
+  }
+
+  /**
+   * Riporta la navigazione alla Home se la sezione corrente non è più offerta dalla sidebar.
+   *
+   * L'area "Addon" esiste solo in modalità Debrid TorBox: se la modalità passa a HTTP Web
+   * mentre la sezione è Addon (o se quella sezione viene ripristinata al termine di una
+   * riproduzione), restare lì mostrerebbe una schermata senza voce di menu corrispondente.
+   */
+  private fun fallbackFromUnavailableSection() {
+    if (_currentSection.value == SidebarSection.ADDON &&
+      !_streamingEngineMode.value.supportsAddonsSection
+    ) {
+      _currentSection.value = SidebarSection.HOME
+    }
   }
 
   fun loadDetails(tmdbId: Int, isTv: Boolean, baseMedia: MediaItem? = null) {
@@ -2799,6 +2815,8 @@ class StreamNovaViewModel(
     screenBeforePlayer = null
     sectionBeforePlayer = SidebarSection.HOME
     _currentSection.value = previousSection
+    // La sezione di partenza potrebbe non esistere più (es. Addon dopo un cambio modalità)
+    fallbackFromUnavailableSection()
     _screenState.value = origin
       ?: if (_selectedMedia.value != null) ScreenState.DETAIL else ScreenState.BROWSING
     Log.d("BACK_TRACE", "STREAMNOVAVM: valore di _screenState dopo: ${_screenState.value}")

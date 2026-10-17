@@ -366,6 +366,9 @@ fun StreamNovaApp(
             },
             isSidebarExpanded = isSidebarExpanded,
             onCollapseRequest = { isSidebarExpanded = false },
+            // La voce "Addon" compare nella sidebar solo in modalità Debrid TorBox:
+            // in Web Streaming (HTTP) gli addon non alimentano la risoluzione sorgenti.
+            showAddons = streamingEngineMode.supportsAddonsSection,
             modifier = Modifier
               .align(Alignment.CenterStart)
               .focusRequester(sidebarFocusRequester)

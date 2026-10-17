@@ -3693,6 +3693,18 @@ fun PlayerSubtitleSelectionDialog(
   }
 }
 
+/**
+ * Indice dell'opzione che riceve il focus all'apertura del dialog di selezione.
+ *
+ * Il focus deve posarsi sulla voce **già attiva** (`selectedIndex`), non sulla prima della
+ * lista: con il telecomando un OK immediato confermava la prima voce (es. "Debrid TorBox")
+ * anche quando la spunta era su un'altra, cambiando l'impostazione per sbaglio.
+ * Un indice fuori range o una lista vuota ricadono su 0, così la richiesta di focus resta
+ * sempre valida.
+ */
+internal fun trackDialogInitialFocusIndex(options: List<String>, selectedIndex: Int): Int =
+  if (options.isEmpty()) 0 else selectedIndex.coerceIn(0, options.lastIndex)
+
 @Composable
 fun TrackSelectionDialog(
   title: String,
@@ -3704,8 +3716,10 @@ fun TrackSelectionDialog(
   headerSwitchChecked: Boolean = false,
   onHeaderSwitchToggle: ((Boolean) -> Unit)? = null
 ) {
-  // Focus iniziale sul primo elemento focalizzabile: senza questa richiesta il
-  // telecomando (D-Pad) non ha alcun elemento focale all'apertura del dialog.
+  // Focus iniziale esplicito: senza questa richiesta il telecomando (D-Pad) non avrebbe
+  // alcun elemento focale all'apertura del dialog. Il bersaglio è il toggle di testa quando
+  // è presente, altrimenti la voce già attiva.
+  val initialFocusIndex = trackDialogInitialFocusIndex(options, selectedIndex)
   val initialFocusRequester = remember { FocusRequester() }
   LaunchedEffect(Unit) {
     try {
@@ -3823,8 +3837,8 @@ fun TrackSelectionDialog(
             modifier = Modifier
               .fillMaxWidth()
               .then(
-                // Senza header switch il primo elemento della lista riceve il focus iniziale.
-                if (index == 0 && headerSwitchLabel == null) {
+                // Senza header switch la voce già attiva riceve il focus iniziale.
+                if (index == initialFocusIndex && headerSwitchLabel == null) {
                   Modifier.focusRequester(initialFocusRequester)
                 } else {
                   Modifier

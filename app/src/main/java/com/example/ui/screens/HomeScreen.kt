@@ -84,17 +84,29 @@ fun HomeScreen(
   modifier: Modifier = Modifier
 ) {
   val currentSection by viewModel.currentSection.collectAsState()
+  val streamingEngineMode by viewModel.streamingEngineMode.collectAsState()
   val allMedia by viewModel.allMedia.collectAsState()
   val homeCatalogs by viewModel.homeCatalogs.collectAsState()
   val handleMediaClick: (MediaItem) -> Unit = onMediaClick ?: { viewModel.openDetail(it) }
 
   val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
 
+  // La sidebar offre la sezione "Addon" solo in modalità Debrid TorBox: se il cambio di
+  // modalità l'ha resa non più raggiungibile mentre era aperta, il contenuto ricade sulla
+  // Home invece di mostrare una schermata che l'utente non può più richiamare dal menu.
+  val activeSection = if (currentSection == SidebarSection.ADDON &&
+    !streamingEngineMode.supportsAddonsSection
+  ) {
+    SidebarSection.HOME
+  } else {
+    currentSection
+  }
+
   CompositionLocalProvider(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
     LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() }
   ) {
-    when (currentSection) {
+    when (activeSection) {
     SidebarSection.HOME -> {
       HomeMainBrowsingContent(
         allMedia = allMedia,

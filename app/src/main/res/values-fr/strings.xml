@@ -225,7 +225,7 @@
      <string name="settings_use_torbox_instant">Utiliser TorBox Instant Debrid</string>
      <string name="settings_value_on">ON</string>
      <string name="settings_value_off">OFF</string>
-     <string name="settings_http_desc">En mode Streaming Web, les sites de streaming web sont désactivés pour garantir uniquement des flux de très haute qualité.</string>
+     <string name="settings_http_desc">Dans ce mode, StreamNova lit directement les flux des scrapers web gratuits (VixSrc, AnimeSaturn, CB01 et autres) : aucun compte Debrid ni clé API externe n\'est nécessaire.</string>
      <string name="settings_sec_playback">Lecture</string>
      <string name="settings_autoplay">Lecture automatique (Autoplay)</string>
      <string name="settings_preferred_resolution">Résolution préférée</string>
