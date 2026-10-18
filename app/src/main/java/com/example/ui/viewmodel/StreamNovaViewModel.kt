@@ -524,6 +524,17 @@ class StreamNovaViewModel(
   // Stack di navigazione tra schede di dettaglio (Punto 2: Consigliati e Backstack)
   private val detailMediaStack = mutableListOf<MediaItem>()
 
+  // Focus retention della catena "Altro come questo": la scheda a cui Back risale deve
+  // riportare il focus sulla card del consiglio che era stata cliccata (e chiusa con Back).
+  // popDetail lo imposta con l'id del media appena chiuso; il consumatore lo azzera quando
+  // il focus è effettivamente tornato sulla card.
+  private val _chainRestoreMediaId = MutableStateFlow<String?>(null)
+  val chainRestoreMediaId: StateFlow<String?> = _chainRestoreMediaId.asStateFlow()
+
+  fun clearChainRestoreMedia() {
+    _chainRestoreMediaId.value = null
+  }
+
   // Focus retention TV (Punto 3: memorizzazione dell'ultima locandina aperta per ripristino al BACK)
   private val _lastFocusedMediaId = MutableStateFlow<String?>(null)
   val lastFocusedMediaId: StateFlow<String?> = _lastFocusedMediaId.asStateFlow()
@@ -1840,6 +1851,8 @@ class StreamNovaViewModel(
   fun openDetail(media: MediaItem) {
     if (_screenState.value != ScreenState.DETAIL) {
       detailMediaStack.clear()
+      // Nuova catena (Home/Provider/Consigliati): nessun target di restauro ereditato.
+      _chainRestoreMediaId.value = null
     }
     if (detailMediaStack.isEmpty() || detailMediaStack.last().id != media.id) {
       detailMediaStack.add(media)
@@ -2829,6 +2842,7 @@ class StreamNovaViewModel(
 
   fun backToBrowsing() {
     detailMediaStack.clear()
+    _chainRestoreMediaId.value = null
     resetStreamState()
     _selectedProvider.value = null
     _selectedMedia.value = null
@@ -2848,8 +2862,11 @@ class StreamNovaViewModel(
     selectSeasonJob = null
     _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
     if (detailMediaStack.size > 1) {
-      detailMediaStack.removeLastOrNull()
+      val closedMedia = detailMediaStack.removeLastOrNull()
       val previousMedia = detailMediaStack.last()
+      // Tornando alla scheda precedente della catena, il focus va sulla card del consiglio
+      // da cui era stata aperta la scheda chiusa (conferma del consumatore, vedi clearChainRestoreMedia).
+      _chainRestoreMediaId.value = closedMedia?.id ?: previousMedia.id
       _selectedMedia.value = previousMedia
       _screenState.value = ScreenState.DETAIL
       val isTv = previousMedia.type == MediaType.SERIE_TV
@@ -2872,6 +2889,8 @@ class StreamNovaViewModel(
       return true
     } else {
       detailMediaStack.clear()
+      // La catena è esaurita: nessun ripristino pendente sulla scheda di dettaglio.
+      _chainRestoreMediaId.value = null
       backFromDetail()
       return false
     }
@@ -2883,6 +2902,7 @@ class StreamNovaViewModel(
     selectSeasonJob?.cancel()
     selectSeasonJob = null
     _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+    _chainRestoreMediaId.value = null
     _selectedMedia.value = null
     if (_selectedProvider.value != null) {
       _screenState.value = ScreenState.PROVIDER

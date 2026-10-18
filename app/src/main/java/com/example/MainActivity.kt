@@ -135,6 +135,7 @@ fun StreamNovaApp(
   val streamResolutionState by viewModel.streamResolutionState.collectAsState()
   val streamingEngineMode by viewModel.streamingEngineMode.collectAsState()
   val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
+  val chainRestoreMediaId by viewModel.chainRestoreMediaId.collectAsState()
 
   // Feedback errore di risoluzione sorgenti (es. timeout o nessuna sorgente):
   // mostra un toast con il messaggio di errore e reimposta lo stato su Idle
@@ -447,7 +448,6 @@ fun StreamNovaApp(
               navController.navigate(Screen.Provider.createRoute(provider.id))
             },
             onMediaClick = { nextMedia ->
-              viewModel.saveLastFocusedMedia(nextMedia.id)
               viewModel.openDetail(nextMedia)
               val nextTmdbId = nextMedia.tmdbId ?: 0
               navController.navigate(Screen.Detail.createRoute(nextMedia.type, nextTmdbId))
@@ -473,7 +473,11 @@ fun StreamNovaApp(
             targetCastMemberId = lastFocusedCastMemberId,
             onClearTargetCastMember = { viewModel.clearLastFocusedCastMember() },
             targetCompanyId = lastFocusedCompanyId,
-            onClearTargetCompany = { viewModel.clearLastFocusedCompany() }
+            onClearTargetCompany = { viewModel.clearLastFocusedCompany() },
+            // Catena "Altro come questo": al Back la scheda precedente ripristina il focus
+            // sulla card del consiglio cliccata (target impostato da popDetail()).
+            targetChainMediaId = chainRestoreMediaId,
+            onClearTargetChainMedia = { viewModel.clearChainRestoreMedia() }
           )
           }
         }

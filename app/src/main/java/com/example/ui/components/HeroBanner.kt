@@ -181,7 +181,7 @@ fun HeroBanner(
       .then(if (heroFocusRequester != null) Modifier.focusRequester(heroFocusRequester) else Modifier)
       .focusProperties {
         up = FocusRequester.Cancel
-        down = heroDownFocusRequester ?: FocusRequester.Default
+        down = heroDownFocusRequester ?: FocusRequester.Cancel
       }
       .onFocusChanged {
         isFocused = it.isFocused

@@ -204,6 +204,30 @@ private suspend fun FocusRequester.requestFocusAfterFrame(attempts: Int = 5) {
   }
 }
 
+/** Superficie del player che deve possedere il focus quando il video è "pulito" (HUD nascosto). */
+internal enum class VideoFocusTarget { NONE, INTRO_BANNER, IDLE }
+
+/**
+ * Seleziona il target di focus per lo stato corrente. Funzione PURA, testabile senza Compose.
+ *
+ * Regole:
+ * - scrubbing, modali o overlay "Prossimo Episodio" -> NONE (il focus non va toccato);
+ * - HUD a schermo -> NONE (gestito dagli effetti HUD esistenti);
+ * - video pulito con intro attiva -> INTRO_BANNER;
+ * - video pulito senza intro -> IDLE.
+ */
+internal fun resolveVideoFocusTarget(
+  hudShown: Boolean,
+  isIntroActive: Boolean,
+  isScrubbing: Boolean,
+  anyModalOpen: Boolean,
+  isNextEpisodePromptVisible: Boolean
+): VideoFocusTarget {
+  if (anyModalOpen || isNextEpisodePromptVisible || isScrubbing) return VideoFocusTarget.NONE
+  if (hudShown) return VideoFocusTarget.NONE
+  return if (isIntroActive) VideoFocusTarget.INTRO_BANNER else VideoFocusTarget.IDLE
+}
+
 /**
  * Risale alla [Activity] ospite anche quando il [Context] è un wrapper
  * (ContextThemeWrapper/ContextWrapper), così da poter gestire i flag della
@@ -374,6 +398,11 @@ fun PlayerScreen(
   val playPauseFocusRequester = remember { FocusRequester() }
   val seekBarFocusRequester = remember { FocusRequester() }
   val skipIntroFocusRequester = remember { FocusRequester() }
+  // Requester DEDICATO al banner flottante: NON deve essere condiviso con il pulsante
+  // "Salta intro" dell'HUD. Un FocusRequester agganciato a due nodi (che coesistono durante
+  // le transizioni di AnimatedVisibility) fa finire il focus sul primo agganciato, non
+  // necessariamente sul banner visibile.
+  val introBannerFocusRequester = remember { FocusRequester() }
   val nextEpisodeFocusRequester = remember { FocusRequester() }
   val idleFocusRequester = remember { FocusRequester() }
   val focusScope = rememberCoroutineScope()
@@ -387,6 +416,7 @@ fun PlayerScreen(
   // il clickable dello sfondo (tocco per mostrare/nascondere i controlli) aprirebbe l'HUD
   // subito dopo la conferma.
   val scrubOkReleasePending = remember { mutableStateOf(false) }
+  val skipIntroOkReleasePending = remember { mutableStateOf(false) }
   var hideTimerTick by remember { mutableLongStateOf(0L) }
 
   // BACK gerarchico (livello 1): finché è aperto un modale, il tasto Back chiude SOLO il modale.
@@ -1865,6 +1895,8 @@ fun PlayerScreen(
   // video è l'overlay di anteprima della posizione.
   val hudShown = (areControlsVisible || !isPlaying) && !isScrubbing
 
+  val showSkipIntro = isIntroActive && !hudShown && !isScrubbing
+
   fun kickAutoHide() {
     hideTimerTick++
   }
@@ -1924,6 +1956,26 @@ fun PlayerScreen(
     areControlsVisible = false
   }
 
+  /**
+   * Salta la sigla iniziale: seek reale a fine finestra, banner dismesso.
+   * Non mostra l'HUD e non mette in pausa il player (riproduzione fluida).
+   */
+  fun skipIntroNow() {
+    kickAutoHide()
+    introWindow?.let { window ->
+      Log.d(
+        "StreamNovaIntro",
+        "Salta Intro: seekTo=${window.endMs}, currentPosition=$currentPosition, isTvShow=$isTvShow"
+      )
+      exoPlayer.seekTo(window.endMs)
+      currentPosition = window.endMs
+    }
+    isIntroDismissed = true
+    try {
+      idleFocusRequester.requestFocus()
+    } catch (_: Exception) {}
+  }
+
   // ---------------------------------------------------------------------------
   // SCRUBBING A SCHERMO INTERO CON IL D-PAD (◀ / ▶)
   //
@@ -1964,6 +2016,35 @@ fun PlayerScreen(
       playPauseFocusRequester.requestFocusAfterFrame()
     } else {
       idleFocusRequester.requestFocusAfterFrame()
+    }
+  }
+
+  // (1a) Richiesta focus immediata sul banner "Salta Intro" non appena diventa visibile
+  LaunchedEffect(showSkipIntro) {
+    if (showSkipIntro) {
+      introBannerFocusRequester.requestFocusAfterFrame()
+    }
+  }
+
+  // (1b) Sincronizzazione del focus del banner "Salta intro" flottante.
+  // Non può essere una richiesta one-shot: `isIntroActive` diventa vero DOPO l'ingresso del
+  // player (posizione 0 -> sigla risolta in modo asincrono). Con video pulito il banner è il
+  // target di focus; quando sparisce si torna al nodo di riposo. Durante scrubbing, modali o
+  // overlay "Prossimo Episodio" il focus NON viene toccato. `requestFocusAfterFrame` gestisce
+  // il caso "nodo non ancora montato" senza invocare requester non agganciati.
+  LaunchedEffect(hudShown, isIntroActive, isScrubbing, anyModalOpen, isNextEpisodePromptVisible) {
+    when (
+      resolveVideoFocusTarget(
+        hudShown = hudShown,
+        isIntroActive = isIntroActive,
+        isScrubbing = isScrubbing,
+        anyModalOpen = anyModalOpen,
+        isNextEpisodePromptVisible = isNextEpisodePromptVisible
+      )
+    ) {
+      VideoFocusTarget.INTRO_BANNER -> introBannerFocusRequester.requestFocusAfterFrame()
+      VideoFocusTarget.IDLE -> if (!playerHasFocus) idleFocusRequester.requestFocusAfterFrame()
+      VideoFocusTarget.NONE -> Unit
     }
   }
 
@@ -2020,7 +2101,13 @@ fun PlayerScreen(
   BackHandler(enabled = !anyModalOpen) {
     Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler")
     Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
-    if (isNextEpisodePromptVisible) {
+    if (showSkipIntro) {
+      Log.d("BACK_TRACE", "PLAYERSCREEN: BACK con banner Salta Intro visibile: chiusura banner")
+      isIntroDismissed = true
+      try {
+        idleFocusRequester.requestFocus()
+      } catch (_: Exception) {}
+    } else if (isNextEpisodePromptVisible) {
       Log.d("BACK_TRACE", "PLAYERSCREEN: BACK su overlay Prossimo Episodio: chiusura overlay")
       nextEpisodeDismissed = true
       nextEpisodeCountdownSeconds = 0
@@ -2045,6 +2132,25 @@ fun PlayerScreen(
         val keyCode = native.keyCode
         val isKeyDown = native.action == KeyEvent.ACTION_DOWN
         val scrubDirection = PlayerScrub.directionForKeyCode(keyCode)
+
+        // Rilascio dell'OK che ha confermato lo skip intro: consumato qui, altrimenti il
+        // clickable dello sfondo interpreterebbe il click e aprirebbe i controlli.
+        if (skipIntroOkReleasePending.value) {
+          skipIntroOkReleasePending.value = false
+          if (!isKeyDown) return@onPreviewKeyEvent true
+        }
+
+        // GUARDIA PRIORITARIA BANNER "SALTA INTRO":
+        // Se il banner Salta Intro è visibile e l'utente preme KEYCODE_DPAD_CENTER o KEYCODE_ENTER,
+        // invoca direttamente l'azione di skip intro (exoPlayer.seekTo(introEndTime)) e consuma
+        // l'evento (return true), impedendo al player di andare in pausa o mostrare l'HUD.
+        if (showSkipIntro && (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)) {
+          if (isKeyDown && native.repeatCount == 0) {
+            skipIntroOkReleasePending.value = true
+            skipIntroNow()
+          }
+          return@onPreviewKeyEvent true
+        }
 
         // Rilascio dell'OK che ha confermato lo scrubbing: consumato qui, altrimenti il
         // clickable dello sfondo interpreterebbe il click e aprirebbe i controlli.
@@ -2103,6 +2209,12 @@ fun PlayerScreen(
               showSubtitleModal = false
               showQualityModal = false
               showSpeedModal = false
+            } else if (showSkipIntro) {
+              Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent BACK su Salta Intro: chiusura banner")
+              isIntroDismissed = true
+              try {
+                idleFocusRequester.requestFocus()
+              } catch (_: Exception) {}
             } else if (isNextEpisodePromptVisible) {
               // Primo BACK con overlay "Prossimo Episodio": nasconde solo l'overlay
               // (niente auto-next, restano i titoli di coda); serve un secondo BACK per uscire.
@@ -2167,6 +2279,13 @@ fun PlayerScreen(
               confirmNextEpisode()
               true
             }
+            // Banner "Salta intro" visibile a video pulito: OK salta la sigla. Il banner,
+            // quando ha il focus, consuma già OK per conto proprio; questo ramo copre il
+            // caso in cui l'evento arrivi comunque alla root. NON deve aprire l'HUD.
+            showSkipIntro -> {
+              skipIntroNow()
+              true
+            }
             !hudShown -> {
               showControls()
               true
@@ -2183,8 +2302,15 @@ fun PlayerScreen(
 
 // Frecce Su / Giù
           KeyEvent.KEYCODE_DPAD_UP -> {
-            requestFocusOn(seekBarFocusRequester)
-            true
+            // A HUD visibile la barra di scorrimento esiste ed è il target naturale. A video
+            // pulito NON si consuma il tasto (la barra non è montata): così la ricerca di focus
+            // può raggiungere il banner "Salta intro" invece di essere bloccata a vuoto.
+            if (hudShown) {
+              requestFocusOn(seekBarFocusRequester)
+              true
+            } else {
+              false
+            }
           }
           KeyEvent.KEYCODE_DPAD_DOWN -> when {
             !hudShown -> {
@@ -2521,6 +2647,13 @@ fun PlayerScreen(
                         requestFocusOn(seekBarFocusRequester)
                         true
                       }
+                      KeyEvent.KEYCODE_DPAD_UP -> {
+                        if (!hudShown) false
+                        else {
+                          hideControls()
+                          true
+                        }
+                      }
                       else -> false
                     }
                   },
@@ -2814,7 +2947,7 @@ fun PlayerScreen(
     // Durante lo scrubbing resta fuori schermo: mentre l'utente cerca nel contenuto
     // l'unico elemento a video è l'overlay di anteprima.
     AnimatedVisibility(
-      visible = isIntroActive && !hudShown && !isScrubbing,
+      visible = showSkipIntro,
       enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
       exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
       modifier = Modifier
@@ -2825,20 +2958,38 @@ fun PlayerScreen(
         )
     ) {
       TvFocusableBox(
+        modifier = Modifier
+          // Requester dedicato: NON condiviso con il pulsante "Salta intro" dell'HUD.
+          .focusRequester(introBannerFocusRequester)
+          .onKeyEvent { keyEvent ->
+            val native = keyEvent.nativeKeyEvent
+            if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
+            when (native.keyCode) {
+              KeyEvent.KEYCODE_DPAD_DOWN -> {
+                // Focus lascia il banner: se l'utente preferisce non saltare l'intro,
+                // il banner viene dismesso e il focus torna al nodo di riposo.
+                isIntroDismissed = true
+                try {
+                  idleFocusRequester.requestFocus()
+                } catch (_: Exception) {}
+                true
+              }
+              KeyEvent.KEYCODE_BACK -> {
+                // BACK sul banner: dismiss del banner senza chiudere il player
+                isIntroDismissed = true
+                try {
+                  idleFocusRequester.requestFocus()
+                } catch (_: Exception) {}
+                true
+              }
+              KeyEvent.KEYCODE_DPAD_UP -> {
+                true
+              }
+              else -> false
+            }
+          },
         shape = RoundedCornerShape(50),
-        onClick = {
-          kickAutoHide()
-          introWindow?.let { window ->
-            Log.d(
-              "StreamNovaIntro",
-              "Click Salta Intro (Floating): seekTo=${window.endMs}, currentPosition=$currentPosition, isTvShow=$isTvShow"
-            )
-            exoPlayer.seekTo(window.endMs)
-            currentPosition = window.endMs
-          }
-          isIntroDismissed = true
-          showControls()
-        }
+        onClick = { skipIntroNow() }
       ) { isFocused ->
         Row(
           modifier = Modifier
@@ -3330,13 +3481,10 @@ fun PlayerSubtitleSelectionDialog(
           Row(
             modifier = Modifier
               .fillMaxWidth()
-              .background(
-                if (isFocused) NovaSurfaceVariant else NovaSurface.copy(alpha = 0.6f),
-                RoundedCornerShape(12.dp)
-              )
+              .background(trackHeaderRowFillColor(isFocused), RoundedCornerShape(12.dp))
               .border(
                 width = 1.dp,
-                color = if (isFocused) NovaCyanBright else Color.White.copy(alpha = 0.12f),
+                color = trackHeaderRowBorderColor(isFocused),
                 shape = RoundedCornerShape(12.dp)
               )
               .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -3530,16 +3678,14 @@ fun PlayerSubtitleSelectionDialog(
             onClick = { onSelectLocal(index) },
             modifier = Modifier.fillMaxWidth()
           ) { isFocused ->
+            val rowAppearance = trackOptionRowAppearance(isSelected, isFocused)
             Row(
               modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                  if (isSelected) NovaCyan.copy(alpha = 0.2f) else if (isFocused) NovaSurfaceVariant else Color.Transparent,
-                  RoundedCornerShape(10.dp)
-                )
+                .background(rowAppearance.background, RoundedCornerShape(10.dp))
                 .border(
                   width = 1.dp,
-                  color = if (isFocused) NovaCyanBright else if (isSelected) NovaCyan else Color.Transparent,
+                  color = rowAppearance.borderColor,
                   shape = RoundedCornerShape(10.dp)
                 )
                 .padding(horizontal = 14.dp, vertical = 9.dp),
@@ -3634,16 +3780,14 @@ fun PlayerSubtitleSelectionDialog(
               onClick = { onSelectOnline(sub) },
               modifier = Modifier.fillMaxWidth()
             ) { isFocused ->
+              val rowAppearance = trackOptionRowAppearance(isSelected = false, isFocused = isFocused)
               Row(
                 modifier = Modifier
                   .fillMaxWidth()
-                  .background(
-                    if (isFocused) NovaSurfaceVariant else Color.Transparent,
-                    RoundedCornerShape(10.dp)
-                  )
+                  .background(rowAppearance.background, RoundedCornerShape(10.dp))
                   .border(
                     width = 1.dp,
-                    color = if (isFocused) NovaCyanBright else Color.Transparent,
+                    color = rowAppearance.borderColor,
                     shape = RoundedCornerShape(10.dp)
                   )
                   .padding(horizontal = 14.dp, vertical = 9.dp),
@@ -3704,6 +3848,55 @@ fun PlayerSubtitleSelectionDialog(
  */
 internal fun trackDialogInitialFocusIndex(options: List<String>, selectedIndex: Int): Int =
   if (options.isEmpty()) 0 else selectedIndex.coerceIn(0, options.lastIndex)
+
+/**
+ * Aspetto (sfondo + bordo interno) di una riga opzione nei dialog delle tracce.
+ *
+ * Regressione della "banda blu scura interna al focus": le righe disegnavano DUE strati
+ * sovrapposti — il ring di focus 2.5dp di `TvFocusableBox` (componente condiviso, resta
+ * l'indicazione di focus primaria) e, dentro, un proprio sfondo [NovaSurfaceVariant]
+ * (navy scuro) più un secondo bordo ciano. Il risultato era un anello scuro tra i due
+ * bordi che sporca la voce evidenziata.
+ *
+ * Da qui la regola testabile:
+ * - a fuoco → fill ciano CHIARO (convenzione dell'app, cf. `TvContextMenu`) e NESSUN
+ *   bordo interno trasparente: l'anello esterno resta l'unica evidenza di focus;
+ * - seleziona e non a fuoco → fill ciano 0.2 + bordo ciano (iniziale "chip" attivo);
+ * - seleziona e a fuoco → fill ciano 0.2, bordo interno spento (niente doppio ring);
+ * - neutra → trasparente.
+ */
+internal data class TrackOptionRowAppearance(
+  val background: Color,
+  val borderColor: Color
+)
+
+internal fun trackOptionRowAppearance(isSelected: Boolean, isFocused: Boolean): TrackOptionRowAppearance =
+  when {
+    isSelected && isFocused -> TrackOptionRowAppearance(
+      background = NovaCyan.copy(alpha = 0.2f),
+      borderColor = Color.Transparent
+    )
+    isSelected -> TrackOptionRowAppearance(
+      background = NovaCyan.copy(alpha = 0.2f),
+      borderColor = NovaCyan
+    )
+    isFocused -> TrackOptionRowAppearance(
+      background = NovaCyan.copy(alpha = 0.15f),
+      borderColor = Color.Transparent
+    )
+    else -> TrackOptionRowAppearance(
+      background = Color.Transparent,
+      borderColor = Color.Transparent
+    )
+  }
+
+/** Colore del container di una riga toggle di testa (es. "Sottotitoli Forzati") a fuoco. */
+internal fun trackHeaderRowFillColor(isFocused: Boolean): Color =
+  if (isFocused) NovaCyan.copy(alpha = 0.15f) else NovaSurface.copy(alpha = 0.6f)
+
+/** Bordo interno del container di testa: a fuoco è SPENTO per non duplicare il ring. */
+internal fun trackHeaderRowBorderColor(isFocused: Boolean): Color =
+  if (isFocused) Color.Transparent else Color.White.copy(alpha = 0.12f)
 
 @Composable
 fun TrackSelectionDialog(
@@ -3770,13 +3963,10 @@ fun TrackSelectionDialog(
           Row(
             modifier = Modifier
               .fillMaxWidth()
-              .background(
-                if (isFocused) NovaSurfaceVariant else NovaSurface.copy(alpha = 0.6f),
-                RoundedCornerShape(12.dp)
-              )
+              .background(trackHeaderRowFillColor(isFocused), RoundedCornerShape(12.dp))
               .border(
                 width = 1.dp,
-                color = if (isFocused) NovaCyanBright else Color.White.copy(alpha = 0.12f),
+                color = trackHeaderRowBorderColor(isFocused),
                 shape = RoundedCornerShape(12.dp)
               )
               .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -3845,16 +4035,14 @@ fun TrackSelectionDialog(
                 }
               )
           ) { isFocused ->
+            val rowAppearance = trackOptionRowAppearance(isSelected, isFocused)
             Row(
               modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                  if (isSelected) NovaCyan.copy(alpha = 0.2f) else if (isFocused) NovaSurfaceVariant else Color.Transparent,
-                  RoundedCornerShape(50)
-                )
+                .background(rowAppearance.background, RoundedCornerShape(50))
                 .border(
                   width = 1.dp,
-                  color = if (isFocused) NovaCyanBright else if (isSelected) NovaCyan else Color.Transparent,
+                  color = rowAppearance.borderColor,
                   shape = RoundedCornerShape(50)
                 )
                 .padding(horizontal = 16.dp, vertical = 10.dp),

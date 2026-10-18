@@ -1,14 +1,19 @@
 package com.example.ui.screens
 
+import android.view.KeyEvent
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,12 +34,15 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -54,6 +62,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -84,6 +94,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
@@ -123,12 +134,14 @@ import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaGold
+import com.example.ui.theme.NovaSurface
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // Ombra proiettata di supporto per il titolo: garantisce leggibilità su artwork chiari.
 private val DetailTitleShadow = TextStyle(
@@ -141,6 +154,51 @@ enum class DetailTab(val titleRes: Int) {
   ALTRO_COME_QUESTO(R.string.detail_tab_more_like_this),
 
 
+}
+
+/**
+ * Numero massimo di righe della sinossi nella scheda di dettaglio (configurabile nel
+ * componente): oltre questo limite il testo viene troncato con ellissi e i pulsanti
+ * Riproduci / Preferiti / ecc. restano visibili e raggiungibili con il D-pad.
+ */
+internal const val DETAIL_SYNOPSIS_MAX_LINES = 4
+
+/**
+ * La sinossi ridotta della scheda riceve il focus (e con OK apre il dialog del testo
+ * completo) solo quando esiste davvero un testo da mostrare: per una sinossi vuota o
+ * nulla la card non è renderizzata e nessun dialog è raggiungibile.
+ */
+internal fun hasFocusableSynopsis(synopsis: String?): Boolean = !synopsis.isNullOrBlank()
+
+/**
+ * Macchina a stati del dialog del testo completo della sinossi.
+ *
+ * INCAPACITÀ DEL DIALOG di cambiare lo stato del contenuto: il dialog espone solo
+ * apertura e chiusura (Back o icona); chi lo apre e lo chiude non tocca riproduzione
+ * né preferiti. Alla chiusura richiede il ripristino del focus sulla sinossi ridotta
+ * della scheda ([refocusRequestPending], consumato una sola volta dall'effetto UI).
+ */
+internal class DetailSynopsisDialogState {
+  var isDialogOpen by mutableStateOf(false)
+    private set
+  var refocusRequestPending by mutableStateOf(false)
+    private set
+
+  fun open() {
+    isDialogOpen = true
+  }
+
+  fun dismiss() {
+    if (isDialogOpen) {
+      isDialogOpen = false
+      // Focus verso la sinossi della scheda al ritorno dal dialog.
+      refocusRequestPending = true
+    }
+  }
+
+  fun consumeRefocusRequest() {
+    refocusRequestPending = false
+  }
 }
 
 private fun matchesSeries(stateSeriesId: String?, media: MediaItem): Boolean {
@@ -179,6 +237,10 @@ fun DetailScreen(
   onClearTargetCastMember: (() -> Unit)? = null,
   targetCompanyId: Int? = null,
   onClearTargetCompany: (() -> Unit)? = null,
+  // Catena "Altro come questo": id della card consiglio cliccata nella scheda precedente.
+  // Al Back la riga Consigliati ripristina il focus su quella card, poi azzera il target.
+  targetChainMediaId: String? = null,
+  onClearTargetChainMedia: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   // Resolve active media & extended details depending on UI State
@@ -198,7 +260,11 @@ fun DetailScreen(
     listOf(DetailTab.PRODUZIONE, DetailTab.ALTRO_COME_QUESTO)
   }
 
-  var selectedTab by remember(displayMedia.id) {
+  // Tab selezionato PERSISTENTE nel backstack di Navigation (rememberSaveable):
+  // tornando con Back da una scheda aperta dai Consigliati, la scheda originale rientra
+  // nel composable con il tab «Altro come questo» (o quello attivo prima del click)
+  // al posto di ripartire dal tab iniziale.
+  var selectedTab by rememberSaveable(displayMedia.id) {
     val initialTab = if (targetCompanyId != null) {
       tabs.indexOf(DetailTab.PRODUZIONE).coerceAtLeast(0)
     } else 0
@@ -451,8 +517,6 @@ fun DetailScreen(
     // header, logo, titolo, badge e backdrop sono puramente visivi e non
     // ricevono mai il focus D-pad.
     val actionFocus = remember(displayMedia.id) { MediaActionBarFocus() }
-    // FocusRequester dedicato al pulsante principale "Riproduci".
-    val playButtonFocusRequester = actionFocus.play
 
     // Scroll guard: la viewport resta CONGELATA finche' l'utente non preme
     // attivamente SU/GIU' per uscire dalla riga dei pulsanti.
@@ -507,8 +571,28 @@ fun DetailScreen(
     // ferma (offset di scroll = 0). `requestFocus()` non lancia eccezioni se il nodo
     // non e' ancora agganciato al sistema di focus (no-op silenzioso), quindi si
     // ritenta finche' `onPlayFocusChanged` non conferma che il focus e' sul pulsante.
-    var hasUserNavigatedAway by remember(displayMedia.id) { mutableStateOf(false) }
-    val isTargetingSubItem = targetCastMemberId != null || targetCompanyId != null
+    // Anche questo flag è persistente nel backstack: dopo il Back dai Consigliati resta
+    // true (l'utente aveva navigato prima di aprire la scheda consigliata), così
+    // l'incoronazione di "Riproduci" non strappa il focus ripristinato sulla card.
+    var hasUserNavigatedAway by rememberSaveable(displayMedia.id) { mutableStateOf(false) }
+    val isTargetingSubItem = targetCastMemberId != null ||
+      targetCompanyId != null ||
+      targetChainMediaId != null
+
+    // Dialog del testo completo della sinossi + ripristino del focus sulla sinossi
+    // ridotta della scheda dopo la chiusura (Back / icona di chiusura).
+    val synopsisDialogState = remember(displayMedia.id) { DetailSynopsisDialogState() }
+    val synopsisFocusRequester = remember(displayMedia.id) { FocusRequester() }
+    // Sinossi completa dell'opera: usata sia dalla card ridotta (troncata a max righe)
+    // sia dal dialog del testo completo. A livello di funzione perché la serve a entrambi.
+    val synopsisText = extendedDetails?.overview?.takeIf { it.isNotBlank() } ?: displayMedia.synopsis
+    LaunchedEffect(synopsisDialogState.refocusRequestPending) {
+      if (!synopsisDialogState.refocusRequestPending) return@LaunchedEffect
+      synopsisDialogState.consumeRefocusRequest()
+      try {
+        synopsisFocusRequester.requestFocus()
+      } catch (_: Exception) {}
+    }
 
     // Focus iniziale: IMMEDIATAMENTE, ESCLUSIVAMENTE e TASSATIVAMENTE su "Riproduci" (Punto 2).
     // Finché l'utente non naviga attivamente con il D-pad, il focus resta ancorato su "Riproduci".
@@ -523,7 +607,7 @@ fun DetailScreen(
       repeat(20) {
         withFrameNanos { } // attende composizione + layout del nodo focusabile
         try {
-          playButtonFocusRequester.requestFocus()
+          actionFocus.play.requestFocus()
         } catch (_: Exception) {
           // FocusRequester non ancora inizializzato: riprova al frame successivo.
         }
@@ -774,14 +858,88 @@ fun DetailScreen(
 
           Spacer(modifier = Modifier.height(14.dp))
 
-          // Full Synopsis (Overview)
-          val synopsisText = extendedDetails?.overview?.takeIf { it.isNotBlank() } ?: displayMedia.synopsis
-          Text(
-            text = synopsisText,
-            color = NovaTextSecondary,
-            fontSize = 14.sp,
-            lineHeight = 22.sp
-          )
+          // Sinossi della scheda (Overview): limitata a DETAIL_SYNOPSIS_MAX_LINES righe con
+          // ellissi, così i pulsanti Riproduci / Preferiti / Visto / Trailer restano sempre
+          // visibili e raggiungibili col D-pad anche su sinossi molto lunghe. La card
+          // ridotta riceve il focus e con OK apre il dialog del testo completo; senza
+          // testo non è renderizzata e nessun elemento resta focalizzabile.
+          // Resa grafica locale: sfondo 100% trasparente (lascia visibile l'immagine di sfondo),
+          // nessun riempimento navy e nessuna ombra hardware (evita la fascia scura e l'alone blu
+          // eccessivo generati su elementi ampi e trasparenti da TvFocusableBox), bordo ciano
+          // sottile e nitido (1.5 dp con gradiente NovaCyan -> NovaCyanBright) e testo ciano a fuoco.
+          if (hasFocusableSynopsis(synopsisText)) {
+            var isSynopsisFocused by remember(displayMedia.id) { mutableStateOf(false) }
+            var isConfirmKeyDown by remember { mutableStateOf(false) }
+            val synopsisShape = remember { RoundedCornerShape(12.dp) }
+
+            Box(
+              modifier = Modifier
+                .padding(vertical = 2.dp)
+                .zIndex(if (isSynopsisFocused) 10f else 1f)
+                .focusRequester(synopsisFocusRequester)
+                .focusProperties { down = actionFocus.play }
+                .onFocusChanged { isSynopsisFocused = it.isFocused }
+                .onKeyEvent { keyEvent ->
+                  val keyCode = keyEvent.nativeKeyEvent.keyCode
+                  val isConfirm = keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                    keyCode == KeyEvent.KEYCODE_ENTER ||
+                    keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+                  if (isConfirm) {
+                    when (keyEvent.type) {
+                      KeyEventType.KeyDown -> {
+                        isConfirmKeyDown = true
+                        true
+                      }
+                      KeyEventType.KeyUp -> {
+                        if (isConfirmKeyDown) {
+                          isConfirmKeyDown = false
+                          synopsisDialogState.open()
+                          true
+                        } else {
+                          false
+                        }
+                      }
+                      else -> false
+                    }
+                  } else {
+                    false
+                  }
+                }
+                .focusable()
+                .clickable(
+                  interactionSource = remember { MutableInteractionSource() },
+                  indication = null
+                ) {
+                  synopsisDialogState.open()
+                }
+                .then(
+                  if (isSynopsisFocused) {
+                    Modifier.border(
+                      width = 1.5.dp,
+                      brush = Brush.horizontalGradient(
+                        listOf(NovaCyan, NovaCyanBright)
+                      ),
+                      shape = synopsisShape
+                    )
+                  } else {
+                    Modifier
+                  }
+                )
+                .clip(synopsisShape)
+            ) {
+              Text(
+                text = synopsisText,
+                color = if (isSynopsisFocused) NovaCyanBright else NovaTextSecondary,
+                fontSize = 14.sp,
+                lineHeight = 22.sp,
+                maxLines = DETAIL_SYNOPSIS_MAX_LINES,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 10.dp, vertical = 8.dp)
+              )
+            }
+          }
 
           Spacer(modifier = Modifier.height(24.dp))
 
@@ -830,7 +988,7 @@ fun DetailScreen(
 
             // Barra azioni: pillola Riproduci + Cuore (preferiti) + Occhio (visto) +
             // Trailer YouTube interno (mai Intent verso l'app esterna).
-            // SU dalla barra resta bloccato: sopra non c'e' nessun nodo focusabile.
+            // SU dalla barra: sale verso la sinossi se presente, altrimenti resta bloccato.
             MediaActionBar(
               playLabel = playButtonLabel,
               onPlay = { onPlayClick(displayMedia, resumeEpisode) },
@@ -840,12 +998,9 @@ fun DetailScreen(
               onToggleWatched = { onToggleWatched?.invoke(displayMedia) },
               onPlayTrailer = { onPlayTrailer?.invoke(displayMedia) },
               focus = actionFocus,
-              upTarget = FocusRequester.Cancel,
+              upTarget = if (hasFocusableSynopsis(synopsisText)) synopsisFocusRequester else FocusRequester.Cancel,
               onFocusChanged = { focused ->
                 isActionBarFocused = focused
-                if (focused && !hasUserNavigatedAway && !isPlayFocused && !isTargetingSubItem) {
-                  try { playButtonFocusRequester.requestFocus() } catch (_: Exception) {}
-                }
               },
               onPlayFocusChanged = { isPlayFocused = it }
             )
@@ -1246,6 +1401,33 @@ fun DetailScreen(
 
 
             val similarState = rememberLazyListState()
+
+            // Back dai Consigliati: la scheda precedente ripristina il focus sulla card
+            // del consiglio cliccata (target impostato da popDetail()). I tentativi
+            // vengono contati in FRAME (nessun ritardo arbitrario); se la card non è
+            // mai raggiungibile (lista cambiata sotto le mani), il focus ricade su
+            // "Riproduci" e il target viene comunque azzerato.
+            val chainFocusRequester = remember { FocusRequester() }
+            var chainCardFocused by remember { mutableStateOf(false) }
+            LaunchedEffect(targetChainMediaId, similarRecommendations) {
+              val targetId = targetChainMediaId ?: return@LaunchedEffect
+              var restored = false
+              if (similarRecommendations.any { it.id == targetId }) {
+                repeat(20) {
+                  try { chainFocusRequester.requestFocus() } catch (_: Exception) {}
+                  if (chainCardFocused) {
+                    restored = true
+                    return@repeat
+                  }
+                  withFrameNanos { }
+                }
+              }
+              if (!restored) {
+                try { actionFocus.play.requestFocus() } catch (_: Exception) {}
+              }
+              onClearTargetChainMedia?.invoke()
+            }
+
             Text(
               text = stringResource(R.string.detail_tab_more_like_this),
               color = NovaTextMuted,
@@ -1261,9 +1443,22 @@ fun DetailScreen(
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
               ) {
                 items(similarRecommendations, key = { "rec_${it.id}" }) { item ->
+                  val isChainRestoreTarget = item.id == targetChainMediaId
                   PosterMediaCard(
                     media = item,
-                    onClick = { onMediaClick?.invoke(item) }
+                    onClick = {
+                      // Navigazione "Altro come questo": ogni scheda apre una NUOVA voce nello
+                      // stack. NESSUN popUpTo, NESSUN launchSingleTop: il Back deve tornare
+                      // alla scheda precedente con il tab Consigliati ancora aperto e il focus
+                      // sulla card cliccata (targetChainMediaId ripristinato dal ViewModel).
+                      onMediaClick?.invoke(item)
+                    },
+                    focusRequester = if (isChainRestoreTarget) chainFocusRequester else null,
+                    modifier = if (isChainRestoreTarget) {
+                      Modifier.onFocusChanged { chainCardFocused = it.isFocused }
+                    } else {
+                      Modifier
+                    }
                   )
                 }
               }
@@ -1285,6 +1480,113 @@ fun DetailScreen(
         }
       }
     }
+
+    // Dialog del testo completo della sinossi: sola lettura (nessuna riproduzione,
+    // nessun toggle preferiti/visto), chiusura con Back o icona; al ritorno il focus
+    // torna sulla sinossi ridotta della scheda (vedi DetailSynopsisDialogState).
+    if (synopsisDialogState.isDialogOpen) {
+      FullSynopsisDialog(
+        title = displayMedia.title,
+        text = synopsisText,
+        synopsisDialogState = synopsisDialogState
+      )
+    }
+  }
+  }
+}
+
+/**
+ * Dialog TV del testo completo della sinossi: superficie e stile coerenti con i dialog
+ * StreamNova (NovaSurface + bordo ciano). Il corpo è scorrevole (mouse/rotella e D-pad
+ * SU/GIÙ con focus esplicito); il Back chiude il dialog via onDismissRequest e non
+ * tocca né la navigazione della scheda né lo stato del contenuto.
+ */
+@Composable
+private fun FullSynopsisDialog(
+  title: String,
+  text: String,
+  synopsisDialogState: DetailSynopsisDialogState
+) {
+  val scrollState = rememberScrollState()
+  val coroutineScope = rememberCoroutineScope()
+  val density = LocalDensity.current
+  val scrollStepPx = with(density) { 36.dp.toPx() }
+  val bodyFocusRequester = remember { FocusRequester() }
+  LaunchedEffect(Unit) {
+    try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+  }
+
+  Dialog(onDismissRequest = { synopsisDialogState.dismiss() }) {
+    BackHandler(enabled = synopsisDialogState.isDialogOpen) {
+      synopsisDialogState.dismiss()
+    }
+    Column(
+      modifier = Modifier
+        .width(640.dp)
+        .background(NovaSurface, RoundedCornerShape(20.dp))
+        .border(1.5.dp, NovaCyan, RoundedCornerShape(20.dp))
+        .padding(28.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = title,
+          color = NovaTextPrimary,
+          fontSize = 18.sp,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier
+            .weight(1f, fill = false)
+            .padding(end = 16.dp)
+        )
+        Icon(
+          imageVector = Icons.Default.Close,
+          contentDescription = stringResource(R.string.action_close),
+          tint = NovaTextSecondary,
+          modifier = Modifier
+            .size(22.dp)
+            .clickable { synopsisDialogState.dismiss() }
+        )
+      }
+
+      Spacer(modifier = Modifier.height(14.dp))
+
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(max = 380.dp)
+          .verticalScroll(scrollState)
+          .focusRequester(bodyFocusRequester)
+          .focusable()
+          .onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown) {
+              when (event.key) {
+                Key.DirectionDown -> {
+                  coroutineScope.launch { scrollState.animateScrollBy(scrollStepPx) }
+                  true
+                }
+                Key.DirectionUp -> {
+                  coroutineScope.launch { scrollState.animateScrollBy(-scrollStepPx) }
+                  true
+                }
+                else -> false
+              }
+            } else {
+              false
+            }
+          }
+      ) {
+        Text(
+          text = text,
+          color = NovaTextSecondary,
+          fontSize = 15.sp,
+          lineHeight = 24.sp
+        )
+      }
     }
   }
 }

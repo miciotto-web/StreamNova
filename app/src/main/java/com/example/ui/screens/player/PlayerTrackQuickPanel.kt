@@ -36,7 +36,6 @@ import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaSurface
-import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
@@ -130,11 +129,17 @@ private fun TrackQuickSection(
                                 .fillMaxWidth()
                                 .background(
                                     when {
-                                        option.selected -> NovaCyan.copy(alpha = 0.18f)
-                                        focused -> NovaSurfaceVariant
+                                        option.selected && focused -> NovaCyan.copy(alpha = 0.20f)
+                                        option.selected -> NovaCyan.copy(alpha = 0.20f)
+                                        focused -> NovaCyan.copy(alpha = 0.15f)
                                         else -> Color.Transparent
                                     },
                                     RoundedCornerShape(10.dp)
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = if (option.selected && !focused) NovaCyan else Color.Transparent,
+                                    shape = RoundedCornerShape(10.dp)
                                 )
                                 .padding(horizontal = 10.dp, vertical = 9.dp)
                         ) {

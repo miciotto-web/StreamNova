@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.util.Log
+import android.view.KeyEvent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
@@ -65,13 +66,16 @@ import com.example.ui.viewmodel.StreamNovaViewModel
 
 import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusBringIntoViewSpec
+import com.example.ui.components.TvFocusRow
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalClearLastFocusedMedia
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import kotlinx.coroutines.flow.collect
 
@@ -196,9 +200,19 @@ fun HomeScreen(
  * - Isolamento bidirezionale: Hero <-> Providers <-> Prima riga poster.
  */
 class HomeRowFocusCoordinator(
-  val activeRowKeys: List<String>,
-  val rowItemCounts: Map<String, Int>
+  initialRowKeys: List<String>,
+  initialRowItemCounts: Map<String, Int>
 ) {
+  // Dati delle righe OSSERVABILI ma aggiornabili sul posto: la stessa istanza del
+  // coordinatore sopravvive a tutte le ondate di caricamento dei cataloghi. I
+  // [FocusRequester] già assegnati restano validi, quindi le celle non devono essere
+  // riagganciate ad ogni cambiamento e i target verticali non si azzerano a metà caricamento.
+  private val _activeRowKeys = mutableStateListOf<String>().apply { addAll(initialRowKeys) }
+  val activeRowKeys: List<String> get() = _activeRowKeys
+
+  private val _rowItemCounts = mutableStateMapOf<String, Int>().apply { putAll(initialRowItemCounts) }
+  val rowItemCounts: Map<String, Int> get() = _rowItemCounts
+
   val lastFocusedColByRow = mutableStateMapOf<String, Int>()
   private val cellRequesters = mutableMapOf<Pair<String, Int>, FocusRequester>()
 
@@ -209,16 +223,75 @@ class HomeRowFocusCoordinator(
   // IllegalStateException "FocusRequester is not initialized".
   private val attachedCellState = mutableStateMapOf<Pair<String, Int>, Boolean>()
 
+  // Contatore osservabile incrementato ad ogni registrazione di cella: consente a un unico
+  // effetto di completare la richiesta di focus pendente non appena il nodo bersaglio esiste.
+  private val _registrationTick = mutableStateOf(0)
+  val registrationTick: Int get() = _registrationTick.value
+
+  // Riga attualmente focalizzata (inizialmente la prima riga attiva, es. Hero).
+  private val _focusedRowKey = mutableStateOf<String?>(initialRowKeys.firstOrNull() ?: "hero_banner")
+  val focusedRowKey: String? get() = _focusedRowKey.value
+
+  // Richiesta di focus differita (una sola): il target verticale è noto (riga in
+  // activeRowKeys) ma il suo nodo non è ancora montato. Viene completata quando la cella
+  // compare e annullata se diventa obsoleta (riga rimossa o focus andato altrove).
+  private val _pendingFocusRequest = mutableStateOf<Pair<String, Int>?>(null)
+  val pendingFocusRequest: Pair<String, Int>? get() = _pendingFocusRequest.value
+
+  /**
+   * Aggiorna righe e conteggi SENZA ricreare il coordinatore. Le registrazioni non più valide
+   * (riga eliminata o colonna oltre il nuovo conteggio) vengono rimosse insieme ai loro
+   * [FocusRequester], così un target non punta mai a un nodo che non esiste più.
+   */
+  fun updateRows(newKeys: List<String>, newCounts: Map<String, Int>) {
+    if (_activeRowKeys.toList() == newKeys && _rowItemCounts.toMap() == newCounts) return
+
+    _rowItemCounts.clear()
+    _rowItemCounts.putAll(newCounts)
+    _activeRowKeys.clear()
+    _activeRowKeys.addAll(newKeys)
+
+    val validKeys = newKeys.toSet()
+    val isStale: (Pair<String, Int>) -> Boolean = { (row, col) ->
+      row !in validKeys || (_rowItemCounts[row] ?: 0) <= col
+    }
+    cellRequesters.keys.filter { isStale(it) }.forEach { cellRequesters.remove(it) }
+    attachedCellState.keys.filter { isStale(it) }.forEach { attachedCellState.remove(it) }
+    lastFocusedColByRow.keys
+      .filter { it !in validKeys }
+      .toList()
+      .forEach { lastFocusedColByRow.remove(it) }
+
+    // Se la riga precedentemente focalizzata è stata rimossa, aggiorna la riga corrente.
+    if (_focusedRowKey.value !in validKeys) {
+      _focusedRowKey.value = newKeys.firstOrNull()
+    }
+
+    // Una richiesta pendente verso una riga eliminata non ha più senso.
+    _pendingFocusRequest.value?.let { (row, _) ->
+      if (row !in validKeys) _pendingFocusRequest.value = null
+    }
+  }
+
   fun getRequester(rowKey: String, colIndex: Int): FocusRequester {
     return cellRequesters.getOrPut(Pair(rowKey, colIndex)) { FocusRequester() }
   }
 
   fun onCellFocused(rowKey: String, colIndex: Int) {
+    _focusedRowKey.value = rowKey
     lastFocusedColByRow[rowKey] = colIndex
+    // Se il focus raggiunge una cella diversa da quella attesa, la richiesta pendente è obsoleta.
+    _pendingFocusRequest.value?.let { pending ->
+      if (pending != Pair(rowKey, colIndex)) _pendingFocusRequest.value = null
+    }
   }
 
   fun registerCell(rowKey: String, colIndex: Int) {
-    attachedCellState[Pair(rowKey, colIndex)] = true
+    val cell = Pair(rowKey, colIndex)
+    if (attachedCellState[cell] != true) {
+      attachedCellState[cell] = true
+      _registrationTick.value++
+    }
   }
 
   fun unregisterCell(rowKey: String, colIndex: Int) {
@@ -228,6 +301,9 @@ class HomeRowFocusCoordinator(
   fun isCellAttached(rowKey: String, colIndex: Int): Boolean =
     attachedCellState.containsKey(Pair(rowKey, colIndex))
 
+  /** `true` se la riga fa parte delle righe attive e ha almeno un elemento. */
+  fun hasItems(rowKey: String): Boolean = (_rowItemCounts[rowKey] ?: 0) > 0
+
   fun getNextRowKey(currentRowKey: String): String? {
     val idx = activeRowKeys.indexOf(currentRowKey)
     return if (idx in 0 until activeRowKeys.lastIndex) activeRowKeys[idx + 1] else null
@@ -236,6 +312,18 @@ class HomeRowFocusCoordinator(
   fun getPrevRowKey(currentRowKey: String): String? {
     val idx = activeRowKeys.indexOf(currentRowKey)
     return if (idx > 0) activeRowKeys[idx - 1] else null
+  }
+
+  /** Registra una richiesta di focus verso una riga nota il cui nodo non è ancora montato. */
+  fun requestPendingFocus(rowKey: String, colIndex: Int) {
+    _pendingFocusRequest.value = Pair(rowKey, colIndex)
+  }
+
+  /** Consuma (una sola volta) la richiesta pendente, restituendola. */
+  fun consumePendingFocusRequest(): Pair<String, Int>? {
+    val current = _pendingFocusRequest.value ?: return null
+    _pendingFocusRequest.value = null
+    return current
   }
 
   /**
@@ -286,29 +374,46 @@ fun Modifier.rowFocusProperties(
   // Target calcolati nel CORPO composable (e non dentro la lambda focusProperties): le
   // letture dello snapshot del coordinator vengono tracciate dalla composizione chiamante,
   // quindi montare/smontare una cella del bersaglio ricompone la riga e aggiorna i target.
-  // Se il bersaglio non ha celle montate il target resta null e si lascia a
-  // FocusRequester.Default la ricerca standard del D-pad (MAI un requester non agganciato).
+  // Se il bersaglio non ha ancora celle montate il target resta null e si imposta
+  // FocusRequester.Cancel per impedire all'algoritmo 2D di scavalcare la riga bersaglio
+  // (transizione rigida N <-> N±1). La discesa viene completata dalla richiesta pendente
+  // registrata in onKeyEvent e soddisfatta da LaunchedEffect(coordinator.registrationTick).
   val nextRowKey = coordinator.getNextRowKey(rowKey)
   val downTarget = nextRowKey?.let { coordinator.getTargetRequester(it, colIndex) }
   val prevRowKey = coordinator.getPrevRowKey(rowKey)
   val upTarget = prevRowKey?.let { coordinator.getTargetRequester(it, colIndex) }
 
   return this
-    .focusProperties {
-      if (nextRowKey != null) {
-        down = downTarget ?: FocusRequester.Default
-      } else {
-        down = FocusRequester.Cancel
-      }
-
-      if (prevRowKey != null) {
-        up = upTarget ?: FocusRequester.Default
-      } else {
-        up = FocusRequester.Cancel
+    // Un GIÙ/SU verso una riga NOTA che non ha ancora celle montate non deve risolversi
+    // silenziosamente nella ricerca geometrica (FocusRequester.Default). Registriamo qui
+    // UNA richiesta pendente: sarà completata quando la cella bersaglio entrerà in
+    // composizione. L'evento NON viene consumato: se il target è a schermo la navigazione
+    // normale ha già il requester corretto e questo ramo non si attiva.
+    .onKeyEvent { keyEvent ->
+      val native = keyEvent.nativeKeyEvent
+      if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
+      when (native.keyCode) {
+        KeyEvent.KEYCODE_DPAD_DOWN -> {
+          if (downTarget == null && nextRowKey != null && coordinator.hasItems(nextRowKey)) {
+            coordinator.requestPendingFocus(nextRowKey, colIndex)
+          }
+          false
+        }
+        KeyEvent.KEYCODE_DPAD_UP -> {
+          if (upTarget == null && prevRowKey != null && coordinator.hasItems(prevRowKey)) {
+            coordinator.requestPendingFocus(prevRowKey, colIndex)
+          }
+          false
+        }
+        else -> false
       }
     }
+    .focusProperties {
+      down = downTarget ?: FocusRequester.Cancel
+      up = upTarget ?: FocusRequester.Cancel
+    }
     .onFocusChanged { state ->
-      if (state.isFocused) {
+      if (state.isFocused || state.hasFocus) {
         coordinator.onCellFocused(rowKey, colIndex)
       }
     }
@@ -449,11 +554,50 @@ fun HomeMainBrowsingContent(
     }
   }
 
-  val coordinator = remember(activeRowKeys, rowItemCounts) {
-    HomeRowFocusCoordinator(activeRowKeys, rowItemCounts)
+  // UNICA istanza per tutta la vita della Home: sopravvive ai caricamenti asincroni dei
+  // cataloghi. I dati delle righe vengono aggiornati sul posto, così i FocusRequester già
+  // assegnati restano validi e la prima navigazione non parte con target azzerati.
+  val coordinator = remember { HomeRowFocusCoordinator(activeRowKeys, rowItemCounts) }
+
+  LaunchedEffect(activeRowKeys, rowItemCounts) {
+    coordinator.updateRows(activeRowKeys, rowItemCounts)
+  }
+
+  // Completa UNA richiesta di focus pendente (riga nota non ancora montata) non appena la
+  // cella bersaglio entra in composizione. Nessun loop: l'effetto scatta ad ogni
+  // registrazione di cella e consuma la richiesta una sola volta.
+  LaunchedEffect(coordinator.registrationTick) {
+    val pending = coordinator.pendingFocusRequest ?: return@LaunchedEffect
+    val requester = coordinator.getTargetRequester(pending.first, pending.second)
+      ?: return@LaunchedEffect
+    coordinator.consumePendingFocusRequest()
+    try {
+      requester.requestFocus()
+    } catch (_: Exception) {}
   }
 
   val listState = rememberLazyListState()
+
+  // Riga bersaglio per lo scroll sincronizzato:
+  // Se c'è una richiesta pendente (transizione verso riga non ancora montata), usiamo quella.
+  // Altrimenti usiamo la riga che ha attualmente il focus.
+  val scrollTargetRow = coordinator.pendingFocusRequest?.first ?: coordinator.focusedRowKey
+
+  LaunchedEffect(scrollTargetRow) {
+    val targetRow = scrollTargetRow ?: return@LaunchedEffect
+    val targetIndex = coordinator.activeRowKeys.indexOf(targetRow)
+    if (targetIndex < 0) return@LaunchedEffect
+
+    if (targetIndex == 0) {
+      if (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0) {
+        listState.animateScrollToItem(0, 0)
+      }
+    } else {
+      if (listState.firstVisibleItemIndex != targetIndex || listState.firstVisibleItemScrollOffset != 0) {
+        listState.animateScrollToItem(targetIndex, 0)
+      }
+    }
+  }
 
   // D-pad: quando il focus torna dalla prima riga verso la Hero, animiamo la lista a posizione 0
   var heroHasFocus by remember { mutableStateOf(false) }
@@ -470,24 +614,22 @@ fun HomeMainBrowsingContent(
   // su una card provider qualunque.
   var pendingHeroFocus by remember { mutableStateOf(false) }
 
-  // Letti al momento dell'evento: il coordinatore viene RICREATO quando cambiano le righe
-  // attive (i cataloghi TMDB arrivano dopo la splash) e il collettore resta agganciato una
-  // sola volta. Usando l'istanza catturata alla partenza si chiederebbe il focus a un
-  // FocusRequester mai agganciato ad alcun nodo ("FocusRequester is not initialized").
-  val currentCoordinator by rememberUpdatedState(coordinator)
+  // Letto al momento dell'evento senza riavviare il collettore (nessuna perdita di eventi).
   val heroItemsAvailable by rememberUpdatedState(dynamicHeroItems.isNotEmpty())
 
   // Scroll to top automatico cliccando "Home" dalla sidebar (Punto 4) e focus iniziale
   // della Home: entrambi devono appoggiarsi sull'Hero, prima cella del contenuto.
+  // Il collettore resta agganciato UNA SOLA volta: se fosse riavviato ad ogni cambiamento
+  // delle righe, un evento emesso nel frattempo andrebbe perso (SharedFlow senza replay).
   LaunchedEffect(viewModel) {
     viewModel?.homeScrollToTopEvent?.collect {
       listState.animateScrollToItem(0)
       try {
         if (heroItemsAvailable) {
-          currentCoordinator.getRequester("hero_banner", 0).requestFocus()
+          coordinator.getRequester("hero_banner", 0).requestFocus()
         } else {
           pendingHeroFocus = true
-          currentCoordinator.getRequester("section_providers_hub", 0).requestFocus()
+          coordinator.getRequester("section_providers_hub", 0).requestFocus()
         }
       } catch (_: Exception) {}
     }
@@ -497,12 +639,12 @@ fun HomeMainBrowsingContent(
     if (pendingHeroFocus && dynamicHeroItems.isNotEmpty()) {
       pendingHeroFocus = false
       try {
-        currentCoordinator.getRequester("hero_banner", 0).requestFocus()
+        coordinator.getRequester("hero_banner", 0).requestFocus()
       } catch (_: Exception) {}
     }
   }
 
-  LaunchedEffect(focusRestoreSignal.value, listState, currentCoordinator) {
+  LaunchedEffect(focusRestoreSignal.value, listState, coordinator) {
     val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
     focusRestoreSignal.value = null
 
@@ -539,17 +681,19 @@ fun HomeMainBrowsingContent(
       }
 
       if (index >= 0) {
-        val requester = currentCoordinator.getTargetRequester(sectionKey, index)
+        val requester = coordinator.getTargetRequester(sectionKey, index)
         if (requester != null) {
           try {
             requester.requestFocus()
           } catch (_: Exception) {}
+        } else {
+          coordinator.requestPendingFocus(sectionKey, index)
         }
       }
     }
   }
 
-  TvFocusBringIntoView(topOffsetDp = 64.dp) {
+  TvFocusBringIntoView(topOffsetDp = 0.dp) {
   LazyColumn(
     state = listState,
     modifier = modifier
@@ -567,7 +711,12 @@ fun HomeMainBrowsingContent(
           }
         }
         Column(
-          modifier = Modifier.onFocusChanged { heroHasFocus = it.hasFocus }
+          modifier = Modifier.onFocusChanged {
+            heroHasFocus = it.hasFocus
+            if (it.hasFocus) {
+              coordinator.onCellFocused("hero_banner", 0)
+            }
+          }
         ) {
           HeroBanner(
             items = dynamicHeroItems,
@@ -575,14 +724,9 @@ fun HomeMainBrowsingContent(
             // azione non esistono piu', l'intero banner e' il target di focus.
             onDetailsClick = { onMediaClick(it) },
             heroFocusRequester = coordinator.getRequester("hero_banner", 0),
-            // Hero va prima su "Continua a guardare" se presente, altrimenti su Providers.
-            // Null finche' la destinazione non ha celle montate: HeroBanner lascia allora
-            // il D-pad la ricerca standard (FocusRequester.Default) invece di usare un
-            // requester non agganciato (crash "FocusRequester is not initialized").
-            heroDownFocusRequester = if (continueWatching.isNotEmpty()) {
-              coordinator.getTargetRequester("section_continue_watching", 0)
-            } else {
-              coordinator.getTargetRequester("section_providers_hub", 0)
+            // Hero va alla riga successiva determinata dal coordinatore.
+            heroDownFocusRequester = coordinator.getNextRowKey("hero_banner")?.let { nextKey ->
+              coordinator.getTargetRequester(nextKey, 0)
             },
             onHeroFocusChanged = { if (it) coordinator.onCellFocused("hero_banner", 0) }
           )
@@ -598,24 +742,26 @@ fun HomeMainBrowsingContent(
           title = stringResource(R.string.home_section_continue_watching),
           badge = stringResource(R.string.home_badge_in_progress, continueWatching.size)
         )
-        LazyRow(
-          contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-          itemsIndexed(continueWatching, key = { _, it -> "cw_${it.id}" }) { index, item ->
-            ContinueWatchingCard(
-              media = item,
-              onClick = {
-                Log.d("HomeScreen", "ContinueWatchingCard onClick (resume playback) called for ${item.title}")
-                onPlayClick(item)
-              },
-              onLongPress = {
-                Log.d("HomeScreen", "ContinueWatchingCard onLongPress called for ${item.title}")
-                contextMenuMedia = item
-              },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_continue_watching", index),
-              focusRequester = coordinator.getRequester("section_continue_watching", index)
-            )
+        TvFocusRow {
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+          ) {
+            itemsIndexed(continueWatching, key = { _, it -> "cw_${it.id}" }) { index, item ->
+              ContinueWatchingCard(
+                media = item,
+                onClick = {
+                  Log.d("HomeScreen", "ContinueWatchingCard onClick (resume playback) called for ${item.title}")
+                  onPlayClick(item)
+                },
+                onLongPress = {
+                  Log.d("HomeScreen", "ContinueWatchingCard onLongPress called for ${item.title}")
+                  contextMenuMedia = item
+                },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_continue_watching", index),
+                focusRequester = coordinator.getRequester("section_continue_watching", index)
+              )
+            }
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
@@ -628,22 +774,24 @@ fun HomeMainBrowsingContent(
         title = stringResource(R.string.home_section_streaming_platforms),
         badge = stringResource(R.string.home_badge_select_provider)
       )
-      LazyRow(
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(125.dp),
-        contentPadding = PaddingValues(horizontal = 48.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
-      ) {
-        itemsIndexed(ProviderConstants.ALL, key = { _, it -> it.id }) { index, provider ->
-          ProviderCard(
-            provider = provider,
-            onClick = {
-              onProviderClick(provider)
-            },
-            modifier = Modifier.rowFocusProperties(coordinator, "section_providers_hub", index),
-            focusRequester = coordinator.getRequester("section_providers_hub", index)
-          )
+      TvFocusRow {
+        LazyRow(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(125.dp),
+          contentPadding = PaddingValues(horizontal = 48.dp, vertical = 8.dp),
+          horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+          itemsIndexed(ProviderConstants.ALL, key = { _, it -> it.id }) { index, provider ->
+            ProviderCard(
+              provider = provider,
+              onClick = {
+                onProviderClick(provider)
+              },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_providers_hub", index),
+              focusRequester = coordinator.getRequester("section_providers_hub", index)
+            )
+          }
         }
       }
       Spacer(modifier = Modifier.height(16.dp))
@@ -656,18 +804,20 @@ fun HomeMainBrowsingContent(
           title = stringResource(R.string.home_section_top_10_movies),
           badge = stringResource(R.string.home_badge_tmdb_ranking_italy)
         )
-        LazyRow(
-          contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(Top10RowSpacing)
-        ) {
-          itemsIndexed(top10Movies, key = { _, item -> "top10_film_${item.id}" }) { index, item ->
-            Top10RankedMediaCard(
-              rank = index + 1,
-              media = item,
-              onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_film", index),
-              focusRequester = coordinator.getRequester("section_top_10_film", index)
-            )
+        TvFocusRow {
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(Top10RowSpacing)
+          ) {
+            itemsIndexed(top10Movies, key = { _, item -> "top10_film_${item.id}" }) { index, item ->
+              Top10RankedMediaCard(
+                rank = index + 1,
+                media = item,
+                onClick = { onMediaClick(item) },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_film", index),
+                focusRequester = coordinator.getRequester("section_top_10_film", index)
+              )
+            }
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
@@ -681,18 +831,20 @@ fun HomeMainBrowsingContent(
           title = stringResource(R.string.home_section_top_10_series),
           badge = stringResource(R.string.home_badge_most_watched_tmdb)
         )
-        LazyRow(
-          contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(Top10RowSpacing)
-        ) {
-          itemsIndexed(top10Series, key = { _, item -> "top10_serie_${item.id}" }) { index, item ->
-            Top10RankedMediaCard(
-              rank = index + 1,
-              media = item,
-              onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_serie", index),
-              focusRequester = coordinator.getRequester("section_top_10_serie", index)
-            )
+        TvFocusRow {
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(Top10RowSpacing)
+          ) {
+            itemsIndexed(top10Series, key = { _, item -> "top10_serie_${item.id}" }) { index, item ->
+              Top10RankedMediaCard(
+                rank = index + 1,
+                media = item,
+                onClick = { onMediaClick(item) },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_serie", index),
+                focusRequester = coordinator.getRequester("section_top_10_serie", index)
+              )
+            }
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
@@ -706,17 +858,19 @@ fun HomeMainBrowsingContent(
           title = stringResource(R.string.home_section_trending_movies),
           badge = stringResource(R.string.home_badge_trending_week)
         )
-        LazyRow(
-          contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-          itemsIndexed(trendingMovies, key = { _, item -> "trend_m_${item.id}" }) { index, item ->
-            PosterMediaCard(
-              media = item,
-              onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_trending_film", index),
-              focusRequester = coordinator.getRequester("section_trending_film", index)
-            )
+        TvFocusRow {
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+          ) {
+            itemsIndexed(trendingMovies, key = { _, item -> "trend_m_${item.id}" }) { index, item ->
+              PosterMediaCard(
+                media = item,
+                onClick = { onMediaClick(item) },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_trending_film", index),
+                focusRequester = coordinator.getRequester("section_trending_film", index)
+              )
+            }
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
@@ -730,17 +884,19 @@ fun HomeMainBrowsingContent(
           title = stringResource(R.string.home_section_trending_series),
           badge = stringResource(R.string.home_badge_trending_phenomena)
         )
-        LazyRow(
-          contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-          itemsIndexed(trendingSeries, key = { _, item -> "trend_s_${item.id}" }) { index, item ->
-            PosterMediaCard(
-              media = item,
-              onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_trending_serie", index),
-              focusRequester = coordinator.getRequester("section_trending_serie", index)
-            )
+        TvFocusRow {
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+          ) {
+            itemsIndexed(trendingSeries, key = { _, item -> "trend_s_${item.id}" }) { index, item ->
+              PosterMediaCard(
+                media = item,
+                onClick = { onMediaClick(item) },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_trending_serie", index),
+                focusRequester = coordinator.getRequester("section_trending_serie", index)
+              )
+            }
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
@@ -754,17 +910,19 @@ fun HomeMainBrowsingContent(
           title = stringResource(R.string.home_section_for_you_movies),
           badge = stringResource(R.string.home_badge_based_on_preferences)
         )
-        LazyRow(
-          contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-          itemsIndexed(forYouMovies, key = { _, item -> "foryou_m_${item.id}" }) { index, item ->
-            StandardMediaCard(
-              media = item,
-              onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_film", index),
-              focusRequester = coordinator.getRequester("section_for_you_film", index)
-            )
+        TvFocusRow {
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+          ) {
+            itemsIndexed(forYouMovies, key = { _, item -> "foryou_m_${item.id}" }) { index, item ->
+              StandardMediaCard(
+                media = item,
+                onClick = { onMediaClick(item) },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_film", index),
+                focusRequester = coordinator.getRequester("section_for_you_film", index)
+              )
+            }
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
@@ -778,17 +936,19 @@ fun HomeMainBrowsingContent(
           title = stringResource(R.string.home_section_for_you_series),
           badge = stringResource(R.string.home_badge_suggested_for_you)
         )
-        LazyRow(
-          contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-          itemsIndexed(forYouSeries, key = { _, item -> "foryou_s_${item.id}" }) { index, item ->
-            StandardMediaCard(
-              media = item,
-              onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_serie", index),
-              focusRequester = coordinator.getRequester("section_for_you_serie", index)
-            )
+        TvFocusRow {
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+          ) {
+            itemsIndexed(forYouSeries, key = { _, item -> "foryou_s_${item.id}" }) { index, item ->
+              StandardMediaCard(
+                media = item,
+                onClick = { onMediaClick(item) },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_serie", index),
+                focusRequester = coordinator.getRequester("section_for_you_serie", index)
+              )
+            }
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
@@ -802,17 +962,19 @@ fun HomeMainBrowsingContent(
           title = stringResource(R.string.home_section_popular_movies),
           badge = stringResource(R.string.home_badge_most_watched_cinema)
         )
-        LazyRow(
-          contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-          itemsIndexed(popularMovies, key = { _, item -> "pop_m_${item.id}" }) { index, item ->
-            PosterMediaCard(
-              media = item,
-              onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_film", index),
-              focusRequester = coordinator.getRequester("section_popolari_film", index)
-            )
+        TvFocusRow {
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+          ) {
+            itemsIndexed(popularMovies, key = { _, item -> "pop_m_${item.id}" }) { index, item ->
+              PosterMediaCard(
+                media = item,
+                onClick = { onMediaClick(item) },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_film", index),
+                focusRequester = coordinator.getRequester("section_popolari_film", index)
+              )
+            }
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
@@ -826,17 +988,19 @@ fun HomeMainBrowsingContent(
           title = stringResource(R.string.home_section_popular_series),
           badge = stringResource(R.string.home_badge_most_discussed_series)
         )
-        LazyRow(
-          contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-          itemsIndexed(popularSeries, key = { _, item -> "pop_s_${item.id}" }) { index, item ->
-            PosterMediaCard(
-              media = item,
-              onClick = { onMediaClick(item) },
-              modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_serie", index),
-              focusRequester = coordinator.getRequester("section_popolari_serie", index)
-            )
+        TvFocusRow {
+          LazyRow(
+            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+          ) {
+            itemsIndexed(popularSeries, key = { _, item -> "pop_s_${item.id}" }) { index, item ->
+              PosterMediaCard(
+                media = item,
+                onClick = { onMediaClick(item) },
+                modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_serie", index),
+                focusRequester = coordinator.getRequester("section_popolari_serie", index)
+              )
+            }
           }
         }
         Spacer(modifier = Modifier.height(20.dp))
@@ -851,17 +1015,19 @@ fun HomeMainBrowsingContent(
             title = extraSec.title,
             badge = extraSec.addonName
           )
-          LazyRow(
-            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-          ) {
-            itemsIndexed(extraSec.items, key = { _, item -> "extra_${extraSec.id}_${item.id}" }) { index, item ->
-              PosterMediaCard(
-                media = item,
-                onClick = { onMediaClick(item) },
-                modifier = Modifier.rowFocusProperties(coordinator, "section_${extraSec.id}", index),
-                focusRequester = coordinator.getRequester("section_${extraSec.id}", index)
-              )
+          TvFocusRow {
+            LazyRow(
+              contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
+              horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+              itemsIndexed(extraSec.items, key = { _, item -> "extra_${extraSec.id}_${item.id}" }) { index, item ->
+                PosterMediaCard(
+                  media = item,
+                  onClick = { onMediaClick(item) },
+                  modifier = Modifier.rowFocusProperties(coordinator, "section_${extraSec.id}", index),
+                  focusRequester = coordinator.getRequester("section_${extraSec.id}", index)
+                )
+              }
             }
           }
           Spacer(modifier = Modifier.height(20.dp))
