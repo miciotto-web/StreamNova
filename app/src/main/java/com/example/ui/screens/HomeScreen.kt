@@ -68,6 +68,7 @@ import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusBringIntoViewSpec
 import com.example.ui.components.TvFocusRow
 import com.example.ui.components.LocalLastFocusedMediaId
+import com.example.ui.components.LocalLastFocusedTarget
 import com.example.ui.components.LocalClearLastFocusedMedia
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.FocusRequester
@@ -94,6 +95,7 @@ fun HomeScreen(
   val handleMediaClick: (MediaItem) -> Unit = onMediaClick ?: { viewModel.openDetail(it) }
 
   val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
+  val lastFocusedTarget by viewModel.lastFocusedTarget.collectAsState()
 
   // La sidebar offre la sezione "Addon" solo in modalità Debrid TorBox: se il cambio di
   // modalità l'ha resa non più raggiungibile mentre era aperta, il contenuto ricade sulla
@@ -108,6 +110,7 @@ fun HomeScreen(
 
   CompositionLocalProvider(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
+    LocalLastFocusedTarget provides lastFocusedTarget,
     LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() }
   ) {
     when (activeSection) {
@@ -446,6 +449,15 @@ fun HomeMainBrowsingContent(
   }
   var contextMenuMedia by remember { mutableStateOf<MediaItem?>(null) }
 
+  // Click ROW-SCOPED: salva il target `(rowKey, media.id)` PRIMA della navigazione.
+  // Al Back solo la riga d'origine ripristina il focus: lo stesso titolo può vivere
+  // contemporaneamente in più righe (es. Popolari e Trending) e senza la riga tutte
+  // le candidate richiederebbero il focus insieme, vincendo quella sbagliata.
+  val handleRowMediaClick: (String, MediaItem) -> Unit = { rowKey, item ->
+    viewModel?.saveLastFocusedMedia(rowKey, item.id)
+    onMediaClick(item)
+  }
+
   val hasCustomCatalogMovies = homeCatalogs?.hasCustomCatalogMovies == true
   val hasCustomCatalogSeries = homeCatalogs?.hasCustomCatalogSeries == true
 
@@ -650,7 +662,31 @@ fun HomeMainBrowsingContent(
 
     // Il media deve esistere nel catalogo, altrimenti non c'è nulla da ripristinare.
     allMedia.find { it.id == mediaId } ?: return@LaunchedEffect
-    val sectionKey = when {
+
+    val restoreTarget = viewModel?.lastFocusedTarget?.value
+    // Target già consumato dalla card della riga corretta: il ripristino è avvenuto (o è
+    // in corso) e una richiesta da qui ruberebbe il focus a una riga sbagliata.
+    if (restoreTarget == null) return@LaunchedEffect
+
+    fun itemsOf(sectionKey: String): List<MediaItem> = when (sectionKey) {
+      "hero_banner" -> dynamicHeroItems
+      "section_continue_watching" -> continueWatching
+      "section_top_10_film" -> top10Movies
+      "section_top_10_serie" -> top10Series
+      "section_trending_film" -> trendingMovies
+      "section_trending_serie" -> trendingSeries
+      "section_for_you_film" -> forYouMovies
+      "section_for_you_serie" -> forYouSeries
+      "section_popolari_film" -> popularMovies
+      "section_popolari_serie" -> popularSeries
+      else -> homeCatalogs?.extraSections?.find { "section_${it.id}" == sectionKey }?.items ?: emptyList()
+    }
+
+    // La riga salvata nel target ha la PRIORITÀ assoluta: solo quella ripristina il focus.
+    val preferredRowKey = restoreTarget.first.takeIf { it.isNotEmpty() }
+    val sectionKey = if (preferredRowKey != null && itemsOf(preferredRowKey).any { it.id == mediaId }) {
+      preferredRowKey
+    } else when {
       continueWatching.any { it.id == mediaId } -> "section_continue_watching"
       top10Movies.any { it.id == mediaId } -> "section_top_10_film"
       top10Series.any { it.id == mediaId } -> "section_top_10_serie"
@@ -666,25 +702,25 @@ fun HomeMainBrowsingContent(
       else -> null
     }
 
-    if (sectionKey != null && rowItemCounts[sectionKey] != null && rowItemCounts[sectionKey]!! > 0) {
-      val index = when (sectionKey) {
-        "section_continue_watching" -> continueWatching.indexOfFirst { it.id == mediaId }
-        "section_top_10_film" -> top10Movies.indexOfFirst { it.id == mediaId }
-        "section_top_10_serie" -> top10Series.indexOfFirst { it.id == mediaId }
-        "section_trending_film" -> trendingMovies.indexOfFirst { it.id == mediaId }
-        "section_trending_serie" -> trendingSeries.indexOfFirst { it.id == mediaId }
-        "section_for_you_film" -> forYouMovies.indexOfFirst { it.id == mediaId }
-        "section_for_you_serie" -> forYouSeries.indexOfFirst { it.id == mediaId }
-        "section_popolari_film" -> popularMovies.indexOfFirst { it.id == mediaId }
-        "section_popolari_serie" -> popularSeries.indexOfFirst { it.id == mediaId }
-        else -> -1
-      }
+    if (sectionKey == "hero_banner") {
+      try {
+        coordinator.getRequester("hero_banner", 0).requestFocus()
+        viewModel?.clearLastFocusedMedia()
+      } catch (_: Exception) {}
+      return@LaunchedEffect
+    }
+
+    if (sectionKey != null && (rowItemCounts[sectionKey] ?: 0) > 0) {
+      val index = itemsOf(sectionKey).indexOfFirst { it.id == mediaId }
 
       if (index >= 0) {
         val requester = coordinator.getTargetRequester(sectionKey, index)
         if (requester != null) {
           try {
             requester.requestFocus()
+            // Focus richiesto con successo: il target viene consumato subito così nessun'altra
+            // riga o frame successivo può spostare il focus sulla riga sbagliata.
+            viewModel?.clearLastFocusedMedia()
           } catch (_: Exception) {}
         } else {
           coordinator.requestPendingFocus(sectionKey, index)
@@ -722,7 +758,7 @@ fun HomeMainBrowsingContent(
             items = dynamicHeroItems,
             // OK/Enter e click sull'Hero aprono la scheda del titolo corrente: i pulsanti
             // azione non esistono piu', l'intero banner e' il target di focus.
-            onDetailsClick = { onMediaClick(it) },
+            onDetailsClick = { handleRowMediaClick("hero_banner", it) },
             heroFocusRequester = coordinator.getRequester("hero_banner", 0),
             // Hero va alla riga successiva determinata dal coordinatore.
             heroDownFocusRequester = coordinator.getNextRowKey("hero_banner")?.let { nextKey ->
@@ -759,7 +795,8 @@ fun HomeMainBrowsingContent(
                   contextMenuMedia = item
                 },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_continue_watching", index),
-                focusRequester = coordinator.getRequester("section_continue_watching", index)
+                focusRequester = coordinator.getRequester("section_continue_watching", index),
+                rowKey = "section_continue_watching"
               )
             }
           }
@@ -809,13 +846,14 @@ fun HomeMainBrowsingContent(
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(Top10RowSpacing)
           ) {
-            itemsIndexed(top10Movies, key = { _, item -> "top10_film_${item.id}" }) { index, item ->
+            itemsIndexed(top10Movies, key = { index, item -> "top10_${item.id}_$index" }) { index, item ->
               Top10RankedMediaCard(
                 rank = index + 1,
                 media = item,
-                onClick = { onMediaClick(item) },
+                onClick = { handleRowMediaClick("section_top_10_film", item) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_film", index),
-                focusRequester = coordinator.getRequester("section_top_10_film", index)
+                focusRequester = coordinator.getRequester("section_top_10_film", index),
+                rowKey = "section_top_10_film"
               )
             }
           }
@@ -836,13 +874,14 @@ fun HomeMainBrowsingContent(
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(Top10RowSpacing)
           ) {
-            itemsIndexed(top10Series, key = { _, item -> "top10_serie_${item.id}" }) { index, item ->
+            itemsIndexed(top10Series, key = { index, item -> "top10_${item.id}_$index" }) { index, item ->
               Top10RankedMediaCard(
                 rank = index + 1,
                 media = item,
-                onClick = { onMediaClick(item) },
+                onClick = { handleRowMediaClick("section_top_10_serie", item) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_serie", index),
-                focusRequester = coordinator.getRequester("section_top_10_serie", index)
+                focusRequester = coordinator.getRequester("section_top_10_serie", index),
+                rowKey = "section_top_10_serie"
               )
             }
           }
@@ -866,9 +905,10 @@ fun HomeMainBrowsingContent(
             itemsIndexed(trendingMovies, key = { _, item -> "trend_m_${item.id}" }) { index, item ->
               PosterMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) },
+                onClick = { handleRowMediaClick("section_trending_film", item) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_trending_film", index),
-                focusRequester = coordinator.getRequester("section_trending_film", index)
+                focusRequester = coordinator.getRequester("section_trending_film", index),
+                rowKey = "section_trending_film"
               )
             }
           }
@@ -892,9 +932,10 @@ fun HomeMainBrowsingContent(
             itemsIndexed(trendingSeries, key = { _, item -> "trend_s_${item.id}" }) { index, item ->
               PosterMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) },
+                onClick = { handleRowMediaClick("section_trending_serie", item) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_trending_serie", index),
-                focusRequester = coordinator.getRequester("section_trending_serie", index)
+                focusRequester = coordinator.getRequester("section_trending_serie", index),
+                rowKey = "section_trending_serie"
               )
             }
           }
@@ -918,9 +959,10 @@ fun HomeMainBrowsingContent(
             itemsIndexed(forYouMovies, key = { _, item -> "foryou_m_${item.id}" }) { index, item ->
               StandardMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) },
+                onClick = { handleRowMediaClick("section_for_you_film", item) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_film", index),
-                focusRequester = coordinator.getRequester("section_for_you_film", index)
+                focusRequester = coordinator.getRequester("section_for_you_film", index),
+                rowKey = "section_for_you_film"
               )
             }
           }
@@ -944,9 +986,10 @@ fun HomeMainBrowsingContent(
             itemsIndexed(forYouSeries, key = { _, item -> "foryou_s_${item.id}" }) { index, item ->
               StandardMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) },
+                onClick = { handleRowMediaClick("section_for_you_serie", item) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_for_you_serie", index),
-                focusRequester = coordinator.getRequester("section_for_you_serie", index)
+                focusRequester = coordinator.getRequester("section_for_you_serie", index),
+                rowKey = "section_for_you_serie"
               )
             }
           }
@@ -970,9 +1013,10 @@ fun HomeMainBrowsingContent(
             itemsIndexed(popularMovies, key = { _, item -> "pop_m_${item.id}" }) { index, item ->
               PosterMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) },
+                onClick = { handleRowMediaClick("section_popolari_film", item) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_film", index),
-                focusRequester = coordinator.getRequester("section_popolari_film", index)
+                focusRequester = coordinator.getRequester("section_popolari_film", index),
+                rowKey = "section_popolari_film"
               )
             }
           }
@@ -996,9 +1040,10 @@ fun HomeMainBrowsingContent(
             itemsIndexed(popularSeries, key = { _, item -> "pop_s_${item.id}" }) { index, item ->
               PosterMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) },
+                onClick = { handleRowMediaClick("section_popolari_serie", item) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_popolari_serie", index),
-                focusRequester = coordinator.getRequester("section_popolari_serie", index)
+                focusRequester = coordinator.getRequester("section_popolari_serie", index),
+                rowKey = "section_popolari_serie"
               )
             }
           }
@@ -1023,9 +1068,10 @@ fun HomeMainBrowsingContent(
               itemsIndexed(extraSec.items, key = { _, item -> "extra_${extraSec.id}_${item.id}" }) { index, item ->
                 PosterMediaCard(
                   media = item,
-                  onClick = { onMediaClick(item) },
+                  onClick = { handleRowMediaClick("section_${extraSec.id}", item) },
                   modifier = Modifier.rowFocusProperties(coordinator, "section_${extraSec.id}", index),
-                  focusRequester = coordinator.getRequester("section_${extraSec.id}", index)
+                  focusRequester = coordinator.getRequester("section_${extraSec.id}", index),
+                  rowKey = "section_${extraSec.id}"
                 )
               }
             }
@@ -1043,7 +1089,7 @@ fun HomeMainBrowsingContent(
     MediaContextMenu(
       media = media,
       onPlay = { onPlayClick(media) },
-      onDetails = { onMediaClick(media) },
+      onDetails = { handleRowMediaClick("section_continue_watching", media) },
       onRemoveFromContinueWatching = { onRemoveFromContinueWatching(media.id) },
       onDismiss = { contextMenuMedia = null }
     )

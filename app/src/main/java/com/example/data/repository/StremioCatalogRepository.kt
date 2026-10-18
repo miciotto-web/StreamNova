@@ -839,6 +839,19 @@ object StremioCatalogRepository {
   }
 
   /**
+   * Ordine STABILE e immutabile della lista piatta del provider.
+   *
+   * I titoli tengono l'ordine dei cataloghi d'origine (piano del manifest); l'unico
+   * assestamento ammesso raggruppa i FILM prima delle SERIE senza mai rimescolare
+   * l'ordine interno a ogni gruppo (sortedBy è uno sort stabile). In questo modo
+   * l'arrivo sfasato delle chiamate di rete (pagine Film e Serie concorrenti) non
+   * può rimescolare le posizioni già a schermo: a parità di pagine caricate la lista
+   * risultante è identica indipendentemente da quale risposta arrivi per prima.
+   */
+  fun stabilizeProviderOrder(items: List<MediaItem>): List<MediaItem> =
+    items.sortedBy { if (it.type == MediaType.FILM) 0 else 1 }
+
+  /**
    * Merge/dedup cross-sorgente per gli elenchi che uniscono Stremio e TMDB.
    *
    * L'ordine d'ingresso è preservato (chi arriva prima resta davanti). Quando lo

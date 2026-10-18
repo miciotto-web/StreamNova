@@ -110,7 +110,8 @@ fun Top10RankedMediaCard(
   media: MediaItem,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
-  focusRequester: FocusRequester? = null
+  focusRequester: FocusRequester? = null,
+  rowKey: String? = null
 ) {
   // Traccia lo stato di focus del poster per gli elementi non focusable (numero di classifica).
   var isFocused by remember { mutableStateOf(false) }
@@ -134,12 +135,13 @@ fun Top10RankedMediaCard(
   val posterShape = RoundedCornerShape(NeonCardCorner)
 
   val targetMediaId = LocalLastFocusedMediaId.current
+  val restoreTarget = LocalLastFocusedTarget.current ?: targetMediaId?.let { FOCUS_ROW_ANY to it }
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
   val posterFocusRequester = focusRequester ?: internalFocusRequester
 
   LaunchedEffect(targetMediaId) {
-    if (targetMediaId != null && targetMediaId == media.id) {
+    if (matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
       try {
         posterFocusRequester.requestFocus()
         clearLastFocusedMedia?.invoke()
@@ -204,7 +206,7 @@ fun Top10RankedMediaCard(
             }
             .onFocusChanged {
               isFocused = it.isFocused
-              if (it.isFocused && targetMediaId == media.id) {
+              if (it.isFocused && matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
                 clearLastFocusedMedia?.invoke()
               }
             }

@@ -23,6 +23,30 @@ import androidx.compose.ui.focus.FocusRequester
  */
 
 /**
+ * RowKey speciale del target di ripristino: salvataggio senza riga esplicita (griglie e
+ * schermate con una sola superficie di focus). Un target con questo rowKey è valido per
+ * ogni riga; un target con rowKey specifico ripristina SOLO quella riga.
+ */
+const val FOCUS_ROW_ANY: String = ""
+
+/**
+ * true se il target di ripristino `(rowKey, mediaId)` si applica a questa card.
+ *
+ * Confronto rigoroso: quando il target dichiara una riga (es. "section_popolari_film")
+ * solo le card di quella riga possono ripristinare il focus. Questo impedisce che lo
+ * stesso titolo presente in più righe (es. Popolari e Trending) faccia scattare il
+ * ripristino su tutte le righe contemporaneamente, con la riga sbagliata che vince.
+ */
+fun matchesFocusRestoreTarget(
+  target: Pair<String, String>?,
+  rowKey: String?,
+  mediaId: String
+): Boolean {
+  if (target == null || target.second != mediaId) return false
+  return target.first == FOCUS_ROW_ANY || (rowKey != null && target.first == rowKey)
+}
+
+/**
  * Regola di attivazione di un tentativo di ripristino per una singola card.
  *
  * Il tentativo parte solo se la card è quella del target E se per il token dell'evento

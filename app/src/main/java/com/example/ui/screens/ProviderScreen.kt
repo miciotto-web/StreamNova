@@ -66,6 +66,7 @@ import com.example.ui.components.TvFocusAttachment
 import com.example.ui.components.guard
 import com.example.ui.components.tvFocusRequester
 import com.example.ui.components.LocalLastFocusedMediaId
+import com.example.ui.components.LocalLastFocusedTarget
 import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.components.scrollToItemVerified
@@ -102,18 +103,32 @@ fun ProviderScreen(
 ) {
   BackHandler { onBackClick() }
   val lastFocusedMediaId by (viewModel?.lastFocusedMediaId ?: MutableStateFlow(null)).collectAsState()
+  val lastFocusedTarget by (viewModel?.lastFocusedTarget ?: MutableStateFlow(null)).collectAsState()
   val focusRestoreToken by (viewModel?.focusRestoreToken ?: MutableStateFlow(0)).collectAsState()
 
   // Nuovo evento di ripristino a ogni ingresso in questa schermata con un target salvato
   // (ritorno dal Dettaglio): il token nel ViewModel avanza, quindi le card della griglia
   // riattivano il tentativo anche quando l'id del target non è cambiato.
+  val stremioProviderMap by (viewModel?.stremioProviderMedia ?: MutableStateFlow(emptyMap())).collectAsState()
+  val stremioItems = stremioProviderMap[provider.id].orEmpty()
+
+  // Nuovo evento di ripristino a ogni ingresso in questa schermata con un target salvato
+  // (ritorno dal Dettaglio): il token nel ViewModel avanza, quindi le card della griglia
+  // riattivano il tentativo anche quando l'id del target non è cambiato. NON tocca i dati.
   LaunchedEffect(Unit) {
     val targetId = viewModel?.lastFocusedMediaId?.value ?: return@LaunchedEffect
     viewModel.signalFocusRestore(targetId)
   }
 
-  val stremioProviderMap by (viewModel?.stremioProviderMedia ?: MutableStateFlow(emptyMap())).collectAsState()
-  val stremioItems = stremioProviderMap[provider.id].orEmpty()
+  // Nessun refresh automatico al ritorno dal Dettaglio: il caricamento parte solo se il
+  // catalogo del provider non è ancora presente in cache (sorgente Stremio o nativa).
+  LaunchedEffect(Unit) {
+    if (stremioProviderMap[provider.id].orEmpty().isEmpty() &&
+      allMedia.none { it.provider?.contains(provider.id, ignoreCase = true) == true }
+    ) {
+      viewModel?.ensureProviderLoaded(provider)
+    }
+  }
 
   // La fonte dati dipende dalla COVERAGE del provider, non più da un flag binario:
   //   NONE    -> solo TMDB nativo,
@@ -132,23 +147,26 @@ fun ProviderScreen(
   // il fallback completa la lista senza mai sostituirlo.
   val isFallbackSource = stremioStateMap[provider.id]?.fallbackToDefault == true
 
+  // Ordine STABILE e immutabile della lista: i titoli tengono l'ordine dei cataloghi
+  // d'origine (manifest) e vengono solo raggruppati Film -> Serie. L'arrivo sfasato
+  // delle chiamate di rete (pagine Film e Serie concorrenti) non rimescola le posizioni.
   val providerMedia = remember(stremioItems, nativeProviderMedia, coverage, isFallbackSource) {
     when (coverage) {
-      ProviderCoverage.FULL -> stremioItems
+      ProviderCoverage.FULL -> StremioCatalogRepository.stabilizeProviderOrder(stremioItems)
       // Stremio resta davanti, TMDB completa; dedup cross-source obbligatorio.
       // Con fallback Cinemeta l'ordine si inverte: TMDB (specifico) prima.
       ProviderCoverage.PARTIAL ->
         if (isFallbackSource) {
-          StremioCatalogRepository.deduplicateCrossSource(nativeProviderMedia + stremioItems)
+          StremioCatalogRepository.stabilizeProviderOrder(
+            StremioCatalogRepository.deduplicateCrossSource(nativeProviderMedia + stremioItems)
+          )
         } else {
-          StremioCatalogRepository.deduplicateCrossSource(stremioItems + nativeProviderMedia)
+          StremioCatalogRepository.stabilizeProviderOrder(
+            StremioCatalogRepository.deduplicateCrossSource(stremioItems + nativeProviderMedia)
+          )
         }
-      ProviderCoverage.NONE -> nativeProviderMedia
+      ProviderCoverage.NONE -> StremioCatalogRepository.stabilizeProviderOrder(nativeProviderMedia)
     }
-  }
-
-  LaunchedEffect(provider) {
-    viewModel?.ensureProviderLoaded(provider)
   }
 
   val gridState = rememberLazyGridState()
@@ -159,24 +177,40 @@ fun ProviderScreen(
     mutableStateOf(if (provider.tmdbProviderId == 283) ProviderCatalogFilter.TV_SERIES else ProviderCatalogFilter.ALL)
   }
 
-  // Pre-caricamento pagina iniziale al cambio filtro: il ViewModel ignora la chiamata
-  // se una fetch per quella coppia (provider, tipo) è già in corso o se il catalogo
-  // è esaurito, quindi è sicuro per ogni copertura (NONE / PARTIAL / FULL).
+  // Filtro effettivamente applicato alla griglia, persistito (rememberSaveable) per
+  // distinguere un REALE cambio filtro da un semplice ritorno dal Dettaglio.
+  var appliedFilterName by rememberSaveable(provider.id) { mutableStateOf<String?>(null) }
+
+  // Reset dello scroll e pre-caricamento pagina iniziale SOLO al cambio filtro (o a cache
+  // vuota): al ritorno dal Dettaglio con dati già presenti nessun refresh automatico parte
+  // e lo scroll orizzontale/verticale resta quello salvato (LazyGridState saveable).
   LaunchedEffect(provider, selectedFilter, coverage) {
-    when (selectedFilter) {
-      ProviderCatalogFilter.TV_SERIES -> {
-        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
-        onLoadMore?.invoke(true)
-      }
-      ProviderCatalogFilter.MOVIES -> {
-        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
-        onLoadMore?.invoke(false)
-      }
-      else -> {
-        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
-        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
-        onLoadMore?.invoke(false)
-        onLoadMore?.invoke(true)
+    val filterChanged = appliedFilterName != null && appliedFilterName != selectedFilter.name
+    val firstComposition = appliedFilterName == null
+    appliedFilterName = selectedFilter.name
+
+    if (filterChanged && providerMedia.isNotEmpty()) {
+      gridState.scrollToItem(0)
+    }
+
+    // Pre-caricamento pagina iniziale: il ViewModel ignora la chiamata se una fetch per
+    // quella coppia (provider, tipo) è già in corso o se il catalogo è esaurito.
+    if (firstComposition || filterChanged || providerMedia.isEmpty()) {
+      when (selectedFilter) {
+        ProviderCatalogFilter.TV_SERIES -> {
+          viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+          onLoadMore?.invoke(true)
+        }
+        ProviderCatalogFilter.MOVIES -> {
+          viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+          onLoadMore?.invoke(false)
+        }
+        else -> {
+          viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+          viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+          onLoadMore?.invoke(false)
+          onLoadMore?.invoke(true)
+        }
       }
     }
   }
@@ -261,19 +295,9 @@ fun ProviderScreen(
     }
   }
 
-  // Reset scroll in cima quando si cambia scheda/filtro.
-  // Alla PRIMA composizione con un ripristino pendente il reset viene saltato: la griglia deve
-  // tornare sulla locandina del Dettaglio e un salto in cima interrompe lo scroll di ripristino.
-  val pendingRestoreTargetId by rememberUpdatedState(lastFocusedMediaId)
-  var entryScrollHandled by remember { mutableStateOf(false) }
-  LaunchedEffect(selectedFilter) {
-    val restorePending = !entryScrollHandled &&
-      pendingRestoreTargetId?.let { id -> filteredItems.any { it.id == id } } == true
-    entryScrollHandled = true
-    if (providerMedia.isNotEmpty() && !restorePending) {
-      gridState.scrollToItem(0)
-    }
-  }
+  // Il reset dello scroll al primo poster avviene solo al REALE cambio filtro (gestito
+  // sopra): al ritorno dal Dettaglio la griglia conserva la posizione salvata e non
+  // viene più riportata all'inizio da un refresh automatico.
 
   // Log di debug: conteggio dei poster effettivamente renderizzati
   LaunchedEffect(filteredItems, selectedFilter) {
@@ -294,6 +318,7 @@ fun ProviderScreen(
 
   CompositionLocalProvider(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
+    LocalLastFocusedTarget provides lastFocusedTarget,
     LocalFocusRestoreToken provides focusRestoreToken,
     LocalClearLastFocusedMedia provides { viewModel?.clearLastFocusedMedia() }
   ) {

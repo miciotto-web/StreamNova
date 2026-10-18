@@ -57,6 +57,7 @@ import com.example.ui.components.TorBoxSourceSelectionScreen
 import com.example.ui.components.StreamStatusOverlay
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.LocalLastFocusedMediaId
+import com.example.ui.components.LocalLastFocusedTarget
 import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.navigation.DetailNavArgs
 import com.example.ui.navigation.Screen
@@ -135,6 +136,7 @@ fun StreamNovaApp(
   val streamResolutionState by viewModel.streamResolutionState.collectAsState()
   val streamingEngineMode by viewModel.streamingEngineMode.collectAsState()
   val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
+  val lastFocusedTarget by viewModel.lastFocusedTarget.collectAsState()
   val chainRestoreMediaId by viewModel.chainRestoreMediaId.collectAsState()
 
   // Feedback errore di risoluzione sorgenti (es. timeout o nessuna sorgente):
@@ -427,6 +429,7 @@ fun StreamNovaApp(
 
           CompositionLocalProvider(
             LocalLastFocusedMediaId provides lastFocusedMediaId,
+            LocalLastFocusedTarget provides lastFocusedTarget,
             LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() }
           ) {
             DetailScreen(

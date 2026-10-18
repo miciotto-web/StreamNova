@@ -1406,7 +1406,7 @@ fun SettingsScreen(
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
-  val appVersion = BuildConfig.VERSION_NAME
+  val appVersion = APP_VERSION_DISPLAY
   val playbackSettings = viewModel?.playbackSettings?.collectAsState()?.value ?: PlaybackSettings()
   // ── Debrid / TorBox ─────────────────────────────────────────────────
   val torBoxApiKey = viewModel?.torBoxApiKey?.collectAsState()?.value
@@ -2312,6 +2312,8 @@ private sealed interface ParentalPinStep {
 /** Codici lingua selezionabili per l'app e metadati TMDB. */
 private val APP_LANGUAGE_CODES = listOf("it", "en", "es", "fr", "de")
 
+private val APP_VERSION_DISPLAY = "${BuildConfig.VERSION_NAME} Beta"
+
 @Composable
 private fun appLanguageLabel(code: String): String = when (code) {
   "en" -> stringResource(R.string.lang_english)
@@ -2489,7 +2491,7 @@ private fun UpdateResultDialog(
           Text(
             text = stringResource(
               R.string.settings_update_installed_version,
-              state.currentVersion
+              APP_VERSION_DISPLAY
             ),
             color = NovaTextSecondary,
             fontSize = 14.sp
@@ -2506,7 +2508,7 @@ private fun UpdateResultDialog(
           Text(
             text = stringResource(
               R.string.settings_update_installed_version,
-              state.currentVersion
+              APP_VERSION_DISPLAY
             ),
             color = NovaTextSecondary,
             fontSize = 14.sp

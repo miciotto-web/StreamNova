@@ -53,6 +53,7 @@ import com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider
 import com.example.domain.model.Subtitle
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.ProviderConstants
+import com.example.ui.components.FOCUS_ROW_ANY
 import java.util.concurrent.ConcurrentHashMap
 import com.example.ui.screens.player.NextEpisodePromptUtils
 import kotlinx.coroutines.async
@@ -535,7 +536,14 @@ class StreamNovaViewModel(
     _chainRestoreMediaId.value = null
   }
 
-  // Focus retention TV (Punto 3: memorizzazione dell'ultima locandina aperta per ripristino al BACK)
+  // Focus retention TV (Punto 3: memorizzazione dell'ultima locandina aperta per ripristino al BACK).
+  // Il target è la COPPIA (rowKey, mediaId): quando lo stesso titolo compare in più righe
+  // (es. Popolari e Trending) solo la riga d'origine può ripristinare il focus. Il rowKey
+  // [FOCUS_ROW_ANY] identifica i salvataggi senza riga esplicita (griglie/schermate singole).
+  private val _lastFocusedTarget = MutableStateFlow<Pair<String, String>?>(null)
+  val lastFocusedTarget: StateFlow<Pair<String, String>?> = _lastFocusedTarget.asStateFlow()
+
+  // Vista legacy del target: solo il mediaId (griglie, SubScreens, segnali di ripristino).
   private val _lastFocusedMediaId = MutableStateFlow<String?>(null)
   val lastFocusedMediaId: StateFlow<String?> = _lastFocusedMediaId.asStateFlow()
 
@@ -546,11 +554,32 @@ class StreamNovaViewModel(
   private val _focusRestoreToken = MutableStateFlow<Int>(0)
   val focusRestoreToken: StateFlow<Int> = _focusRestoreToken.asStateFlow()
 
-  fun saveLastFocusedMedia(mediaId: String) {
+  /**
+   * Salva il target di ripristino ROW-SCOPED: alla Back dalla scheda Dettaglio solo le
+   * card della riga [rowKey] possono ripristinare il focus su [mediaId].
+   */
+  fun saveLastFocusedMedia(rowKey: String, mediaId: String) {
+    _lastFocusedTarget.value = rowKey to mediaId
     _lastFocusedMediaId.value = mediaId
   }
 
+  /**
+   * Compatibilità: salvataggio senza riga esplicita (retrocompatibilità con le chiamate
+   * storiche). NON sovrascrive un target già salvato per lo stesso media con una riga
+   * specifica: il click di una riga salva prima il target row-scoped e questa chiamata
+   * (emessa dal navigatore centrale) non deve degradarlo a "ogni riga".
+   */
+  fun saveLastFocusedMedia(mediaId: String) {
+    val current = _lastFocusedTarget.value
+    if (current == null || current.second != mediaId) {
+      _lastFocusedTarget.value = FOCUS_ROW_ANY to mediaId
+    }
+    _lastFocusedMediaId.value = mediaId
+  }
+
+  /** Consuma il target di ripristino non appena il focus è stato richiesto con successo. */
   fun clearLastFocusedMedia() {
+    _lastFocusedTarget.value = null
     _lastFocusedMediaId.value = null
   }
 
@@ -3026,11 +3055,15 @@ class StreamNovaViewModel(
 
             // Read-modify-write ATOMICO: Film e Serie paginano in parallelo sulla stessa
             // entry di mappa, un read prima del fetch perderebbe l'aggiornamento.
+            // L'ordine viene riassestato in modo deterministico (Film poi Serie, stabile):
+            // l'arrivo sfasato delle due pagine non deve rimescolare le posizioni a schermo.
             var newTotal = -1
             if (more.isNotEmpty()) {
               _stremioProviderMedia.update { map ->
                 val current = map[provider.id].orEmpty()
-                val combined = StremioCatalogRepository.deduplicateCrossSource(current + more)
+                val combined = StremioCatalogRepository.stabilizeProviderOrder(
+                  StremioCatalogRepository.deduplicateCrossSource(current + more)
+                )
                 if (combined.size > current.size) {
                   newTotal = combined.size
                   map + (provider.id to combined)
@@ -3148,7 +3181,10 @@ class StreamNovaViewModel(
         }
         if (coverage != ProviderCoverage.NONE) {
           // Copertura Stremio attiva: Stremio è la fonte primaria del provider.
-          _stremioProviderMedia.update { it + (provider.id to page.items) }
+          // Ordine stabile (Film poi Serie) identico a ogni riapertura.
+          _stremioProviderMedia.update {
+            it + (provider.id to StremioCatalogRepository.stabilizeProviderOrder(page.items))
+          }
           _stremioProviderStates.update {
             it + (provider.id to StremioProviderCatalogState(
               hasConfirmedBindings = page.hasConfirmedBindings,

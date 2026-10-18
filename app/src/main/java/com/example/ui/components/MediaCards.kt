@@ -88,6 +88,12 @@ import kotlinx.coroutines.delay
 /** CompositionLocal per il ripristino del focus sull'esatta card all'uscita dal Dettaglio (Punto 3). */
 val LocalLastFocusedMediaId = compositionLocalOf<String?> { null }
 
+/**
+ * CompositionLocal del target di ripristino ROW-SCOPED: coppia `(rowKey, mediaId)`.
+ * Solo la card appartenente alla riga `rowKey` può consumare il target.
+ */
+val LocalLastFocusedTarget = compositionLocalOf<Pair<String, String>?> { null }
+
 /** CompositionLocal per il token di ripristino che cambia ad ogni tentativo. */
 val LocalFocusRestoreToken = compositionLocalOf<Int> { 0 }
 
@@ -283,10 +289,12 @@ fun ContinueWatchingCard(
   onClick: () -> Unit,
   onLongPress: (() -> Unit)? = null,
   modifier: Modifier = Modifier,
-  focusRequester: FocusRequester? = null
+  focusRequester: FocusRequester? = null,
+  rowKey: String? = null
 ) {
   val fallbackRes = (media.backdropRes ?: media.posterRes)?.takeIf { it != R.drawable.banner_dune }
   val targetMediaId = LocalLastFocusedMediaId.current
+  val restoreTarget = LocalLastFocusedTarget.current ?: targetMediaId?.let { FOCUS_ROW_ANY to it }
   val focusRestoreToken = LocalFocusRestoreToken.current
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
@@ -302,12 +310,15 @@ fun ContinueWatchingCard(
     }
   }
 
-  // Only request focus when target ID matches and we haven't done so yet
+  // Ripristino ROW-SCOPED: solo la card della riga salvata nel target richiede il focus.
   LaunchedEffect(targetMediaId, cardFocusRequester) {
-    if (targetMediaId != null && targetMediaId == media.id && focusRequestedToken == null) {
-      // Richiedi il focus direttamente - la card si occuperà di cancellare il target
-      // solo quando il focus verrà effettivamente acquisito
-      cardFocusRequester.requestFocus()
+    if (matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) && focusRequestedToken == null) {
+      try {
+        cardFocusRequester.requestFocus()
+        // Target consumato immediatamente: nessun'altra riga/frame può rubare il focus.
+        clearLastFocusedMedia?.invoke()
+      } catch (_: Exception) {
+      }
       focusRequestedToken = focusRestoreToken
     }
   }
@@ -323,7 +334,7 @@ fun ContinueWatchingCard(
     onLongPress = onLongPress
   ) { isFocused ->
     // Clear the target only when focus is actually gained
-    if (isFocused && focusRequestedToken != null && targetMediaId == media.id) {
+    if (isFocused && focusRequestedToken != null && matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
       clearLastFocusedMedia?.invoke()
       focusRequestedToken = null
     }
@@ -471,10 +482,12 @@ fun StandardMediaCard(
   media: MediaItem,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
-  focusRequester: FocusRequester? = null
+  focusRequester: FocusRequester? = null,
+  rowKey: String? = null
 ) {
   var isFocused by remember { mutableStateOf(false) }
   val targetMediaId = LocalLastFocusedMediaId.current
+  val restoreTarget = LocalLastFocusedTarget.current ?: targetMediaId?.let { FOCUS_ROW_ANY to it }
   val focusRestoreToken = LocalFocusRestoreToken.current
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
@@ -490,12 +503,15 @@ fun StandardMediaCard(
     }
   }
 
-  // Only request focus when target ID matches and we haven't done so yet
+  // Ripristino ROW-SCOPED: solo la card della riga salvata nel target richiede il focus.
   LaunchedEffect(targetMediaId, cardFocusRequester) {
-    if (targetMediaId != null && targetMediaId == media.id && focusRequestedToken == null) {
-      // Richiedi il focus direttamente - la card si occuperà di cancellare il target
-      // solo quando il focus verrà effettivamente acquisito
-      cardFocusRequester.requestFocus()
+    if (matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) && focusRequestedToken == null) {
+      try {
+        cardFocusRequester.requestFocus()
+        // Target consumato immediatamente: nessun'altra riga/frame può rubare il focus.
+        clearLastFocusedMedia?.invoke()
+      } catch (_: Exception) {
+      }
       focusRequestedToken = focusRestoreToken
     }
   }
@@ -531,7 +547,7 @@ fun StandardMediaCard(
       .onFocusChanged {
         isFocused = it.isFocused
         // Clear the target only when focus is actually gained
-        if (it.isFocused && focusRequestedToken != null && targetMediaId == media.id) {
+        if (it.isFocused && focusRequestedToken != null && matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }
@@ -688,10 +704,12 @@ fun PosterMediaCard(
   focusRequester: FocusRequester? = null,
   cardWidth: Dp = 150.dp,
   allowBackdropFallback: Boolean = true,
-  confirmFocusRestore: Boolean = false
+  confirmFocusRestore: Boolean = false,
+  rowKey: String? = null
 ) {
   var isFocused by remember { mutableStateOf(false) }
   val targetMediaId = LocalLastFocusedMediaId.current
+  val restoreTarget = LocalLastFocusedTarget.current ?: targetMediaId?.let { FOCUS_ROW_ANY to it }
   val focusRestoreToken = LocalFocusRestoreToken.current
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
@@ -707,13 +725,19 @@ fun PosterMediaCard(
     }
   }
 
-  // Percorso storico (Home, Film, Serie TV, Cerca, Preferiti, Dettaglio): comportamento
-  // invariato, un solo tentativo quando la card corrisponde al target.
+  // Percorso storico (Home, Film, Serie TV, Cerca, Preferiti, Dettaglio): un solo
+  // tentativo quando la card corrisponde al target, condizionato anche alla riga
+  // (rowKey) quando il target è row-scoped.
   LaunchedEffect(targetMediaId, cardFocusRequester) {
     if (!confirmFocusRestore &&
-      targetMediaId != null && targetMediaId == media.id && focusRequestedToken == null
+      matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) && focusRequestedToken == null
     ) {
-      cardFocusRequester.requestFocus()
+      try {
+        cardFocusRequester.requestFocus()
+        // Target consumato immediatamente: nessun'altra riga/frame può rubare il focus.
+        clearLastFocusedMedia?.invoke()
+      } catch (_: Exception) {
+      }
       focusRequestedToken = focusRestoreToken
     }
   }
@@ -733,7 +757,8 @@ fun PosterMediaCard(
     var restoreAttemptToken by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(focusRestoreToken, cardFocusRequester) {
-      if (!shouldAttemptFocusRestore(
+      if (!matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) ||
+        !shouldAttemptFocusRestore(
           cardMediaId = media.id,
           targetMediaId = currentTargetMediaId,
           restoreToken = focusRestoreToken,
@@ -788,7 +813,7 @@ fun PosterMediaCard(
         isFocused = it.isFocused
         if (confirmFocusRestore) restoreConfirmation.onFocusChanged(it.isFocused)
         // Clear the target only when focus is actually gained
-        if (it.isFocused && focusRequestedToken != null && targetMediaId == media.id) {
+        if (it.isFocused && focusRequestedToken != null && matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }

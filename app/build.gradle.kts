@@ -19,8 +19,8 @@ android {
     applicationId = "com.aistudio.streamnova.tvapp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 100
-    versionName = "1.0.0"
+    versionCode = 1
+    versionName = "0.1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     // TMDB API key is never hardcoded here: it would be committed and published.
