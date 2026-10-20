@@ -133,21 +133,32 @@ class CinemetaDefaultCatalogTest {
   }
 
   @Test
-  fun gliAddonUtenteRestanoSezioniAggiuntiveSenzaSostituireCinemeta() {
-    val cinemeta = movie("tt1000001", "Popolare")
+  fun gliAddonUtenteSostituisconoLeRigheCinemetaSoloDelLoroTipo() {
+    val cinemetaMovie = movie("tt1000001", "Popolare")
+    val cinemetaSeries = series("tt2000001", "Popolare TV")
     val userItem = movie("tt9999999", "Da addon Xperience")
 
     val catalog = StremioCatalogRepository.buildHomeCatalogs(
-      defaultSections = listOf(section("top", MediaType.FILM, items = listOf(cinemeta))),
+      defaultSections = listOf(
+        section("top", MediaType.FILM, items = listOf(cinemetaMovie)),
+        section("top", MediaType.SERIE_TV, items = listOf(cinemetaSeries))
+      ),
       userSections = listOf(
         section("trending_movies", MediaType.FILM, addonName = "Xperience", items = listOf(userItem))
       ),
       allMedia = emptyList()
     )
 
-    assertEquals(listOf(cinemeta), catalog.popularMovies)
+    // Film: l'addon sostituisce le righe Cinemeta dello stesso tipo.
+    assertTrue(catalog.popularMovies.isEmpty())
+    assertTrue(catalog.hasCustomCatalogMovies)
+    assertEquals(listOf(userItem.id), catalog.allMovies.map { it.id })
     assertEquals(1, catalog.extraSections.size)
     assertEquals("Xperience", catalog.extraSections.single().addonName)
+
+    // Serie TV: nessun catalogo addon utilizzabile, Cinemeta resta la sorgente.
+    assertFalse(catalog.hasCustomCatalogSeries)
+    assertEquals(listOf(cinemetaSeries), catalog.popularSeries)
   }
 
   @Test
@@ -203,8 +214,7 @@ class CinemetaDefaultCatalogTest {
         section("trending_movies", MediaType.FILM, addonName = "Xperience", items = listOf(userMovie)),
         section("trending_series", MediaType.SERIE_TV, addonName = "Xperience", items = listOf(userSeries))
       ),
-      allMedia = emptyList(),
-      customCatalogAddonsActive = true
+      allMedia = emptyList()
     )
 
     // Tutte le righe stock Cinemeta devono essere soppresse
