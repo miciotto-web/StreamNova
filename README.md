@@ -10,9 +10,9 @@
 
 * **⚡ Navigazione Fluida per TV:** Interfaccia reattiva e pulita, progettata nativamente per la navigazione da divano con il D-Pad.
 
-* **🔗 Integrazione Debrid Avanzata:** Supporto per lo streaming diretto HTTP ad alte prestazioni tramite servizi Debrid (TorBox e Real-Debrid) con verifica della cache.
+* **🔗 Integrazione Debrid Avanzata:** Supporto per lo streaming diretto HTTP ad alte prestazioni tramite servizi Debrid (TorBox per momento) con verifica della cache.
 
-* **🎬 Cataloghi e Sincronizzazione:** Sincronizzazione completa tramite account Trakt.tv e cataloghi multimediali ottimizzati (con fix dedicati per provider e reti TV).
+* **🎬 Cataloghi e Sincronizzazione:** Sincronizzazione completa tramite account Simkl e cataloghi multimediali ottimizzati (con fix dedicati per provider e reti TV).
 
 * **🎯 Prestazioni e Stabilità:** Un'architettura solida basata su ExoPlayer/Media3 per una riproduzione multimediale impeccabile.
 
