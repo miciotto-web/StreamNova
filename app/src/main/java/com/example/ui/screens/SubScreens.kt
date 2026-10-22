@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -135,7 +136,9 @@ import com.example.data.update.DownloadErrorReason
 import com.example.data.update.UpdateCheckState
 import com.example.data.update.UpdateDownloadState
 import com.example.ui.components.ContinueWatchingCard
+import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.PosterMediaCard
+import com.example.ui.components.requestFocusWhenAttached
 import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusBringIntoView
@@ -766,15 +769,36 @@ private fun SearchBarRow(
   }
 }
 
+/**
+ * Diagnostica del percorso di focus della schermata Ricerca.
+ *
+ * Attiva solo nelle build DEBUG (`BuildConfig.DEBUG`): i log distinguono il focus sulla
+ * barra, sui filtri, sull'area contenuti ([hasFocus] del contenitore stabile) e sulla card
+ * dei risultati che riceve DAVVERO il focus. Filtrare con `adb logcat -s SEARCH_FOCUS`.
+ */
+internal object SearchFocusDiagnostics {
+  const val TAG = "SEARCH_FOCUS"
+}
+
 @OptIn(ExperimentalLayoutApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
-fun SearchScreen(
-  viewModel: StreamNovaViewModel,
+fun SearchScreen(  viewModel: StreamNovaViewModel,
   onMediaClick: (MediaItem) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  /**
+   * Risultati espliciti, usati SOLO dai test di regressione del focus: permettono di
+   * riprodurre in modo deterministico l'arrivo a ondate dei risultati (con la griglia che
+   * mantiene in vista la card corrente) senza passare dalla rete. In produzione resta `null`
+   * e la schermata osserva [StreamNovaViewModel.filteredSearchResults].
+   */
+  resultsOverride: List<MediaItem>? = null
 ) {
   val query by viewModel.searchQuery.collectAsState()
-  val results by viewModel.filteredSearchResults.collectAsState()
+  val results = if (resultsOverride != null) {
+    resultsOverride
+  } else {
+    viewModel.filteredSearchResults.collectAsState().value
+  }
   val searchFilter by viewModel.searchFilter.collectAsState()
   val categoryItems by viewModel.categoryItems.collectAsState()
   val isCategoryLoading by viewModel.isCategoryLoading.collectAsState()
@@ -804,11 +828,11 @@ fun SearchScreen(
   val filmFilterFocusRequester = remember { FocusRequester() }
   val serieTvFilterFocusRequester = remember { FocusRequester() }
   val contentFirstItemFocusRequester = remember { FocusRequester() }
-  // Traccia l'aggancio del primo poster del contenuto (LazyVerticalGrid): le griglie sono
-  // ramificate (categoria / query / categorie globali) e il primo item NON e' sempre in
-  // composizione; assegnarlo comunque alle focusProperties dei filtri faceva crashare il
-  // focus search del D-pad con "FocusRequester is not initialized".
-  val contentFirstItemAttachment = remember { TvFocusAttachment() }
+  // Il requester della cella 0 è usato SOLO dalla griglia dei badge categoria (stato
+  // default), dove è agganciato al nodo focalizzabile del badge tramite tvFocusRequester.
+  // Non va MAI agganciato alle celle delle griglie lazy dei risultati: una Box-cella non è
+  // un target di focus e una cella lazy smontata lascia il requester orfano (richieste
+  // rifiute in silenzio o IllegalStateException).
   val backButtonFocusRequester = remember { FocusRequester() }
 
   val categoryFocusRequesters = remember {
@@ -828,6 +852,109 @@ fun SearchScreen(
 
   // Consumer il segnale di focus restoration per ripristinare il focus sulla card corretta
   val gridState = rememberLazyGridState()
+
+  // Requester PER IDENTITÀ di card dei risultati: il D-pad Giù dai filtri deve chiedere il
+  // focus a una cella che è DAVVERO composta in questo momento (non alla cella 0, che può
+  // essere smontata dallo scroll o dal riordino della lista). Stessa struttura usata dalla
+  // griglia Provider/Categoria, dove il requester vive sul nodo focalizzabile della card.
+  val resultFocusRequesters = remember { mutableMapOf<String, FocusRequester>() }
+  fun resultFocusRequester(mediaId: String): FocusRequester =
+    resultFocusRequesters.getOrPut(mediaId) { FocusRequester() }
+
+  // Lista della categoria selezionata già filtrata per tipo: una sola fonte di verità,
+  // condivisa dal ramo categorie (che la renderizza) e dal Giù dai filtri (che ne legge la
+  // prima card realmente composta).
+  val displayedCategoryMedia = remember(categoryItems, searchFilter) {
+    when (searchFilter) {
+      SearchTypeFilter.ALL -> categoryItems
+      SearchTypeFilter.FILM -> categoryItems.filter { it.type == MediaType.FILM }
+      SearchTypeFilter.SERIE_TV -> categoryItems.filter { it.type == MediaType.SERIE_TV }
+    }
+  }
+  // Stato di scroll della griglia categoria, definito FUORI dal ramo `when`: il Giù dai
+  // filtri in modalità categoria legge qui il viewport reale della griglia.
+  val categoryGridState = rememberLazyGridState()
+
+  val searchFocusScope = rememberCoroutineScope()
+
+  // Stessa struttura per la griglia della CATEGORIA selezionata: la chiave replica la key
+  // della griglia (una film e una serie possono condividere lo stesso id grezzo).
+  val categoryResultFocusRequesters = remember { mutableMapOf<String, FocusRequester>() }
+
+  fun categoryResultFocusRequester(cat: GlobalSearchCategory, media: MediaItem): FocusRequester =
+    categoryResultFocusRequesters.getOrPut("cat_${cat.id}_${media.type}_${media.id}") {
+      FocusRequester()
+    }
+
+  /**
+   * Prima card delle categorie attualmente composta e visibile nella griglia (stesso
+   * criterio di [firstVisibleResultRequester], applicato alla griglia categoria).
+   */
+  fun firstVisibleCategoryResultRequester(): Pair<MediaItem, FocusRequester>? {
+    val cat = selectedCategory ?: return null
+    if (displayedCategoryMedia.isEmpty()) return null
+    val firstVisibleIndex = categoryGridState.layoutInfo.visibleItemsInfo.firstOrNull()?.index
+    val item = firstVisibleIndex?.let { displayedCategoryMedia.getOrNull(it) }
+      ?: displayedCategoryMedia.firstOrNull()
+      ?: return null
+    return item to categoryResultFocusRequester(cat, item)
+  }
+
+  /**
+   * Prima card dei risultati attualmente composta e visibile nella griglia.
+   *
+   * `layoutInfo.visibleItemsInfo` è la fotografia reale del viewport lazy: il primo indice
+   * elencato è la cella che l'utente vede in alto a sinistra (quindi la più naturale da
+   * raggiungere con un Giù dai filtri). Se la griglia non è ancora stata misurata si usa la
+   * prima voce della lista, con richiesta protetta finché il nodo non è agganciato.
+   */
+  fun firstVisibleResultRequester(): Pair<MediaItem, FocusRequester>? {
+    if (results.isEmpty()) return null
+    val firstVisibleIndex = gridState.layoutInfo.visibleItemsInfo.firstOrNull()?.index
+    val item = firstVisibleIndex?.let { results.getOrNull(it) }
+      ?: results.firstOrNull()
+      ?: return null
+    return item to resultFocusRequester(item.id)
+  }
+
+  val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
+  val focusManager = LocalFocusManager.current
+  // Prova REALE che il focus è entrato nell'area contenuti: `hasFocus` del contenitore
+  // (nella Box qui sotto) diventa true solo quando una sua discendente — cioè una card
+  // dei risultati — è effettivamente a fuoco. Serve alla gestione del Giù dai filtri per
+  // NON credere ciecamente all'esito di requestFocus(): un nodo agganciato ma non
+  // focalizzabile (gate di ripristino chiuso) rifiuta la richiesta in silenzio.
+  var contentAreaHasFocus by remember { mutableStateOf(false) }
+
+  // Un target di ripristino che NON appartiene alla lista corrente è STANTIO e va
+  // rilasciato. Le card della schermata possono prendere il focus solo se non c'è un
+  // target pendente di altro id (gate `canFocus` di PosterMediaCard): un id orfano —
+  // tipicamente l'ancora sintetica "home_content_anchor" scritta dalla MainActivity al
+  // rientro dal Dettaglio, o il target di una sezione precedente — renderebbe PERMANENTE
+  // l'annullamento del focus di TUTTE le card, lasciando morto il Giù dai filtri. Il
+  // rilascio avviene solo con la lista popolata: durante il caricamento non si decide.
+  LaunchedEffect(lastFocusedMediaId, results, categoryItems, selectedCategory, searchFilter) {
+    val pending = lastFocusedMediaId ?: return@LaunchedEffect
+    val visibleIds: Set<String> = if (selectedCategory != null) {
+      when (searchFilter) {
+        SearchTypeFilter.ALL -> categoryItems
+        SearchTypeFilter.FILM -> categoryItems.filter { it.type == MediaType.FILM }
+        SearchTypeFilter.SERIE_TV -> categoryItems.filter { it.type == MediaType.SERIE_TV }
+      }.map { it.id }.toSet()
+    } else {
+      results.map { it.id }.toSet()
+    }
+    if (visibleIds.isNotEmpty() && pending !in visibleIds) {
+      if (BuildConfig.DEBUG) {
+        Log.d(
+          SearchFocusDiagnostics.TAG,
+          "stale restore target '$pending' absent from current list: cleared"
+        )
+      }
+      viewModel.clearLastFocusedMedia()
+    }
+  }
+
   LaunchedEffect(focusRestoreSignal.value, gridState) {
     val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
     focusRestoreSignal.value = null
@@ -970,6 +1097,11 @@ fun SearchScreen(
       },
       modifier = Modifier
         .focusRequester(searchBarFocusRequester)
+        .onFocusChanged { state ->
+          if (BuildConfig.DEBUG && state.isFocused) {
+            Log.d(SearchFocusDiagnostics.TAG, "focus on search bar")
+          }
+        }
         .focusProperties {
           up = if (selectedCategory != null || query.isNotBlank()) backButtonFocusRequester else FocusRequester.Cancel
           down = activeFilterRequester
@@ -983,7 +1115,68 @@ fun SearchScreen(
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(bottom = 12.dp),
+        .padding(bottom = 12.dp)
+        // Il Giù dai filtri viene gestito QUI, in modo esplicito: si chiede il focus alla
+        // prima card realmente composta della griglia DI CONTESTO (categoria selezionata od
+        // esiti della query). Affidarsi alla sola focus search (requester o geometrica) non
+        // è sufficiente su dispositivo, dove la griglia lazy può aver smontato la cella 0 o
+        // aver cambiato posizione dopo il riordino dei risultati. Se non c'è nessuna card
+        // disponibile il tasto passa oltre (nessuna eccezione) e il rientro funziona appena
+        // la griglia viene composta.
+        .onPreviewKeyEvent { event ->
+          if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionDown) {
+            return@onPreviewKeyEvent false
+          }
+          // Il target dipende dal CONTESTO della schermata: griglia categoria quando una
+          // categoria è selezionata, griglia dei risultati della query altrimenti. Con
+          // query vuota e nessuna categoria vale lo stato default (badge), che NON viene
+          // intercettato: la ricerca geometrica nativa raggiunge la prima riga di badge.
+          val target: Pair<MediaItem, FocusRequester> = when {
+            selectedCategory != null ->
+              if (displayedCategoryMedia.isEmpty()) {
+                null
+              } else {
+                firstVisibleCategoryResultRequester()
+              }
+            query.isBlank() -> null
+            results.isEmpty() -> null
+            else -> firstVisibleResultRequester()
+          } ?: return@onPreviewKeyEvent false
+          if (BuildConfig.DEBUG) {
+            Log.d(
+              SearchFocusDiagnostics.TAG,
+              "DOWN from filters: key consumed, category=${selectedCategory?.id ?: "-"} " +
+                "targetId=${target.first.id} title='${target.first.title}'"
+            )
+          }
+          searchFocusScope.launch {
+            // Tentativi a FRAME (nessun delay): copre il primo frame in cui la griglia non
+            // ha ancora agganciato il nodo della card. `requestFocusWhenAttached` dichiara
+            // successo anche quando il nodo è agganciato ma NON focalizzabile (gate di
+            // ripristino chiuso): la richiesta viene rifiutata in silenzio senza eccezioni.
+            val sent = requestFocusWhenAttached(target.second, maxAttempts = 5)
+            if (BuildConfig.DEBUG) {
+              Log.d(
+                SearchFocusDiagnostics.TAG,
+                "DOWN request for ${target.first.id}: sent=$sent contentFocused=$contentAreaHasFocus"
+              )
+            }
+            if (!contentAreaHasFocus) {
+              // Il tasto è GIÀ stato consumato: non si può lasciare il focus sui filtri. Se
+              // la richiesta non ha ATTRAVERSATO un trasferimento reale (nodo non agganciato
+              // o rifiutato in silenzio da un gate di focus chiuso), si ripiega sulla
+              // ricerca geometrica del focus system dal filtro corrente: la prima card
+              // focalizzabile sotto la riga dei filtri riceve il focus. Se anche questa
+              // non trova nulla il focus resta dov'è (stato senza risultati).
+              val recovered = focusManager.moveFocus(FocusDirection.Down)
+              Log.d(
+                SearchFocusDiagnostics.TAG,
+                "DOWN fallback moveFocus(Down) accepted=$recovered after failed direct request"
+              )
+            }
+          }
+          true
+        },
       horizontalArrangement = Arrangement.spacedBy(10.dp),
       verticalAlignment = Alignment.CenterVertically
     ) {
@@ -997,12 +1190,20 @@ fun SearchScreen(
         TvFocusableBox(
           modifier = Modifier
             .focusRequester(requester)
+            .onFocusChanged { state ->
+              if (BuildConfig.DEBUG && state.isFocused) {
+                Log.d(SearchFocusDiagnostics.TAG, "focus on filter ${filter.name}")
+              }
+            }
             .focusProperties {
               up = searchBarFocusRequester
-              // Il primo poster e' in una LazyVerticalGrid ramificata: se non montato
-              // (es. stato default o risultati vuoti) si lascia la ricerca standard.
-              down = contentFirstItemAttachment.guard(contentFirstItemFocusRequester)
-                ?: FocusRequester.Default
+              // Il Giù NON ha un target esplicito: in presenza di risultati (query o
+              // categoria) è intercettato dall'onPreviewKeyEvent della riga (sopra), che
+              // consegna il focus alla prima card realmente composta; nello stato default
+              // vale la ricerca geometrica nativa, che raggiunge la prima riga di badge.
+              // Un requester fisso qui (`down = ...`) è la causa storica del Giù morto: la
+              // cella lazy target esce dalla composizione allo scroll e la richiesta resta
+              // a vuoto con il focus inchiodato sul filtro.
               when (filter) {
                 SearchTypeFilter.ALL -> {
                   left = FocusRequester.Cancel
@@ -1052,347 +1253,404 @@ fun SearchScreen(
     }
 
     // Vista Condizionale: Categoria Selezionata / Risultati di Ricerca Testo / Default con soli Badge Colorati
-    when {
-      selectedCategory != null -> {
-        val cat = selectedCategory!!
-        // Solo i contenuti caricati per QUESTA categoria: nessun seed da allMedia,
-        // così una categoria nuova non mostra mai i poster di quella precedente.
-        val rawCategoryMedia = categoryItems
-        val displayedCategoryMedia = remember(rawCategoryMedia, searchFilter) {
-          when (searchFilter) {
-            SearchTypeFilter.ALL -> rawCategoryMedia
-            SearchTypeFilter.FILM -> rawCategoryMedia.filter { it.type == MediaType.FILM }
-            SearchTypeFilter.SERIE_TV -> rawCategoryMedia.filter { it.type == MediaType.SERIE_TV }
-          }
-        }
-        val categoryGridState = rememberLazyGridState()
-
-        // Paginazione infinita allo scorrimento della griglia
-        LaunchedEffect(categoryGridState) {
-          snapshotFlow {
-            val layout = categoryGridState.layoutInfo
-            val total = layout.totalItemsCount
-            val last = layout.visibleItemsInfo.lastOrNull()?.index ?: 0
-            total to last
-          }.collect { (total, last) ->
-            if (total > 0 && last >= total - 6) {
-              viewModel.loadNextCategoryPage()
-            }
-          }
-        }
-
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 14.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-          ) {
-            Box(
-              modifier = Modifier
-                .background(
-                  brush = Brush.horizontalGradient(listOf(cat.gradientStart, cat.gradientEnd)),
-                  shape = RoundedCornerShape(50)
-                )
-                .border(1.5.dp, cat.accentColor, RoundedCornerShape(50))
-                .padding(horizontal = 18.dp, vertical = 7.dp)
-            ) {
-              Text(
-                text = stringResource(cat.labelRes).uppercase(),
-                color = Color.White,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 0.5.sp
-              )
-            }
-            Text(
-              // Sottotitolo secondo la sorgente REALE dei poster: l'etichetta
-              // TMDB Discover appare solo quando il fallback TMDB è attivo.
-              text = when (categoryState.source) {
-                SearchCategorySource.ADDON -> stringResource(
-                  R.string.search_category_desc_addon,
-                  categoryState.addonLabel.orEmpty()
-                )
-                SearchCategorySource.TMDB_FALLBACK -> stringResource(R.string.search_category_desc_fallback)
-                null -> ""
-              },
-              color = if (categoryState.source == SearchCategorySource.TMDB_FALLBACK) {
-                NovaOrange
-              } else {
-                NovaTextSecondary
-              },
-              fontSize = 13.sp
+    // La superficie dei contenuti è SEMPRE composta insieme ai filtri e osserva il passaggio
+    // reale del focus (`hasFocus`), che serve a verificare l'esito del Giù dai filtri. NON è
+    // un target di focus: agganciarci un FocusRequester su una Box senza `focusable` genera
+    // richieste rifiute (IllegalStateException) invisibili al chiamante.
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .onFocusChanged { state ->
+          // Il contenitore non è focalizzabile: `hasFocus` diventa true quando il focus è su
+          // un SUO discendente (una card dei risultati). È la prova che il focus è entrato
+          // davvero nell'area contenuti, non solo che il requester è stato collegato. Lo
+          // stato alimenta la verifica del Giù dai filtri (v. `contentAreaHasFocus`).
+          contentAreaHasFocus = state.hasFocus
+          if (BuildConfig.DEBUG) {
+            Log.d(
+              SearchFocusDiagnostics.TAG,
+              "content surface hasFocus=${state.hasFocus} isFocused=${state.isFocused}"
             )
           }
-
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-          ) {
-            if (isCategoryLoading) {
-              CircularProgressIndicator(
-                color = NovaCyanBright,
-                modifier = Modifier.size(16.dp),
-                strokeWidth = 2.dp
-              )
-            }
-            Box(
-              modifier = Modifier
-                .background(Color(0x33000000), RoundedCornerShape(50))
-                .border(1.dp, cat.accentColor.copy(alpha = 0.5f), RoundedCornerShape(50))
-                .padding(horizontal = 16.dp, vertical = 6.dp)
-            ) {
-              Text(
-                text = stringResource(R.string.search_titles_available, displayedCategoryMedia.size),
-                color = cat.accentColor,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold
-              )
-            }
-          }
         }
-
-        // Avviso esplicito: errore del catalogo addon oppure motivo del fallback
-        // TMDB Discover: non viene mai mascherato come caricamento riuscito.
-        categoryState.statusMessage?.let { message ->
-          Text(
-            text = message,
-            color = if (categoryState.source == SearchCategorySource.ADDON) NovaOrange else NovaTextMuted,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
-          )
-        }
-
-        if (displayedCategoryMedia.isEmpty() && !isCategoryLoading) {
-          Box(
-            modifier = Modifier
-              .fillMaxSize()
-              .padding(32.dp),
-            contentAlignment = Alignment.Center
-          ) {
-            Text(
-              text = stringResource(R.string.search_no_content_for_category, stringResource(cat.labelRes)),
-              color = NovaTextMuted,
-              fontSize = 16.sp
-            )
-          }
-        } else {
-          TvFocusBringIntoView {
-            LazyVerticalGrid(
-              state = categoryGridState,
-              columns = GridCells.Adaptive(minSize = 150.dp),
-              contentPadding = PaddingValues(bottom = 48.dp),
-              horizontalArrangement = Arrangement.spacedBy(16.dp),
-              verticalArrangement = Arrangement.spacedBy(16.dp),
-              modifier = Modifier.fillMaxSize()
-            ) {
-              // La key include il tipo: film e serie possono condividere lo stesso
-              // id grezzo senza collidere (una key duplicata crasherebbe la griglia).
-              itemsIndexed(displayedCategoryMedia, key = { _, item -> "cat_${cat.id}_${item.type}_${item.id}" }) { index, item ->
-                Box(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .then(
-                      if (index == 0) {
-                        Modifier.tvFocusRequester(contentFirstItemFocusRequester, contentFirstItemAttachment)
-                      } else {
-                        Modifier
-                      }
-                    )
-                    .focusProperties {
-                      if (index < 5) {
-                        up = activeFilterRequester
-                      }
-                    },
-                  contentAlignment = Alignment.TopCenter
-                ) {
-                  PosterMediaCard(
-                    media = item,
-                    onClick = { onMediaClick(item) }
-                  )
+    ) {
+      when {
+        selectedCategory != null -> {
+          val cat = selectedCategory!!
+          // Solo i contenuti caricati per QUESTA categoria: nessun seed da allMedia,
+          // così una categoria nuova non mostra mai i poster di quella precedente. La
+          // lista (`displayedCategoryMedia`) e lo scroll (`categoryGridState`) vivono
+          // FUORI dal `when`, condivisi con il Giù dai filtri.
+          //
+          // La superficie è un COLUMN: badge, messaggio di stato e griglia sono impilati
+          // VERTICALMENTE nella stessa cella del Box. In precedenza erano emessi come
+          // fratelli DIRETTI del Box (= Stack) e le card disegnavano sopra il badge della
+          // categoria (il giallo "COMMEDIA").
+          Column(modifier = Modifier.fillMaxSize()) {
+            // Paginazione infinita allo scorrimento della griglia
+            LaunchedEffect(categoryGridState) {
+              snapshotFlow {
+                val layout = categoryGridState.layoutInfo
+                val total = layout.totalItemsCount
+                val last = layout.visibleItemsInfo.lastOrNull()?.index ?: 0
+                total to last
+              }.collect { (total, last) ->
+                if (total > 0 && last >= total - 6) {
+                  viewModel.loadNextCategoryPage()
                 }
               }
             }
-          }
-        }
-      }
 
-      query.isNotBlank() -> {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 14.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Text(
-            text = stringResource(R.string.search_results_found, query, results.size),
-            color = NovaCyanBright,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold
-          )
-        }
-
-        if (results.isEmpty()) {
-          Box(
-            modifier = Modifier
-              .fillMaxSize()
-              .padding(32.dp),
-            contentAlignment = Alignment.Center
-          ) {
-            Text(
-              text = stringResource(R.string.search_no_results, query),
-              color = NovaTextMuted,
-              fontSize = 16.sp
-            )
-          }
-        } else {
-          TvFocusBringIntoView {
-            LazyVerticalGrid(
-              state = gridState,
-              columns = GridCells.Adaptive(minSize = 150.dp),
-              contentPadding = PaddingValues(bottom = 48.dp),
-              horizontalArrangement = Arrangement.spacedBy(16.dp),
-              verticalArrangement = Arrangement.spacedBy(16.dp),
-              modifier = Modifier.fillMaxSize()
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 14.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
             ) {
-              itemsIndexed(results, key = { _, item -> "search_${item.id}" }) { index, item ->
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+              ) {
                 Box(
                   modifier = Modifier
-                    .fillMaxWidth()
-                    .then(
-                      if (index == 0) {
-                        Modifier.tvFocusRequester(contentFirstItemFocusRequester, contentFirstItemAttachment)
-                      } else {
-                        Modifier
-                      }
-                    )
-                    .focusProperties {
-                      if (index < 5) {
-                        up = activeFilterRequester
-                      }
-                    },
-                  contentAlignment = Alignment.TopCenter
-                ) {
-                  PosterMediaCard(
-                    media = item,
-                    onClick = { onMediaClick(item) }
-                  )
-                }
-              }
-            }
-          }
-        }
-      }
-
-      else -> {
-        // STATO DEFAULT: Nessun poster! Mostra solo i badge colorati per la ricerca globale
-        Column(modifier = Modifier.fillMaxSize()) {
-          Text(
-            text = stringResource(R.string.search_global_title),
-            color = NovaCyanBright,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Black,
-            letterSpacing = 1.sp
-          )
-          Text(
-            text = stringResource(R.string.search_global_subtitle),
-            color = NovaTextSecondary,
-            fontSize = 13.sp,
-            modifier = Modifier.padding(top = 2.dp, bottom = 14.dp)
-          )
-
-          TvFocusBringIntoView {
-          LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 170.dp),
-            contentPadding = PaddingValues(bottom = 48.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxSize()
-          ) {
-            itemsIndexed(GLOBAL_SEARCH_CATEGORIES, key = { _, it -> it.id }) { index, cat ->
-              val requester = if (index < categoryFocusRequesters.size) categoryFocusRequesters[index] else null
-              // Le categorie sono in una LazyVerticalGrid: i requester delle celle fuori
-              // viewport non sono montati e non vanno mai assegnati alle focusProperties.
-              val attachment = categoryAttachments.getOrPut(index) { TvFocusAttachment() }
-              TvFocusableBox(
-                modifier = Modifier
-                  .then(
-                    if (requester != null) {
-                      Modifier.tvFocusRequester(requester, attachment)
-                    } else {
-                      Modifier
-                    }
-                  )
-                  .focusProperties {
-                    if (index < 4) {
-                      up = activeFilterRequester
-                    } else {
-                      up = categoryAttachments[index - 4].guard(categoryFocusRequesters[index - 4])
-                        ?: FocusRequester.Default
-                    }
-                    if (index + 4 < categoryFocusRequesters.size) {
-                      down = categoryAttachments[index + 4].guard(categoryFocusRequesters[index + 4])
-                        ?: FocusRequester.Default
-                    }
-                  },
-                shape = RoundedCornerShape(50),
-                focusedScale = 1.05f,
-                onClick = {
-                  try {
-                    activeFilterRequester.requestFocus()
-                  } catch (_: Exception) {}
-                  viewModel.setSelectedSearchCategoryId(cat.id)
-                  // La categoria viene caricata SOLO dai cataloghi degli addon
-                  // (Xperience/Stremio) dichiarati nei manifest; nessun seed da
-                  // allMedia/TMDB Discover. Keywords = etichette della categoria.
-                  viewModel.initCategory(
-                    categoryId = cat.id,
-                    keywords = cat.keywords,
-                    movieGenreId = cat.movieGenreId,
-                    tvGenreId = cat.tvGenreId
-                  )
-                  selectedCategory = cat
-                  isSearchSubmitted = false
-                }
-              ) { isFocused ->
-                Box(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
                     .background(
-                      brush = Brush.horizontalGradient(
-                        colors = listOf(
-                          cat.gradientStart.copy(alpha = if (isFocused) 0.95f else 0.70f),
-                          cat.gradientEnd.copy(alpha = if (isFocused) 0.95f else 0.70f)
-                        )
-                      ),
+                      brush = Brush.horizontalGradient(listOf(cat.gradientStart, cat.gradientEnd)),
                       shape = RoundedCornerShape(50)
                     )
-                    .border(
-                      width = if (isFocused) 2.dp else 1.dp,
-                      color = if (isFocused) Color.White else cat.accentColor.copy(alpha = 0.5f),
-                      shape = RoundedCornerShape(50)
-                    )
-                    .padding(horizontal = 16.dp),
-                  contentAlignment = Alignment.Center
+                    .border(1.5.dp, cat.accentColor, RoundedCornerShape(50))
+                    .padding(horizontal = 18.dp, vertical = 7.dp)
                 ) {
                   Text(
                     text = stringResource(cat.labelRes).uppercase(),
                     color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.5.sp
+                  )
+                }
+                Text(
+                  // Sottotitolo secondo la sorgente REALE dei poster: l'etichetta
+                  // TMDB Discover appare solo quando il fallback TMDB è attivo.
+                  text = when (categoryState.source) {
+                    SearchCategorySource.ADDON -> stringResource(
+                      R.string.search_category_desc_addon,
+                      categoryState.addonLabel.orEmpty()
+                    )
+                    SearchCategorySource.TMDB_FALLBACK -> stringResource(R.string.search_category_desc_fallback)
+                    null -> ""
+                  },
+                  color = if (categoryState.source == SearchCategorySource.TMDB_FALLBACK) {
+                    NovaOrange
+                  } else {
+                    NovaTextSecondary
+                  },
+                  fontSize = 13.sp
+                )
+              }
+
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                if (isCategoryLoading) {
+                  CircularProgressIndicator(
+                    color = NovaCyanBright,
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp
+                  )
+                }
+                Box(
+                  modifier = Modifier
+                    .background(Color(0x33000000), RoundedCornerShape(50))
+                    .border(1.dp, cat.accentColor.copy(alpha = 0.5f), RoundedCornerShape(50))
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                ) {
+                  Text(
+                    text = stringResource(R.string.search_titles_available, displayedCategoryMedia.size),
+                    color = cat.accentColor,
                     fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.5.sp,
-                    maxLines = 1
+                    fontWeight = FontWeight.Bold
                   )
                 }
               }
             }
+
+            // Avviso esplicito: errore del catalogo addon oppure motivo del fallback
+            // TMDB Discover: non viene mai mascherato come caricamento riuscito.
+            categoryState.statusMessage?.let { message ->
+              Text(
+                text = message,
+                color = if (categoryState.source == SearchCategorySource.ADDON) NovaOrange else NovaTextMuted,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+              )
+            }
+
+            // Griglia (o messaggio "nessun contenuto") su weight(1f): occupa ESATTAMENTE
+            // lo spazio che resta dopo badge e messaggio, qualunque sia il numero dei
+            // badge e degli item.
+            if (displayedCategoryMedia.isEmpty() && !isCategoryLoading) {
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .weight(1f)
+                  .padding(32.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = stringResource(R.string.search_no_content_for_category, stringResource(cat.labelRes)),
+                  color = NovaTextMuted,
+                  fontSize = 16.sp
+                )
+              }
+            } else {
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .weight(1f)
+              ) {
+                TvFocusBringIntoView {
+                  LazyVerticalGrid(
+                    state = categoryGridState,
+                    columns = GridCells.Adaptive(minSize = 150.dp),
+                    contentPadding = PaddingValues(bottom = 48.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.fillMaxSize()
+                  ) {
+                    // La key include il tipo: film e serie possono condividere lo stesso
+                    // id grezzo senza collidere (una key duplicata crasherebbe la griglia).
+                    itemsIndexed(displayedCategoryMedia, key = { _, item -> "cat_${cat.id}_${item.type}_${item.id}" }, contentType = { _, _ -> "media_poster" }) { index, item ->
+                      Box(
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .focusProperties {
+                            if (index < 5) {
+                              up = activeFilterRequester
+                            }
+                          },
+                        contentAlignment = Alignment.TopCenter
+                      ) {
+                        PosterMediaCard(
+                          media = item,
+                          onClick = { onMediaClick(item) },
+                          // Requester per identità: è il nodo focalizzabile REALE della
+                          // card, target del Giù dai filtri in modalità categoria. Le
+                          // celle fuori viewport non sono composte: nessun requester
+                          // fisso sulla cella 0.
+                          focusRequester = categoryResultFocusRequester(cat, item),
+                          modifier = Modifier.onFocusChanged { state ->
+                            if (BuildConfig.DEBUG && state.isFocused) {
+                              Log.d(
+                                SearchFocusDiagnostics.TAG,
+                                "CATEGORY CARD FOCUSED id=${item.id} title='${item.title}' index=$index"
+                              )
+                            }
+                          }
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
+        }
+  
+        query.isNotBlank() -> {
+          // Anche qui la superficie è un COLUMN: l'header "N risultati per ..." e la
+          // griglia (o il messaggio nessun risultato) sono impilati VERTICALMENTE. In
+          // precedenza erano fratelli DIRETTI del Box (= Stack) e le card coprivano
+          // l'header e l'area dei filtri.
+          Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 14.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = stringResource(R.string.search_results_found, query, results.size),
+                color = NovaCyanBright,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+              )
+            }
+
+            if (results.isEmpty()) {
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .weight(1f)
+                  .padding(32.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = stringResource(R.string.search_no_results, query),
+                  color = NovaTextMuted,
+                  fontSize = 16.sp
+                )
+              }
+            } else {
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .weight(1f)
+              ) {
+                TvFocusBringIntoView {
+                  LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Adaptive(minSize = 150.dp),
+                    contentPadding = PaddingValues(bottom = 48.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.fillMaxSize()
+                  ) {
+                    itemsIndexed(results, key = { _, item -> "search_${item.id}" }, contentType = { _, _ -> "media_poster" }) { index, item ->
+                      Box(
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .focusProperties {
+                            if (index < 5) {
+                              up = activeFilterRequester
+                            }
+                          },
+                        contentAlignment = Alignment.TopCenter
+                      ) {
+                        PosterMediaCard(
+                          media = item,
+                          onClick = { onMediaClick(item) },
+                          // Requester per identità: è il nodo focalizzabile REALE della
+                          // card (non un contenitore esterno), quindi il Giù dai filtri
+                          // consegna il focus a una cella composta qualunque sia lo
+                          // scroll. La Box-cella NON è un target di focus: agganciarci il
+                          // requester produce richieste rifiute invisibili.
+                          focusRequester = resultFocusRequester(item.id),
+                          modifier = Modifier.onFocusChanged { state ->
+                            if (BuildConfig.DEBUG && state.isFocused) {
+                              Log.d(
+                                SearchFocusDiagnostics.TAG,
+                                "RESULT CARD FOCUSED id=${item.id} title='${item.title}' index=$index"
+                              )
+                            }
+                          }
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+  
+        else -> {
+          // STATO DEFAULT: Nessun poster! Mostra solo i badge colorati per la ricerca globale
+          Column(modifier = Modifier.fillMaxSize()) {
+            Text(
+              text = stringResource(R.string.search_global_title),
+              color = NovaCyanBright,
+              fontSize = 13.sp,
+              fontWeight = FontWeight.Black,
+              letterSpacing = 1.sp
+            )
+            Text(
+              text = stringResource(R.string.search_global_subtitle),
+              color = NovaTextSecondary,
+              fontSize = 13.sp,
+              modifier = Modifier.padding(top = 2.dp, bottom = 14.dp)
+            )
+  
+            TvFocusBringIntoView {
+            LazyVerticalGrid(
+              columns = GridCells.Adaptive(minSize = 170.dp),
+              contentPadding = PaddingValues(bottom = 48.dp),
+              horizontalArrangement = Arrangement.spacedBy(12.dp),
+              verticalArrangement = Arrangement.spacedBy(12.dp),
+              modifier = Modifier.fillMaxSize()
+            ) {
+              itemsIndexed(GLOBAL_SEARCH_CATEGORIES, key = { _, it -> it.id }, contentType = { _, _ -> "search_category" }) { index, cat ->
+                val requester = if (index < categoryFocusRequesters.size) categoryFocusRequesters[index] else null
+                // Le categorie sono in una LazyVerticalGrid: i requester delle celle fuori
+                // viewport non sono montati e non vanno mai assegnati alle focusProperties.
+                val attachment = categoryAttachments.getOrPut(index) { TvFocusAttachment() }
+                TvFocusableBox(
+                  modifier = Modifier
+                    .then(
+                      if (requester != null) {
+                        Modifier.tvFocusRequester(requester, attachment)
+                      } else {
+                        Modifier
+                      }
+                    )
+                    .focusProperties {
+                      if (index < 4) {
+                        up = activeFilterRequester
+                      } else {
+                        up = categoryAttachments[index - 4].guard(categoryFocusRequesters[index - 4])
+                          ?: FocusRequester.Default
+                      }
+                      if (index + 4 < categoryFocusRequesters.size) {
+                        down = categoryAttachments[index + 4].guard(categoryFocusRequesters[index + 4])
+                          ?: FocusRequester.Default
+                      }
+                    },
+                  shape = RoundedCornerShape(50),
+                  focusedScale = 1.05f,
+                  onClick = {
+                    try {
+                      activeFilterRequester.requestFocus()
+                    } catch (_: Exception) {}
+                    viewModel.setSelectedSearchCategoryId(cat.id)
+                    // La categoria viene caricata SOLO dai cataloghi degli addon
+                    // (Xperience/Stremio) dichiarati nei manifest; nessun seed da
+                    // allMedia/TMDB Discover. Keywords = etichette della categoria.
+                    viewModel.initCategory(
+                      categoryId = cat.id,
+                      keywords = cat.keywords,
+                      movieGenreId = cat.movieGenreId,
+                      tvGenreId = cat.tvGenreId
+                    )
+                    selectedCategory = cat
+                    isSearchSubmitted = false
+                  }
+                ) { isFocused ->
+                  Box(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .height(48.dp)
+                      .background(
+                        brush = Brush.horizontalGradient(
+                          colors = listOf(
+                            cat.gradientStart.copy(alpha = if (isFocused) 0.95f else 0.70f),
+                            cat.gradientEnd.copy(alpha = if (isFocused) 0.95f else 0.70f)
+                          )
+                        ),
+                        shape = RoundedCornerShape(50)
+                      )
+                      .border(
+                        width = if (isFocused) 2.dp else 1.dp,
+                        color = if (isFocused) Color.White else cat.accentColor.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(50)
+                      )
+                      .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center
+                  ) {
+                    Text(
+                      text = stringResource(cat.labelRes).uppercase(),
+                      color = Color.White,
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Bold,
+                      letterSpacing = 0.5.sp,
+                      maxLines = 1
+                    )
+                  }
+                }
+              }
+            }
+            }
           }
         }
       }

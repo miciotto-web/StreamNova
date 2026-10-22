@@ -86,6 +86,9 @@ private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
 /** Durata della Splash Screen iniziale, ottenuta con coroutine/delay (mai Thread.sleep). */
 private const val SPLASH_DURATION_MS = 10_000L
 
+internal const val HOME_CONTENT_ANCHOR_ROW = "hero_banner"
+internal const val HOME_CONTENT_ANCHOR_ID = "home_content_anchor"
+
 class MainActivity : ComponentActivity() {
   private val viewModel: StreamNovaViewModel by viewModels()
 

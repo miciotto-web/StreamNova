@@ -159,3 +159,27 @@ suspend fun LazyGridState.scrollToItemVerified(
   }
   return false
 }
+
+/**
+ * Richiede il focus su un [FocusRequester] il cui nodo può non essere ancora agganciato
+ * (cella appena composta dallo scroll di una griglia): ritenta per un numero limitato di
+ * FRAME invece di affidarsi a un delay arbitrario.
+ *
+ * @return `true` appena una richiesta viene accettata senza eccezioni.
+ */
+suspend fun requestFocusWhenAttached(
+  requester: FocusRequester,
+  maxAttempts: Int = 3
+): Boolean {
+  var attempt = 0
+  while (attempt < maxAttempts) {
+    attempt++
+    try {
+      requester.requestFocus()
+      return true
+    } catch (_: Exception) {
+      withFrameNanos { }
+    }
+  }
+  return false
+}
