@@ -11,8 +11,15 @@ import org.junit.Test
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
 
+/**
+ * sdk = [34] come le altre classi Android della suite streaming: senza @Config la
+ * classe girerebbe a targetSdk 36 e la coesistenza di due sandbox SDK nella stessa
+ * JVM rompe l'inizializzazione dei font di Robolectric (FileSystemAlreadyExistsException).
+ */
 @RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
 class StreamPriorityTest {
 
   @Test

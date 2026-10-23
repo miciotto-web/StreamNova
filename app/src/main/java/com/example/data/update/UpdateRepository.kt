@@ -22,9 +22,28 @@ sealed interface UpdateCheckState {
   data class UpdateAvailable(
     val currentVersion: String,
     val newVersion: String,
+    val tagName: String,
+    val assetName: String?,
+    val changelog: String?,
     val releaseUrl: String?
   ) : UpdateCheckState
-  data object Error : UpdateCheckState
+
+  /**
+   * Release pubblicata ma non coerente: la versione estratta dal nome dell'asset
+   * APK non corrisponde al tag della release (es. tag `v1.0.0` con asset
+   * `StreamNova-V0.1.0-*.apk`). Un aggiornamento così pubblicato NON viene
+   * offerto: non è installabile in modo verificabile.
+   */
+  data class VersionMismatch(
+    val currentVersion: String,
+    val tagName: String,
+    val tagVersion: String,
+    val assetVersion: String?,
+    val assetName: String?,
+    val releaseUrl: String?
+  ) : UpdateCheckState
+
+  data class Error(val reason: UpdateCheckErrorReason) : UpdateCheckState
 }
 
 /**
@@ -37,6 +56,48 @@ sealed interface UpdateDownloadState {
   data class Downloading(val percent: Int?) : UpdateDownloadState
   data class Completed(val apkPath: String) : UpdateDownloadState
   data class Error(val reason: DownloadErrorReason) : UpdateDownloadState
+}
+
+/**
+ * Decisione pura sul risultato del controllo, separata dall'I/O così da poter
+ * essere verificata deterministicamente senza rete.
+ *
+ * Regole:
+ *  - se un asset APK porta una versione estraibile diversa dal tag, la release è
+ *    incoerente e non viene offerta ([UpdateCheckState.VersionMismatch]);
+ *  - la versione proposta è quella dell'asset quando nota, altrimenti il tag;
+ *  - una versione uguale o inferiore a quella installata non è un aggiornamento.
+ */
+internal fun evaluateUpdate(installed: AppVersion, latest: LatestRelease): UpdateCheckState {
+  val apkAssets = latest.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+
+  val conflicting = apkAssets.firstOrNull { it.version != null && it.version != latest.version }
+  if (conflicting != null) {
+    return UpdateCheckState.VersionMismatch(
+      currentVersion = installed.toString(),
+      tagName = latest.tagName,
+      tagVersion = latest.version.toString(),
+      assetVersion = conflicting.version?.toString(),
+      assetName = conflicting.name,
+      releaseUrl = latest.releaseUrl
+    )
+  }
+
+  val selected = selectApkAsset(latest.assets)
+  val proposed = selected?.version ?: latest.version
+
+  return if (proposed > installed) {
+    UpdateCheckState.UpdateAvailable(
+      currentVersion = installed.toString(),
+      newVersion = proposed.toString(),
+      tagName = latest.tagName,
+      assetName = selected?.name,
+      changelog = latest.body,
+      releaseUrl = latest.releaseUrl
+    )
+  } else {
+    UpdateCheckState.UpToDate(installed.toString())
+  }
 }
 
 /**
@@ -75,17 +136,21 @@ object UpdateRepository {
       _state.value = UpdateCheckState.Checking
       _state.value = runCatching {
         val installed = AppVersion.parse(currentVersion)
-          ?: throw UpdateCheckException("Versione installata non valida: $currentVersion")
+          ?: throw UpdateCheckException(
+            UpdateCheckErrorReason.INVALID_RELEASE,
+            "Versione installata non valida: $currentVersion"
+          )
         val latest = client.fetchLatestRelease()
-        if (latest.version > installed) {
-          latestRelease = latest
-          UpdateCheckState.UpdateAvailable(currentVersion, latest.tagName, latest.releaseUrl)
-        } else {
-          UpdateCheckState.UpToDate(currentVersion)
+        evaluateUpdate(installed, latest).also { result ->
+          // Solo una release offribile diventa la sorgente del download: una
+          // release incoerente o non più recente non può alimentare l'installer.
+          if (result is UpdateCheckState.UpdateAvailable) latestRelease = latest
         }
       }.getOrElse { error ->
         Log.w(TAG, "Controllo aggiornamenti fallito: ${error.message}")
-        UpdateCheckState.Error
+        UpdateCheckState.Error(
+          (error as? UpdateCheckException)?.reason ?: UpdateCheckErrorReason.UNKNOWN
+        )
       }
     }
   }
@@ -142,4 +207,3 @@ object UpdateRepository {
     _downloadState.value = UpdateDownloadState.Idle
   }
 }
-

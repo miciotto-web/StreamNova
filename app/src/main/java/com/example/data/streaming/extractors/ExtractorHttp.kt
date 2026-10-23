@@ -48,21 +48,75 @@ object ExtractorHttp {
   const val USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+  /**
+   * Cookie di sessione condivisi dalla catena padre -> iframe/player.
+   *
+   * Il jar è unico per tutti gli hoster ma il matching resta per dominio,
+   * percorso e scadenza: nessun cookie viene inviato a un host che non lo ha
+   * rilasciato. Anche i client derivati ([mirrorClient]) ereditano lo stesso jar.
+   */
+  private val extractorCookies = InMemoryCookieJar()
+
   val client: OkHttpClient = OkHttpClient.Builder()
     .connectTimeout(12, TimeUnit.SECONDS)
     .readTimeout(18, TimeUnit.SECONDS)
     .retryOnConnectionFailure(true)
+    .cookieJar(extractorCookies)
     .build()
+
+  /** Svuota il cookie store (isolamento fra test; non usato in produzione). */
+  internal fun clearCookies() {
+    extractorCookies.clear()
+  }
+
+  /**
+   * Timeout complessivo di una singola richiesta nei percorsi "per mirror".
+   *
+   * Non è il budget globale di [com.example.data.streaming.StreamManager]
+   * (15 s): è il limite oltre il quale un tentativo verso un mirror viene
+   * abbandonato e si passa al successivo. Il `callTimeout` di OkHttp copre
+   * l'intera call (connessione, redirect, lettura del body) e la cancellazione
+   * della coroutine continua a interrompere fisicamente la richiesta.
+   */
+  const val MIRROR_CALL_TIMEOUT_MS = 5_000L
+
+  /** Client con [MIRROR_CALL_TIMEOUT_MS] per i tentativi indipendenti per mirror. */
+  private val mirrorClient: OkHttpClient by lazy {
+    client.newBuilder()
+      .callTimeout(MIRROR_CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+      .build()
+  }
+
+  /**
+   * Client da usare per la richiesta.
+   *
+   * `null` mantiene il client storico (nessun `callTimeout` globale): i provider
+   * già funzionanti non cambiano comportamento. Un timeout esplicito diverso da
+   * [MIRROR_CALL_TIMEOUT_MS] crea un client dedicato (caso raro, documentato).
+   */
+  private fun clientFor(callTimeoutMs: Long?): OkHttpClient = when {
+    callTimeoutMs == null -> client
+    callTimeoutMs == MIRROR_CALL_TIMEOUT_MS -> mirrorClient
+    else -> client.newBuilder()
+      .callTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+      .build()
+  }
 
   /**
    * GET della pagina embed/risorsa.
    *
    * @param referer Referer da inviare: per molti CDN è obbligatorio (403 altrimenti).
+   * @param callTimeoutMs limite complessivo della singola richiesta; `null` usa il
+   *   client storico senza `callTimeout`.
    * @return corpo della risposta.
    * @throws IOException su status non 2xx.
    */
-  suspend fun get(url: String, referer: String? = null, extraHeaders: Map<String, String> = emptyMap()): String =
-    getWithFinalUrl(url, referer, extraHeaders).second
+  suspend fun get(
+    url: String,
+    referer: String? = null,
+    extraHeaders: Map<String, String> = emptyMap(),
+    callTimeoutMs: Long? = null
+  ): String = getWithFinalUrl(url, referer, extraHeaders, callTimeoutMs).second
 
   /** Costruisce la richiesta validando l'URL (messaggio d'errore con contesto). */
   private fun buildRequest(url: String): Request.Builder = try {
@@ -81,7 +135,8 @@ object ExtractorHttp {
   suspend fun getWithFinalUrl(
     url: String,
     referer: String? = null,
-    extraHeaders: Map<String, String> = emptyMap()
+    extraHeaders: Map<String, String> = emptyMap(),
+    callTimeoutMs: Long? = null
   ): Pair<String, String> {
     val builder = buildRequest(url)
       .header("User-Agent", USER_AGENT)
@@ -91,7 +146,7 @@ object ExtractorHttp {
     if (!referer.isNullOrBlank()) builder.header("Referer", referer)
     extraHeaders.forEach { (k, v) -> builder.header(k, v) }
 
-    val response = client.newCall(builder.build()).awaitResponse()
+    val response = clientFor(callTimeoutMs).newCall(builder.build()).awaitResponse()
     response.use { resp ->
       val body = resp.body?.string().orEmpty()
       if (!resp.isSuccessful) throw IOException("HTTP ${resp.code} su $url")
@@ -101,7 +156,13 @@ object ExtractorHttp {
   }
 
   /** POST form-urlencoded (usato dagli shortener tipo stayonline). */
-  suspend fun postForm(url: String, referer: String?, form: Map<String, String>, extraHeaders: Map<String, String> = emptyMap()): String {
+  suspend fun postForm(
+    url: String,
+    referer: String?,
+    form: Map<String, String>,
+    extraHeaders: Map<String, String> = emptyMap(),
+    callTimeoutMs: Long? = null
+  ): String {
     val body = form.entries.joinToString("&") { "${it.key}=${java.net.URLEncoder.encode(it.value, "UTF-8")}" }
     val builder = buildRequest(url)
       .header("User-Agent", USER_AGENT)
@@ -112,7 +173,7 @@ object ExtractorHttp {
     if (!referer.isNullOrBlank()) builder.header("Referer", referer)
     extraHeaders.forEach { (k, v) -> builder.header(k, v) }
 
-    val response = client.newCall(builder.build()).awaitResponse()
+    val response = clientFor(callTimeoutMs).newCall(builder.build()).awaitResponse()
     response.use { resp ->
       val respBody = resp.body?.string().orEmpty()
       if (!resp.isSuccessful) throw IOException("HTTP ${resp.code} su $url")

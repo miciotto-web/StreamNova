@@ -5,6 +5,7 @@ import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.stremio.CinemetaAddon
 import com.example.data.stremio.StremioAddonRepository
+import com.example.data.stremio.StremioCatalogEngine
 import com.example.data.stremio.TYPE_MOVIE
 import com.example.data.stremio.TYPE_SERIES
 import com.sun.net.httpserver.HttpExchange
@@ -329,7 +330,84 @@ class HomeCatalogSourceSelectionTest {
     assertEquals(listOf("tt7000011"), catalog.popularSeries.map { it.id })
   }
 
-  // ── 6. Addon con risultati validi: sostituzione per tipo, no coesistenza ────
+  // ── 6. Cataloghi dichiarati `tv`: sono serie TV a tutti gli effetti ─────────
+
+  /**
+   * Manifest nella forma di TvVoo: tipi `tv`, catalogo `tv` con filtro `genre`
+   * dichiarato. Il tipo originale non viene mai riscritto.
+   */
+  private fun tvManifest(): String = """
+    {
+      "id": "org.stremio.vavoo.clean",
+      "name": "TvVoo | ElfHosted",
+      "version": "1.0.0",
+      "description": "Canali TV",
+      "resources": ["catalog", "meta", "stream"],
+      "types": ["tv"],
+      "idPrefixes": ["vavoo", "vavoo_"],
+      "catalogs": [
+        {
+          "type": "tv",
+          "id": "vavoo_tv_home_it",
+          "name": "TvVoo TV",
+          "extra": [{"name": "genre", "options": ["Tutti", "Rai", "Mediaset", "Sport"]}]
+        }
+      ]
+    }
+  """.trimIndent()
+
+  @Test
+  fun ilCatalogoDiTipoTvCompareTraITargetSerieDelCatalogEngine() {
+    installAddon(
+      tvManifest(),
+      responses = mapOf(
+        "/catalog/tv/vavoo_tv_home_it.json" to metas("vavoo_rai1" to "Rai 1", type = "tv")
+      )
+    )
+
+    val seriesTargets = StremioCatalogEngine.getAvailableCatalogs(TYPE_SERIES)
+    assertEquals(
+      listOf("vavoo_tv_home_it"),
+      seriesTargets.filter { it.addonId == "org.stremio.vavoo.clean" }.map { it.catalogId }
+    )
+    // Il tipo richiesto all'addon resta quello dichiarato nel manifest.
+    assertEquals(
+      listOf("tv"),
+      seriesTargets.filter { it.addonId == "org.stremio.vavoo.clean" }.map { it.type }
+    )
+    assertTrue(StremioCatalogEngine.getAvailableCatalogs(TYPE_MOVIE).none { it.addonId == "org.stremio.vavoo.clean" })
+  }
+
+  @Test
+  fun iCanaliTvAlimentanoLeRigheSerieDellaHome() {
+    val fixture = installAddon(
+      tvManifest(),
+      responses = mapOf(
+        "/catalog/tv/vavoo_tv_home_it.json" to metas(
+          "vavoo_rai1" to "Rai 1",
+          "vavoo_canale5" to "Canale 5",
+          type = "tv"
+        )
+      )
+    )
+
+    val catalog = resolve()
+
+    // Le serie arrivano dall'addon: Cinemeta resta solo per i film.
+    assertEquals(listOf(listOf(MediaType.FILM)), cinemetaRequests)
+    assertTrue(catalog.hasCustomCatalogSeries)
+    assertFalse(catalog.hasCustomCatalogMovies)
+    assertEquals(listOf("vavoo_rai1", "vavoo_canale5"), catalog.allSeries.map { it.id })
+    assertEquals(listOf(MediaType.SERIE_TV), catalog.extraSections.map { it.mediaType })
+    assertTrue(catalog.popularSeries.isEmpty())
+    assertTrue(catalog.seriesFromDefaultCatalog.not())
+
+    // L'endpoint interrogato conserva il tipo originale `tv`.
+    assertTrue(fixture.requested.contains("/catalog/tv/vavoo_tv_home_it.json"))
+    assertTrue(fixture.requested.none { it.startsWith("/catalog/series/") })
+  }
+
+  // ── 7. Addon con risultati validi: sostituzione per tipo, no coesistenza ────
 
   @Test
   fun addonConRisultatiValidiSostituisceLeRigheCinemetaSenzaCoesistenza() {

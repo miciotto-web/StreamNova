@@ -14,6 +14,7 @@ import com.example.data.stremio.StremioMetaItem
 import com.example.data.stremio.TYPE_MOVIE
 import com.example.data.stremio.TYPE_SERIES
 import com.example.data.stremio.EXTRA_GENRE
+import com.example.data.stremio.StremioLiveChannelClassifier
 import com.example.data.stremio.EXTRA_SEARCH
 import com.example.data.stremio.provider.CatalogEntryResult
 import com.example.data.stremio.provider.CatalogKey
@@ -35,6 +36,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Origine di provenienza di un catalogo o contenuto nel data layer.
@@ -264,12 +266,49 @@ object StremioCatalogRepository {
   fun resolver(): ProviderCatalogResolver = ProviderCatalogResolvers.get()
 
   /**
-   * Restituisce tutti i target di catalogo disponibili dagli addon Stremio attivi.
+   * Risolve tutti i target di catalogo disponibili dagli addon Stremio attivi.
    * Non effettua chiamate di rete: legge i manifest già installati e validati.
    */
   fun getAvailableTargets(mediaType: MediaType? = null): List<StremioCatalogTarget> {
     val stremioType = toStremioType(mediaType)
     return StremioCatalogEngine.getAvailableCatalogs(stremioType)
+  }
+
+  /** Catalogo (popolato da [StremioCatalogItemIndex]) che esponeva un canale. */
+  private val channelCatalogIndex = ConcurrentHashMap<String, String>()
+
+  /**
+   * Registra, per ogni elemento non cinematografico (canale LIVE) restituito da un
+   * catalogo, il catalogo che lo ha prodotto. È l'unico modo per conservare il
+   * tipo ORIGINALE (`tv`) nelle richieste `meta`/`stream`: la card Home porta solo
+   * l'id, non il catalogo.
+   */
+  internal fun rememberChannelItems(
+    addonId: String,
+    catalogId: String,
+    items: List<StremioMetaItem>
+  ) {
+    items.forEach { item ->
+      val itemId = item.id?.trim().orEmpty()
+      if (itemId.isEmpty()) return@forEach
+      if (!StremioLiveChannelClassifier.isChannelStyleId(itemId)) return@forEach
+      channelCatalogIndex["${addonId.trim()}|${itemId.lowercase()}"] = catalogId.trim()
+    }
+  }
+
+  /**
+   * Catalogo dell'addon [addonId] che espone il contenuto [mediaId], oppure null.
+   * Accetta sia l'id Stremio nativo sia la chiave di navigazione del canale.
+   */
+  fun channelCatalogIdFor(addonId: String, mediaId: String?): String? {
+    val id = StremioLiveChannelClassifier.parseChannelKey(mediaId)?.second
+      ?: mediaId?.trim().orEmpty()
+    if (id.isEmpty()) return null
+    return channelCatalogIndex["${addonId.trim()}|${id.lowercase()}"]
+  }
+
+  internal fun clearChannelItemIndex() {
+    channelCatalogIndex.clear()
   }
 
   /**
@@ -357,6 +396,10 @@ object StremioCatalogRepository {
     val extraGenres = mutableListOf<String>()
     if (isTop10) extraGenres += "Top 10"
     if (brandName != null) extraGenres += brandName
+
+    // Canali live: la card porta solo l'id, quindi il catalogo d'origine viene
+    // memorizzato qui per conservare il tipo ORIGINALE (`tv`) nelle richieste stream.
+    rememberChannelItems(target.addonId, target.catalogId, result.items)
 
     val mediaItems = StremioCatalogMapper.toMediaItemList(
       result.items,
@@ -1009,7 +1052,8 @@ object StremioCatalogRepository {
     val resolved = buildHomeCatalogs(
       defaultSections = defaultSections,
       userSections = userSections,
-      allMedia = tmdbMedia
+      allMedia = tmdbMedia,
+      heroSynopsisLocalizer = HeroSynopsisLocalizer::localizeAll
     )
     homeResolutionGate.complete(requestId, resolved)
   }
@@ -1089,6 +1133,38 @@ object StremioCatalogRepository {
       allMovies = homeMovies.ifEmpty { allMedia.filter { it.type == MediaType.FILM } },
       allSeries = homeSeries.ifEmpty { allMedia.filter { it.type == MediaType.SERIE_TV } }
     )
+  }
+
+  /**
+   * Variante con localizzazione della sinossi dell'Hero Banner.
+   *
+   * I cataloghi Stremio (Cinemeta in primis) espongono la sinossi solo in inglese e
+   * non supportano alcun parametro di lingua: [heroSynopsisLocalizer] sostituisce il
+   * testo SOLO per gli item dell'Hero, lasciando invariati poster, titoli, ordine,
+   * id, provider e tutte le altre righe della Home. Un errore del localizer non
+   * interrompe il caricamento: si mantengono le sinossi originali.
+   */
+  internal suspend fun buildHomeCatalogs(
+    defaultSections: List<CatalogSection>,
+    userSections: List<CatalogSection>,
+    allMedia: List<MediaItem>,
+    heroSynopsisLocalizer: (suspend (List<MediaItem>) -> List<MediaItem>)?
+  ): HomeCatalogs {
+    val base = buildHomeCatalogs(
+      defaultSections = defaultSections,
+      userSections = userSections,
+      allMedia = allMedia
+    )
+    if (heroSynopsisLocalizer == null || base.heroItems.isEmpty()) return base
+    val localizedHero = try {
+      heroSynopsisLocalizer(base.heroItems)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Localizzazione sinossi Hero fallita, testo originale mantenuto: ${e.message}")
+      base.heroItems
+    }
+    return if (localizedHero == base.heroItems) base else base.copy(heroItems = localizedHero)
   }
 
   /**

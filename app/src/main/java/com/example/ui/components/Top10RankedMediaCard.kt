@@ -35,8 +35,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
@@ -47,10 +49,12 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -76,10 +80,28 @@ internal val Top10RowSpacing = 32.dp
  * mentre la separazione tra coppie consecutive nella LazyRow è gestita da [Top10RowSpacing].
  */
 private val Top10RankGapWidth = 8.dp
+/** Dimensione del font del numero di classifica (condivisa con il test di regressione). */
+internal val Top10RankFontSize = 115.sp
+/** Larghezza dell'area riservata al numero di classifica (NON focusable) per una cifra. */
+private val Top10RankAreaWidth = 72.dp
+/**
+ * Larghezza dell'area del numero quando la classifica ha due cifre ("10"): a 115sp le due
+ * cifre misurano ~128dp, quindi nei 72dp di [Top10RankAreaWidth] la seconda cifra finiva
+ * fuori dall'area di disegno (TextOverflow.Clip) e restava visibile solo "1".
+ */
+private val Top10RankTwoDigitAreaWidth = 144.dp
 private val Top10PosterWidth = 148.dp
 private val Top10PosterHeight = 220.dp
 /** Altezza del blocco numero + poster (il titolo sotto è aggiunto a parte). */
 private val Top10CardHeight = 235.dp
+
+/**
+ * Larghezza dell'area del numero di classifica: identica a [Top10RankAreaWidth] per le
+ * posizioni 1-9 (una cifra), allargata a [Top10RankTwoDigitAreaWidth] per i numeri a due
+ * cifre come "10".
+ */
+internal fun top10RankAreaWidth(rank: Int): Dp =
+  if (rank >= 10) Top10RankTwoDigitAreaWidth else Top10RankAreaWidth
 
 /**
  * Card stile "TOP 10" con numero gigante in stile TV streaming (es. Netflix/HBO style)
@@ -100,8 +122,9 @@ private val Top10CardHeight = 235.dp
  * ricompongono a ogni frame.
  *
  * Il focus resta esclusivamente sul poster, ma quando è focalizzato lo scroll
- * (bring-into-view) usa come area di riferimento l'INTERO contenitore della card, così il
- * numero di classifica resta visibile e non finisce sotto la Sidebar.
+ * (bring-into-view) usa come area di riferimento l'INTERA larghezza del blocco
+ * numero + poster (e la sola banda verticale del poster), così il numero di classifica
+ * resta visibile e non finisce sotto la Sidebar senza alterare lo scroll verticale.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -111,10 +134,43 @@ fun Top10RankedMediaCard(
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
   focusRequester: FocusRequester? = null,
-  rowKey: String? = null
+  rowKey: String? = null,
+  isRestoreTarget: Boolean = false
 ) {
   // Traccia lo stato di focus del poster per gli elementi non focusable (numero di classifica).
   var isFocused by remember { mutableStateOf(false) }
+
+  // Riporta in vista l'INTERO blocco (numero + poster) quando il poster riceve focus, così il
+  // numero di classifica non finisce sotto la Sidebar. Il rettangolo copre l'intera larghezza del
+  // blocco ma SOLO la banda verticale del poster: sull'asse verticale la richiesta coincide con
+  // quella del focus nativo sul poster (distanza zero, nessuno scroll aggiuntivo e nessun
+  // "sobbalzo" dell'atterraggio), sull'asse orizzontale include anche il numero, che non è
+  // focusable e quindi non verrebbe mai rivelato dal reveal nativo.
+  val bringIntoViewRequester = remember { BringIntoViewRequester() }
+  val density = LocalDensity.current
+  // "10" ha bisogno di più spazio di "1": l'area del numero si allarga solo per due cifre,
+  // così le posizioni 1-9 mantengono esattamente la geometria attuale.
+  val rankLabel = rank.toString()
+  val rankAreaWidth = top10RankAreaWidth(rank)
+  val cardRevealRect = remember(density, rankAreaWidth) {
+    val posterTop = (Top10CardHeight - Top10PosterHeight) / 2
+    with(density) {
+      Rect(
+        left = 0f,
+        top = posterTop.toPx(),
+        right = (rankAreaWidth + Top10RankGapWidth + Top10PosterWidth).toPx(),
+        bottom = (posterTop + Top10PosterHeight).toPx()
+      )
+    }
+  }
+
+  LaunchedEffect(isFocused) {
+    if (isFocused) {
+      try {
+        bringIntoViewRequester.bringIntoView(cardRevealRect)
+      } catch (_: Exception) {}
+    }
+  }
 
   // Animazioni GPU: i valori sono letti solo dentro graphicsLayer/drawBehind/drawWithContent.
   val scaleState = animateFloatAsState(
@@ -135,42 +191,63 @@ fun Top10RankedMediaCard(
   val posterShape = RoundedCornerShape(NeonCardCorner)
 
   val targetMediaId = LocalLastFocusedMediaId.current
+  val pendingRestoreId = targetMediaId
+  val isRestoringActive = pendingRestoreId != null
   val restoreTarget = LocalLastFocusedTarget.current ?: targetMediaId?.let { FOCUS_ROW_ANY to it }
+  // Nella riga Home (rowKey != null) solo la card marcata `isRestoreTarget` può richiedere il
+  // focus: l'item 0 non ruba il focus durante il ripristino.
+  val restoreEligible = matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) &&
+    (rowKey == null || isRestoreTarget)
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
+  val focusRestoreToken = LocalFocusRestoreToken.current
   val internalFocusRequester = remember { FocusRequester() }
   val posterFocusRequester = focusRequester ?: internalFocusRequester
 
-  LaunchedEffect(targetMediaId) {
-    if (matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
+  var focusRequestedToken by remember { mutableStateOf<Int?>(null) }
+
+  LaunchedEffect(focusRestoreToken) {
+    if (focusRequestedToken != null && focusRestoreToken != focusRequestedToken) {
+      focusRequestedToken = null
+    }
+  }
+
+  // Nelle righe Home (rowKey != null) il ripristino è guidato dal coordinatore della Home
+  // (richiesta pendente + HomeVerticalFocusSync): una richiesta concorrente da qui poteva
+  // far atterrare il focus su una riga diversa da quella di origine.
+  LaunchedEffect(targetMediaId, posterFocusRequester, focusRestoreToken) {
+    if (rowKey != null) return@LaunchedEffect
+    if (restoreEligible && focusRequestedToken != focusRestoreToken) {
       try {
         posterFocusRequester.requestFocus()
-        clearLastFocusedMedia?.invoke()
       } catch (_: Exception) {
         delay(32)
         try {
           posterFocusRequester.requestFocus()
-          clearLastFocusedMedia?.invoke()
         } catch (_: Exception) {}
       }
+      focusRequestedToken = focusRestoreToken
     }
   }
 
   Row(
     modifier = modifier
+      .bringIntoViewRequester(bringIntoViewRequester)
       // L'intero blocco (numero + poster + titolo) sale sopra le card vicine quando è a fuoco.
       .zIndex(if (isFocused) 10f else 1f)
   ) {
     // 1. Area riservata al numero di classifica (NON focusable, a ridosso del proprio poster)
     Box(
       modifier = Modifier
+        .width(rankAreaWidth)
         .height(Top10CardHeight)
         .align(Alignment.Top),
       contentAlignment = Alignment.BottomEnd
     ) {
-      // Numero gigante stilizzato della posizione in Top 10
+      // Numero gigante stilizzato della posizione in Top 10. L'area è larga abbastanza da
+      // contenere anche due cifre, quindi "10" non viene tagliato a "1".
       Text(
-        text = "$rank",
-        fontSize = 115.sp,
+        text = rankLabel,
+        fontSize = Top10RankFontSize,
         fontWeight = FontWeight.Black,
         fontFamily = FontFamily.SansSerif,
         color = if (isFocused) NovaCyanBright.copy(alpha = 0.95f) else Color(0xFF2C394E),
@@ -198,16 +275,20 @@ fun Top10RankedMediaCard(
           modifier = Modifier
             .width(Top10PosterWidth)
             .height(Top10PosterHeight)
+            .focusProperties {
+              canFocus = !isRestoringActive || (media.id == pendingRestoreId && (rowKey == null || isRestoreTarget))
+            }
             .focusRequester(posterFocusRequester)
             .graphicsLayer {
               val s = scaleState.value
               scaleX = s
               scaleY = s
             }
-            .onFocusChanged {
-              isFocused = it.isFocused
-              if (it.isFocused && matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
+            .onFocusChanged { focusState ->
+              isFocused = focusState.isFocused
+              if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
                 clearLastFocusedMedia?.invoke()
+                focusRequestedToken = null
               }
             }
             .onKeyEvent { keyEvent ->

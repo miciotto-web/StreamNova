@@ -3,6 +3,10 @@ package com.example.data.streaming.providers
 import android.util.Log
 import com.example.data.streaming.StreamProvider
 import com.example.data.streaming.StreamSource
+import com.example.data.streaming.diagnostics.StreamAttemptOutcome
+import com.example.data.streaming.diagnostics.StreamDiagnosticSink
+import com.example.data.streaming.diagnostics.StreamDiagnostics
+import com.example.data.streaming.diagnostics.record
 import com.example.data.streaming.extractors.ExtractorHttp
 import java.io.IOException
 import java.net.URI
@@ -30,7 +34,16 @@ import kotlinx.coroutines.withContext
  * La ricerca delle sorgenti copre comunque i casi "aperti": URL `.m3u8`/`.mp4`
  * nel markup, tag `<video>/<source>`, iframe annidati (massimo 2 livelli).
  */
-class SuperEmbedProvider : StreamProvider {
+class SuperEmbedProvider(
+  private val diagnostics: StreamDiagnosticSink = StreamDiagnosticSink.NONE,
+  /**
+   * Fetcher iniettabile: i test offline simulano la pagina con gate Turnstile e
+   * l'endpoint alternativo senza rete.
+   */
+  private val http: suspend (url: String, referer: String?) -> String = { url, referer ->
+    ExtractorHttp.get(url, referer = referer)
+  }
+) : StreamProvider {
 
   override suspend fun getStreams(
     tmdbId: Int,
@@ -47,18 +60,46 @@ class SuperEmbedProvider : StreamProvider {
     val failures = mutableListOf<String>()
     for ((name, base) in BASE_URLS) {
       currentCoroutineContext().ensureActive()
+      val startedAt = System.currentTimeMillis()
+      val mirrorId = StreamDiagnostics.hostId(base)
       try {
         val sources = resolveOnBase(name, base, tmdbId, isTv, s, e)
         if (sources.isNotEmpty()) {
           Log.i(TAG, "sorgenti $name: ${sources.size}")
+          diagnostics.record(
+            providerId = PROVIDER_ID,
+            mirrorId = mirrorId,
+            outcome = StreamAttemptOutcome.SUCCESS,
+            durationMs = System.currentTimeMillis() - startedAt
+          )
           return@withContext sources
         }
         failures += "$name -> nessuna sorgente"
+        diagnostics.record(
+          providerId = PROVIDER_ID,
+          mirrorId = mirrorId,
+          outcome = StreamAttemptOutcome.NO_RESULTS,
+          durationMs = System.currentTimeMillis() - startedAt
+        )
       } catch (ex: CancellationException) {
+        diagnostics.record(
+          providerId = PROVIDER_ID,
+          mirrorId = mirrorId,
+          outcome = StreamAttemptOutcome.CANCELLED,
+          durationMs = System.currentTimeMillis() - startedAt,
+          message = "ricerca annullata"
+        )
         throw ex
       } catch (ex: Exception) {
         Log.w(TAG, "$name: ${ex.message}")
         failures += "$name -> ${ex.message}"
+        diagnostics.record(
+          providerId = PROVIDER_ID,
+          mirrorId = mirrorId,
+          outcome = StreamDiagnostics.classify(ex),
+          durationMs = System.currentTimeMillis() - startedAt,
+          message = ex.message
+        )
       }
     }
     throw IOException("SuperEmbed/MultiEmbed non risolvibile (${failures.joinToString(" | ")})")
@@ -84,33 +125,48 @@ class SuperEmbedProvider : StreamProvider {
       )
     }
 
-    var page: String? = null
-    var used = ""
+    // La challenge su un endpoint non è definitiva: il secondo endpoint
+    // documentato può servire la stessa API senza gate. Si prova ognuno e si
+    // segnala la challenge solo se nessuno produce sorgenti.
+    var challenge: String? = null
     for (candidate in candidates) {
       currentCoroutineContext().ensureActive()
-      try {
-        page = ExtractorHttp.get(candidate, referer = "$base/")
-        used = candidate
-        break
+      val html = try {
+        http(candidate, "$base/")
       } catch (ex: CancellationException) {
         throw ex
       } catch (ex: Exception) {
         Log.i(TAG, "$name endpoint non disponibile: $candidate (${ex.message})")
+        continue
+      }
+      if (html.isBlank()) continue
+      Log.i(TAG, "GET PLAYER $candidate (${html.length} byte)")
+
+      val sources = sourcesFromPage(name, html, base, candidate)
+      if (sources.isNotEmpty()) return sources
+      if (CAPTCHA_GATE_REGEX.containsMatchIn(html)) {
+        challenge = "$name protetto da captcha Cloudflare Turnstile (gate del player)"
+        Log.i(TAG, "$name: gate Turnstile su $candidate, provo il candidato successivo")
       }
     }
-    val html = page ?: throw IOException("nessuna pagina player $name per TMDB $tmdbId")
-    Log.i(TAG, "GET PLAYER $used (${html.length} byte)")
+
+    throw IOException(challenge ?: "$name senza sorgenti leggibili (player offuscato o file non disponibile)")
+  }
+
+  /** Sorgenti leggibili dal markup/script di una singola pagina player. */
+  private suspend fun sourcesFromPage(name: String, html: String, base: String, used: String): List<StreamSource> {
     val normalized = html.replace("\\/", "/")
 
     // --- 1) sorgenti dirette nel markup -----------------------------------
     val direct = MEDIA_REGEX.findAll(normalized).map { it.groupValues[1] }.distinct().toList()
     if (direct.isNotEmpty()) {
       val url = direct.first()
-      Log.i(TAG, "$name sorgente diretta: $url")
+      Log.i(TAG, "sorgente diretta: $url")
       return listOf(
         StreamSource(
           streamUrl = url,
-          quality = if (url.contains(".m3u8", ignoreCase = true)) "Auto" else "1080p",
+          // La risoluzione MP4 non è verificata (nessun probe): non dichiarare "1080p".
+          quality = "Auto",
           serverName = name,
           headers = mapOf("Referer" to "$base/", "User-Agent" to ExtractorHttp.USER_AGENT)
         )
@@ -120,7 +176,7 @@ class SuperEmbedProvider : StreamProvider {
     // --- 2) tag video/source ----------------------------------------------
     val srcTag = SOURCE_REGEX.find(normalized)?.groupValues?.get(1)
     if (srcTag != null && srcTag.startsWith("http")) {
-      Log.i(TAG, "$name sorgente da <source>: $srcTag")
+      Log.i(TAG, "sorgente da <source>: $srcTag")
       return listOf(
         StreamSource(
           streamUrl = srcTag,
@@ -131,29 +187,34 @@ class SuperEmbedProvider : StreamProvider {
       )
     }
 
-    // --- 3) iframe annidati (massimo 2 livelli) ----------------------------
-    val iframe = IFRAME_REGEX.findAll(normalized)
+    // --- 3) iframe annidati ------------------------------------------------
+    val iframes = IFRAME_REGEX.findAll(normalized)
       .map { it.groupValues[1] }
-      .firstOrNull { !it.contains("youtube") && !it.contains("googletag") && !it.contains("histats") }
-    if (iframe != null) {
+      .filter { !it.contains("youtube") && !it.contains("googletag") && !it.contains("histats") }
+      .toList()
+    for (iframe in iframes) {
+      currentCoroutineContext().ensureActive()
       val iframeUrl = when {
         iframe.startsWith("http") -> iframe
         iframe.startsWith("//") -> "https:$iframe"
         else -> originOf(used) + iframe
       }
-      Log.i(TAG, "$name iframe annidato: $iframeUrl")
+      Log.i(TAG, "iframe annidato: $iframeUrl")
       val nested = try {
-        ExtractorHttp.get(iframeUrl, referer = used).replace("\\/", "/")
+        http(iframeUrl, used).replace("\\/", "/")
       } catch (ex: CancellationException) {
         throw ex
       } catch (ex: Exception) {
-        throw IOException("iframe $name non raggiungibile: ${ex.message}")
+        Log.i(TAG, "iframe $iframeUrl non raggiungibile: ${ex.message}")
+        continue
       }
       val nestedMedia = MEDIA_REGEX.findAll(nested).map { it.groupValues[1] }.distinct().toList()
       if (nestedMedia.isNotEmpty()) {
+        val url = nestedMedia.first()
         return listOf(
           StreamSource(
-            streamUrl = nestedMedia.first(),
+            streamUrl = url,
+            // La risoluzione MP4 non è verificata (nessun probe): non dichiarare "1080p".
             quality = "Auto",
             serverName = name,
             headers = mapOf("Referer" to iframeUrl, "User-Agent" to ExtractorHttp.USER_AGENT)
@@ -162,11 +223,7 @@ class SuperEmbedProvider : StreamProvider {
       }
     }
 
-    // --- 4) gate rilevato ---------------------------------------------------
-    if (CAPTCHA_GATE_REGEX.containsMatchIn(normalized)) {
-      throw IOException("$name protetto da captcha Cloudflare Turnstile (gate del player)")
-    }
-    throw IOException("$name senza sorgenti leggibili (player offuscato o file non disponibile)")
+    return emptyList()
   }
 
   private fun originOf(url: String): String = try {
@@ -178,6 +235,7 @@ class SuperEmbedProvider : StreamProvider {
 
   companion object {
     private const val TAG = "SuperEmbedProvider"
+    private const val PROVIDER_ID = "SuperEmbedProvider"
 
     /** Nome -> base URL (stessa famiglia di player, parametri identici). */
     private val BASE_URLS = linkedMapOf(

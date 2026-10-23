@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
@@ -61,6 +62,17 @@ object MediaRepository {
   private var database: StreamNovaDatabase? = null
   private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val episodeProgressMap = ConcurrentHashMap<String, Long>()
+
+  /**
+   * Cache (LRU, massimo 1024 serie) degli episodi generati per i titoli non
+   * seed. La generazione è deterministica: rigenerarla a ogni emissione Room
+   * creava migliaia di oggetti per volta, con pressione sul GC durante la
+   * sincronizzazione iniziale.
+   */
+  private val generatedEpisodesCache = object : LinkedHashMap<String, List<Episode>>(256, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Episode>>?): Boolean =
+      size > 1024
+  }
   private val detailsSingleFlight = AsyncSingleFlight<ExtendedMediaDetails>()
   private val ageRatingSingleFlight = AsyncSingleFlight<Int?>()
 
@@ -117,8 +129,15 @@ object MediaRepository {
     if (dbObserverJob?.isActive == true) return
     dbObserverJob = repoScope.launch {
       try {
-        db.cachedMediaDao().getAllCachedMediaFlow().collect { entities ->
-          _mediaList.value = mapEntitiesToUiState(entities)
+        // Durante il refresh TMDB la tabella viene aggiornata a blocchi: senza
+        // `conflate` ogni scrittura accodava una conversione completa del
+        // catalogo. Con il conflate l'UI riceve l'ultimo stato disponibile e
+        // non una raffica di stati intermedi.
+        db.cachedMediaDao().getAllCachedMediaFlow().conflate().collect { entities ->
+          // La conversione entità -> MediaItem (inclusa la generazione degli
+          // episodi) è CPU-bound: Dispatchers.Default evita di occupare i
+          // thread di I/O e di contendere con Room/OkHttp.
+          _mediaList.value = withContext(Dispatchers.Default) { mapEntitiesToUiState(entities) }
         }
       } catch (e: CancellationException) {
         throw e
@@ -724,6 +743,15 @@ object MediaRepository {
 
     val initialMap = initialList.associateBy { it.id }
     val episodesById = initialList.filter { it.episodes.isNotEmpty() }.associate { it.id to it.episodes }
+      .toMutableMap()
+
+    // Episodi delle serie non seed: generati una sola volta e riusati fra le
+    // emissioni successive dell'osservatore Room.
+    cachedEntities.forEach { entity ->
+      if (entity.type == MediaType.SERIE_TV.name && entity.id !in episodesById) {
+        episodesById[entity.id] = generatedEpisodesFor(entity)
+      }
+    }
 
     val mappedItems = cachedEntities.map { entity ->
       val initItem = initialMap[entity.id]
@@ -753,6 +781,25 @@ object MediaRepository {
       itemWithSeed.copy(episodes = enrichedEpisodes)
     }
     return mappedItems.sortedByDescending { it.rating }
+  }
+
+  /** Episodi generati (deterministici) per una serie non seed, con cache LRU. */
+  private fun generatedEpisodesFor(entity: CachedMediaItemEntity): List<Episode> {
+    val key = "${entity.id}:${entity.seasonsCount ?: 2}"
+    synchronized(generatedEpisodesCache) {
+      generatedEpisodesCache[key]?.let { return it }
+    }
+    val generated = generateEpisodesForTv(
+      tvId = entity.tmdbId ?: (entity.id.hashCode() and 0x7FFFFFFF),
+      tvTitle = entity.title,
+      backdropUrl = entity.backdropUrl,
+      posterUrl = entity.posterUrl,
+      seasons = entity.seasonsCount ?: 2
+    )
+    synchronized(generatedEpisodesCache) {
+      generatedEpisodesCache[key] = generated
+    }
+    return generated
   }
 
   /**
@@ -3106,18 +3153,29 @@ object MediaRepository {
       // Garantisce che l'osservatore del Flow Room sia attivo prima di scrivere
       startDatabaseObserver()
 
-      withContext(Dispatchers.IO) {
+      // Mapping/normalizzazione TMDB sono CPU-bound: Default. Le chiamate
+      // Retrofit suspend e quelle Room suspend non bloccano il thread (OkHttp e
+      // Room usano i propri executor), quindi non serve un IO dispatcher attorno
+      // all'intero ciclo.
+      withContext(Dispatchers.Default) {
         try {
           val currentList = _mediaList.value.toMutableList()
           // Nessun MutableMap<Int, MediaItem>: le chiavi sono canoniche
           // ("tmdb_m_<id>" per i film, "tmdb_tv_<id>" per le serie), così un ID
           // film e un ID serie identici non collidono mai.
           val fetchedItemsMap = LinkedHashMap<String, MediaItem>()
+          // Ogni titolo viene scritto UNA volta: i checkpoint successivi
+          // persistono solo il delta. Prima ogni blocco riscriveva l'intero
+          // catalogo, generando molte invalidazioni Room e altrettante
+          // emissioni/ricomposizioni durante la sincronizzazione iniziale.
+          val persistedIds = HashSet<String>()
 
           // Persistenza progressiva: la UI (che legge dalla tabella Room) si aggiorna
           // dopo ogni blocco invece di restare ferma per tutto il refresh.
           suspend fun checkpoint(label: String) {
-            val total = mergeAndPersistCatalog(currentList, fetchedItemsMap)
+            val pendingIds = fetchedItemsMap.keys - persistedIds
+            val total = mergeAndPersistCatalog(currentList, fetchedItemsMap, pendingIds)
+            persistedIds += pendingIds
             Log.i("MediaRepository", "Checkpoint [$label]: $total titoli in catalogo (persistiti in Room)")
           }
 
@@ -3409,10 +3467,14 @@ object MediaRepository {
    * Merge incrementale del catalogo + persistenza su Room (Single Source of Truth).
    * Nessuno scarto per poster/backdrop mancanti: un titolo con titolo valido resta
    * in catalogo; preferiti e progressi vengono SEMPRE preservati dalla riga Room.
+   *
+   * @param idsToPersist se non null, solo questi id vengono scritti: i checkpoint
+   *   successivi persistono il delta invece di riscrivere l'intero catalogo.
    */
   private suspend fun mergeAndPersistCatalog(
     currentList: List<MediaItem>,
-    fetchedItems: Map<String, MediaItem>
+    fetchedItems: Map<String, MediaItem>,
+    idsToPersist: Set<String>? = null
   ): Int {
     val finalMap = LinkedHashMap<String, MediaItem>()
     // Prima tutti i titoli appena fetchati (chiavi distinte movie/tv)
@@ -3456,17 +3518,26 @@ object MediaRepository {
     if (db != null) {
       try {
         val dao = db.cachedMediaDao()
-        // Preserva SEMPRE preferiti, progressi ed episodio visto sui dati remoti
+        // Preserva SEMPRE preferiti, progressi ed episodio visto sui dati remoti.
+        // La lettura resta sull'intero catalogo (serve lo stato utente di ogni
+        // riga), ma la SCRITTURA è limitata al delta del checkpoint.
         val existingById = dao.getAllCachedMedia().associateBy { it.id }
-        val preservedList = combinedList.map { item ->
-          existingById[item.id]?.preserveUserStateInto(item) ?: item
+        val toPersist = if (idsToPersist == null) {
+          combinedList
+        } else {
+          combinedList.filter { it.id in idsToPersist }
         }
-        dao.insertOrUpdate(preservedList.map { it.toEntity() })
+        if (toPersist.isNotEmpty()) {
+          val preservedList = toPersist.map { item ->
+            existingById[item.id]?.preserveUserStateInto(item) ?: item
+          }
+          dao.insertOrUpdate(preservedList.map { it.toEntity() })
+        }
         // Fallback solo se l'osservatore del Flow non fosse attivo
         if (dbObserverJob?.isActive != true) {
           _mediaList.value = mapEntitiesToUiState(dao.getAllCachedMedia())
         }
-        return preservedList.size
+        return combinedList.size
       } catch (e: Exception) {
         Log.w("MediaRepository", "Salvataggio in Room fallito: ${e.message}")
         _mediaList.value = combinedList

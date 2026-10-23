@@ -45,3 +45,22 @@ androidx/
 
 # --- Vecchio progetto ---
 SnakeNeon/
+
+
+# StreamNova - chiavi di firma e credenziali
+*.jks
+*.keystore
+*.p12
+*.pfx
+
+# File locali contenenti password o segreti
+.env
+.env.*
+!.env.example
+keystore.properties
+signing.properties
+local.properties
+# Extracted JVM/Kotlin dependency classes accidentally written at repository root
+/META-INF/
+/com/
+/io/

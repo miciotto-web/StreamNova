@@ -3,6 +3,7 @@ package com.example.data.streaming.extractors
 import android.util.Log
 import com.example.data.streaming.StreamSource
 import java.io.IOException
+import java.net.URI
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -25,7 +26,11 @@ class MaxStreamExtractor : VideoExtractor {
 
   override suspend fun extract(embedUrl: String): List<StreamSource> = withContext(Dispatchers.IO) {
     Log.i(TAG, "GET embed $embedUrl")
-    val html = ExtractorHttp.get(embedUrl, referer = REFERER)
+    // Il Referer segue l'origin dell'embed EFFETTIVO (dopo redirect) e resta
+    // nell'allowlist dei domini MaxStream già accettati dal resolver.
+    val initialReferer = maxStreamReferer(embedUrl)
+    val (finalUrl, html) = ExtractorHttp.getWithFinalUrl(embedUrl, referer = initialReferer, callTimeoutMs = ExtractorHttp.MIRROR_CALL_TIMEOUT_MS)
+    val referer = maxStreamReferer(finalUrl, initialReferer)
     if (html.isBlank()) throw IOException("Pagina embed MaxStream vuota: $embedUrl")
 
     // I JSON negli script usano gli slash escapati: li normalizziamo prima del parsing
@@ -42,7 +47,7 @@ class MaxStreamExtractor : VideoExtractor {
       when {
         src.startsWith("http") -> candidates += src
         src.startsWith("//") -> candidates += "https:$src"
-        src.startsWith("/") -> candidates += baseOrigin(embedUrl) + src
+        src.startsWith("/") -> candidates += originOf(finalUrl) + src
       }
     }
 
@@ -59,14 +64,42 @@ class MaxStreamExtractor : VideoExtractor {
         streamUrl = best,
         quality = "Auto",
         serverName = SERVER_NAME,
-        headers = mapOf("Referer" to REFERER, "User-Agent" to ExtractorHttp.USER_AGENT)
+        headers = mapOf(
+          "Referer" to referer,
+          "Origin" to originOf(finalUrl),
+          "User-Agent" to ExtractorHttp.USER_AGENT
+        )
       )
     )
   }
 
-  private fun baseOrigin(url: String): String {
-    val m = ORIGIN_REGEX.find(url) ?: return "https://maxstream.video"
-    return m.value
+  /**
+   * Referer coerente con l'origin dell'embed, limitato ai domini MaxStream già
+   * ammessi (`maxstream.video`, `.net`, `.org`). Per un host estraneo si usa il
+   * referer storico del sito ufficiale: nessuna allowlist allargata.
+   */
+  internal fun maxStreamReferer(url: String, fallback: String = REFERER): String = try {
+    val uri = URI(url)
+    val scheme = uri.scheme
+    val host = uri.host?.lowercase()?.trimEnd('.')
+    if (scheme.isNullOrBlank() || host.isNullOrBlank() ||
+      MAXSTREAM_DOMAINS.none { host == it || host.endsWith(".$it") }
+    ) {
+      fallback
+    } else {
+      "$scheme://$host/"
+    }
+  } catch (e: Exception) {
+    fallback
+  }
+
+  private fun originOf(url: String): String = try {
+    val uri = URI(url)
+    val scheme = uri.scheme
+    val host = uri.host
+    if (scheme.isNullOrBlank() || host.isNullOrBlank()) "https://maxstream.video" else "$scheme://$host"
+  } catch (e: Exception) {
+    "https://maxstream.video"
   }
 
   companion object {
@@ -74,8 +107,10 @@ class MaxStreamExtractor : VideoExtractor {
     const val SERVER_NAME = "MaxStream"
     const val REFERER = "https://maxstream.video/"
 
+    /** Stessi domini ammessi da [com.example.data.streaming.providers.HosterResolver]. */
+    private val MAXSTREAM_DOMAINS = listOf("maxstream.video", "maxstream.net", "maxstream.org")
+
     private val URL_REGEX = Regex("""(https?://[^\s"'<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>\\]*)?)""", RegexOption.IGNORE_CASE)
     private val SOURCE_REGEX = Regex("""<(?:video|source)[^>]*\ssrc\s*=\s*"([^"]+)"""", RegexOption.IGNORE_CASE)
-    private val ORIGIN_REGEX = Regex("""^https?://[^/]+""", RegexOption.IGNORE_CASE)
   }
 }

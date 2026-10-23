@@ -19,8 +19,10 @@ android {
     applicationId = "com.aistudio.streamnova.tvapp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "0.1.0"
+    // Release stabile ufficiale StreamNova V1.0.
+    // Ogni release successiva deve incrementare versionCode.
+    versionCode = 1002
+    versionName = "1.0.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     // TMDB API key is never hardcoded here: it would be committed and published.
@@ -89,10 +91,49 @@ android {
     }
   }
 
+  // ABI splits: every device only downloads/installs the native libraries it can
+  // actually load, instead of the ~90 MB of lib/*/*.so carried by a universal APK.
+  // All the ABIs already shipped by the project are kept, so no device loses
+  // support: 32-bit ARM (older Fire TV Stick / Android TV boxes), 64-bit ARM
+  // (current boxes and sticks) and x86/x86_64 (emulator and the few Intel-based
+  // Android TV devices).
+  splits {
+    abi {
+      isEnable = true
+      reset()
+      include("x86", "x86_64", "armeabi-v7a", "arm64-v8a")
+      isUniversalApk = false
+    }
+  }
+
+  packaging {
+    jniLibs {
+      // Store lib/*/*.so compressed (android:extractNativeLibs="true") instead of
+      // the AGP default of keeping them uncompressed inside the APK. The .so files
+      // are the dominant part of each split (~23 MB of 28 MB for arm64-v8a) and
+      // they deflate to ~45% of their size, i.e. the download shrinks from
+      // 29.4 MB to ~15.6 MB.
+      //
+      // Trade-off, deliberate and reversible with this one line: the runtime
+      // extracts the libraries into the app data directory, so the APK is much
+      // smaller but the on-device footprint is larger (APK + extracted copies)
+      // and the installation takes slightly longer. Nothing about loading,
+      // MediaCodec, or JNI changes.
+      useLegacyPackaging = true
+    }
+  }
+
   buildTypes {
     release {
-      isCrunchPngs = false
-      isMinifyEnabled = false
+      isCrunchPngs = true
+      // R8: removes the unused code reachable from the release runtime classpath.
+      // This is the single biggest dex win (material-icons-extended, unused Media3
+      // renderers/extractors, kotlin-reflect and the Moshi reflection adapter are
+      // all only reachable through shrinkable code paths).
+      isMinifyEnabled = true
+      // Removes the resources that no reachable code/manifest entry references.
+      // Requires minification to be enabled.
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
@@ -229,6 +270,7 @@ dependencies {
   testImplementation(libs.androidx.junit)
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
+  testImplementation(libs.mockwebserver)
   testImplementation(libs.robolectric)
   testImplementation(libs.roborazzi)
   testImplementation(libs.roborazzi.compose)
@@ -243,3 +285,4 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+

@@ -41,6 +41,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
@@ -99,6 +100,18 @@ val LocalFocusRestoreToken = compositionLocalOf<Int> { 0 }
 
 /** CompositionLocal per cancellare il target salvato non appena la card riceve il focus. */
 val LocalClearLastFocusedMedia = compositionLocalOf<(() -> Unit)?> { null }
+
+/**
+ * CompositionLocal del target di ripristino per le CARD PROVIDER dell'hub della Home.
+ *
+ * Canale DEDICATO rispetto a [LocalLastFocusedMediaId]: le card provider (Netflix, HBO Max, …)
+ * non sono [com.example.data.model.MediaItem] e la scheda Provider consuma/rilascia il target
+ * media al primo ingresso, quindi condividerlo azzererebbe il ripristino al ritorno.
+ */
+val LocalLastFocusedProviderId = compositionLocalOf<String?> { null }
+
+/** CompositionLocal per cancellare il target provider non appena la card provider riceve il focus. */
+val LocalClearLastFocusedProvider = compositionLocalOf<(() -> Unit)?> { null }
 
 /**
  * Componente neutro ed elegante per Android TV in sostituzione definitiva di qualsiasi
@@ -290,11 +303,19 @@ fun ContinueWatchingCard(
   onLongPress: (() -> Unit)? = null,
   modifier: Modifier = Modifier,
   focusRequester: FocusRequester? = null,
-  rowKey: String? = null
+  rowKey: String? = null,
+  isRestoreTarget: Boolean = false
 ) {
   val fallbackRes = (media.backdropRes ?: media.posterRes)?.takeIf { it != R.drawable.banner_dune }
   val targetMediaId = LocalLastFocusedMediaId.current
+  val pendingRestoreId = targetMediaId
+  val isRestoringActive = pendingRestoreId != null
   val restoreTarget = LocalLastFocusedTarget.current ?: targetMediaId?.let { FOCUS_ROW_ANY to it }
+  // La card è candidata al ripristino solo se il target è suo E, nelle righe Home (rowKey != null),
+  // il chiamante l'ha esplicitamente marcata come `isRestoreTarget`: l'item 0 di ogni riga non
+  // può quindi rubare il focus mentre il ripristino è in corso.
+  val restoreEligible = matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) &&
+    (rowKey == null || isRestoreTarget)
   val focusRestoreToken = LocalFocusRestoreToken.current
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
@@ -311,12 +332,14 @@ fun ContinueWatchingCard(
   }
 
   // Ripristino ROW-SCOPED: solo la card della riga salvata nel target richiede il focus.
-  LaunchedEffect(targetMediaId, cardFocusRequester) {
-    if (matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) && focusRequestedToken == null) {
+  // Nelle righe Home (rowKey != null) il ripristino è guidato dal coordinatore della Home
+  // (richiesta pendente + HomeVerticalFocusSync): una richiesta concorrente da qui poteva
+  // far atterrare il focus su una riga diversa da quella di origine.
+  LaunchedEffect(targetMediaId, cardFocusRequester, focusRestoreToken) {
+    if (rowKey != null) return@LaunchedEffect
+    if (restoreEligible && focusRequestedToken != focusRestoreToken) {
       try {
         cardFocusRequester.requestFocus()
-        // Target consumato immediatamente: nessun'altra riga/frame può rubare il focus.
-        clearLastFocusedMedia?.invoke()
       } catch (_: Exception) {
       }
       focusRequestedToken = focusRestoreToken
@@ -327,17 +350,21 @@ fun ContinueWatchingCard(
     modifier = modifier
       .width(280.dp)
       .height(158.dp)
-      .focusRequester(cardFocusRequester),
+      .focusProperties {
+        canFocus = !isRestoringActive || (media.id == pendingRestoreId && (rowKey == null || isRestoreTarget))
+      }
+      .focusRequester(cardFocusRequester)
+      .onFocusChanged { focusState ->
+        if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
+          clearLastFocusedMedia?.invoke()
+          focusRequestedToken = null
+        }
+      },
     shape = RoundedCornerShape(14.dp),
     focusedScale = 1.05f,
     onClick = onClick,
     onLongPress = onLongPress
   ) { isFocused ->
-    // Clear the target only when focus is actually gained
-    if (isFocused && focusRequestedToken != null && matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
-      clearLastFocusedMedia?.invoke()
-      focusRequestedToken = null
-    }
     Box(
       modifier = Modifier
         .fillMaxSize()
@@ -483,11 +510,16 @@ fun StandardMediaCard(
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
   focusRequester: FocusRequester? = null,
-  rowKey: String? = null
+  rowKey: String? = null,
+  isRestoreTarget: Boolean = false
 ) {
   var isFocused by remember { mutableStateOf(false) }
   val targetMediaId = LocalLastFocusedMediaId.current
+  val pendingRestoreId = targetMediaId
+  val isRestoringActive = pendingRestoreId != null
   val restoreTarget = LocalLastFocusedTarget.current ?: targetMediaId?.let { FOCUS_ROW_ANY to it }
+  val restoreEligible = matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) &&
+    (rowKey == null || isRestoreTarget)
   val focusRestoreToken = LocalFocusRestoreToken.current
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
@@ -504,12 +536,14 @@ fun StandardMediaCard(
   }
 
   // Ripristino ROW-SCOPED: solo la card della riga salvata nel target richiede il focus.
-  LaunchedEffect(targetMediaId, cardFocusRequester) {
-    if (matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) && focusRequestedToken == null) {
+  // Nelle righe Home (rowKey != null) il ripristino è guidato dal coordinatore della Home
+  // (richiesta pendente + HomeVerticalFocusSync): una richiesta concorrente da qui poteva
+  // far atterrare il focus su una riga diversa da quella di origine.
+  LaunchedEffect(targetMediaId, cardFocusRequester, focusRestoreToken) {
+    if (rowKey != null) return@LaunchedEffect
+    if (restoreEligible && focusRequestedToken != focusRestoreToken) {
       try {
         cardFocusRequester.requestFocus()
-        // Target consumato immediatamente: nessun'altra riga/frame può rubare il focus.
-        clearLastFocusedMedia?.invoke()
       } catch (_: Exception) {
       }
       focusRequestedToken = focusRestoreToken
@@ -536,6 +570,9 @@ fun StandardMediaCard(
   Column(
     modifier = modifier
       .width(220.dp)
+      .focusProperties {
+        canFocus = !isRestoringActive || (media.id == pendingRestoreId && (rowKey == null || isRestoreTarget))
+      }
       .focusRequester(cardFocusRequester)
       // La card in focus deve coprire le card vicine
       .zIndex(if (isFocused) 10f else 1f)
@@ -544,10 +581,10 @@ fun StandardMediaCard(
         scaleX = s
         scaleY = s
       }
-      .onFocusChanged {
-        isFocused = it.isFocused
+      .onFocusChanged { focusState ->
+        isFocused = focusState.isFocused
         // Clear the target only when focus is actually gained
-        if (it.isFocused && focusRequestedToken != null && matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
+        if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }
@@ -695,6 +732,8 @@ fun StandardMediaCard(
  * @param confirmFocusRestore attiva il protocollo di ripristino con CONFERMA del focus reale
  *   (usato dalla griglia Provider). Con `false` resta il comportamento storico delle altre
  *   schermate (Home, Film, Serie TV, Cerca, Preferiti, Dettaglio).
+ * @param isRestoreTarget nelle righe Home marca l'UNICA card autorizzata a ripristinare il
+ *   focus: l'item 0 di ciascuna LazyRow non può rubare il focus prima del ripristino.
  */
 @Composable
 fun PosterMediaCard(
@@ -705,11 +744,18 @@ fun PosterMediaCard(
   cardWidth: Dp = 150.dp,
   allowBackdropFallback: Boolean = true,
   confirmFocusRestore: Boolean = false,
-  rowKey: String? = null
+  rowKey: String? = null,
+  isRestoreTarget: Boolean = false
 ) {
   var isFocused by remember { mutableStateOf(false) }
   val targetMediaId = LocalLastFocusedMediaId.current
+  val pendingRestoreId = targetMediaId
+  val isRestoringActive = pendingRestoreId != null
   val restoreTarget = LocalLastFocusedTarget.current ?: targetMediaId?.let { FOCUS_ROW_ANY to it }
+  // Nelle righe Home (rowKey != null) il ripristino è ammesso solo per la card marcata
+  // esplicitamente `isRestoreTarget`: l'item 0 non può rubare il focus durante il restore.
+  val restoreEligible = matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) &&
+    (rowKey == null || isRestoreTarget)
   val focusRestoreToken = LocalFocusRestoreToken.current
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
@@ -725,17 +771,19 @@ fun PosterMediaCard(
     }
   }
 
-  // Percorso storico (Home, Film, Serie TV, Cerca, Preferiti, Dettaglio): un solo
+  // Percorso storico (Film, Serie TV, Cerca, Preferiti, Dettaglio): un solo
   // tentativo quando la card corrisponde al target, condizionato anche alla riga
   // (rowKey) quando il target è row-scoped.
-  LaunchedEffect(targetMediaId, cardFocusRequester) {
+  // Nelle righe Home (rowKey != null) il ripristino è guidato dal coordinatore della Home
+  // (richiesta pendente + HomeVerticalFocusSync): una richiesta concorrente da qui poteva
+  // far atterrare il focus su una riga diversa da quella di origine.
+  LaunchedEffect(targetMediaId, cardFocusRequester, focusRestoreToken) {
+    if (rowKey != null) return@LaunchedEffect
     if (!confirmFocusRestore &&
-      matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) && focusRequestedToken == null
+      restoreEligible && focusRequestedToken != focusRestoreToken
     ) {
       try {
         cardFocusRequester.requestFocus()
-        // Target consumato immediatamente: nessun'altra riga/frame può rubare il focus.
-        clearLastFocusedMedia?.invoke()
       } catch (_: Exception) {
       }
       focusRequestedToken = focusRestoreToken
@@ -757,7 +805,7 @@ fun PosterMediaCard(
     var restoreAttemptToken by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(focusRestoreToken, cardFocusRequester) {
-      if (!matchesFocusRestoreTarget(restoreTarget, rowKey, media.id) ||
+      if (!restoreEligible ||
         !shouldAttemptFocusRestore(
           cardMediaId = media.id,
           targetMediaId = currentTargetMediaId,
@@ -801,6 +849,9 @@ fun PosterMediaCard(
     modifier = Modifier
       .width(cardWidth)
       .then(modifier)
+      .focusProperties {
+        canFocus = !isRestoringActive || (media.id == pendingRestoreId && (rowKey == null || isRestoreTarget))
+      }
       .focusRequester(cardFocusRequester)
       // La card in focus deve coprire le card vicine
       .zIndex(if (isFocused) 10f else 1f)
@@ -809,11 +860,11 @@ fun PosterMediaCard(
         scaleX = s
         scaleY = s
       }
-      .onFocusChanged {
-        isFocused = it.isFocused
-        if (confirmFocusRestore) restoreConfirmation.onFocusChanged(it.isFocused)
+      .onFocusChanged { focusState ->
+        isFocused = focusState.isFocused
+        if (confirmFocusRestore) restoreConfirmation.onFocusChanged(focusState.isFocused)
         // Clear the target only when focus is actually gained
-        if (it.isFocused && focusRequestedToken != null && matchesFocusRestoreTarget(restoreTarget, rowKey, media.id)) {
+        if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }

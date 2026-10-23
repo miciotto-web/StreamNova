@@ -4,6 +4,9 @@ import com.example.data.stremio.StremioProxyHeaders
 import com.example.data.stremio.StremioStreamBehaviorHints
 import com.example.data.stremio.StremioStreamCandidate
 import com.example.data.stremio.StremioStreamItem
+import com.example.data.prefs.StreamingEngineMode
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -146,5 +149,38 @@ class StreamManagerDirectSourceTest {
     assertEquals(CacheState.Cached, source.cacheState)
     assertEquals("Comet | ElfHosted", source.addonName)
     assertTrue(source.streamUrl!!.contains("/playback/"))
+  }
+
+  @Test
+  fun httpWebNonInterrogaAddonStremio() = runTest {
+    var fetchCalled = false
+    val directUrl = "https://cdn.example/Film.2024.1080p.m3u8"
+    val manager = StreamManager(
+      providers = emptyList(),
+      timeoutMs = 2_000L,
+      addonStreamsFetcher = { tmdbId, isTv, season, episode, imdbId ->
+        fetchCalled = true
+        assertEquals(550, tmdbId)
+        assertFalse(isTv)
+        assertNull(season)
+        assertNull(episode)
+        assertEquals("tt1234567", imdbId)
+        listOf(candidate(url = directUrl, name = "TestAddon 1080p", title = "Film.2024.1080p.mkv"))
+      }
+    )
+
+    val emissions = manager.resolveFlow(
+      tmdbId = 550,
+      isTv = false,
+      title = "Film",
+      streamingEngineMode = StreamingEngineMode.HTTP_WEB,
+      imdbId = "tt1234567"
+    ).toList()
+
+    assertFalse("HTTP_WEB non deve interrogare addon Stremio", fetchCalled)
+    assertTrue(
+      "HTTP_WEB senza provider integrati deve restituire zero sorgenti",
+      emissions.flatten().none { it.streamUrl == directUrl }
+    )
   }
 }

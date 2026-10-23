@@ -410,7 +410,19 @@ fun MediaContextMenu(
   }
 
   LaunchedEffect(Unit) {
-    firstItemFocusRequester.requestFocus()
+    // Retry su requester non agganciato: nel primo frame di apertura del dialogo l'item può
+    // non essere ancora attaccato e `requestFocus` lancia IllegalStateException (crash).
+    // Stesso schema protetto di SourceSelectionDialog.
+    var attached = false
+    repeat(8) {
+      if (attached) return@repeat
+      try {
+        firstItemFocusRequester.requestFocus()
+        attached = true
+      } catch (_: IllegalStateException) {
+        delay(40)
+      }
+    }
     delay(250L)
     canClick = true
   }

@@ -25,22 +25,22 @@
     <string name="home_badge_select_provider">Select Provider</string>
     <string name="home_section_continue_watching">Continue Watching</string>
     <string name="home_badge_in_progress">%d titles in progress</string>
-    <string name="home_section_top_10_movies">Top 10 Movies Today</string>
-    <string name="home_badge_tmdb_ranking_italy">TMDB Ranking</string>
-    <string name="home_section_top_10_series">Top 10 TV Shows Today</string>
-    <string name="home_badge_most_watched_tmdb">Most Watched on TMDB</string>
-    <string name="home_section_trending_movies">Trending Movies</string>
-    <string name="home_badge_trending_week">Trending this week</string>
-    <string name="home_section_trending_series">Trending TV Shows</string>
-    <string name="home_badge_trending_phenomena">Hot right now</string>
+    <string name="home_section_top_10_movies">Featured: Movies</string>
+    <string name="home_badge_tmdb_ranking_italy">Featured on Cinemeta</string>
+    <string name="home_section_top_10_series">Featured: TV Shows</string>
+    <string name="home_badge_most_watched_tmdb">Featured on Cinemeta</string>
+    <string name="home_section_trending_movies">New Movies</string>
+    <string name="home_badge_trending_week">New this year</string>
+    <string name="home_section_trending_series">New TV Shows</string>
+    <string name="home_badge_trending_phenomena">New this year</string>
     <string name="home_section_for_you_movies">For You: Recommended Movies</string>
     <string name="home_badge_based_on_preferences">Based on your preferences</string>
     <string name="home_section_for_you_series">For You: Must-Watch TV Shows</string>
     <string name="home_badge_suggested_for_you">Suggested for you</string>
     <string name="home_section_popular_movies">Popular Movies</string>
-    <string name="home_badge_most_watched_cinema">Top cinema hits</string>
+    <string name="home_badge_most_watched_cinema">Popular on Cinemeta</string>
     <string name="home_section_popular_series">Popular TV Shows</string>
-    <string name="home_badge_most_discussed_series">Most talked about shows</string>
+    <string name="home_badge_most_discussed_series">Popular on Cinemeta</string>
 
     <!-- Provider Catalog Filters & States -->
     <string name="filter_all">All</string>
@@ -210,6 +210,18 @@
      <string name="settings_update_dl_error_file">APK file missing or empty</string>
      <string name="settings_update_dl_error_space">Not enough storage space</string>
      <string name="settings_update_dl_error_generic">Error during download</string>
+    <string name="settings_update_dl_error_size">The downloaded file is incomplete or damaged (wrong size)</string>
+    <string name="settings_update_dl_error_checksum">The downloaded file failed the integrity check</string>
+    <string name="settings_update_changelog">What\'s new in this version</string>
+    <string name="settings_update_asset_name">File: %1$s</string>
+    <string name="settings_update_mismatch">Inconsistent release: the declared version (%1$s) does not match the published file (%2$s). Update not available.</string>
+    <string name="settings_update_error_rate_limited">Too many requests to GitHub: please try again later</string>
+    <string name="settings_update_error_not_found">No release available on the server</string>
+    <string name="settings_update_error_network">No connection or connection lost</string>
+    <string name="settings_update_error_invalid_release">The published release does not contain a valid update</string>
+    <string name="settings_update_install_failed_file">The update file is no longer available: download it again</string>
+    <string name="settings_update_install_failed_permission">Permission to install apps from this source is missing</string>
+    <string name="settings_update_install_failed_generic">Could not start the system installer</string>
      <string name="settings_sec_playback_engine">Playback Engine</string>
      <string name="settings_playback_mode">Playback Mode</string>
      <string name="settings_mode_debrid">Debrid TorBox (1080p / 4K Ultra HD)</string>
@@ -324,6 +336,12 @@
      <string name="player_cd_playback_speed">Playback Speed</string>
      <string name="player_cd_subtitles">Subtitles</string>
      <string name="player_cd_audio_tracks">Audio Tracks</string>
+     <string name="player_cd_video_source">Video Source</string>
+     <string name="player_source_selector_title">Video Source</string>
+     <string name="player_source_selector_subtitle">%1$d sources available</string>
+     <string name="player_source_selector_current">Now playing</string>
+     <string name="player_source_selector_empty">No source available for this title.</string>
+     <string name="player_source_fallback_switched">Source unavailable · switching to %1$s</string>
      <string name="player_scrub_hint">OK to confirm • BACK to cancel</string>
      <string name="player_cd_selected">Selected</string>
 

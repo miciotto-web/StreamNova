@@ -17,12 +17,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -77,6 +79,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.runtime.setValue
@@ -107,6 +111,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.snapshotFlow
@@ -133,12 +139,18 @@ import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.TargetBufferOption
 import com.example.data.update.ApkInstaller
 import com.example.data.update.DownloadErrorReason
+import com.example.data.update.UpdateCheckErrorReason
 import com.example.data.update.UpdateCheckState
 import com.example.data.update.UpdateDownloadState
 import com.example.ui.components.ContinueWatchingCard
+import com.example.ui.components.FOCUS_ROW_ANY
+import com.example.ui.components.LocalClearLastFocusedMedia
+import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.requestFocusWhenAttached
+import com.example.ui.components.scrollToItemVerified
+import com.example.ui.components.stabilizeFirstSeenOrder
 import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusBringIntoView
@@ -201,19 +213,29 @@ fun CategoryBrowsingScreen(
   modifier: Modifier = Modifier
 ) {
   var selectedFilter by remember { mutableStateOf(CategoryCatalogFilter.ALL) }
-  val gridState = rememberLazyGridState()
+  // Stato di scroll della griglia PERSISTENTE durante la navigazione: al Back dal Dettaglio la
+  // griglia ritrova la stessa posizione (come la griglia Provider), quindi la card ripristinata
+  // resta nella riga e nella posizione visiva da cui si era entrati.
+  val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
 
-  // Focus restoration: riceve il segnale dal ViewModel
-  val focusRestoreSignal = remember { mutableStateOf<String?>(null) }
-  LaunchedEffect(viewModel) {
-    viewModel?.focusRestoreSignal?.collect { mediaId ->
-      focusRestoreSignal.value = mediaId
-    }
-  }
+  // Stato di ripristino del focus al ritorno dal Dettaglio: il target è la coppia
+  // (FOCUS_ROW_ANY, mediaId) salvata al click (griglia = superficie unica di focus), il token
+  // avanza ad ogni evento di ripristino così i ritorni consecutivi dalla STESSA card
+  // riattivano il tentativo anche quando l'id non è cambiato.
+  val restoreMediaId = LocalLastFocusedMediaId.current
+  val focusRestoreToken = LocalFocusRestoreToken.current
+  val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
 
-  // Reset scroll in cima quando si cambia scheda/filtro
+  // Reset scroll in cima SOLO al REALE cambio filtro: l'effetto viene rieseguito ad ogni
+  // composizione (quindi anche al ritorno dal Dettaglio) e un reset incondizionato riportava
+  // la griglia all'indice 0, alterando la posizione visiva da cui si era entrati.
+  var appliedFilterName by remember { mutableStateOf<String?>(null) }
   LaunchedEffect(selectedFilter) {
-    gridState.scrollToItem(0)
+    val filterChanged = appliedFilterName != null && appliedFilterName != selectedFilter.name
+    appliedFilterName = selectedFilter.name
+    if (filterChanged) {
+      gridState.scrollToItem(0)
+    }
   }
 
   val providerCategoryMap by (viewModel?.categoryProviderMedia ?: MutableStateFlow(emptyMap())).collectAsState()
@@ -234,17 +256,34 @@ fun CategoryBrowsingScreen(
     providerCategoryMap[Pair(currentProviderId, isTv)]
   } else null
 
-  val filteredItems = remember(items, selectedFilter, providerItems) {
+  // Ordine dei contenuti CONGELATO per id di prima comparsa: gli aggiornamenti del catalogo
+  // (l'osservatore Room riordina `allMedia` per rating ad ogni persistenza dei dettagli)
+  // non devono ricollocare le card già a schermo, altrimenti la posizione visiva cambia ad
+  // ogni ritorno dal Dettaglio. Le nuove pagine si accodano nell'ordine di arrivo.
+  // La memoria è Saveable: deve sopravvivere alla navigazione verso il Dettaglio, dove
+  // questa composizione viene smontata e il catalogo può cambiare ordine.
+  val frozenItemOrder = rememberSaveable(
+    saver = listSaver<MutableList<String>, String>(
+      save = { order -> order.toList() },
+      restore = { saved -> saved.toMutableList() }
+    )
+  ) { mutableListOf<String>() }
+  val stableItems = remember(items) { stabilizeFirstSeenOrder(items, frozenItemOrder) { it.id } }
+  val stableProviderItems = providerItems?.let { list ->
+    remember(list) { stabilizeFirstSeenOrder(list, frozenItemOrder) { it.id } }
+  }
+
+  val filteredItems = remember(stableItems, selectedFilter, stableProviderItems) {
     when {
-      providerItems != null -> providerItems
-      selectedFilter == CategoryCatalogFilter.ALL -> items
-      selectedFilter == CategoryCatalogFilter.TOP_10 -> items.filter { item ->
+      stableProviderItems != null -> stableProviderItems
+      selectedFilter == CategoryCatalogFilter.ALL -> stableItems
+      selectedFilter == CategoryCatalogFilter.TOP_10 -> stableItems.filter { item ->
         item.genres.any { it.contains("Top 10", ignoreCase = true) || it.contains("Top10", ignoreCase = true) || it.contains("Top 100", ignoreCase = true) } ||
         item.provider?.contains("Top 10", ignoreCase = true) == true
       }.ifEmpty {
-        items.sortedByDescending { it.rating }.take(10)
+        stableItems.sortedByDescending { it.rating }.take(10)
       }
-      selectedFilter == CategoryCatalogFilter.ACTION -> items.filter { item ->
+      selectedFilter == CategoryCatalogFilter.ACTION -> stableItems.filter { item ->
         item.genres.any { g ->
           g.contains("Azione", ignoreCase = true) ||
           g.contains("Action", ignoreCase = true) ||
@@ -252,7 +291,7 @@ fun CategoryBrowsingScreen(
           g.contains("Adventure", ignoreCase = true)
         }
       }
-      selectedFilter == CategoryCatalogFilter.SCI_FI -> items.filter { item ->
+      selectedFilter == CategoryCatalogFilter.SCI_FI -> stableItems.filter { item ->
         item.genres.any { g ->
           g.contains("Fantascienza", ignoreCase = true) ||
           g.contains("Sci-Fi", ignoreCase = true) ||
@@ -260,13 +299,13 @@ fun CategoryBrowsingScreen(
           g.contains("Fantasy", ignoreCase = true)
         }
       }
-      selectedFilter == CategoryCatalogFilter.DRAMA -> items.filter { item ->
+      selectedFilter == CategoryCatalogFilter.DRAMA -> stableItems.filter { item ->
         item.genres.any { g ->
           g.contains("Dramma", ignoreCase = true) ||
           g.contains("Drama", ignoreCase = true)
         }
       }
-      selectedFilter == CategoryCatalogFilter.COMEDY -> items.filter { item ->
+      selectedFilter == CategoryCatalogFilter.COMEDY -> stableItems.filter { item ->
         item.genres.any { g ->
           g.contains("Commedia", ignoreCase = true) ||
           g.contains("Comedy", ignoreCase = true)
@@ -274,7 +313,7 @@ fun CategoryBrowsingScreen(
       }
       else -> {
         val pid = currentProviderId ?: ""
-        items.filter { item ->
+        stableItems.filter { item ->
           item.provider?.contains(pid, ignoreCase = true) == true ||
           item.genres.any { it.contains(pid, ignoreCase = true) }
         }
@@ -282,20 +321,68 @@ fun CategoryBrowsingScreen(
     }
   }
 
-  // Consumer il segnale per ripristinare il focus sulla card corretta
-  val focusRequester = remember { FocusRequester() }
-  LaunchedEffect(focusRestoreSignal.value, gridState) {
-    val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
-    focusRestoreSignal.value = null
+  // Richieste di focus per IDENTITÀ di cella: il ripristino dal Dettaglio deve atterrare sulla
+  // card salvata, non su una cella fissa della griglia (in precedenza il FocusRequester era
+  // agganciato alla cella 0 della griglia e il focus finiva sempre sulla prima card della
+  // prima riga).
+  val cellFocusRequesters = remember { mutableMapOf<String, FocusRequester>() }
+  fun cellFocusRequester(mediaId: String): FocusRequester =
+    cellFocusRequesters.getOrPut(mediaId) { FocusRequester() }
 
+  // Ancora di recupero di un ripristino fallito: viene eseguita da un effetto dedicato perché
+  // il rilascio del target (che apre il gate `canFocus` delle card) riavvia l'effetto di
+  // ripristino e ne cancellerebbe il corpo. L'effetto parte dopo la ricomposizione, quindi il
+  // gate è già aperto e la richiesta di focus non viene rifiutata.
+  var recoveryAnchorId by remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(recoveryAnchorId) {
+    val anchorId = recoveryAnchorId ?: return@LaunchedEffect
+    recoveryAnchorId = null
+    requestFocusWhenAttached(cellFocusRequester(anchorId))
+  }
+
+  // UNICO punto di ingresso del ripristino dal Dettaglio: risolve la cella per identità e
+  // richiede il focus SU QUELLA cella. Lo scroll avviene solo quando la cella target non è
+  // già in finestra CON la griglia già misurata: alla prima composizione dopo il ritorno
+  // dal Dettaglio `layoutInfo` è ancora VUOTO e il vecchio controllo "target non visibile?"
+  // era vacuamente vero — la griglia saltava con la card bersaglio allineata alla cella
+  // in alto a sinistra (difetto "il focus va sempre alla prima scheda di qualsiasi fila").
+  LaunchedEffect(restoreMediaId, focusRestoreToken, filteredItems) {
+    val mediaId = restoreMediaId ?: return@LaunchedEffect
     val index = filteredItems.indexOfFirst { it.id == mediaId }
-    if (index >= 0) {
-      gridState.scrollToItem(index)
-      kotlinx.coroutines.delay(100)
-      try {
-        focusRequester.requestFocus()
-      } catch (_: Exception) {}
+    if (index < 0) {
+      // Target non più disponibile (catalogo cambiato mentre il Dettaglio era aperto): il
+      // target viene rilasciato così le card tornano focalizzabili, e l'ancora di recupero
+      // assegna la prima cella GIÀ visibile — nessuno scroll, nessun salto silenzioso alla
+      // prima card del catalogo e nessun cambio di sezione. Il focus è richiesto dall'effetto
+      // dedicato ([recoveryAnchorId]): il rilascio del target riavvia QUESTO effetto e ne
+      // cancellerebbe il corpo.
+      var firstVisibleId = gridState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String
+      var frames = 0
+      while (firstVisibleId == null && frames < 5) {
+        withFrameNanos { }
+        frames++
+        firstVisibleId = gridState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String
+      }
+      recoveryAnchorId = firstVisibleId
+      clearLastFocusedMedia?.invoke()
+      return@LaunchedEffect
     }
+    // La visibilità del target si valuta solo su una griglia GIÀ misurata (almeno una cella
+    // in composizione): finché `visibleItemsInfo` è vuoto ogni verdetto sarebbe falso.
+    var measuredFrames = 0
+    while (gridState.layoutInfo.visibleItemsInfo.isEmpty() && measuredFrames < 8) {
+      withFrameNanos { }
+      measuredFrames++
+    }
+    val targetVisible = gridState.layoutInfo.visibleItemsInfo.any { it.index == index }
+    if (!targetVisible && !gridState.isScrollInProgress) {
+      try {
+        gridState.scrollToItemVerified(index)
+      } catch (_: Exception) {
+        // La richiesta di focus sotto attende comunque il montaggio della cella.
+      }
+    }
+    requestFocusWhenAttached(cellFocusRequester(mediaId))
   }
 
   Column(
@@ -316,7 +403,7 @@ fun CategoryBrowsingScreen(
       modifier = Modifier.padding(vertical = 14.dp),
       horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-      items(filters) { filter ->
+      items(filters, key = { it.name }, contentType = { "filter_chip" }) { filter ->
         val isSelected = selectedFilter == filter
         val label = filter.labelRes?.let { stringResource(it) } ?: filter.brandName ?: ""
         TvFocusableBox(
@@ -360,7 +447,7 @@ fun CategoryBrowsingScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize()
       ) {
-        itemsIndexed(filteredItems, key = { _, item -> item.id }) { index, item ->
+        itemsIndexed(filteredItems, key = { _, item -> item.id }, contentType = { _, _ -> "media_poster" }) { index, item ->
           if (index >= filteredItems.size - 6) {
             LaunchedEffect(Unit) {
               if (currentProviderId != null && currentTmdbProviderId != null && viewModel != null) {
@@ -372,13 +459,26 @@ fun CategoryBrowsingScreen(
           }
           Box(
             modifier = Modifier
-              .fillMaxWidth()
-              .then(if (index == 0) Modifier.focusRequester(focusRequester) else Modifier),
+              .fillMaxWidth(),
             contentAlignment = Alignment.TopCenter
           ) {
             PosterMediaCard(
               media = item,
-              onClick = { onMediaClick(item) }
+              onClick = {
+                viewModel?.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
+                onMediaClick(item)
+              },
+              // Il requester DELLA CARD SELZIONATA vive sul nodo FOCALIZZABILE della card
+              // (come ProviderScreen): una richiesta via `focusRequester` attaccato a una Box
+              // non focalizzabile lancia sempre "FocusRequester is not initialized" e il
+              // ripristino non può mai essere consegnato (difetto: il focus atterra sulla
+              // prima card della riga al ritorno dal Dettaglio).
+              focusRequester = cellFocusRequester(item.id),
+              // Protocollo Provider (conferma reale via onFocusChanged, tentativi a frame):
+              // la richiesta non è più monocolpo, quindi su un dispositivo reale — dove le
+              // finestre di composizione al rientro sono più lente che in test — il tentativo
+              // non viene consumato su un nodo non ancora pronto.
+              confirmFocusRestore = true
             )
           }
         }
@@ -498,7 +598,7 @@ fun FavoritesScreen(
           verticalArrangement = Arrangement.spacedBy(16.dp),
           modifier = Modifier.fillMaxSize()
         ) {
-          itemsIndexed(favorites, key = { index, item -> "fav_grid_${index}_${item.id}" }) { index, item ->
+          itemsIndexed(favorites, key = { _, item -> "fav_grid_${item.id}" }, contentType = { _, _ -> "media_poster" }) { index, item ->
             Box(
               modifier = Modifier
                 .fillMaxWidth()
@@ -1723,7 +1823,8 @@ fun SettingsScreen(
     showUpdateResultDialog = when (updateCheckState) {
       is UpdateCheckState.UpToDate,
       is UpdateCheckState.UpdateAvailable,
-      UpdateCheckState.Error -> true
+      is UpdateCheckState.VersionMismatch,
+      is UpdateCheckState.Error -> true
       else -> false
     }
   }
@@ -1892,12 +1993,14 @@ fun SettingsScreen(
             value = when (updateCheckState) {
               UpdateCheckState.Checking -> stringResource(R.string.settings_update_checking)
               is UpdateCheckState.UpdateAvailable -> updateCheckState.newVersion
-              UpdateCheckState.Error -> stringResource(R.string.settings_update_error_short)
+              is UpdateCheckState.VersionMismatch -> stringResource(R.string.settings_update_error_short)
+              is UpdateCheckState.Error -> stringResource(R.string.settings_update_error_short)
               else -> null
             },
             valueColor = when (updateCheckState) {
               is UpdateCheckState.UpdateAvailable -> NovaGreen
-              UpdateCheckState.Error -> NovaRed
+              is UpdateCheckState.VersionMismatch -> NovaRed
+              is UpdateCheckState.Error -> NovaRed
               else -> NovaCyanBright
             },
             onClick = { viewModel?.checkForAppUpdates() }
@@ -2691,7 +2794,11 @@ private fun decoderFallbackLabel(mode: DecoderFallbackMode): String = when (mode
 
 /**
  * Dialog con l'esito del controllo aggiornamenti e, quando disponibile, il
- * flusso download APK + avvio installer (FASE C).
+ * flusso download APK verificato + avvio ESPLICITO dell'installer.
+ *
+ * L'installer di sistema non viene mai aperto in automatico: parte solo alla
+ * pressione del pulsante "Installa", dopo che il file è stato scaricato e
+ * verificato.
  */
 @Composable
 private fun UpdateResultDialog(
@@ -2702,16 +2809,9 @@ private fun UpdateResultDialog(
 ) {
   val context = LocalContext.current
   val canInstall = ApkInstaller.canInstall(context)
-  var launchedApkPath by remember { mutableStateOf<String?>(null) }
-
-  // Avvia l'installer non appena il download è completo (una sola volta per file).
-  LaunchedEffect(downloadState, canInstall) {
-    val path = (downloadState as? UpdateDownloadState.Completed)?.apkPath
-    if (path != null && canInstall && launchedApkPath != path) {
-      launchedApkPath = path
-      ApkInstaller.launch(context, File(path))
-    }
-  }
+  // Esito dell'ultimo tentativo ESPLICITO di avvio installer: resta visibile
+  // così l'utente non finisce in uno stato apparentemente completato.
+  var installErrorRes by remember { mutableStateOf<Int?>(null) }
 
   Dialog(onDismissRequest = onDismiss) {
     Column(
@@ -2749,7 +2849,7 @@ private fun UpdateResultDialog(
           Text(
             text = stringResource(
               R.string.settings_update_installed_version,
-              APP_VERSION_DISPLAY
+              state.currentVersion
             ),
             color = NovaTextSecondary,
             fontSize = 14.sp
@@ -2766,7 +2866,7 @@ private fun UpdateResultDialog(
           Text(
             text = stringResource(
               R.string.settings_update_installed_version,
-              APP_VERSION_DISPLAY
+              state.currentVersion
             ),
             color = NovaTextSecondary,
             fontSize = 14.sp
@@ -2778,6 +2878,18 @@ private fun UpdateResultDialog(
             fontSize = 15.sp,
             fontWeight = FontWeight.SemiBold
           )
+          state.assetName?.let { assetName ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+              text = stringResource(R.string.settings_update_asset_name, assetName),
+              color = NovaTextMuted,
+              fontSize = 12.sp
+            )
+          }
+
+          // Changelog della release: area scorrevole di altezza contenuta,
+          // leggibile con il D-pad su Android TV.
+          UpdateChangelogBlock(state.changelog)
 
           Spacer(modifier = Modifier.height(14.dp))
 
@@ -2815,7 +2927,18 @@ private fun UpdateResultDialog(
               if (canInstall) {
                 UpdateDialogButton(
                   text = stringResource(R.string.settings_update_install),
-                  onClick = { ApkInstaller.launch(context, File(downloadState.apkPath)) }
+                  onClick = {
+                    val apk = File(downloadState.apkPath)
+                    val launched = ApkInstaller.launch(context, apk)
+                    installErrorRes = when {
+                      launched -> null
+                      !apk.exists() || apk.length() <= 0L ->
+                        R.string.settings_update_install_failed_file
+                      !ApkInstaller.canInstall(context) ->
+                        R.string.settings_update_install_failed_permission
+                      else -> R.string.settings_update_install_failed_generic
+                    }
+                  }
                 )
               } else {
                 Text(
@@ -2828,6 +2951,21 @@ private fun UpdateResultDialog(
                   text = stringResource(R.string.settings_update_install_permission_button),
                   onClick = { ApkInstaller.openInstallPermissionSettings(context) }
                 )
+              }
+              installErrorRes?.let { errorRes ->
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                  text = stringResource(errorRes),
+                  color = NovaRed,
+                  fontSize = 13.sp
+                )
+                if (errorRes == R.string.settings_update_install_failed_permission) {
+                  Spacer(modifier = Modifier.height(10.dp))
+                  UpdateDialogButton(
+                    text = stringResource(R.string.settings_update_install_permission_button),
+                    onClick = { ApkInstaller.openInstallPermissionSettings(context) }
+                  )
+                }
               }
             }
             is UpdateDownloadState.Error -> {
@@ -2844,9 +2982,37 @@ private fun UpdateResultDialog(
             }
           }
         }
-        UpdateCheckState.Error -> {
+        is UpdateCheckState.VersionMismatch -> {
           Text(
-            text = stringResource(R.string.settings_update_error),
+            text = stringResource(
+              R.string.settings_update_installed_version,
+              state.currentVersion
+            ),
+            color = NovaTextSecondary,
+            fontSize = 14.sp
+          )
+          Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            text = stringResource(
+              R.string.settings_update_mismatch,
+              state.tagVersion,
+              state.assetVersion ?: "?"
+            ),
+            color = NovaRed,
+            fontSize = 14.sp
+          )
+          state.assetName?.let { assetName ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+              text = stringResource(R.string.settings_update_asset_name, assetName),
+              color = NovaTextMuted,
+              fontSize = 12.sp
+            )
+          }
+        }
+        is UpdateCheckState.Error -> {
+          Text(
+            text = updateCheckErrorText(state.reason),
             color = NovaRed,
             fontSize = 14.sp
           )
@@ -2909,8 +3075,58 @@ private fun downloadErrorText(reason: DownloadErrorReason): String = when (reaso
     stringResource(R.string.settings_update_dl_error_file)
   DownloadErrorReason.INSUFFICIENT_SPACE ->
     stringResource(R.string.settings_update_dl_error_space)
+  DownloadErrorReason.SIZE_MISMATCH ->
+    stringResource(R.string.settings_update_dl_error_size)
+  DownloadErrorReason.CHECKSUM_MISMATCH ->
+    stringResource(R.string.settings_update_dl_error_checksum)
   DownloadErrorReason.UNKNOWN ->
     stringResource(R.string.settings_update_dl_error_generic)
+}
+
+/** Messaggio localizzato del motivo di errore del controllo aggiornamenti. */
+@Composable
+private fun updateCheckErrorText(reason: UpdateCheckErrorReason): String = when (reason) {
+  UpdateCheckErrorReason.RATE_LIMITED ->
+    stringResource(R.string.settings_update_error_rate_limited)
+  UpdateCheckErrorReason.NOT_FOUND ->
+    stringResource(R.string.settings_update_error_not_found)
+  UpdateCheckErrorReason.NETWORK ->
+    stringResource(R.string.settings_update_error_network)
+  UpdateCheckErrorReason.INVALID_RELEASE ->
+    stringResource(R.string.settings_update_error_invalid_release)
+  UpdateCheckErrorReason.UNKNOWN ->
+    stringResource(R.string.settings_update_error)
+}
+
+/**
+ * Changelog della release in area scorrevole ad altezza contenuta: leggibile
+ * su Android TV con il D-pad senza far crescere il dialog a dismisura.
+ */
+@Composable
+private fun UpdateChangelogBlock(changelog: String?) {
+  if (changelog.isNullOrBlank()) return
+  Spacer(modifier = Modifier.height(12.dp))
+  Text(
+    text = stringResource(R.string.settings_update_changelog),
+    color = NovaTextPrimary,
+    fontSize = 14.sp,
+    fontWeight = FontWeight.Bold
+  )
+  Spacer(modifier = Modifier.height(6.dp))
+  Box(
+    modifier = Modifier
+      .fillMaxWidth()
+      .heightIn(max = 180.dp)
+      .background(NovaSurfaceVariant, RoundedCornerShape(10.dp))
+      .padding(10.dp)
+  ) {
+    Text(
+      text = changelog,
+      color = NovaTextSecondary,
+      fontSize = 13.sp,
+      modifier = Modifier.verticalScroll(rememberScrollState())
+    )
+  }
 }
 
 /**

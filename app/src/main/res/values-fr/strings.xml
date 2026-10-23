@@ -25,22 +25,22 @@
     <string name="home_badge_select_provider">Sélectionner un fournisseur</string>
     <string name="home_section_continue_watching">Reprendre la lecture</string>
     <string name="home_badge_in_progress">%d titres en cours</string>
-    <string name="home_section_top_10_movies">Top 10 Films Aujourd\'hui</string>
-    <string name="home_badge_tmdb_ranking_italy">Classement TMDB</string>
-    <string name="home_section_top_10_series">Top 10 Séries TV Aujourd\'hui</string>
-    <string name="home_badge_most_watched_tmdb">Les plus regardées sur TMDB</string>
-    <string name="home_section_trending_movies">Films tendances</string>
-    <string name="home_badge_trending_week">Tendances de la semaine</string>
-    <string name="home_section_trending_series">Séries TV tendances</string>
-    <string name="home_badge_trending_phenomena">Phénomènes du moment</string>
+    <string name="home_section_top_10_movies">En vedette : Films</string>
+    <string name="home_badge_tmdb_ranking_italy">En vedette sur Cinemeta</string>
+    <string name="home_section_top_10_series">En vedette : Séries TV</string>
+    <string name="home_badge_most_watched_tmdb">En vedette sur Cinemeta</string>
+    <string name="home_section_trending_movies">Nouveautés : Films</string>
+    <string name="home_badge_trending_week">Nouveautés de l\'année</string>
+    <string name="home_section_trending_series">Nouveautés : Séries TV</string>
+    <string name="home_badge_trending_phenomena">Nouveautés de l\'année</string>
     <string name="home_section_for_you_movies">Pour vous : Films sélectionnés</string>
     <string name="home_badge_based_on_preferences">Selon vos préférences</string>
     <string name="home_section_for_you_series">Pour vous : Séries incontournables</string>
     <string name="home_badge_suggested_for_you">Suggérées pour vous</string>
     <string name="home_section_popular_movies">Films populaires</string>
-    <string name="home_badge_most_watched_cinema">Les plus vus du cinéma</string>
+    <string name="home_badge_most_watched_cinema">Populaires sur Cinemeta</string>
     <string name="home_section_popular_series">Séries populaires</string>
-    <string name="home_badge_most_discussed_series">Les séries les plus discutées</string>
+    <string name="home_badge_most_discussed_series">Populaires sur Cinemeta</string>
 
     <!-- Provider Catalog Filters & States -->
     <string name="filter_all">Tous</string>
@@ -210,6 +210,18 @@
      <string name="settings_update_dl_error_space">Espace de stockage insuffisant</string>
      <string name="settings_update_dl_error_host">Téléchargement bloqué : source non autorisée</string>
      <string name="settings_update_dl_error_generic">Erreur pendant le téléchargement</string>
+    <string name="settings_update_dl_error_size">Le fichier téléchargé est incomplet ou endommagé (taille incorrecte)</string>
+    <string name="settings_update_dl_error_checksum">Le fichier téléchargé n\'a pas passé la vérification d\'intégrité</string>
+    <string name="settings_update_changelog">Nouveautés de cette version</string>
+    <string name="settings_update_asset_name">Fichier : %1$s</string>
+    <string name="settings_update_mismatch">Version incohérente : la version déclarée (%1$s) ne correspond pas au fichier publié (%2$s). Mise à jour indisponible.</string>
+    <string name="settings_update_error_rate_limited">Trop de requêtes vers GitHub : réessayez plus tard</string>
+    <string name="settings_update_error_not_found">Aucune version disponible sur le serveur</string>
+    <string name="settings_update_error_network">Connexion absente ou interrompue</string>
+    <string name="settings_update_error_invalid_release">La version publiée ne contient pas de mise à jour valide</string>
+    <string name="settings_update_install_failed_file">Le fichier de mise à jour n\'est plus disponible : téléchargez-le à nouveau</string>
+    <string name="settings_update_install_failed_permission">L\'autorisation d\'installer des applications depuis cette source est manquante</string>
+    <string name="settings_update_install_failed_generic">Impossible de lancer l\'installateur du système</string>
      <string name="settings_sec_playback_engine">Moteur de Lecture</string>
      <string name="settings_playback_mode">Mode de lecture</string>
      <string name="settings_mode_debrid">Debrid TorBox (1080p / 4K Ultra HD)</string>
@@ -324,6 +336,12 @@
      <string name="player_cd_playback_speed">Vitesse de lecture</string>
      <string name="player_cd_subtitles">Sous-titres</string>
      <string name="player_cd_audio_tracks">Pistes audio</string>
+     <string name="player_cd_video_source">Source vidéo</string>
+     <string name="player_source_selector_title">Source vidéo</string>
+     <string name="player_source_selector_subtitle">%1$d sources disponibles</string>
+     <string name="player_source_selector_current">En lecture</string>
+     <string name="player_source_selector_empty">Aucune source disponible pour ce titre.</string>
+     <string name="player_source_fallback_switched">Source indisponible · passage à %1$s</string>
      <string name="player_scrub_hint">OK pour confirmer • BACK pour annuler</string>
      <string name="player_cd_selected">Sélectionné</string>
 

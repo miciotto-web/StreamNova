@@ -12,6 +12,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import com.example.data.streaming.diagnostics.StreamAttemptOutcome
+import com.example.data.streaming.diagnostics.StreamDiagnosticSink
+import com.example.data.streaming.diagnostics.StreamDiagnostics
+import com.example.data.streaming.diagnostics.record
 import com.example.data.streaming.extractors.awaitResponse
 
 /**
@@ -39,7 +43,8 @@ class VixSrcProvider(
     .connectTimeout(15, TimeUnit.SECONDS)
     .readTimeout(25, TimeUnit.SECONDS)
     .retryOnConnectionFailure(true)
-    .build()
+    .build(),
+  private val diagnostics: StreamDiagnosticSink = StreamDiagnosticSink.NONE
 ) : StreamProvider {
 
   private data class EmbedStream(val name: String, val url: String)
@@ -59,18 +64,46 @@ class VixSrcProvider(
     val failures = mutableListOf<String>()
     for (base in BASE_URLS) {
       currentCoroutineContext().ensureActive()
+      val startedAt = System.currentTimeMillis()
+      val mirrorId = StreamDiagnostics.hostId(base)
       try {
         val sources = resolveOnBase(base, tmdbId, isTv, season, episode)
         if (sources.isNotEmpty()) {
           Log.i(TAG, "Estrazione riuscita su $base: ${sources.size} sorgente/i prodotte e consegnate alla pipeline")
+          diagnostics.record(
+            providerId = PROVIDER_ID,
+            mirrorId = mirrorId,
+            outcome = StreamAttemptOutcome.SUCCESS,
+            durationMs = System.currentTimeMillis() - startedAt
+          )
           return@withContext sources
         }
         failures += "$base -> nessuna sorgente prodotta"
+        diagnostics.record(
+          providerId = PROVIDER_ID,
+          mirrorId = mirrorId,
+          outcome = StreamAttemptOutcome.NO_RESULTS,
+          durationMs = System.currentTimeMillis() - startedAt
+        )
       } catch (ex: CancellationException) {
+        diagnostics.record(
+          providerId = PROVIDER_ID,
+          mirrorId = mirrorId,
+          outcome = StreamAttemptOutcome.CANCELLED,
+          durationMs = System.currentTimeMillis() - startedAt,
+          message = "ricerca annullata"
+        )
         throw ex
       } catch (e: Exception) {
         Log.w(TAG, "Fallback mirror $base fallito: ${e.message}")
         failures += "$base -> ${e.message}"
+        diagnostics.record(
+          providerId = PROVIDER_ID,
+          mirrorId = mirrorId,
+          outcome = StreamDiagnostics.classify(e),
+          durationMs = System.currentTimeMillis() - startedAt,
+          message = e.message
+        )
       }
     }
     throw IOException("Nessun mirror VixSrc disponibile (${failures.joinToString(" | ")})")
@@ -342,6 +375,7 @@ class VixSrcProvider(
 
   companion object {
     private const val TAG = "VixSrcProvider"
+    private const val PROVIDER_ID = "VixSrcProvider"
 
     /**
      * Redige parametri sensibili (es. token) negli URL prima della registrazione nei log.

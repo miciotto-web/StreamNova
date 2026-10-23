@@ -54,7 +54,11 @@ fun ProviderCard(
     provider: StreamingProvider,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    focusRequester: FocusRequester? = null
+    focusRequester: FocusRequester? = null,
+    /** true quando questa card è il bersaglio del ripristino focus al ritorno dalla scheda Provider. */
+    isRestoreTarget: Boolean = false,
+    /** Invocato quando la card riceve DAVVERO il focus ed è il bersaglio del ripristino. */
+    onRestoreFocusConfirmed: (() -> Unit)? = null
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val internalFocusRequester = remember { FocusRequester() }
@@ -74,7 +78,13 @@ fun ProviderCard(
             // La card focused deve coprire le card vicine, non venire coperta
             .zIndex(if (isFocused) 10f else 1f)
             .scale(scale)
-            .onFocusChanged { isFocused = it.isFocused }
+            .onFocusChanged {
+                isFocused = it.isFocused
+                // Rilascio del target di ripristino SOLO all'evento reale di focus: un click che
+                // lascia la card già focalizzata non rifà scattare onFocusChanged, quindi il
+                // target sopravvive alla navigazione e viene consumato al ritorno.
+                if (it.isFocused && isRestoreTarget) onRestoreFocusConfirmed?.invoke()
+            }
             // OK/Enter della tastiera D-pad -> onClick (consumato prima di clickable)
             .onKeyEvent { keyEvent ->
                 val isConfirm = keyEvent.key == Key.Enter ||

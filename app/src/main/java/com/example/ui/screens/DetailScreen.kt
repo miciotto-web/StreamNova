@@ -118,7 +118,6 @@ import com.example.ui.components.MediaActionBar
 import com.example.ui.components.MediaActionBarFocus
 import com.example.ui.components.ProviderBadge
 import com.example.ui.components.ProviderConstants
-import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.QualityBadge
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvActionButton
@@ -151,9 +150,6 @@ private val DetailTitleShadow = TextStyle(
 enum class DetailTab(val titleRes: Int) {
   EPISODI(R.string.detail_tab_episodes),
   PRODUZIONE(R.string.detail_tab_production),
-  ALTRO_COME_QUESTO(R.string.detail_tab_more_like_this),
-
-
 }
 
 /**
@@ -237,10 +233,12 @@ fun DetailScreen(
   onClearTargetCastMember: (() -> Unit)? = null,
   targetCompanyId: Int? = null,
   onClearTargetCompany: (() -> Unit)? = null,
-  // Catena "Altro come questo": id della card consiglio cliccata nella scheda precedente.
-  // Al Back la riga Consigliati ripristina il focus su quella card, poi azzera il target.
-  targetChainMediaId: String? = null,
-  onClearTargetChainMedia: (() -> Unit)? = null,
+  /**
+   * true quando [media] è un CANALE LIVE di un addon Stremio (es. TvVoo): il
+   * canale non ha stagioni, episodi né cast, quindi la scheda mostra solo
+   * logo/titolo e le sorgenti, senza tab Episodi/Produzione.
+   */
+  isLiveChannel: Boolean = false,
   modifier: Modifier = Modifier
 ) {
   // Resolve active media & extended details depending on UI State
@@ -253,11 +251,11 @@ fun DetailScreen(
 
 
 
-  val isTvSeries = displayMedia.type == MediaType.SERIE_TV
+  val isTvSeries = displayMedia.type == MediaType.SERIE_TV && !isLiveChannel
   val tabs = if (isTvSeries) {
-    listOf(DetailTab.EPISODI, DetailTab.PRODUZIONE, DetailTab.ALTRO_COME_QUESTO)
+    listOf(DetailTab.EPISODI, DetailTab.PRODUZIONE)
   } else {
-    listOf(DetailTab.PRODUZIONE, DetailTab.ALTRO_COME_QUESTO)
+    listOf(DetailTab.PRODUZIONE)
   }
 
   // Tab selezionato PERSISTENTE nel backstack di Navigation (rememberSaveable):
@@ -407,7 +405,7 @@ fun DetailScreen(
         CastMember(
           id = -1,
           name = displayMedia.director,
-          character = if (displayMedia.type == MediaType.SERIE_TV) "Creatore" else "Regista",
+          character = if (displayMedia.type == MediaType.SERIE_TV && !isLiveChannel) "Creatore" else "Regista",
           profileUrl = null
         )
       } else null
@@ -576,8 +574,7 @@ fun DetailScreen(
     // l'incoronazione di "Riproduci" non strappa il focus ripristinato sulla card.
     var hasUserNavigatedAway by rememberSaveable(displayMedia.id) { mutableStateOf(false) }
     val isTargetingSubItem = targetCastMemberId != null ||
-      targetCompanyId != null ||
-      targetChainMediaId != null
+      targetCompanyId != null
 
     // Dialog del testo completo della sinossi + ripristino del focus sulla sinossi
     // ridotta della scheda dopo la chiusura (Back / icona di chiusura).
@@ -799,7 +796,7 @@ fun DetailScreen(
               QualityBadge(text = displayYear.toString())
             }
 
-            val durationText = if (displayMedia.type == MediaType.SERIE_TV) {
+            val durationText = if (displayMedia.type == MediaType.SERIE_TV && !isLiveChannel) {
               val sCount = extendedDetails?.seasonsCount ?: displayMedia.seasonsCount ?: 1
               val epCount = extendedDetails?.episodesCount
               if (epCount != null && epCount > 0) {
@@ -948,7 +945,7 @@ fun DetailScreen(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically
           ) {
-            val resumeEpisode = if (displayMedia.type == MediaType.SERIE_TV) {
+            val resumeEpisode = if (displayMedia.type == MediaType.SERIE_TV && !isLiveChannel) {
               val targetSeason = displayMedia.lastWatchedSeason ?: 1
               val targetEpNum = displayMedia.lastWatchedEpisode ?: 1
               val found = displayMedia.episodes.find {
@@ -971,7 +968,7 @@ fun DetailScreen(
               found.copy(currentProgressMs = savedProgress)
             } else null
 
-            val playButtonLabel = if (displayMedia.type == MediaType.SERIE_TV) {
+            val playButtonLabel = if (displayMedia.type == MediaType.SERIE_TV && !isLiveChannel) {
               val ep = resumeEpisode
               if (ep != null && ep.currentProgressMs > 0L) {
                 stringResource(R.string.detail_resume_episode_format, ep.seasonNumber, ep.episodeNumber)
@@ -1109,7 +1106,7 @@ fun DetailScreen(
                   horizontalArrangement = Arrangement.spacedBy(14.dp),
                   contentPadding = PaddingValues(vertical = 4.dp)
                 ) {
-                  items(availableSeasons, key = { "season_$it" }) { seasonNum ->
+                  items(availableSeasons, key = { "season_$it" }, contentType = { "season_chip" }) { seasonNum ->
                     val isSeasonSelected = seasonNum == activeSeason
                     val epCount = extendedDetails?.seasonEpisodesCount?.get(seasonNum)
                       ?: displayMedia.seasonEpisodesCount[seasonNum]
@@ -1348,7 +1345,7 @@ fun DetailScreen(
               }
             }
           } else {
-            itemsIndexed(episodesForSeason, key = { _, episode -> episode.id }) { index, episode ->
+            itemsIndexed(episodesForSeason, key = { _, episode -> episode.id }, contentType = { _, _ -> "episode" }) { index, episode ->
               EpisodeRowItem(
                 episode = episode,
                 isSimklWatched = episode.episodeNumber in simklWatchedEpisodes,
@@ -1369,99 +1366,6 @@ fun DetailScreen(
                     }
                   )
               )
-            }
-          }
-        }
-        DetailTab.ALTRO_COME_QUESTO -> {
-          item {
-            val currentGenres = extendedDetails?.genres?.takeIf { it.isNotEmpty() } ?: displayMedia.genres
-            val similarRecommendations = remember(extendedDetails, allMedia, displayMedia, currentGenres) {
-              val matched = allMedia.filter { item ->
-                item.id != displayMedia.id &&
-                  (item.tmdbId == null || item.tmdbId != displayMedia.tmdbId) &&
-                  item.genres.any { itemGenre ->
-                    currentGenres.any { it.equals(itemGenre, ignoreCase = true) }
-                  }
-              }.sortedByDescending { item ->
-                val sameTypeBonus = if (item.type == displayMedia.type) 10 else 0
-                val sharedCount = item.genres.count { itemGenre ->
-                  currentGenres.any { it.equals(itemGenre, ignoreCase = true) }
-                }
-                sameTypeBonus + sharedCount * 2 + (item.rating / 2f).toInt()
-              }
-              if (matched.isNotEmpty()) {
-                matched
-              } else {
-                extendedDetails?.similarItems?.takeIf { it.isNotEmpty() }
-                  ?: allMedia.filter { it.id != displayMedia.id && it.type == displayMedia.type }
-              }
-            }
-
-
-
-
-            val similarState = rememberLazyListState()
-
-            // Back dai Consigliati: la scheda precedente ripristina il focus sulla card
-            // del consiglio cliccata (target impostato da popDetail()). I tentativi
-            // vengono contati in FRAME (nessun ritardo arbitrario); se la card non è
-            // mai raggiungibile (lista cambiata sotto le mani), il focus ricade su
-            // "Riproduci" e il target viene comunque azzerato.
-            val chainFocusRequester = remember { FocusRequester() }
-            var chainCardFocused by remember { mutableStateOf(false) }
-            LaunchedEffect(targetChainMediaId, similarRecommendations) {
-              val targetId = targetChainMediaId ?: return@LaunchedEffect
-              var restored = false
-              if (similarRecommendations.any { it.id == targetId }) {
-                repeat(20) {
-                  try { chainFocusRequester.requestFocus() } catch (_: Exception) {}
-                  if (chainCardFocused) {
-                    restored = true
-                    return@repeat
-                  }
-                  withFrameNanos { }
-                }
-              }
-              if (!restored) {
-                try { actionFocus.play.requestFocus() } catch (_: Exception) {}
-              }
-              onClearTargetChainMedia?.invoke()
-            }
-
-            Text(
-              text = stringResource(R.string.detail_tab_more_like_this),
-              color = NovaTextMuted,
-              fontSize = 13.sp,
-              fontWeight = FontWeight.Bold,
-              letterSpacing = 1.sp,
-              modifier = Modifier.padding(horizontal = 32.dp, vertical = 4.dp)
-            )
-            TvFocusRow {
-              LazyRow(
-                state = similarState,
-                contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-              ) {
-                items(similarRecommendations, key = { "rec_${it.id}" }) { item ->
-                  val isChainRestoreTarget = item.id == targetChainMediaId
-                  PosterMediaCard(
-                    media = item,
-                    onClick = {
-                      // Navigazione "Altro come questo": ogni scheda apre una NUOVA voce nello
-                      // stack. NESSUN popUpTo, NESSUN launchSingleTop: il Back deve tornare
-                      // alla scheda precedente con il tab Consigliati ancora aperto e il focus
-                      // sulla card cliccata (targetChainMediaId ripristinato dal ViewModel).
-                      onMediaClick?.invoke(item)
-                    },
-                    focusRequester = if (isChainRestoreTarget) chainFocusRequester else null,
-                    modifier = if (isChainRestoreTarget) {
-                      Modifier.onFocusChanged { chainCardFocused = it.isFocused }
-                    } else {
-                      Modifier
-                    }
-                  )
-                }
-              }
             }
           }
         }
@@ -1629,7 +1533,7 @@ fun CastCarousel(
         contentPadding = PaddingValues(horizontal = 32.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp)
       ) {
-        items(cast, key = { "${it.id}_${it.name}" }) { member ->
+        items(cast, key = { "${it.id}_${it.name}" }, contentType = { "cast_member" }) { member ->
           CastMemberCard(
             member = member,
             onClick = { onMemberClick?.invoke(member) },
@@ -2070,7 +1974,7 @@ fun ProductionSection(
           contentPadding = PaddingValues(vertical = 4.dp),
           horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-          items(companies, key = { "${it.id}_${it.name}" }) { company ->
+          items(companies, key = { "${it.id}_${it.name}" }, contentType = { "company" }) { company ->
             ProductionCompanyCard(
               company = company,
               onClick = { onCompanyClick?.invoke(company) },

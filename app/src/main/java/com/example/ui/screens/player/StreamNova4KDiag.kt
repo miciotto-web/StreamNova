@@ -9,14 +9,19 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.trackselection.ExoTrackSelection
 import androidx.media3.exoplayer.trackselection.MappingTrackSelector.MappedTrackInfo
+import com.example.data.streaming.diagnostics.StreamDiagnostics
+import java.io.IOException
 
 /**
  * Logging diagnostico temporaneo per il problema "4K: audio + schermo nero".
@@ -408,9 +413,12 @@ object StreamNova4KDiag {
     /**
      * AnalyticsListener di pura osservazione: nome decoder video, formato in ingresso
      * al decoder, rilascio, errore codec, primo frame renderizzato, cambio parametri
-     * di selezione. Nessun intervento sul comportamento.
+     * di selezione, errore di caricamento HLS. Nessun intervento sul comportamento.
+     *
+     * @param isHls true quando la sorgente in riproduzione e' HLS: abilita il log
+     *   delle richieste di caricamento (`source=hls`). Non altera il player.
      */
-    fun createAnalyticsListener(): AnalyticsListener = object : AnalyticsListener {
+    fun createAnalyticsListener(isHls: Boolean = false): AnalyticsListener = object : AnalyticsListener {
         override fun onVideoDecoderInitialized(
             eventTime: AnalyticsListener.EventTime,
             decoderName: String,
@@ -467,6 +475,60 @@ object StreamNova4KDiag {
                 line("PARAMS[analytics] non-DefaultTrackSelector.Parameters: $trackSelectionParameters")
             }
         }
+
+        /**
+         * Errore di caricamento di UNA richiesta HLS (manifest/playlist o segmento).
+         *
+         * Pura osservazione: Media3 espone qui il `MediaLoadData` della richiesta
+         * fallita (e quindi il suo `dataType`), che e' l'unico segnale affidabile per
+         * classificare la richiesta senza confronti di URI.
+         */
+        override fun onLoadError(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+            error: IOException,
+            wasCanceled: Boolean
+        ) {
+            if (isHls) logHlsLoadError(loadEventInfo, mediaLoadData, error)
+        }
+    }
+
+    /**
+     * Diagnostica sanificata di una richiesta HLS fallita.
+     *
+     * Registra solo: `source=hls`, `host`, `initial`, `status`, `code`. Nessun URL
+     * completo, path, query string, token, cookie o header.
+     *
+     * `initial` deriva da [MediaLoadData.dataType], l'unica classificazione fornita
+     * da Media3 in questo punto:
+     *  - `C.DATA_TYPE_MANIFEST` -> `initial=true`: richiesta di manifest/playlist;
+     *  - `C.DATA_TYPE_MEDIA` / `C.DATA_TYPE_MEDIA_INITIALIZATION` -> `initial=false`:
+     *    richiesta di segmento (o sezione di inizializzazione).
+     *
+     * LIMITE DICHIARATO: Media3 assegna `C.DATA_TYPE_MANIFEST` SIA al manifest
+     * iniziale SIA alle playlist di variante/canale, quindi `initial=true` NON
+     * distingue il manifest iniziale da una variante. Solamente `initial=false`
+     * (media/init) e' univoco. Non viene dedotto nulla da confronti di URI.
+     * Il codice Media3 (`ERROR_CODE_*`) resta nella riga `STREAM_HTTP_FAIL` di
+     * `onPlayerError`, che riceve l'`ExoPlaybackException`; qui `code` e' il nome
+     * della classe dell'errore di caricamento.
+     */
+    fun logHlsLoadError(
+        loadEventInfo: LoadEventInfo,
+        mediaLoadData: MediaLoadData,
+        error: IOException
+    ) {
+        val host = StreamDiagnostics.hostId(loadEventInfo.dataSpec.uri.toString()) ?: "unknown"
+        val status = generateSequence<Throwable>(error) { it.cause }
+            .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
+            .firstOrNull()
+            ?.responseCode
+        val initial = mediaLoadData.dataType == C.DATA_TYPE_MANIFEST
+        line(
+            "STREAM_HLS_REQ source=hls host=$host initial=$initial " +
+                "status=${status ?: "n/a"} code=${error.javaClass.simpleName}"
+        )
     }
 
     private fun reuseResultLabel(result: Int): String = when (result) {

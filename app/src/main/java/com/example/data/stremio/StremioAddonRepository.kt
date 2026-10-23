@@ -6,6 +6,7 @@ import com.example.data.prefs.AppSettingsRepository
 import com.example.data.repository.MediaRepository
 import com.example.data.streaming.extractors.awaitResponse
 import com.example.data.util.AsyncSingleFlight
+import com.squareup.moshi.JsonReader
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -31,6 +32,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.logging.HttpLoggingInterceptor
+import okio.Buffer
 
 /**
  * Candidato stream restituito da uno addon Stremio installato.
@@ -488,6 +490,23 @@ object StremioAddonRepository {
   }
 
   /**
+   * DIAG TEMPORANEO: true se l'addon è TvVoo (per nome, id del manifest, host o
+   * prefissi id della risorsa `stream`). A questo addon è dedicata la diagnostica
+   * della struttura delle chiavi `behaviorHints`.
+   */
+  private fun isTvVooLike(addon: InstalledAddon): Boolean {
+    val name = addon.manifest.displayTitle.lowercase()
+    val id = addon.manifest.id?.lowercase().orEmpty()
+    val host = addon.baseUrl.toHttpUrlOrNull()?.host?.lowercase().orEmpty()
+    val hasVavooPrefix = addon.manifest.idPrefixesForResource(RESOURCE_STREAM)
+      .orEmpty()
+      .any { it.lowercase().startsWith("vavoo") }
+    return name.contains("tvvoo") || name.contains("vavoo") ||
+      id.contains("vavoo") || host.contains("tvvoo") || host.contains("hayd") ||
+      hasVavooPrefix
+  }
+
+  /**
    * URL di stream reso sicuro per i log: conserva schema/host e indica se è un
    * endpoint `/playback/...`, ma **non** il path completo. Negli addon Debrid
    * (es. Comet) il path contiene la config Base64 con le chiavi dei servizi:
@@ -498,6 +517,103 @@ object StremioAddonRepository {
     val http = url.toHttpUrlOrNull() ?: return "<non-http:${url.take(20)}...>"
     val endpoint = if (http.encodedPath.contains("/playback/")) "/playback/..." else "/..."
     return "${http.scheme}://${http.host}$endpoint (len=${url.length})"
+  }
+
+  /**
+   * DIAG TEMPORANEO: struttura delle chiavi `behaviorHints` della risposta grezza
+   * dell'addon, letta con [JsonReader] **prima** di qualsiasi deserializzazione
+   * tipizzata (l'adapter [streamResponseAdapter], che scarterebbe le chiavi JSON
+   * non previste dal modello).
+   *
+   * Restituisce esclusivamente:
+   *  - presenza/assenza di `behaviorHints` e nomi delle sue chiavi;
+   *  - presenza/assenza di `proxyHeaders` e nomi delle sue chiavi;
+   *  - numero di elementi in `proxyHeaders.request` (solo se è un oggetto).
+   *
+   * NON viene mai registrato alcun valore: né URL, né titoli, né identificativi di
+   * contenuto, né valori degli header, cookie, token o il JSON grezzo. Restituisce
+   * `null` se il body non è un oggetto JSON leggibile.
+   */
+  internal fun tvVooBehaviorHintsDiag(body: String): String? = try {
+    var behaviorHintsPresent = false
+    val behaviorHintsKeys = linkedSetOf<String>()
+    var proxyHeadersPresent = false
+    val proxyHeadersKeys = linkedSetOf<String>()
+    var requestCount: Int? = null
+
+    JsonReader.of(Buffer().writeUtf8(body)).use { reader ->
+      reader.beginObject()
+      while (reader.hasNext()) {
+        if (reader.nextName() != "streams" || reader.peek() != JsonReader.Token.BEGIN_ARRAY) {
+          reader.skipValue()
+          continue
+        }
+        reader.beginArray()
+        var inspectedFirstStream = false
+        while (reader.hasNext()) {
+          if (inspectedFirstStream || reader.peek() != JsonReader.Token.BEGIN_OBJECT) {
+            reader.skipValue()
+            continue
+          }
+          inspectedFirstStream = true
+          reader.beginObject()
+          while (reader.hasNext()) {
+            if (reader.nextName() != "behaviorHints" ||
+              reader.peek() != JsonReader.Token.BEGIN_OBJECT
+            ) {
+              reader.skipValue()
+              continue
+            }
+            behaviorHintsPresent = true
+            reader.beginObject()
+            while (reader.hasNext()) {
+              val bhKey = reader.nextName()
+              behaviorHintsKeys += bhKey
+              if (bhKey != "proxyHeaders" || reader.peek() != JsonReader.Token.BEGIN_OBJECT) {
+                reader.skipValue()
+                continue
+              }
+              proxyHeadersPresent = true
+              reader.beginObject()
+              while (reader.hasNext()) {
+                val phKey = reader.nextName()
+                proxyHeadersKeys += phKey
+                if (phKey == "request" && reader.peek() == JsonReader.Token.BEGIN_OBJECT) {
+                  requestCount = countJsonObjectKeys(reader)
+                } else {
+                  reader.skipValue()
+                }
+              }
+              reader.endObject()
+            }
+            reader.endObject()
+          }
+          reader.endObject()
+        }
+        reader.endArray()
+        break
+      }
+    }
+
+    "DIAG-BH behaviorHints=${if (behaviorHintsPresent) "present" else "absent"} " +
+      "bhKeys=$behaviorHintsKeys " +
+      "proxyHeaders=${if (proxyHeadersPresent) "present" else "absent"} " +
+      "phKeys=$proxyHeadersKeys requestCount=${requestCount ?: "n/a"}"
+  } catch (e: Exception) {
+    null
+  }
+
+  /** Conta le chiavi di un oggetto JSON consumandone i valori (nessuno viene letto). */
+  private fun countJsonObjectKeys(reader: JsonReader): Int {
+    var count = 0
+    reader.beginObject()
+    while (reader.hasNext()) {
+      reader.nextName()
+      reader.skipValue()
+      count++
+    }
+    reader.endObject()
+    return count
   }
 
   // ── Manifest ───────────────────────────────────────────────────────────
@@ -638,6 +754,58 @@ object StremioAddonRepository {
     }
   }
 
+  /**
+   * Stream di un CANALE live: interroga esclusivamente l'addon che dichiara il
+   * canale, con il TIPO ORIGINALE del suo catalogo (`tv` per TvVoo) e l'id
+   * Stremio nativo (`vavoo_rai1`), senza stagione/episodio.
+   *
+   * I `idPrefixes` qui sono quelli dell'id del contenuto, non quelli IMDb: filtrare
+   * con `stremioIdFor`/`supportsStreamId` (pensati per `tt`/`tmdb`) scarterebbe
+   * ogni canale. Il vincolo verificato è che l'addon dichiari davvero quel canale
+   * in un proprio catalogo, e che la risorsa `stream` esista.
+   */
+  suspend fun fetchChannelStreams(
+    addon: InstalledAddon,
+    catalogId: String?,
+    mediaId: String
+  ): List<StremioStreamCandidate> {
+    val cleanMediaId = mediaId.trim()
+    if (cleanMediaId.isBlank()) return emptyList()
+    val type = StremioLiveChannelClassifier.catalogType(addon, catalogId)
+      ?: addon.manifest.types.orEmpty()
+        .firstOrNull { !it.equals(TYPE_MOVIE, ignoreCase = true) && !it.equals(TYPE_SERIES, ignoreCase = true) }
+      ?: addon.manifest.types.orEmpty().firstOrNull()
+      ?: return emptyList()
+    if (!addon.manifest.supportsStream()) return emptyList()
+    if (!addon.manifest.supportsTypeForResource(RESOURCE_STREAM, type)) {
+      Log.i(
+        DIAG_TAG,
+        "DIAG-A addon=${diagAddonLabel(addon)} result=SKIP_NO_TYPE type=$type streams=0"
+      )
+      return emptyList()
+    }
+    val path = buildStreamPath(type, cleanMediaId, null, null)
+    return try {
+      withTimeout(STREAM_FETCH_TIMEOUT_MS) {
+        fetchStreamItems(addon, path).map { item ->
+          StremioStreamCandidate(
+            addonName = addon.manifest.displayTitle,
+            baseUrl = addon.baseUrl,
+            item = item
+          )
+        }
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: TimeoutCancellationException) {
+      Log.w(TAG, "Addon ${addon.manifest.displayTitle} -> timeout canale ($STREAM_FETCH_TIMEOUT_MS ms)")
+      emptyList()
+    } catch (e: Exception) {
+      Log.w(TAG, "Addon ${addon.manifest.displayTitle} -> canale ${e.javaClass.simpleName}")
+      emptyList()
+    }
+  }
+
   /** Costruisce il path `series/tt...:S:E.json` / `movie/tt....json`. */
   fun buildStreamPath(type: String, id: String, season: Int?, episode: Int?): String {
     val cleanId = id.substringBefore(":")
@@ -719,6 +887,11 @@ object StremioAddonRepository {
               "DIAG-A addon=${diagAddonLabel(addon)} result=EMPTY_BODY http=$httpStatus streams=0"
             )
             throw IOException("Risposta vuota da $url")
+          }
+          // DIAG TEMPORANEO: struttura delle chiavi behaviorHints dal JSON grezzo,
+          // PRIMA della deserializzazione tipizzata (che scarta le chiavi non previste).
+          if (isTvVooLike(addon)) {
+            tvVooBehaviorHintsDiag(body)?.let { Log.i(DIAG_TAG, it) }
           }
           val parsed = try {
             streamResponseAdapter.fromJson(body)

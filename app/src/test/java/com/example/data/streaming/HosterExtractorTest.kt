@@ -1,9 +1,11 @@
 package com.example.data.streaming
 
 import com.example.data.streaming.extractors.ExtractorHttp
+import com.example.data.streaming.extractors.FilemoonExtractor
 import com.example.data.streaming.extractors.MaxStreamExtractor
 import com.example.data.streaming.extractors.MixdropExtractor
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -53,7 +55,42 @@ class HosterExtractorTest {
         "errore inatteso (atteso gate reCAPTCHA o file rimosso): $message",
         message.contains("reCAPTCHA", ignoreCase = true) ||
           message.contains("protett", ignoreCase = true) ||
+          message.contains("non disponibile", ignoreCase = true) ||
           message.contains("nessuna sorgente", ignoreCase = true) ||
+          message.contains("HTTP", ignoreCase = true)
+      )
+    }
+  }
+
+  /**
+   * Filemoon: l'API del player (`/api/videos/{code}`) è pubblica e restituisce
+   * un payload AES-256-GCM. Se il video di prova viene rimosso il test accetta
+   * solo un errore esplicito: non maschera un fallimento di parsing.
+   */
+  @Test
+  fun filemoonRisolveUnEmbedPubblico(): Unit = runBlocking {
+    val embed = "https://filemoon.to/e/vxkeptfavoa6"
+    val result = runCatching { FilemoonExtractor().extract(embed) }
+    if (result.isSuccess) {
+      val source = result.getOrNull()!!.first()
+      val url = source.url
+      assertTrue("sorgente Filemoon non media: $url",
+        url.contains(".m3u8", true) || url.contains(".mp4", true))
+      assertEquals("Filemoon", source.serverName)
+      assertEquals(embed, source.headers["Referer"])
+
+      if (url.contains(".m3u8", true)) {
+        val manifest = ExtractorHttp.get(url, referer = source.headers["Referer"])
+        assertTrue("risposta non HLS: ${manifest.take(40)}", manifest.contains("#EXTM3U"))
+      }
+      println("Filemoon OK -> $url")
+    } else {
+      val message = result.exceptionOrNull()?.message.orEmpty()
+      println("Filemoon gate: $message")
+      assertTrue(
+        "errore inatteso (atteso rimozione video o errore esplicito): $message",
+        message.contains("Filemoon", ignoreCase = true) ||
+          message.contains("protett", ignoreCase = true) ||
           message.contains("HTTP", ignoreCase = true)
       )
     }

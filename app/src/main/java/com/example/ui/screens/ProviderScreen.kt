@@ -19,9 +19,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -60,6 +61,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import com.example.ui.components.PosterMediaCard
+import com.example.ui.components.stabilizeFirstSeenOrder
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusAttachment
@@ -69,7 +71,6 @@ import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalLastFocusedTarget
 import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalClearLastFocusedMedia
-import com.example.ui.components.scrollToItemVerified
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaSurfaceVariant
@@ -102,9 +103,16 @@ fun ProviderScreen(
   onLoadMore: ((isTv: Boolean) -> Unit)? = null
 ) {
   BackHandler { onBackClick() }
-  val lastFocusedMediaId by (viewModel?.lastFocusedMediaId ?: MutableStateFlow(null)).collectAsState()
-  val lastFocusedTarget by (viewModel?.lastFocusedTarget ?: MutableStateFlow(null)).collectAsState()
-  val focusRestoreToken by (viewModel?.focusRestoreToken ?: MutableStateFlow(0)).collectAsState()
+  // Stato di ripristino del focus: dal ViewModel quando è disponibile, altrimenti quello
+  // ambientale (fornito da MainActivity o dall'harness di test). I valori ambientali coincidono
+  // con quelli del ViewModel nel percorso di produzione, quindi il comportamento non cambia.
+  val ambientLastFocusedMediaId = LocalLastFocusedMediaId.current
+  val ambientLastFocusedTarget = LocalLastFocusedTarget.current
+  val ambientFocusRestoreToken = LocalFocusRestoreToken.current
+  val ambientClearLastFocusedMedia = LocalClearLastFocusedMedia.current
+  val lastFocusedMediaId by (viewModel?.lastFocusedMediaId ?: MutableStateFlow(ambientLastFocusedMediaId)).collectAsState()
+  val lastFocusedTarget by (viewModel?.lastFocusedTarget ?: MutableStateFlow(ambientLastFocusedTarget)).collectAsState()
+  val focusRestoreToken by (viewModel?.focusRestoreToken ?: MutableStateFlow(ambientFocusRestoreToken)).collectAsState()
 
   // Nuovo evento di ripristino a ogni ingresso in questa schermata con un target salvato
   // (ritorno dal Dettaglio): il token nel ViewModel avanza, quindi le card della griglia
@@ -169,7 +177,10 @@ fun ProviderScreen(
     }
   }
 
-  val gridState = rememberLazyGridState()
+  // Stato di scroll della griglia PERSISTENTE durante la navigazione: chiavato sul provider e
+  // salvato come Saveable, quindi al Back dal Dettaglio la griglia ritrova la lista intatta in
+  // memoria e lo scroll invariato, con il poster target nelle stesse coordinate visive.
+  val gridState = rememberSaveable(provider.id, saver = LazyGridState.Saver) { LazyGridState() }
   val isProviderLoading by (viewModel?.isProviderLoading ?: MutableStateFlow(false)).collectAsState()
 
   // Crunchyroll: catalogo dominato da serie TV/anime -> filtro iniziale dedicato
@@ -220,44 +231,64 @@ fun ProviderScreen(
   // dimensione della lista: ad OGNIA pagina caricata l'effetto si riavvia e
   // rivaluta la soglia, così il caricamento prosegue finché non si esce dalla
   // finestra visibile o il catalogo non è esaurito.
-  LaunchedEffect(gridState, selectedFilter, provider, providerMedia.size) {
+  LaunchedEffect(gridState, selectedFilter, provider) {
     snapshotFlow {
       val layoutInfo = gridState.layoutInfo
       val totalItems = layoutInfo.totalItemsCount
       val lastVisibleItemIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
       totalItems to lastVisibleItemIndex
-    }.distinctUntilChanged()
-     .collect { (totalItems, lastVisibleItemIndex) ->
-       if (totalItems > 0 && lastVisibleItemIndex >= totalItems - 6) {
-         when (selectedFilter) {
-           ProviderCatalogFilter.TV_SERIES -> {
-             viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
-             onLoadMore?.invoke(true)
-           }
-           ProviderCatalogFilter.MOVIES -> {
-             viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
-             onLoadMore?.invoke(false)
-           }
-           else -> {
-             viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
-             viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
-             onLoadMore?.invoke(false)
-             onLoadMore?.invoke(true)
-           }
-         }
-       }
-     }
+    }
+    .distinctUntilChanged()
+    .collect { (totalItems, lastVisibleItemIndex) ->
+      // Aggiungi il controllo tassativo !isProviderLoading e verifica che l'utente stia davvero scrollando verso la fine
+      if (!isProviderLoading && totalItems > 12 && lastVisibleItemIndex >= totalItems - 3) {
+        when (selectedFilter) {
+          ProviderCatalogFilter.TV_SERIES -> {
+            viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+            onLoadMore?.invoke(true)
+          }
+          ProviderCatalogFilter.MOVIES -> {
+            viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+            onLoadMore?.invoke(false)
+          }
+          else -> {
+            viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+            viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+            onLoadMore?.invoke(false)
+            onLoadMore?.invoke(true)
+          }
+        }
+      }
+    }
   }
 
   val filters = remember { ProviderCatalogFilter.values().toList() }
 
-  val filteredItems = remember(providerMedia, selectedFilter) {
+  // Ordine dei poster CONGELATO per id di prima comparsa: il catalogo di origine viene
+  // ricostruito più volte durante una navigazione (i dettagli arricchiti dal Dettaglio
+  // vengono persistiti in Room e l'osservatore del DAO riemette `allMedia` riordinato per
+  // rating) e ogni ricostruzione ricollocava le card già a schermo: al ritorno dal Dettaglio
+  // il focus tornava sul titolo giusto ma la sua POSIZIZIONE VISIVA era cambiata. Le nuove
+  // pagine si accodano nell'ordine di arrivo, senza rimescolare le posizioni già note.
+  // La memoria è Saveable: deve sopravvivere alla navigazione verso il Dettaglio, dove
+  // questa composizione viene smontata e il catalogo può cambiare ordine.
+  val frozenProviderOrder = rememberSaveable(
+    saver = listSaver<MutableList<String>, String>(
+      save = { order -> order.toList() },
+      restore = { saved -> saved.toMutableList() }
+    )
+  ) { mutableListOf<String>() }
+  val orderedProviderMedia = remember(providerMedia) {
+    stabilizeFirstSeenOrder(providerMedia, frozenProviderOrder) { it.id }
+  }
+
+  val filteredItems = remember(orderedProviderMedia, selectedFilter) {
     when (selectedFilter) {
-      ProviderCatalogFilter.ALL -> providerMedia
-      ProviderCatalogFilter.MOVIES -> providerMedia.filter { it.type == MediaType.FILM }
-      ProviderCatalogFilter.TV_SERIES -> providerMedia.filter { it.type == MediaType.SERIE_TV }
-      ProviderCatalogFilter.TOP_10 -> providerMedia.sortedByDescending { it.rating }.take(10)
-      ProviderCatalogFilter.ACTION -> providerMedia.filter { item ->
+      ProviderCatalogFilter.ALL -> orderedProviderMedia
+      ProviderCatalogFilter.MOVIES -> orderedProviderMedia.filter { it.type == MediaType.FILM }
+      ProviderCatalogFilter.TV_SERIES -> orderedProviderMedia.filter { it.type == MediaType.SERIE_TV }
+      ProviderCatalogFilter.TOP_10 -> orderedProviderMedia.sortedByDescending { it.rating }.take(10)
+      ProviderCatalogFilter.ACTION -> orderedProviderMedia.filter { item ->
         item.genres.any { g ->
           g.contains("Azione", ignoreCase = true) ||
           g.contains("Action", ignoreCase = true) ||
@@ -265,7 +296,7 @@ fun ProviderScreen(
           g.contains("Adventure", ignoreCase = true)
         }
       }
-      ProviderCatalogFilter.SCI_FI -> providerMedia.filter { item ->
+      ProviderCatalogFilter.SCI_FI -> orderedProviderMedia.filter { item ->
         item.genres.any { g ->
           g.contains("Fantascienza", ignoreCase = true) ||
           g.contains("Sci-Fi", ignoreCase = true) ||
@@ -273,25 +304,36 @@ fun ProviderScreen(
           g.contains("Fantasy", ignoreCase = true)
         }
       }
-      ProviderCatalogFilter.DRAMA -> providerMedia.filter { item ->
+      ProviderCatalogFilter.DRAMA -> orderedProviderMedia.filter { item ->
         item.genres.any { g ->
           g.contains("Dramma", ignoreCase = true) ||
           g.contains("Drama", ignoreCase = true)
         }
       }
-      ProviderCatalogFilter.COMEDY -> providerMedia.filter { item ->
+      ProviderCatalogFilter.COMEDY -> orderedProviderMedia.filter { item ->
         item.genres.any { g ->
           g.contains("Commedia", ignoreCase = true) ||
           g.contains("Comedy", ignoreCase = true)
         }
       }
-      ProviderCatalogFilter.ANIMATION -> providerMedia.filter { item ->
+      ProviderCatalogFilter.ANIMATION -> orderedProviderMedia.filter { item ->
         item.type == MediaType.FILM &&
           item.genres.any { g ->
             g.contains("Animazione", ignoreCase = true) ||
             g.contains("Animation", ignoreCase = true)
           }
       }
+    }
+  }
+
+  // Target di ripristino non più disponibile: nessuna card potrebbe confermarlo e il gate
+  // `canFocus` del protocollo di ripristino resterebbe chiuso per sempre (griglia non più
+  // navigabile). Il target viene rilasciato senza alcun salto: la posizione visiva resta
+  // quella salvata e la griglia torna interamente navigabile.
+  LaunchedEffect(lastFocusedMediaId, filteredItems) {
+    val targetId = lastFocusedMediaId ?: return@LaunchedEffect
+    if (filteredItems.none { it.id == targetId }) {
+      viewModel?.clearLastFocusedMedia()
     }
   }
 
@@ -320,20 +362,25 @@ fun ProviderScreen(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
     LocalLastFocusedTarget provides lastFocusedTarget,
     LocalFocusRestoreToken provides focusRestoreToken,
-    LocalClearLastFocusedMedia provides { viewModel?.clearLastFocusedMedia() }
+    LocalClearLastFocusedMedia provides if (viewModel != null) {
+      { viewModel.clearLastFocusedMedia() }
+    } else {
+      ambientClearLastFocusedMedia
+    }
   ) {
-  // Ripristino del focus (percorso Provider): porta nel viewport la locandina target della
-  // griglia e VERIFICA che sia davvero visibile. L'indice è calcolato sulla stessa lista
-  // renderizzata dalla griglia (`filteredItems`), quindi indice di scroll e card coincidono
-  // per costruzione; la verifica rilegge il `layoutInfo` reale invece di assumere l'esito.
-  LaunchedEffect(filteredItems, lastFocusedMediaId) {
-    val mediaId = lastFocusedMediaId ?: return@LaunchedEffect
-    val index = filteredItems.indexOfFirst { it.id == mediaId }
-    if (index < 0) return@LaunchedEffect
-    // Già nel viewport: la card è composta e il suo tentativo di focus è già in corso.
-    if (gridState.layoutInfo.visibleItemsInfo.any { it.index == index }) return@LaunchedEffect
-    gridState.scrollToItemVerified(index)
-  }
+  // NOTA: nessuno scroll forzato al ritorno dal Dettaglio. `gridState` è già salvato con
+  // `rememberSaveable(provider.id, saver = LazyGridState.Saver)` e mantiene l'offset esatto
+  // della griglia; invocare `scrollToItemVerified` costringerebbe la griglia a portare il film
+  // selezionato in cima allo schermo (indice 0 visibile), alterando la posizione di tutti i
+  // poster al ritorno dal Dettaglio. Il ripristino del focus è responsabilità delle card
+  // (via `confirmFocusRestore`) e del bring-into-view, che agiscono SENZA muovere la griglia.
+  // LaunchedEffect(filteredItems, lastFocusedMediaId) {
+  //   val mediaId = lastFocusedMediaId ?: return@LaunchedEffect
+  //   val index = filteredItems.indexOfFirst { it.id == mediaId }
+  //   if (index < 0) return@LaunchedEffect
+  //   if (gridState.layoutInfo.visibleItemsInfo.any { it.index == index }) return@LaunchedEffect
+  //   gridState.scrollToItemVerified(index)
+  // }
 
     Column(
       modifier = modifier
@@ -398,7 +445,7 @@ fun ProviderScreen(
         .padding(horizontal = 32.dp, vertical = 8.dp),
       horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-      itemsIndexed(filters) { index, filter ->
+      itemsIndexed(filters, key = { _, filter -> filter.name }, contentType = { _, _ -> "filter_chip" }) { index, filter ->
         val isSelected = selectedFilter == filter
         val filterRequester = filterFocusRequesters.getOrPut(index) { FocusRequester() }
         val filterAttachment = filterAttachments.getOrPut(index) { TvFocusAttachment() }
@@ -496,7 +543,7 @@ fun ProviderScreen(
           verticalArrangement = Arrangement.spacedBy(16.dp),
           modifier = Modifier.fillMaxSize()
         ) {
-          itemsIndexed(filteredItems, key = { _, it -> it.id }) { index, item ->
+          itemsIndexed(filteredItems, key = { _, it -> it.id }, contentType = { _, _ -> "media_poster" }) { index, item ->
             Box(
               modifier = Modifier
                 .fillMaxWidth()

@@ -58,7 +58,10 @@ import com.example.ui.components.StreamStatusOverlay
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalLastFocusedTarget
+import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalClearLastFocusedMedia
+import com.example.ui.components.LocalLastFocusedProviderId
+import com.example.ui.components.LocalClearLastFocusedProvider
 import com.example.ui.navigation.DetailNavArgs
 import com.example.ui.navigation.Screen
 import com.example.ui.screens.DetailScreen
@@ -86,8 +89,53 @@ private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
 /** Durata della Splash Screen iniziale, ottenuta con coroutine/delay (mai Thread.sleep). */
 private const val SPLASH_DURATION_MS = 10_000L
 
+/**
+ * Riga della Home usata come ANCORA DI CONTENUTO quando il target di ripristino non e' piu'
+ * disponibile (target consumato prematuramente dalla Home ancora composta sotto la
+ * destinazione Dettaglio/Provider).
+ *
+ * L'Hero e' l'ancora canonica della Home: e' la prima cella del contenuto ed e' sempre
+ * presente quando la Home ha contenuto. Il ripristino passa dal PROTOCOLLO della Home
+ * (richiesta pendente + attesa del mount + conferma del focus): il focus arriva sulla
+ * cella solo quando e' realmente pronta e NON puo' finire sulla sidebar.
+ */
 internal const val HOME_CONTENT_ANCHOR_ROW = "hero_banner"
+
+/**
+ * Id sintetico del target di ripristino usato come ancora di contenuto.
+ *
+ * Non corrisponde a nessun titolo: serve solo a rendere il target NON nullo, cosi' la Home
+ * avvia il protocollo di ripristino sulla riga indicata da [HOME_CONTENT_ANCHOR_ROW]. Il
+ * ripristino dell'Hero e' posizionale (cella 0 della riga) e non per identita' di titolo.
+ */
 internal const val HOME_CONTENT_ANCHOR_ID = "home_content_anchor"
+
+/**
+ * Piano di ripristino del focus al ritorno da Dettaglio/Provider.
+ *
+ * - [RESTORE_SAVED_TARGET]: il target salvato esiste ancora -> la Home lo ripristina sulla
+ *   riga e sulla card di origine (percorso invariato).
+ * - [ANCHOR_CONTENT]: il target e' stato gia' consumato -> il focus viene affidato al
+ *   CONTENUTO tramite l'ancora dell'Hero, senza mai muovere il focus alla cieca.
+ */
+internal enum class ContentFocusRestorePlan {
+  RESTORE_SAVED_TARGET,
+  ANCHOR_CONTENT
+}
+
+/**
+ * Calcola il piano di ripristino del focus al ritorno da Dettaglio/Provider.
+ *
+ * @param savedTargetId id del titolo salvato all'apertura del Dettaglio, `null` se il target
+ *   e' gia' stato consumato (la Home era ancora composta sotto la destinazione Dettaglio e
+ *   ha rilasciato il target).
+ */
+internal fun contentFocusRestorePlan(savedTargetId: String?): ContentFocusRestorePlan =
+  if (savedTargetId != null) {
+    ContentFocusRestorePlan.RESTORE_SAVED_TARGET
+  } else {
+    ContentFocusRestorePlan.ANCHOR_CONTENT
+  }
 
 class MainActivity : ComponentActivity() {
   private val viewModel: StreamNovaViewModel by viewModels()
@@ -140,7 +188,8 @@ fun StreamNovaApp(
   val streamingEngineMode by viewModel.streamingEngineMode.collectAsState()
   val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
   val lastFocusedTarget by viewModel.lastFocusedTarget.collectAsState()
-  val chainRestoreMediaId by viewModel.chainRestoreMediaId.collectAsState()
+  val lastFocusedProviderId by viewModel.lastFocusedProviderId.collectAsState()
+  val focusRestoreToken by viewModel.focusRestoreToken.collectAsState()
 
   // Feedback errore di risoluzione sorgenti (es. timeout o nessuna sorgente):
   // mostra un toast con il messaggio di errore e reimposta lo stato su Idle
@@ -245,7 +294,12 @@ fun StreamNovaApp(
 
         // Focus iniziale esplicito sul contenuto Home dopo la fine della splash.
         val focusManager = LocalFocusManager.current
-        var isInitialHomeFocusSet by remember { mutableStateOf(false) }
+        // Saveable: "focus iniziale post-splash" è un evento UNA TANTUM, non un rimontaggio.
+        // Al rientro dal Dettaglio la destination Browsing è ricomposta e un `remember`
+        // semplice si azzererebbe, rieseguendo `requestHomeScrollToTop()` (scroll a 0 + focus
+        // sull'Hero) IN CORSA col ripristino della card salvata: la corsa sottrae il focus al
+        // rientro e lo lascia fuori dal contenuto (difetto risalita -> focus nella sidebar).
+        var isInitialHomeFocusSet by rememberSaveable { mutableStateOf(false) }
 
         LaunchedEffect(screenState, isSplashActive, pendingContentFocusRestore, isInitialHomeFocusSet) {
           if (screenState == ScreenState.BROWSING && !isSplashActive) {
@@ -260,14 +314,43 @@ fun StreamNovaApp(
                 viewModel.requestHomeScrollToTop()
               }
             } else if (pendingContentFocusRestore) {
-              pendingContentFocusRestore = false
-              // Se abbiamo un target specifico salvato, emetti il segnale di ripristino
-              if (viewModel.lastFocusedMediaId.value != null) {
-                viewModel.signalFocusRestore(viewModel.lastFocusedMediaId.value!!)
-              } else {
-                // Fallback: nessun target salvato, focus generico
-                try { homeFocusRequester.requestFocus() } catch (_: Exception) {}
-                focusManager.moveFocus(FocusDirection.Down)
+              val savedTargetId = viewModel.lastFocusedMediaId.value
+              val savedProviderId = viewModel.lastFocusedProviderId.value
+              when (contentFocusRestorePlan(savedTargetId)) {
+                ContentFocusRestorePlan.RESTORE_SAVED_TARGET -> {
+                  // Percorso INVARIATO: il target salvato esiste ancora, la Home lo
+                  // ripristina sulla riga e sulla card di origine.
+                  pendingContentFocusRestore = false
+                  viewModel.signalFocusRestore(savedTargetId!!)
+                }
+                ContentFocusRestorePlan.ANCHOR_CONTENT -> if (savedProviderId != null) {
+                  // Provenienza da una CARD PROVIDER dell'hub della Home (es. HBO Max): il
+                  // focus deve tornare su QUELLA card, non sull'Hero. Canale dedicato: il
+                  // token avanza e la Home ripristina l'hub per identità del provider.
+                  pendingContentFocusRestore = false
+                  viewModel.signalFocusRestore(savedProviderId)
+                } else {
+                  // FALLBACK: il target e' gia' stato CONSUMATO. La Home era ancora
+                  // composta sotto la destinazione Dettaglio/Provider e ha rilasciato il
+                  // target (l'Hero era ancora focalizzato al momento del click), quindi al
+                  // ritorno non c'e' piu' nessuna card da ripristinare.
+                  //
+                  // Il vecchio fallback (requestFocus sul Box + moveFocus(Down)) sparava il
+                  // movimento a freddo: quando le righe della Home non sono ancora
+                  // composte l'unica superficie focalizzabile e' la SIDEBAR e il movimento
+                  // ci finisce dentro (difetto "al rientro il focus e' sulla sidebar").
+                  //
+                  // Il focus viene ora AFFIDATO al contenuto: si ri-prestabilisce un target
+                  // di ripristino sulla riga dell'Hero (l'ancora canonica della Home) e si
+                  // segnala il ripristino. La Home applica il SUO protocollo (richiesta
+                  // pendente + attesa del mount + conferma): il focus arriva su una cella
+                  // realmente pronta e non puo' finire sulla sidebar.
+                  viewModel.saveLastFocusedMedia(HOME_CONTENT_ANCHOR_ROW, HOME_CONTENT_ANCHOR_ID)
+                  viewModel.signalFocusRestore(HOME_CONTENT_ANCHOR_ID)
+                  // La richiesta pendente viene consumata SOLO dopo che il ripristino e'
+                  // stato affidato al contenuto (niente richieste consumate a vuoto).
+                  pendingContentFocusRestore = false
+                }
               }
             }
           }
@@ -338,22 +421,39 @@ fun StreamNovaApp(
             }
         ) {
           // Main Screen Content — larghezza e posizione fisse, non si sposta mai.
-          HomeScreen(
-            viewModel = viewModel,
-            onProviderClick = { provider ->
-              viewModel.openProvider(provider)
-              navController.navigate(Screen.Provider.createRoute(provider.id))
-            },
-            onMediaClick = { media ->
-              viewModel.saveLastFocusedMedia(media.id)
-              viewModel.openDetail(media)
-              val tmdbId = media.tmdbId ?: 0
-              navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
-            },
-            modifier = Modifier
-              .fillMaxSize()
-              .padding(start = 60.dp)
-          )
+          CompositionLocalProvider(
+            LocalLastFocusedTarget provides lastFocusedTarget,
+            LocalLastFocusedMediaId provides lastFocusedMediaId,
+            LocalLastFocusedProviderId provides lastFocusedProviderId,
+            LocalFocusRestoreToken provides focusRestoreToken,
+            LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() },
+            LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() }
+          ) {
+            HomeScreen(
+              viewModel = viewModel,
+              onProviderClick = { provider ->
+                viewModel.openProvider(provider)
+                navController.navigate(Screen.Provider.createRoute(provider.id))
+              },
+              onMediaClick = { media ->
+                // NON chiamare viewModel.saveLastFocusedMedia(media.id) qui!
+                // HomeScreen.kt gestisce già internamente handleRowMediaClick salvando la rowKey specifica.
+                // Canale LIVE (addon Stremio, es. TvVoo): nessuna scheda stagioni/episodi,
+                // si aprono direttamente le sorgenti del canale.
+                if (viewModel.isLiveChannel(media.id)) {
+                  viewModel.openLiveChannel(media)
+                  navController.navigate(Screen.Detail.createRoute(media.type, media.tmdbId ?: 0))
+                } else {
+                  viewModel.openDetail(media)
+                  val tmdbId = media.tmdbId ?: 0
+                  navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
+                }
+              },
+              modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 60.dp)
+            )
+          }
 
           // Left Sidebar Menu — overlay sopra la Home.
           // onFocusChanged ESTERNO aggiorna sidebarHasFocus (solo tracking, NON colapsa la sidebar).
@@ -404,8 +504,8 @@ fun StreamNovaApp(
         val lastFocusedCastMemberId by viewModel.lastFocusedCastMemberId.collectAsState()
         val lastFocusedCompanyId by viewModel.lastFocusedCompanyId.collectAsState()
 
-        // (2) Back dal Dettaglio: popBackStack verso la schermata precedente.
-        // Se c'erano dettagli aperti a catena dai Consigliati, risale alla scheda precedente
+                // (2) Back dal Dettaglio: popBackStack verso la schermata precedente.
+        // Se lo stack contiene più dettagli, risale alla scheda precedente
         // ripristinandone stato e metadati. Solo quando lo stack è esaurito si torna a Home/Provider.
         BackHandler(enabled = screenState != ScreenState.PLAYER) {
           val hasPreviousDetail = viewModel.popDetail()
@@ -430,10 +530,17 @@ fun StreamNovaApp(
             else -> baseMedia
           }
 
+          // Canale LIVE (addon Stremio): nessun tab Episodi/Produzione, nessuna
+          // richiesta TMDB. La scheda mostra il canale e le sue sorgenti.
+          val isLiveChannel = viewModel.isLiveChannel(currentMedia.id)
+
           CompositionLocalProvider(
             LocalLastFocusedMediaId provides lastFocusedMediaId,
             LocalLastFocusedTarget provides lastFocusedTarget,
-            LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() }
+            LocalLastFocusedProviderId provides lastFocusedProviderId,
+            LocalFocusRestoreToken provides focusRestoreToken,
+            LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() },
+            LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() }
           ) {
             DetailScreen(
             media = currentMedia,
@@ -445,7 +552,15 @@ fun StreamNovaApp(
               }
               navController.popBackStack()
             },
-            onPlayClick = { m, ep -> viewModel.openStreamForMedia(m, ep) },
+            onPlayClick = { m, ep ->
+              if (isLiveChannel) {
+                // Canale: le sorgenti vengono raccolte dall'addon (tipo originale
+                // `tv`) e mostrate nel selettore esistente.
+                viewModel.resolveLiveChannelSources(m)
+              } else {
+                viewModel.openStreamForMedia(m, ep)
+              }
+            },
             onToggleFavorite = { viewModel.toggleFavorite(it) },
             onToggleWatched = { viewModel.toggleWatched(it) },
             onPlayTrailer = { viewModel.playTrailer(it) },
@@ -478,12 +593,9 @@ fun StreamNovaApp(
             },
             targetCastMemberId = lastFocusedCastMemberId,
             onClearTargetCastMember = { viewModel.clearLastFocusedCastMember() },
-            targetCompanyId = lastFocusedCompanyId,
+targetCompanyId = lastFocusedCompanyId,
             onClearTargetCompany = { viewModel.clearLastFocusedCompany() },
-            // Catena "Altro come questo": al Back la scheda precedente ripristina il focus
-            // sulla card del consiglio cliccata (target impostato da popDetail()).
-            targetChainMediaId = chainRestoreMediaId,
-            onClearTargetChainMedia = { viewModel.clearChainRestoreMedia() }
+            isLiveChannel = isLiveChannel
           )
           }
         }
@@ -505,6 +617,11 @@ fun StreamNovaApp(
           viewModel = viewModel,
           onBackClick = {
             viewModel.closeProvider()
+            // Rientro alla Home: il CONTENUTO deve riprendere il focus. Senza questa
+            // richiesta la Home viene ricomposta senza alcuna superficie focalizzata e il
+            // focus repair di Compose atterra sulla sidebar (difetto "tornando da una
+            // schermata Provider il focus finisce sulla sidebar").
+            pendingContentFocusRestore = true
             navController.popBackStack()
           },
           onMediaClick = { media ->

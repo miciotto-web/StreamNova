@@ -183,3 +183,44 @@ suspend fun requestFocusWhenAttached(
   }
   return false
 }
+
+/**
+ * Riallinea un elenco di catalogo all'ORDINE di prima comparsa, per identità.
+ *
+ * L'ordine delle card è parte della loro POSIZIONE VISIVA: se la lista di catalogo viene
+ * ricostruita in un ordine diverso (i dettagli arricchiti da TMDB vengono persistiti in Room e
+ * l'osservatore del DAO riemette `allMedia` riordinato per rating) le card cambiano cella a
+ * ogni ritorno dal Dettaglio, anche quando il focus viene ripristinato sul titolo giusto.
+ * Registrando la posizione di prima comparsa di ogni id, gli aggiornamenti successivi del
+ * catalogo NON ricollocano le card già note: le nuove voci (pagine successive, merge di
+ * sorgenti) si accodano nell'ordine di arrivo.
+ *
+ * @param firstSeenOrder memoria dell'ordine di prima comparsa, aggiornata sul posto dal
+ *   chiamante (una `remember` della schermata: sopravvive ai ricalcoli della lista).
+ * @return la lista riallineata; le identità non ancora note mantengono l'ordine di arrivo.
+ */
+fun <T> stabilizeFirstSeenOrder(
+  items: List<T>,
+  firstSeenOrder: MutableList<String>,
+  idOf: (T) -> String
+): List<T> {
+  if (items.isEmpty()) return items
+  val byId = LinkedHashMap<String, T>(items.size)
+  items.forEach { item ->
+    val id = idOf(item)
+    if (!byId.containsKey(id)) byId[id] = item
+  }
+  val result = ArrayList<T>(byId.size)
+  val emitted = HashSet<String>(byId.size)
+  for (id in firstSeenOrder) {
+    val item = byId[id] ?: continue
+    if (emitted.add(id)) result.add(item)
+  }
+  for ((id, item) in byId) {
+    if (emitted.add(id)) {
+      firstSeenOrder.add(id)
+      result.add(item)
+    }
+  }
+  return result
+}

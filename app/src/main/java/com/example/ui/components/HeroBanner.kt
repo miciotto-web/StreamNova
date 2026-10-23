@@ -93,13 +93,20 @@ private val HERO_DOTS_RESERVED_HEIGHT = 56.dp
  * - D-pad RIGHT: poster successivo con wrap-around, il timer dell'auto-scroll riparte da zero.
  * - D-pad LEFT: poster precedente; sul primissimo poster l'evento NON viene consumato, cosi'
  *   il focus esce dall'Hero e si posiziona sulla Sidebar (gestito da `MainActivity`).
- * - D-pad DOWN: scende alla prima riga di contenuti sotto l'Hero ([heroDownFocusRequester]).
+ * - D-pad DOWN: scende alla riga IMMEDIATAMENTE sotto l'Hero. Il movimento è deciso dal
+ *   coordinatore delle righe Home tramite [onHeroMoveDown] (che consuma il tasto e, se la riga
+ *   di destinazione non è ancora composta, ne completa il focus appena diventa disponibile).
  * - D-pad UP: annullato, l'Hero e' la prima riga della Home.
  *
  * Focus: [heroFocusRequester] e' il requester della cella "hero_banner" del coordinatore di
- * Home; [heroDownFocusRequester] deve essere SOLO un requester il cui nodo e' montato (o
- * `null`): se nullo si usa `FocusRequester.Default`, mai un requester non agganciato (crash
- * "FocusRequester is not initialized" al focus search).
+ * Home. Il D-pad DOWN NON usa `focusProperties { down = ... }`: un requester assegnato a una
+ * card della riga sottostante può diventare ORFANO quando la LazyColumn smonta/ricicla la riga
+ * durante lo scroll, e il focus search del D-pad su un requester non agganciato termina con
+ * `IllegalStateException: FocusRequester is not initialized` (crash). Il movimento passa
+ * ESCLUSIVAMENTE da [onHeroMoveDown], che consuma il tasto e delega al coordinatore delle righe
+ * (richieste controllate su celle montate, con fallback pendente crash-safe). Ai fini della
+ * ricerca nativa `down` resta quindi `FocusRequester.Cancel`: se il coordinatore non ha una
+ * destinazione il tasto resta inerte invece di far atterrare il focus dove capita.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -108,7 +115,7 @@ fun HeroBanner(
   onDetailsClick: (MediaItem) -> Unit,
   modifier: Modifier = Modifier,
   heroFocusRequester: FocusRequester? = null,
-  heroDownFocusRequester: FocusRequester? = null,
+  onHeroMoveDown: (() -> Boolean)? = null,
   onHeroFocusChanged: ((Boolean) -> Unit)? = null
 ) {
   val safeItems = remember(items) { items.take(9) }
@@ -181,7 +188,11 @@ fun HeroBanner(
       .then(if (heroFocusRequester != null) Modifier.focusRequester(heroFocusRequester) else Modifier)
       .focusProperties {
         up = FocusRequester.Cancel
-        down = heroDownFocusRequester ?: FocusRequester.Cancel
+        // Il GIU' vero è del coordinatore (onKeyEvent -> onHeroMoveDown, tasto consumato).
+        // `Cancel` qui serve solo a non lasciare il tasto alla ricerca geometrica quando il
+        // coordinatore NON consuma (nessuna riga sottostante): mai un requester che può
+        // diventare orfano durante lo scroll (crash "FocusRequester is not initialized").
+        down = FocusRequester.Cancel
       }
       .onFocusChanged {
         isFocused = it.isFocused
@@ -196,7 +207,8 @@ fun HeroBanner(
           currentIndex = currentIndex,
           itemCount = safeItems.size,
           onScrollToIndex = scrollToPoster,
-          onConfirm = { onDetailsClick(currentMedia) }
+          onConfirm = { onDetailsClick(currentMedia) },
+          onMoveDown = onHeroMoveDown
         )
       }
       // Superficie cliccabile (mouse/air-mouse) e focalizzabile con il D-pad. `indication`
@@ -428,13 +440,25 @@ private fun handleHeroKeyEvent(
   currentIndex: Int,
   itemCount: Int,
   onScrollToIndex: (Int) -> Unit,
-  onConfirm: () -> Unit
+  onConfirm: () -> Unit,
+  onMoveDown: (() -> Boolean)? = null
 ): Boolean {
   return when (keyEvent.key) {
     Key.Enter, Key.NumPadEnter, Key.DirectionCenter ->
       if (keyEvent.type == KeyEventType.KeyUp) {
         onConfirm()
         true
+      } else {
+        false
+      }
+
+    Key.DirectionDown ->
+      // Il Giù dall'Hero è un movimento verticale come quelli fra le righe: lo decide il
+      // coordinatore (riga immediatamente sottostante, richiesta differita se non composta).
+      // Se il coordinatore non ha una destinazione il tasto non viene consumato e resta
+      // valido il `down` di focusProperties.
+      if (keyEvent.type == KeyEventType.KeyDown && onMoveDown != null) {
+        onMoveDown()
       } else {
         false
       }

@@ -14,6 +14,16 @@ package com.example.data.streaming
 interface StreamProvider {
 
   /**
+   * Identificativo stabile del provider nella catena diagnostica.
+   *
+   * Il default e' il nome semplice della classe: le implementazioni esistenti
+   * non devono cambiare. Un provider che vuole un'etichetta piu' stabile (o una
+   * classe anonima nei test) puo' sovrascriverla.
+   */
+  val providerId: String
+    get() = javaClass.simpleName
+
+  /**
    * Recupera le sorgenti disponibili per un titolo.
    *
    * @param tmdbId identificativo TMDB del titolo.

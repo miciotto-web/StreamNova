@@ -12,12 +12,23 @@ import com.example.data.model.Episode
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.torbox.TorBoxRepository
+import com.example.data.streaming.diagnostics.AttemptConcurrencyCounter
+import com.example.data.streaming.diagnostics.DiagnosticClock
+import com.example.data.streaming.diagnostics.StreamAttemptOutcome
+import com.example.data.streaming.diagnostics.StreamDiagnosticSink
+import com.example.data.streaming.diagnostics.StreamDiagnostics
+import com.example.data.streaming.diagnostics.StreamSearchMetrics
+import com.example.data.streaming.diagnostics.StreamSearchMetricsCollector
+import com.example.data.streaming.diagnostics.toLogLine
+import com.example.data.streaming.diagnostics.record
 import com.example.data.streaming.providers.Cb01Provider
 import com.example.data.streaming.providers.EurostreamingProvider
 import com.example.data.streaming.providers.MultiEmbedProvider
 import com.example.data.streaming.providers.StreamingCommunityProvider
 import com.example.data.streaming.providers.SuperEmbedProvider
 import com.example.data.streaming.providers.TwoEmbedProvider
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
@@ -28,9 +39,13 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Gestore dell'interrogazione dei provider di streaming con supporto a **Priorità Qualitativa Intelligente**
@@ -62,24 +77,34 @@ import kotlinx.coroutines.withTimeoutOrNull
  *  3. L'arricchimento continua in background per fornire tutte le sorgenti al selettore di risoluzione.
  */
 class StreamManager(
-  private val providers: List<StreamProvider> = listOf(
-    // Debrid: risolve gli infoHash degli addon Stremio/scraper con TorBox Instant Debrid.
-    // E' il primo elemento perché le sorgenti 4K/1080p debrid hanno priorità massima.
-    TorBoxStreamProvider(),
-    // Provider dedicato agli anime: per i contenuti animati viene prioritizzato
-    // (vedi [isAnimeContent] in resolveFlow) e lanciato per primo.
-    AnimeStreamProvider(),
-    MultiEmbedProvider(),
-    VixSrcProvider(),
-    TwoEmbedProvider(),
-    SuperEmbedProvider(),
-    StreamingCommunityProvider(),
-    Cb01Provider(),
-    EurostreamingProvider()
-  ),
+  /**
+   * Destinazione dei tentativi strutturati. Default [StreamDiagnosticSink.NONE]:
+   * nessuna persistenza e nessun costo quando la diagnostica non e' richiesta.
+   * I provider catalogo creati di default ricevono lo stesso sink, cosi' la
+   * catena provider -> mirror -> extractor resta ricostruibile.
+   */
+  private val diagnostics: StreamDiagnosticSink = StreamDiagnosticSink.NONE,
+  private val providers: List<StreamProvider> = defaultProviders(diagnostics),
   private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
-  /** Repository degli addon Stremio installati (interrogato in parallelo ai provider). */
-  private val addonRepository: StremioAddonRepository = StremioAddonRepository
+  /**
+   * Limite esplicito di provider interrogati contemporaneamente. Il valore e'
+   * configurabile dal chiamante; 1 rende la ricerca sequenziale nell'ordine
+   * della lista. La cancellazione resta strutturata (i job in attesa di slot
+   * vengono annullati con lo scope).
+   */
+  private val maxConcurrentProviders: Int = DEFAULT_MAX_CONCURRENT_PROVIDERS,
+  /** Recupera gli stream degli addon Stremio; iniettabile per testare l'isolamento tra modalità. */
+  private val addonStreamsFetcher: suspend (Int, Boolean, Int?, Int?, String?) -> List<StremioStreamCandidate> =
+    { tmdbId, isTv, season, episode, imdbId ->
+      StremioAddonRepository.fetchStreams(tmdbId, isTv, season, episode, imdbId)
+    },
+  /**
+   * Clock monotono per le metriche (queueMs/runMs/firstSourceMs). Iniettabile
+   * nei test: la produzione usa [DiagnosticClock.SYSTEM].
+   */
+  private val clock: DiagnosticClock = DiagnosticClock.SYSTEM,
+  /** Riceve le metriche aggregate a fine ricerca. Default: nessun costo. */
+  private val onSearchMetrics: (StreamSearchMetrics) -> Unit = {}
 ) {
 
   /** Esito singolo per provider: utile per log e diagnostica. */
@@ -87,6 +112,11 @@ class StreamManager(
 
   /**
    * Risoluzione concorrente reattiva via Flow con priorità 1080p e finestra di sicurezza 1.2s.
+   *
+   * Le metriche di ricerca ([onSearchMetrics]) vengono emesse in un `finally`
+   * che gira **fuori** dalla coroutine del channel: restano disponibili anche
+   * quando il collector va via prima (ricerca annullata dall'utente), senza
+   * dipendere da un `send` sul channel gia' chiuso.
    */
   fun resolveFlow(
     tmdbId: Int,
@@ -100,8 +130,62 @@ class StreamManager(
     genres: List<String> = emptyList(),
     streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB,
     imdbId: String? = null
-  ): Flow<List<StreamSource>> = channelFlow {
-    val flowId = ++searchIdCounter
+  ): Flow<List<StreamSource>> {
+    var metricsToPublish: StreamSearchMetrics? = null
+    var cancelledMetricsSink: (() -> StreamSearchMetrics?)? = null
+    val flow = channelFlow {
+      try {
+        resolveFlowBody(
+          metricsSink = { metricsToPublish = it },
+          cancelledMetricsSink = { cancelledMetricsSink = it },
+          tmdbId = tmdbId,
+          isTv = isTv,
+          season = season,
+          episode = episode,
+          title = title,
+          year = year,
+          originalTitle = originalTitle,
+          providerTag = providerTag,
+          genres = genres,
+          streamingEngineMode = streamingEngineMode,
+          imdbId = imdbId
+        )
+      } finally {
+        // Il producer puo' essere gia' cancellato (collector andato via): la
+        // pubblicazione non deve dipendere dallo stato della coroutine, quindi
+        // gira in NonCancellable. E' sincrona, senza sospensioni e senza I/O.
+        // Se il corpo e' stato cancellato prima di emettere le metriche, qui
+        // ne viene pubblicata comunque la versione parziale gia' nota.
+        withContext(NonCancellable) {
+          val metrics = metricsToPublish ?: cancelledMetricsSink?.invoke()
+          if (metrics != null) {
+            Log.i(DIAG_TAG, "DIAG-M ${metrics.toLogLine()}")
+            onSearchMetrics(metrics)
+          }
+        }
+      }
+    }
+    return flow
+  }
+
+  @Suppress("LongParameterList")
+  private suspend fun kotlinx.coroutines.channels.ProducerScope<List<StreamSource>>.resolveFlowBody(
+    metricsSink: (StreamSearchMetrics) -> Unit,
+    cancelledMetricsSink: (() -> StreamSearchMetrics?) -> Unit,
+    tmdbId: Int,
+    isTv: Boolean,
+    season: Int?,
+    episode: Int?,
+    title: String?,
+    year: Int?,
+    originalTitle: String?,
+    providerTag: String?,
+    genres: List<String>,
+    streamingEngineMode: StreamingEngineMode,
+    imdbId: String?
+  ) {
+    val flowId = NEXT_SEARCH_ID.incrementAndGet()
+    searchIdCounter = flowId.toInt()
     Log.i(HTTP_TRACE, "[SM] resolveFlow START searchId=$flowId tmdbId=$tmdbId isTv=$isTv S${season}E${episode}")
 
     // Senza TMDB ID, IMDb ID e titolo non esiste alcuna chiave di ricerca: nessun
@@ -109,10 +193,27 @@ class StreamManager(
     val imdbIdClean = imdbId?.trim()?.takeIf { it.isNotBlank() }?.substringBefore(":")
     if (tmdbId <= 0 && imdbIdClean.isNullOrBlank() && title.isNullOrBlank()) {
       Log.w(TAG, "resolveFlow: nessuna chiave di ricerca disponibile (tmdbId=$tmdbId, imdbId=$imdbId, titolo vuoto)")
-      return@channelFlow
+      return@resolveFlowBody
     }
+
+    // --- Metriche locali di QUESTA ricerca -----------------------------------
+    // Tutti i tempi sono presi da un clock monotono (mai orologio di parete).
+    // Il contatore di concorrenza viene incrementato DENTRO il permit e
+    // decrementato in un finally: nessun percorso (errore, timeout, cancella-
+    // zione, eccezione non-cancellazione) puo' lasciarlo gonfiato.
+    val metrics = StreamSearchMetricsCollector(flowId, clock)
+    val concurrency = AttemptConcurrencyCounter()
+    val slotLimit = maxConcurrentProviders.coerceAtLeast(1)
+    // Snapshot per l'uscita anticipata: se la ricerca viene cancellata prima
+    // di completare il corpo, il chiamante pubblica comunque le metriche
+    // parziali raccolte fino a quel punto (mai valori inventati).
+    cancelledMetricsSink { metrics.build(peakConcurrent = concurrency.peakCount) }
+
     val collected = mutableListOf<StreamSource>()
     val mutex = Mutex()
+    // Limite per QUESTA ricerca: ricerche concorrenti (es. una annullata e una
+    // nuova) non si contendono gli slot.
+    val providerSlots = Semaphore(slotLimit)
     var emittedFirst = false
     var fastStartWindowPassed = false
     var currentSelectedUrl: String? = null
@@ -130,6 +231,15 @@ class StreamManager(
         Log.i(HTTP_TRACE, "[SM] send() AFTER searchId=$flowId")
       }
     }
+
+    /**
+     * Una sorgente e' candidata alla riproduzione solo se ha un URL HTTP(S)
+     * riproducibile o un infoHash risolvibile da TorBox. Un provider che
+     * restituisce risultati non riproducibili NON deve far partire il timer
+     * della prima sorgente.
+     */
+    fun isPlayableCandidate(source: StreamSource): Boolean =
+      isPlayableDirectUrl(source.streamUrl.orEmpty()) || !source.infoHash.isNullOrBlank()
 
     // Fallback timer: se entro 1.2 secondi nessun provider restituisce >= 1080p,
     // emetti il miglior flusso disponibile finora (es. 720p) come Fast-Start.
@@ -155,30 +265,25 @@ class StreamManager(
       var added = 0
       var dropped = 0
       mutex.withLock {
-        sources.forEach { s ->
-          val isTorBoxSource = s.infoHash != null
-          val dedupKey = if (isTorBoxSource) {
-            "${s.infoHash}_${s.fileIdx ?: -1}"
-          } else {
-            s.streamUrl ?: ""
-          }
-          if (collected.none { other ->
-            val otherKey = if (other.infoHash != null) "${other.infoHash}_${other.fileIdx ?: -1}" else other.streamUrl ?: ""
-            otherKey == dedupKey
-          }) {
-            collected.add(s)
-            added++
-          } else {
-            dropped++
-          }
+        // La deduplica distingue lo stesso URL con header di autorizzazione o
+        // riproduzione differenti (es. token Debrid diversi): sono sorgenti
+        // realmente diverse e non vanno collassate in una sola.
+        val before = collected.size
+        addDistinctSources(collected, sources)
+        added = collected.size - before
+        dropped = sources.size - added
+        // Contatori per provider, non solo per addon: almeno una delle
+        // sorgenti aggiunte deve essere riproducibile per far partire il
+        // cronometro della prima sorgente valida.
+        metrics.onDuplicates(dropped)
+        metrics.onValidSources(added)
+        if (added > 0 && collected.any { isPlayableCandidate(it) }) {
+          metrics.onFirstPlayableSource()
         }
-        // DIAG TEMPORANEO (C): deduplicazione delle sorgenti dirette addon (infoHash == null).
-        if (origin == "StremioAddons") {
-          Log.i(
-            DIAG_TAG,
-            "DIAG-C origin=$origin incoming=${sources.size} added=$added dropped_dup=$dropped collected=${collected.size}"
-          )
-        }
+        Log.i(
+          DIAG_TAG,
+          "DIAG-C origin=$origin incoming=${sources.size} added=$added dropped_dup=$dropped collected=${collected.size}"
+        )
         collected.sortWith(
           compareByDescending<StreamSource> { qualityScore(it) }
             .thenByDescending { if (it.serverName.contains("TorBox", ignoreCase = true)) 1 else 0 }
@@ -258,10 +363,9 @@ class StreamManager(
     supervisorScope {
       val jobs = mutableListOf<Job>()
 
-      // --- 1) ADDON STREMIO (risorsa "stream") — SOLO in DEBRID_TORBOX ---
-      // In HTTP_WEB gli addon Stremio NON vengono interrogati: la modalita'
-      // usa esclusivamente gli scraper web gratuiti, quindi nessun job addon
-      // puo' rallentare o bloccare la ricerca HTTP_WEB.
+      // --- 1) ADDON STREMIO (risorsa "stream") ----------------------------
+      // Gli addon Stremio vengono interrogati esclusivamente in DEBRID_TORBOX.
+      // HTTP_WEB usa soltanto i provider HTTP integrati in StreamNova.
       if (streamingEngineMode == StreamingEngineMode.DEBRID_TORBOX) {
         // Interroga in parallelo tutti gli addon attivi: gli stream con "url" diretto
         // (es. addon pre-configurato con TorBox/Debrid) diventano sorgenti dirette ad
@@ -269,18 +373,64 @@ class StreamManager(
         // [TorBoxStreamProvider] che gira in parallelo nello stesso launch (le chiamate
         // agli addon/condividono la cache single-flight di StremioAddonRepository).
         val stremioAddonJob = launch {
+          metrics.onProviderStarted()
           if (isAnime) delay(ANIME_HEAD_START_MS)
+          val enqueuedAt = clock.nowMs()
+          var runStart = enqueuedAt
+          var outcome = StreamAttemptOutcome.NO_RESULTS
+          var failureMessage: String? = null
+          var produced = 0
           try {
             Log.i(HTTP_TRACE, "[SM] StremioAddon source START searchId=$flowId tmdbId=$tmdbId")
-            val sources = withTimeout(timeoutMs) {
-              resolveStremioAddonSources(tmdbId, isTv, season, episode, imdbId)
+            val sources = providerSlots.withPermit {
+              runStart = clock.nowMs()
+              concurrency.increment()
+              try {
+                withTimeout(timeoutMs) {
+                  resolveStremioAddonSources(tmdbId, isTv, season, episode, imdbId)
+                }
+              } finally {
+                concurrency.decrement()
+              }
             }
             Log.i(HTTP_TRACE, "[SM] StremioAddon source END searchId=$flowId sources=${sources.size}")
-            mergeSources("StremioAddons", sources)
+            produced = sources.size
+            if (sources.isNotEmpty()) {
+              mergeSources("StremioAddons", sources)
+              outcome = StreamAttemptOutcome.SUCCESS
+            }
           } catch (e: TimeoutCancellationException) {
+            outcome = StreamAttemptOutcome.TIMEOUT
+            failureMessage = e.message
             Log.w(TAG, "StremioAddons -> timeout dopo ${timeoutMs}ms")
+          } catch (e: CancellationException) {
+            outcome = StreamAttemptOutcome.CANCELLED
+            failureMessage = "ricerca annullata"
+            throw e
           } catch (e: Exception) {
+            outcome = StreamDiagnostics.classify(e)
+            failureMessage = e.message
             Log.w(TAG, "StremioAddons -> ${e.message}")
+          } finally {
+            val finishedAt = clock.nowMs()
+            metrics.onAttemptOutcome(outcome)
+            metrics.onProviderCompleted()
+            Log.i(
+              DIAG_TAG,
+              "DIAG-P provider=StremioAddons request='${(title ?: "").take(80)}' isTv=$isTv " +
+                "S=${season ?: "-"} E=${episode ?: "-"} outcome=$outcome " +
+                "durationMs=${finishedAt - enqueuedAt} sources=$produced " +
+                "error=${StreamDiagnostics.sanitize(failureMessage) ?: "-"}"
+            )
+            diagnostics.record(
+              providerId = "StremioAddons",
+              outcome = outcome,
+              durationMs = finishedAt - enqueuedAt,
+              message = failureMessage,
+              searchId = flowId,
+              queueMs = runStart - enqueuedAt,
+              runMs = finishedAt - runStart
+            )
           }
         }
         jobs += stremioAddonJob
@@ -288,50 +438,108 @@ class StreamManager(
 
       jobs += filteredProviders.map { provider ->
         launch {
+          metrics.onProviderStarted()
           if (isAnime && provider !is AnimeStreamProvider) {
             // Head-start: i provider generici partono dopo, cosi l'anime viene servito per primo
             delay(ANIME_HEAD_START_MS)
           }
-          val name = provider.javaClass.simpleName
+          val name = provider.providerId
           val isPittDebug = tmdbId == 318508 && isTv
           if (isPittDebug) {
             Log.d("THE_PITT_STREAM", "[StreamManager] $name resolving TMDB=$tmdbId isTv=$isTv season=$season episode=$episode")
           }
-          val startTime = System.currentTimeMillis()
+          // Candidato in coda da qui: queueMs e' l'attesa del semaforo,
+          // runMs l'esecuzione effettiva sotto slot. L'attesa in coda non
+          // consuma il budget del tentativo (withTimeout e' dentro il permit).
+          val enqueuedAt = clock.nowMs()
+          var runStart = enqueuedAt
+          var outcome = StreamAttemptOutcome.NO_RESULTS
+          var failureMessage: String? = null
+          var produced = 0
           try {
             Log.i(HTTP_TRACE, "[SM] Provider source START name=$name searchId=$flowId tmdbId=$tmdbId")
-            val sources = withTimeout(timeoutMs) {
-              if (provider is AnimeStreamProvider && originalTitle != null) {
-                provider.getStreams(tmdbId, isTv, season, episode, title, originalTitle, year)
-              } else if (provider is TorBoxStreamProvider) {
-                provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
-              } else {
-                provider.getStreams(tmdbId, isTv, season, episode, title, year)
+            // Lo slot viene acquisito PRIMA del timeout: l'attesa in coda non
+            // consuma il budget del tentativo. withPermit e' cancellabile,
+            // quindi l'annullamento della ricerca libera anche i job in attesa.
+            val sources = providerSlots.withPermit {
+              runStart = clock.nowMs()
+              concurrency.increment()
+              try {
+                withTimeout(timeoutMs) {
+                  if (provider is AnimeStreamProvider && originalTitle != null) {
+                    provider.getStreams(tmdbId, isTv, season, episode, title, originalTitle, year)
+                  } else if (provider is TorBoxStreamProvider) {
+                    provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
+                  } else if (provider is TwoEmbedProvider) {
+                    // IMDb ID disponibile: fallback per `var Q` quando il player
+                    // espone solo un ID numerico o nessun identificativo.
+                    provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
+                  } else {
+                    provider.getStreams(tmdbId, isTv, season, episode, title, year)
+                  }
+                }
+              } finally {
+                concurrency.decrement()
               }
             }
-            val elapsed = System.currentTimeMillis() - startTime
+            val elapsed = clock.nowMs() - runStart
             Log.i(HTTP_TRACE, "[SM] Provider source END name=$name searchId=$flowId duration=${elapsed}ms sources=${sources?.size ?: 0}")
+            produced = sources?.size ?: 0
             if (sources.isNotEmpty()) {
               Log.i(TAG, "$name -> ${sources.size} sorgente/i trovate in ${elapsed}ms")
               if (isPittDebug) {
                 Log.d("THE_PITT_STREAM", "[StreamManager] $name SUCCESS: ${sources.size} sources, first URL: ${sources.first().streamUrl}")
               }
               mergeSources(name, sources)
+              outcome = StreamAttemptOutcome.SUCCESS
             } else {
               Log.d(TAG, "$name -> nessuna sorgente prodotta in ${elapsed}ms")
             }
           } catch (e: TimeoutCancellationException) {
-            val elapsed = System.currentTimeMillis() - startTime
+            outcome = StreamAttemptOutcome.TIMEOUT
+            failureMessage = e.message
+            val elapsed = clock.nowMs() - runStart
             Log.w(TAG, "$name -> timeout dopo ${elapsed}ms")
             if (tmdbId == 318508 && isTv) {
               Log.d("THE_PITT_STREAM", "[StreamManager] $name TIMEOUT after ${elapsed}ms")
             }
+          } catch (e: CancellationException) {
+            // Cancellazione strutturata: non e' un errore del provider e non va
+            // soppressa. Il tentativo viene comunque registrato per diagnostica.
+            outcome = StreamAttemptOutcome.CANCELLED
+            failureMessage = "ricerca annullata"
+            throw e
           } catch (e: Exception) {
-            val elapsed = System.currentTimeMillis() - startTime
+            val elapsed = clock.nowMs() - runStart
+            outcome = StreamDiagnostics.classify(e)
+            failureMessage = e.message
             Log.w(TAG, "$name -> eccezione dopo ${elapsed}ms: ${e.message}")
             if (tmdbId == 318508 && isTv) {
               Log.d("THE_PITT_STREAM", "[StreamManager] $name ERROR: ${e.message}")
             }
+          } finally {
+            val finishedAt = clock.nowMs()
+            metrics.onAttemptOutcome(outcome)
+            metrics.onProviderCompleted()
+            // Diagnostica per provider richiesta: titolo/episodio, esito,
+            // durata, sorgenti prodotte ed errore finale. Nessun header,
+            // cookie o token viene registrato.
+            Log.i(
+              DIAG_TAG,
+              "DIAG-P provider=$name request='${(title ?: "").take(80)}' isTv=$isTv " +
+                "S=${season ?: "-"} E=${episode ?: "-"} outcome=$outcome " +
+                "durationMs=${finishedAt - enqueuedAt} sources=$produced " +
+                "error=${StreamDiagnostics.sanitize(failureMessage) ?: "-"}"
+            )
+            diagnostics.record(
+              providerId = name,
+              outcome = outcome,
+              durationMs = finishedAt - enqueuedAt,
+              message = failureMessage,
+              searchId = flowId,
+              queueMs = runStart - enqueuedAt,
+              runMs = finishedAt - runStart
+            )
           }
         }
       }
@@ -356,13 +564,18 @@ class StreamManager(
       }
     }
     fallbackTimerJob.cancel()
-    Log.i(HTTP_TRACE, "[SM] resolveFlow COMPLETE searchId=$flowId collected=${collected.size}")
-
-    mutex.withLock {
-      if (!emittedFirst && collected.isNotEmpty()) {
-        emittedFirst = true
-        logAndSendSelected(collected.toList())
+    // Emissione finale best-effort: se il collector e' gia' andato via (ricerca
+    // annullata) il send fallisce con CancellationException; le metriche sono
+    // comunque pubblicate dal finally non-suspending di resolveFlow.
+    try {
+      mutex.withLock {
+        if (!emittedFirst && collected.isNotEmpty()) {
+          emittedFirst = true
+          logAndSendSelected(collected.toList())
+        }
       }
+    } catch (e: CancellationException) {
+      Log.i(HTTP_TRACE, "[SM] collector assente su send finale searchId=$flowId")
     }
     // DIAG TEMPORANEO (E): conteggi aggregati finali. "stream-name:" e' il testo `name`
     // della singola sorgente (payload addon), NON l'addon interrogato; "serverName:" per le
@@ -372,6 +585,11 @@ class StreamManager(
       DIAG_TAG,
       "DIAG-E resolveFlow COMPLETE searchId=$flowId total=${collected.size} byLabel=$diagFinalCounts"
     )
+
+    // Metriche aggregate finali (anche parziali, se la ricerca e' stata
+    // cancellata o ha superato il budget). La scrittura sul log e la callback
+    // avvengono fuori da qui, nel finally di resolveFlow.
+    metricsSink(metrics.build(peakConcurrent = concurrency.peakCount))
   }
 
   /**
@@ -388,7 +606,7 @@ class StreamManager(
     episode: Int?,
     imdbId: String? = null
   ): List<StreamSource> {
-    val candidates = addonRepository.fetchStreams(tmdbId, isTv, season, episode, imdbId)
+    val candidates = addonStreamsFetcher(tmdbId, isTv, season, episode, imdbId)
     if (candidates.isEmpty()) {
       Log.i(DIAG_TAG, "DIAG-C origin=StremioAddons result=EMPTY candidates=0")
       return emptyList()
@@ -513,8 +731,35 @@ class StreamManager(
     // DIAG TEMPORANEO (solo logging).
     private const val DIAG_TAG = "COMET_DIAG"
     var searchIdCounter = 0
+
+    /** Sorgente monotona degli ID di ricerca (nessun perdita con ricerche concorrenti). */
+    private val NEXT_SEARCH_ID = AtomicLong(0L)
     const val DEFAULT_TIMEOUT_MS = 15_000L
     const val FAST_START_FALLBACK_DELAY_MS = 1200L
+
+    /** Provider interrogati contemporaneamente quando il chiamante non specifica un limite. */
+    const val DEFAULT_MAX_CONCURRENT_PROVIDERS = 3
+
+    /**
+     * Provider predefiniti. I provider catalogo condividono il sink diagnostico
+     * per registrare i tentativi per mirror ed extractor con lo stesso contesto.
+     */
+    private fun defaultProviders(diagnostics: StreamDiagnosticSink): List<StreamProvider> = listOf(
+      // Debrid: risolve gli infoHash degli addon Stremio/scraper con TorBox Instant Debrid.
+      // E' il primo elemento perché le sorgenti 4K/1080p debrid hanno priorità massima.
+      TorBoxStreamProvider(),
+      // Provider dedicato agli anime: per i contenuti animati viene prioritizzato
+      // (vedi [isAnimeContent] in resolveFlow) e lanciato per primo.
+      AnimeStreamProvider(),
+      MultiEmbedProvider(diagnostics = diagnostics),
+      VixSrcProvider(diagnostics = diagnostics),
+      // 2Embed: il sink alimenta i record diagnostici per-mirror (come i cataloghi).
+      TwoEmbedProvider(diagnostics = diagnostics),
+      SuperEmbedProvider(diagnostics = diagnostics),
+      StreamingCommunityProvider(diagnostics = diagnostics),
+      Cb01Provider(diagnostics = diagnostics),
+      EurostreamingProvider(diagnostics = diagnostics)
+    )
 
     /** Timeout (ms) per l'attesa finale dei job cancellati prima di chiudere il channelFlow. */
     const val JOIN_TIMEOUT_MS = 3_000L
@@ -574,6 +819,15 @@ class StreamManager(
         addonName = candidate.addonName
       )
 
+      // DIAG: attribuzione diagnostica della sorgente diretta. Solo host, presenza di
+      // header e hint HLS: niente URL completo, path, query o token nei log.
+      val diagHost = url.toHttpUrlOrNull()?.host ?: "unknown-host"
+      Log.i(
+        DIAG_TAG,
+        "DIAG-S direct host=$diagHost headers=${item.proxyHeaders.isNotEmpty()} " +
+          "hlsHint=${url.lowercase().contains(".m3u8")}"
+      )
+
       return StreamSource(
         streamUrl = url,
         quality = quality,
@@ -595,6 +849,57 @@ class StreamManager(
         subtitles = subtitles
       )
     }
+
+    /**
+     * Chiave di deduplica di una sorgente.
+     *
+     *  - torrent/TorBox: `infoHash` + indice file (comportamento storico);
+     *  - HTTP: URL **più** gli header che possono cambiare autorizzazione o
+     *    riproduzione. Nomi normalizzati in lowercase, valori con spazi esterni
+     *    rimossi e ordine deterministico.
+     *
+     * I valori degli header non vengono mai loggati: la chiave è solo per il
+     * confronto in memoria.
+     */
+    internal fun sourceDedupKey(source: StreamSource): String {
+      if (source.infoHash != null) {
+        return "torrent:${source.infoHash}_${source.fileIdx ?: -1}"
+      }
+      val url = source.streamUrl.orEmpty()
+      val relevantHeaders = source.headers.entries
+        .map { it.key.trim().lowercase() to it.value.trim() }
+        .filter { (name, _) -> name in PLAYBACK_HEADERS || name.startsWith("x-") }
+        .sortedWith(compareBy({ it.first }, { it.second }))
+        .joinToString("\u001f") { (name, value) -> "$name=$value" }
+      return "url:$url\u001e$relevantHeaders"
+    }
+
+    /** Aggiunge a [target] solo le sorgenti con chiave non ancora presente. */
+    internal fun addDistinctSources(target: MutableList<StreamSource>, incoming: List<StreamSource>): Int {
+      if (incoming.isEmpty()) return 0
+      val keys = target.mapTo(HashSet(target.size + incoming.size)) { sourceDedupKey(it) }
+      var added = 0
+      incoming.forEach { source ->
+        if (keys.add(sourceDedupKey(source))) {
+          target.add(source)
+          added++
+        }
+      }
+      return added
+    }
+
+    /**
+     * Header che influenzano l'autorizzazione o il contesto della richiesta
+     * (Referer/Origin sono richiesti da molti CDN). Altri header `X-*` sono
+     * inclusi perché spesso trasportano token di sessione.
+     */
+    private val PLAYBACK_HEADERS = setOf(
+      "authorization",
+      "cookie",
+      "referer",
+      "origin",
+      "user-agent"
+    )
 
     /** true se l'URL è un link HTTP(S) riproducibile (non un manifest/JSON). */
     internal fun isPlayableDirectUrl(url: String): Boolean {
@@ -695,3 +1000,10 @@ class StreamManager(
     }
   }
 }
+
+
+
+
+
+
+

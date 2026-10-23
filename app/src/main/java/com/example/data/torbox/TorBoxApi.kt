@@ -32,30 +32,33 @@ data class TorBoxUserDto(
   @Json(name = "premium_left") val premiumLeft: Any? = null
 )
 
+@JsonClass(generateAdapter = true)
 data class TorBoxUserResponse(
   val success: Boolean? = null,
   val error: String? = null,
   val data: TorBoxUserDto? = null
 )
 
+@JsonClass(generateAdapter = true)
 data class TorBoxCheckCachedResponse(
   val success: Boolean? = null,
   val error: String? = null,
   val data: Any? = null
 )
 
+@JsonClass(generateAdapter = true)
 data class TorBoxDownloadLinkResponse(
   val success: Boolean? = null,
   val error: String? = null,
   val data: Any? = null
 )
 
+@JsonClass(generateAdapter = true)
 data class TorBoxMyListResponse(
   val success: Boolean? = null,
   val error: String? = null,
   val data: Any? = null
 )
-
 interface TorBoxApi {
 
   @GET("user/me")

@@ -56,6 +56,38 @@ class NewProvidersTest {
     println("2Embed OK -> ${best.serverName} ${best.quality} ${best.url}")
   }
 
+  /**
+   * 2Embed **Serie TV**: `embedtv/{tmdb}&s=&e=` -> VidSrc `/embed/tv/...` ->
+   * master HLS con stagione/episodio esatti. Verifica online end-to-end della
+   * correzione del path TV (eseguita manualmente il 2026-10-22: S01E01 di
+   * Game of Thrones ha restituito una master HLS 1080p).
+   */
+  @Ignore("Online: dipende dai mirror esterni; eseguire manualmente per la verifica end-to-end")
+  @Test
+  fun twoEmbedRisolveSerieTvRealeConHls(): Unit = runBlocking {
+    val sources = TwoEmbedProvider().getStreams(
+      tmdbId = 1399, // Game of Thrones
+      isTv = true,
+      season = 1,
+      episode = 1,
+      title = "Game of Thrones",
+      year = 2011,
+      imdbId = "tt0944947"
+    )
+
+    assertTrue("nessuna sorgente 2Embed per S01E01", sources.isNotEmpty())
+    val best = sources.first()
+    assertTrue(
+      "url non HLS: ${best.streamUrl}",
+      best.streamUrl.orEmpty().contains(".m3u8", true) ||
+        best.streamUrl.orEmpty().contains("_stream", true)
+    )
+    assertTrue("Referer mancante: ${best.headers}", best.headers.containsKey("Referer"))
+    val playlist = ExtractorHttp.get(best.streamUrl.orEmpty(), referer = best.headers["Referer"])
+    assertTrue("risposta non HLS: ${playlist.take(40)}", playlist.startsWith("#EXTM3U"))
+    println("2Embed TV OK -> ${best.serverName} ${best.quality} S01E01")
+  }
+
   /** SuperEmbed/MultiEmbed: riconoscimento del player e del gate Turnstile. */
   @Test
   fun superEmbedGestiscePlayerEGate(): Unit = runBlocking {
@@ -79,7 +111,7 @@ class NewProvidersTest {
     }
   }
 
-  /** StreamingCommunity: nessun mirror attivo -> fallimento esplicito e tracciato. */
+  /** StreamingCommunity: esito esplicito e tracciato, con l'elenco dei mirror provati. */
   @Test
   fun streamingCommunityFallisceInModoEsplicito(): Unit = runBlocking {
     val result = runCatching {
@@ -99,7 +131,8 @@ class NewProvidersTest {
         "atteso errore di mirror, ottenuto: $message",
         message.contains("non risolvibile", ignoreCase = true)
       )
-      assertTrue("elenco mirror mancante: $message", message.contains("streamingcommunity"))
+      // I mirror verificati usano il dominio con trattino (streaming-community.*).
+      assertTrue("elenco mirror mancante: $message", message.contains("streaming-community"))
     }
   }
 }

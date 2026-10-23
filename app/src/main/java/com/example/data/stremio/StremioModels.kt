@@ -14,6 +14,25 @@ const val RESOURCE_ADDON_CATALOG = "addon_catalog"
 const val TYPE_MOVIE = "movie"
 const val TYPE_SERIES = "series"
 
+/**
+ * Confronto condiviso tra il tipo dichiarato da un catalogo/addon e il tipo richiesto.
+ *
+ * Il tipo richiesto `series` è un insieme: un catalogo che dichiara `tv`, `show` o
+ * `tvshow` (es. TvVoo) è una fonte di serie TV esattamente come uno che dichiara
+ * `series`. `movie` resta invece un confronto stretto. Il tipo ORIGINALE del
+ * catalogo non viene mai riscritto: serve a costruire l'endpoint dell'addon.
+ */
+fun catalogTypeMatches(catalogType: String?, requestedType: String?): Boolean {
+  val catalog = catalogType?.trim().orEmpty()
+  val requested = requestedType?.trim().orEmpty()
+  if (catalog.isEmpty() || requested.isEmpty()) return false
+  if (catalog.equals(requested, ignoreCase = true)) return true
+  if (!requested.equals(TYPE_SERIES, ignoreCase = true)) return false
+  return catalog.equals("tv", ignoreCase = true) ||
+    catalog.equals("show", ignoreCase = true) ||
+    catalog.equals("tvshow", ignoreCase = true)
+}
+
 const val EXTRA_SEARCH = "search"
 const val EXTRA_GENRE = "genre"
 const val EXTRA_SKIP = "skip"
@@ -97,10 +116,7 @@ data class StremioCatalogDefinition(
     get() = effectiveType.equals(TYPE_MOVIE, ignoreCase = true)
 
   val isSeries: Boolean
-    get() = effectiveType.equals(TYPE_SERIES, ignoreCase = true) ||
-      effectiveType.equals("tv", ignoreCase = true) ||
-      effectiveType.equals("show", ignoreCase = true) ||
-      effectiveType.equals("tvshow", ignoreCase = true)
+    get() = catalogTypeMatches(effectiveType, TYPE_SERIES)
 
   /**
    * Converte [extra] in una lista tipizzata di [StremioCatalogExtra], gestendo sia
@@ -310,7 +326,7 @@ data class StremioManifest(
   fun supportsCatalogForType(type: String): Boolean {
     if (!supportsCatalog()) return false
     if (!catalogs.isNullOrEmpty()) {
-      return validCatalogs().any { it.type.equals(type, ignoreCase = true) }
+      return validCatalogs().any { catalogTypeMatches(it.effectiveType, type) }
     }
     return supportsTypeForResource(RESOURCE_CATALOG, type)
   }
@@ -331,7 +347,7 @@ data class StremioManifest(
 
   /** Cataloghi filtrati per tipo ("movie", "series", ecc.). */
   fun catalogsForType(type: String): List<StremioCatalogDefinition> =
-    validCatalogs().filter { it.effectiveType.equals(type, ignoreCase = true) }
+    validCatalogs().filter { catalogTypeMatches(it.effectiveType, type) }
 
   /** Cataloghi film. */
   fun movieCatalogs(): List<StremioCatalogDefinition> =

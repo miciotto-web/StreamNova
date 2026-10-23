@@ -41,6 +41,7 @@ import com.example.data.repository.ProviderCoverage
 import com.example.data.repository.StremioCatalogRepository
 import com.example.data.stremio.InstalledAddon
 import com.example.data.stremio.StremioAddonRepository
+import com.example.data.stremio.StremioLiveChannelClassifier
 import com.example.data.torbox.TorBoxRepository
 import com.example.data.update.UpdateCheckState
 import com.example.data.update.UpdateDownloadState
@@ -48,6 +49,7 @@ import com.example.data.update.UpdateRepository
 import com.example.data.streaming.StreamManager
 import com.example.data.streaming.StreamResult
 import com.example.data.streaming.StreamSource
+import com.example.data.streaming.diagnostics.StreamDiagnosticSinkFactory
 import com.example.data.opensubtitles.OpenSubtitlesSubtitleAdapter
 import com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider
 import com.example.domain.model.Subtitle
@@ -56,10 +58,12 @@ import com.example.ui.components.ProviderConstants
 import com.example.ui.components.FOCUS_ROW_ANY
 import java.util.concurrent.ConcurrentHashMap
 import com.example.ui.screens.player.NextEpisodePromptUtils
+import com.example.ui.screens.player.PlayerSourceFallback
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -213,6 +217,21 @@ internal const val NEXT_EPISODE_FAST_PATH_TIMEOUT_MS = 3_500L
  * e si mostra il dialog di selezione manuale delle sorgenti. Mai spinner infinito.
  */
 internal const val NEXT_EPISODE_RESOLUTION_TIMEOUT_MS = 10_000L
+
+/**
+ * Finestra di assestamento (ms) dell'auto-pick.
+ *
+ * I provider HTTP rispondono in tempi molto diversi: il primo arrivo puo'
+ * essere una sorgente a qualita' bassa, mentre quella migliore arriva piu'
+ * tardi. Dopo la prima emissione si attende questo breve lasso di tempo per
+ * raccogliere le sorgenti migliori e POI il player viene avviato una volta
+ * sola con la migliore disponibile.
+ *
+ * La finestra e' volutamente breve (stesso ordine di grandezza del fast-start
+ * di [com.example.data.streaming.StreamManager]): la riproduzione non resta
+ * sospesa indefinitamente e il download non viene mai ricaricato a meta'.
+ */
+internal const val AUTO_PICK_SETTLE_WINDOW_MS = 1_200L
 
 /**
  * Priorita' assoluta del bingewatching: risolve il nuovo episodio DALLA STESSA
@@ -522,13 +541,9 @@ class StreamNovaViewModel(
   private val _selectedMedia = MutableStateFlow<MediaItem?>(null)
   val selectedMedia: StateFlow<MediaItem?> = _selectedMedia.asStateFlow()
 
-  // Stack di navigazione tra schede di dettaglio (Punto 2: Consigliati e Backstack)
   private val detailMediaStack = mutableListOf<MediaItem>()
 
-  // Focus retention della catena "Altro come questo": la scheda a cui Back risale deve
-  // riportare il focus sulla card del consiglio che era stata cliccata (e chiusa con Back).
-  // popDetail lo imposta con l'id del media appena chiuso; il consumatore lo azzera quando
-  // il focus è effettivamente tornato sulla card.
+  // Target di focus quando si torna indietro nella catena "Altro come questo".
   private val _chainRestoreMediaId = MutableStateFlow<String?>(null)
   val chainRestoreMediaId: StateFlow<String?> = _chainRestoreMediaId.asStateFlow()
 
@@ -561,6 +576,8 @@ class StreamNovaViewModel(
   fun saveLastFocusedMedia(rowKey: String, mediaId: String) {
     _lastFocusedTarget.value = rowKey to mediaId
     _lastFocusedMediaId.value = mediaId
+    // Mutua esclusione: un salvataggio media invalida un target provider rimasto appeso.
+    _lastFocusedProviderId.value = null
   }
 
   /**
@@ -575,12 +592,37 @@ class StreamNovaViewModel(
       _lastFocusedTarget.value = FOCUS_ROW_ANY to mediaId
     }
     _lastFocusedMediaId.value = mediaId
+    // Mutua esclusione: un salvataggio media invalida un target provider rimasto appeso.
+    _lastFocusedProviderId.value = null
   }
 
   /** Consuma il target di ripristino non appena il focus è stato richiesto con successo. */
   fun clearLastFocusedMedia() {
     _lastFocusedTarget.value = null
     _lastFocusedMediaId.value = null
+  }
+
+  /**
+   * Target di ripristino per le CARD PROVIDER dell'hub della Home (Netflix, HBO Max, …).
+   *
+   * Canale DEDICATO: le card provider non sono [com.example.data.model.MediaItem] e la scheda
+   * Provider CONSUMA e RILASCIA il target media ([clearLastFocusedMedia]) al primo ingresso,
+   * quindi condividerlo azzererebbe il target proprio mentre la scheda è aperta e al BACK il
+   * focus non avrebbe nulla da ripristinare (difetto "ritorno dalla scheda provider sull'Hero").
+   * Salvato al click della card provider, consumato quando la card riceve DAVVERO il focus.
+   */
+  private val _lastFocusedProviderId = MutableStateFlow<String?>(null)
+  val lastFocusedProviderId: StateFlow<String?> = _lastFocusedProviderId.asStateFlow()
+
+  fun saveLastFocusedProvider(providerId: String) {
+    _lastFocusedProviderId.value = providerId
+    // Mutua esclusione col target media: la provenienza è la card PROVIDER, non una card media.
+    _lastFocusedTarget.value = null
+    _lastFocusedMediaId.value = null
+  }
+
+  fun clearLastFocusedProvider() {
+    _lastFocusedProviderId.value = null
   }
 
   fun signalFocusRestore(mediaId: String) {
@@ -746,11 +788,13 @@ class StreamNovaViewModel(
     currentMediaFetchJob = null
     streamJob?.cancel()
     streamJob = null
-    loadStreamJob?.cancel()
     loadStreamGeneration++
-    loadStreamJob = null
     _showSourceDialog.value = false
     _availableSources.value = emptyList()
+    // NOTA: [_sourceCandidates] (lista del selettore interno al player) NON viene
+    // azzerata qui: resetStreamState viene invocato anche dall'onDispose di
+    // ExoPlayer durante una ricreazione del player, a sessione in corso. La lista
+    // dei candidati resta valida finche' il player non viene chiuso (closePlayer).
     _sourceDialogMedia.value = null
     _streamResolutionState.value = StreamResolutionState.Idle
     _streamResult.value = StreamResult.Idle
@@ -864,6 +908,82 @@ class StreamNovaViewModel(
   val availableSources: StateFlow<List<StreamSource>> = _availableSources.asStateFlow()
 
   /**
+   * Sorgenti valide disponibili per il titolo corrente, mostrate dal selettore
+   * "Sorgente video" interno al player.
+   *
+   * Diversamente da [_availableSources] (che viene azzerata alla scelta, per
+   * chiudere il dialog di scelta iniziale), questa lista SOPRAVVIVE alla scelta
+   * manuale: se la sorgente scelta fallisce l'utente deve poter riaprire il
+   * selettore e provarne un'altra senza riavviare la risoluzione.
+   *
+   * L'aggiornamento e' progressivo: ogni provider che risponde arricchisce la
+   * lista, senza mai riavviare la sorgente attualmente in riproduzione.
+   */
+  private val _sourceCandidates = MutableStateFlow<List<StreamSource>>(emptyList())
+  val sourceCandidates: StateFlow<List<StreamSource>> = _sourceCandidates.asStateFlow()
+
+  /**
+   * Visibilita' del selettore sorgenti interno al player.
+   *
+   * E' indipendente dal dialog di scelta iniziale ([_showSourceDialog]): il
+   * selettore del player resta apribile durante la riproduzione, il buffering
+   * e lo stato di errore, cosi' l'utente puo' sempre provare un'altra sorgente.
+   */
+  private val _showSourceSelector = MutableStateFlow(false)
+  val showSourceSelector: StateFlow<Boolean> = _showSourceSelector.asStateFlow()
+
+  /**
+   * Token incrementato a ogni cambio della sorgente in riproduzione.
+   *
+   * Due percorsi lo incrementano: la scelta **manuale** dell'utente
+   * ([selectSource]) e il **fallback automatico** su errore definitivo
+   * ([handleSourcePlaybackFailure]). In entrambi i casi il player deve ricaricare
+   * il flusso anche quando l'URL non cambia (a parita' di URL cambiano header e
+   * metadati) e lo fa sulla STESSA istanza di ExoPlayer, senza duplicazioni ne'
+   * avvii concorrenti.
+   */
+  private val _manualSourceSelectionToken = MutableStateFlow(0)
+  val manualSourceSelectionToken: StateFlow<Int> = _manualSourceSelectionToken.asStateFlow()
+
+  /**
+   * Chiavi logiche ([PlayerSourceFallback.keyOf]) delle sorgenti gia' tentate nel
+   * ciclo di riproduzione corrente.
+   *
+   * Una sorgente che ha gia' fallito non viene ritentata automaticamente nello
+   * stesso ciclo: il fallback non puo' quindi entrare in un ciclo infinito ne'
+   * alternarsi continuamente tra due sorgenti. Il ciclo riparte (insieme vuoto) a
+   * ogni nuova risoluzione ([openStreamForMedia]), a ogni scelta manuale
+   * ([selectSource], che e' autorevole e puo' ritentare anche una sorgente
+   * fallita) e alla chiusura del player ([closePlayer]).
+   *
+   * Letto e scritto solo dal thread principale, come il resto dello stato.
+   */
+  private val attemptedSourceKeys = mutableSetOf<String>()
+
+  /**
+   * True mentre una scelta manuale della sorgente e' in corso di applicazione
+   * (risoluzione TorBox on-demand inclusa).
+   *
+   * In quella finestra il fallback automatico non deve inserirsi tra la richiesta
+   * dell'utente e il suo avvio: la scelta manuale resta autorevole.
+   */
+  @Volatile
+  private var manualSourceSelectionInFlight = false
+
+  /**
+   * Pubblica le sorgenti appena risolte.
+   *
+   * Alimenta sia la lista del dialog di scelta iniziale ([_availableSources]) sia
+   * quella del selettore interno al player ([_sourceCandidates]). L'aggiornamento
+   * e' progressivo: le emissioni successive dei provider arricchiscono la lista
+   * senza toccare il flusso in riproduzione.
+   */
+  private fun publishResolvedSources(sources: List<StreamSource>) {
+    _availableSources.value = sources
+    _sourceCandidates.value = sources
+  }
+
+  /**
    * Media/episodio per cui è in corso la selezione sorgente TorBox. Esposto alla UI
    * per comporre la schermata di selezione (poster, backdrop, logo, SxEx) senza
    * introdurre nuove chiamate di rete: sono gli stessi dati già risolti dal flow.
@@ -879,7 +999,6 @@ class StreamNovaViewModel(
   private val _trailerState = MutableStateFlow<TrailerPlaybackState>(TrailerPlaybackState.Idle)
   val trailerState: StateFlow<TrailerPlaybackState> = _trailerState.asStateFlow()
   private var loadTrailerJob: Job? = null
-  private var loadStreamJob: Job? = null
 
   /**
    * Generazione del loadStream corrente: incrementata a ogni nuova chiamata e
@@ -892,6 +1011,30 @@ class StreamNovaViewModel(
   /** Stato schermata attivo PRIMA dell'apertura del Player: usato per ripristinare l'origine al BACK. */
   private var screenBeforePlayer: ScreenState? = null
   private var sectionBeforePlayer: SidebarSection = SidebarSection.HOME
+
+  /**
+   * Provenienza del focus della riproduzione avviata da una card di riga: coppia
+   * (rowKey, mediaId) registrata al click della card (es. «Continua a guardare»).
+   *
+   * La riproduzione avviata direttamente da una card NON passa dal Dettaglio: la Home resta
+   * composta sotto l'overlay del player e al ritorno nessun segnale di ripristino veniva
+   * emesso (il target di [saveLastFocusedMedia] è del percorso Dettaglio/Provider), quindi il
+   * focus restava alla prima superficie focalizzabile (la sidebar). La provenienza viene
+   * consumata UNA SOLA VOLTA alla chiusura del player (vedi [restoreFocusOnPlayerReturn]).
+   *
+   * Non è il target di ripristino: finché il player è aperto la Home è ancora composta e un
+   * target attivo verrebbe consumato dal proprio ciclo di vita (gate `canFocus` + rilascio da
+   * `onFocusChanged`) prima che il player si chiuda.
+   */
+  private var playbackOriginTarget: Pair<String, String>? = null
+
+  /**
+   * Registra la PROVENIENZA della riproduzione avviata dalla card ([rowKey], [mediaId]) di una
+   * riga della Home: al ritorno dal player il focus deve tornare su QUELLA card, per identità.
+   */
+  fun savePlaybackFocusOrigin(rowKey: String, mediaId: String) {
+    playbackOriginTarget = rowKey to mediaId
+  }
 
   /** ID della categoria selezionata in Cerca (preserva al BACK dal Player). */
   private val _selectedSearchCategoryId = MutableStateFlow<String?>(null)
@@ -914,7 +1057,7 @@ class StreamNovaViewModel(
   // Interrogazione parallela dei provider di streaming HTTP diretto:
   // 1) VixSrc/VixCloud (istantaneo via TMDB ID), 2) CB01 e 3) Eurostreaming
   // (cataloghi italiani, ricerca per titolo/anno) con timeout per ciascuno.
-  internal var streamManager = StreamManager()
+  internal var streamManager = StreamManager(diagnostics = StreamDiagnosticSinkFactory.DEFAULT)
   internal var openSubtitlesProvider = OpenSubtitlesSubtitleProvider(ioDispatcher = ioDispatcher)
 
   /**
@@ -944,6 +1087,12 @@ class StreamNovaViewModel(
   private val _stremioProviderMedia = MutableStateFlow<Map<String, List<MediaItem>>>(emptyMap())
   val stremioProviderMedia: StateFlow<Map<String, List<MediaItem>>> = _stremioProviderMedia.asStateFlow()
 
+  // Cache in-memory del catalogo per provider (id -> lista STABILITA). Congela l'ORDINE dei
+  // poster: alla riapertura la lista salvata viene emessa SUBITO e nessuna nuova richiesta di
+  // rete parte a rimescolare i dati. Si ricarica da rete solo se la lista è vuota (cache miss)
+  // o se l'utente esegue un refresh esplicito delle fonti (cambio/installazione addon).
+  private val providerCatalogCache = mutableMapOf<String, List<MediaItem>>()
+
   /** Stato del catalogo Stremio per provider: decide la fonte dati della schermata Provider. */
   data class StremioProviderCatalogState(
     val hasConfirmedBindings: Boolean = false,
@@ -969,11 +1118,22 @@ class StreamNovaViewModel(
   private val categoryProviderPages = ConcurrentHashMap<Pair<String, Boolean>, Int>()
   private val categoryProviderHasMore = ConcurrentHashMap<Pair<String, Boolean>, Boolean>()
 
+  /**
+   * Ultimo refresh dei cataloghi Home. Le emissioni di [allMedia] durante la
+   * sincronizzazione TMDB sono multiple: senza cancellare il tentativo
+   * precedente si accumulavano risoluzioni Cinemeta/addon concorrenti (rete e
+   * CPU) mentre la UI era già in fase di composizione.
+   */
+  private var homeCatalogsRefreshJob: Job? = null
+
   fun refreshHomeCatalogs(mediaList: List<MediaItem> = allMedia.value) {
-    viewModelScope.launch(Dispatchers.IO) {
+    homeCatalogsRefreshJob?.cancel()
+    homeCatalogsRefreshJob = viewModelScope.launch(Dispatchers.IO) {
       try {
         val resolved = StremioCatalogRepository.resolveHomeCatalogs(mediaList)
         _homeCatalogs.value = resolved
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w(TAG, "Risoluzione cataloghi Home fallita: ${e.message}")
       }
@@ -1005,6 +1165,8 @@ class StreamNovaViewModel(
       StremioAddonRepository.addons.collect {
         _stremioProviderMedia.value = emptyMap()
         _stremioProviderStates.value = emptyMap()
+        // Refresh esplicito delle fonti: la cache ordine provider va svuotata insieme ai dati.
+        providerCatalogCache.clear()
         StremioCatalogRepository.clearCache()
         StremioCatalogRepository.resetProviderPaging()
         _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
@@ -1880,7 +2042,7 @@ class StreamNovaViewModel(
   fun openDetail(media: MediaItem) {
     if (_screenState.value != ScreenState.DETAIL) {
       detailMediaStack.clear()
-      // Nuova catena (Home/Provider/Consigliati): nessun target di restauro ereditato.
+      // Una nuova catena non deve ereditare il target di focus precedente.
       _chainRestoreMediaId.value = null
     }
     if (detailMediaStack.isEmpty() || detailMediaStack.last().id != media.id) {
@@ -1950,7 +2112,123 @@ class StreamNovaViewModel(
 
   fun retryLoadDetail() {
     val media = _selectedMedia.value ?: return
+    if (isLiveChannel(media.id)) {
+      openLiveChannel(media)
+      return
+    }
     openDetail(media)
+  }
+
+  // ── Canali LIVE (addon Stremio, es. TvVoo) ──────────────────────────────────
+
+  /** Addon installato che espone [mediaId] in uno dei propri cataloghi. */
+  private fun addonForChannel(mediaId: String): InstalledAddon? {
+    val parsed = StremioLiveChannelClassifier.parseChannelKey(mediaId)
+    if (parsed != null) {
+      return StremioAddonRepository.getInstalledAddons()
+        .firstOrNull { it.id.equals(parsed.first, ignoreCase = true) }
+    }
+    return StremioAddonRepository.getInstalledAddons()
+      .firstOrNull { StremioCatalogRepository.channelCatalogIdFor(it.id, mediaId) != null }
+  }
+
+  /**
+   * true se [mediaId] identifica un canale LIVE di un addon installato.
+   * Il dettaglio tradizionale (stagioni/episodi, cast, trailer) resta invariato
+   * per film, serie e tutti i contenuti IMDb/TMDB.
+   */
+  fun isLiveChannel(mediaId: String?): Boolean {
+    val id = mediaId?.trim().orEmpty()
+    if (id.isEmpty()) return false
+    if (!StremioLiveChannelClassifier.isChannelStyleId(id)) return false
+    val key = StremioLiveChannelClassifier.channelKeyFor(
+      id,
+      StremioLiveChannelClassifier.AddonResolver(::addonForChannel)
+    ) ?: return false
+    return StremioLiveChannelClassifier.isLiveChannel(
+      key,
+      StremioAddonRepository.getInstalledAddons()
+    )
+  }
+
+  /**
+   * Apre un canale LIVE: nessun caricamento di stagioni/episodi (il canale non ne
+   * ha). Il media resta aperto come dettaglio corrente e le sorgenti vengono
+   * raccolte dall'addon con il tipo ORIGINALE del catalogo (`tv` per TvVoo).
+   */
+  fun openLiveChannel(media: MediaItem) {
+    selectSeasonJob?.cancel()
+    selectSeasonJob = null
+    _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+    _selectedMedia.value = media
+    _screenState.value = ScreenState.DETAIL
+    detailMediaStack.clear()
+    detailMediaStack.add(media)
+    resolveLiveChannelSources(media)
+  }
+
+  /**
+   * Raccolta delle sorgenti del canale tramite l'addon che lo dichiara.
+   *
+   * Riusa il flusso esistente: le sorgenti diventano [StreamSource] con la stessa
+   * conversione usata da [StreamManager] e confluiscono in `_availableSources`,
+   * così la schermata di selezione e il player restano quelli di sempre.
+   */
+  fun resolveLiveChannelSources(media: MediaItem) {
+    val addon = addonForChannel(media.id)
+    if (addon == null) {
+      _availableSources.value = emptyList()
+      _sourceCandidates.value = emptyList()
+      _streamResolutionState.value = StreamResolutionState.Error(
+        "Canale non disponibile: nessun addon installato lo espone"
+      )
+      return
+    }
+    val mediaId = StremioLiveChannelClassifier.parseChannelKey(media.id)?.second ?: media.id
+    val catalogId = StremioCatalogRepository.channelCatalogIdFor(addon.id, mediaId)
+
+    currentMediaFetchJob?.cancel()
+    streamJob?.cancel()
+    loadStreamGeneration++
+    val generation = loadStreamGeneration
+    _availableSources.value = emptyList()
+    _sourceCandidates.value = emptyList()
+    _showSourceDialog.value = false
+    _streamResolutionState.value = StreamResolutionState.Loading
+    _streamResult.value = StreamResult.Loading("Ricerca sorgenti canale in corso...")
+    _sourceDialogMedia.value = SourceDialogTarget(media, null)
+
+    streamJob = viewModelScope.launch(ioDispatcher) {
+      val sources = try {
+        StremioAddonRepository.fetchChannelStreams(addon, catalogId, mediaId)
+          .mapNotNull { StreamManager.directStreamSource(it) }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Canale $mediaId: risoluzione fallita (${e.javaClass.simpleName})")
+        emptyList()
+      }
+      withContext(Dispatchers.Main) {
+        if (generation != loadStreamGeneration) return@withContext
+        _isSwitchingEpisode.value = false
+        if (sources.isEmpty()) {
+          _streamResolutionState.value = StreamResolutionState.Error(
+            "Nessuna sorgente disponibile per questo canale"
+          )
+          _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo canale")
+          return@withContext
+        }
+        publishResolvedSources(sources)
+        _sourceDialogMedia.value = SourceDialogTarget(media, null)
+        _streamResolutionState.value = StreamResolutionState.Idle
+        _streamResult.value = StreamResult.Idle
+        _showSourceDialog.value = true
+        Log.i(
+          SAME_SOURCE_TAG,
+          "Canale ${mediaId}: ${sources.size} sorgenti (addon=${addon.manifest.displayTitle})"
+        )
+      }
+    }
   }
 
   fun openPlayer(media: MediaItem, episode: Episode? = null, source: StreamSource? = null) {
@@ -1970,7 +2248,9 @@ class StreamNovaViewModel(
     source: StreamSource? = null,
     isReusedStream: Boolean = false
   ) {
-    val isTv = media.type == MediaType.SERIE_TV
+    // Un canale LIVE è tipizzato SERIE_TV (così lo mostra il catalogo `tv`), ma non
+    // ha episodi: non va mai creato un episodio sintetico S1E1.
+    val isTv = media.type == MediaType.SERIE_TV && !isLiveChannel(media.id)
     val effectiveEpisode = if (isTv && episode == null) {
       val s = media.lastWatchedSeason ?: 1
       val e = media.lastWatchedEpisode ?: 1
@@ -2388,7 +2668,6 @@ class StreamNovaViewModel(
     currentMediaFetchJob?.cancel()
     currentMediaFetchJob = null
     streamJob?.cancel()
-    loadStreamJob?.cancel()
     loadStreamGeneration++
     // Sessione pulita: azzera lo stream corrente e i puntatori di fallback.
     // Eccezione mirata: nel cambio puntata consecutivo della STESSA serie il
@@ -2403,6 +2682,11 @@ class StreamNovaViewModel(
       isReusedStream = false
     )
     _availableSources.value = emptyList()
+    // Nuovo titolo: anche la lista del selettore interno al player riparte vuota.
+    _sourceCandidates.value = emptyList()
+    // Nuovo ciclo di riproduzione: nessuna sorgente risulta ancora tentata, cosi'
+    // il fallback automatico riparte con la lista completa.
+    attemptedSourceKeys.clear()
     // Ogni nuova risoluzione riparte senza dialog di selezione (il flag viene
     // riattivato dal flusso solo quando serve la scelta manuale).
     _showSourceDialog.value = false
@@ -2553,6 +2837,7 @@ class StreamNovaViewModel(
             if (currentJobGeneration != loadStreamGeneration) return@withContext
             Log.i(SAME_SOURCE_TAG, "Avvio diretto S$season E$epNumber dallo stesso torrent")
             _availableSources.value = listOf(samePackSource)
+            _sourceCandidates.value = listOf(samePackSource)
             _streamResolutionState.value = StreamResolutionState.Success(
               streamUrl = samePackSource.streamUrl ?: "",
               mediaItem = resolvedMediaItem,
@@ -2580,7 +2865,36 @@ class StreamNovaViewModel(
       }
 
       var hasOpenedPlayer = false
-      var currentBestUrl: String? = null
+      // Sorgente auto-picked in attesa della finestra di assestamento: e' la
+      // sorgente con cui il player verra' avviato, scelta UNA volta sola.
+      var pendingAutoPick: StreamSource? = null
+      var settleJob: Job? = null
+
+      /**
+       * Avvia il player con la sorgente auto-picked.
+       *
+       * Idempotente e serializzata: gira sempre sul Main dispatcher e la prima
+       * chiamata vince. E' l'UNICO punto in cui la risoluzione automatica
+       * puo' far partire il player.
+       */
+      suspend fun openAutoPickedSource(source: StreamSource) {
+        withContext(Dispatchers.Main) {
+          if (hasOpenedPlayer) return@withContext
+          if (currentJobGeneration != loadStreamGeneration) return@withContext
+          hasOpenedPlayer = true
+          _streamResolutionState.value = StreamResolutionState.Success(
+            streamUrl = source.streamUrl ?: "",
+            mediaItem = resolvedMediaItem,
+            episode = effectiveEpisode,
+            streamHeaders = source.headers,
+            quality = source.quality,
+            serverName = source.serverName,
+            isProgressive = source.isProgressive
+          )
+          _streamResult.value = StreamResult.Success(listOf(source))
+          openPlayer(resolvedMediaItem, effectiveEpisode, source)
+        }
+      }
 
       val resolutionFlow = streamManager.resolveFlow(
         tmdbId = effectiveTmdbId,
@@ -2628,7 +2942,7 @@ class StreamNovaViewModel(
         if (shouldShowDialog) {
           withContext(Dispatchers.Main) {
             if (currentJobGeneration != loadStreamGeneration) return@withContext
-            _availableSources.value = affinitySources
+            publishResolvedSources(affinitySources)
             _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
             _showSourceDialog.value = true
             _streamResolutionState.value = StreamResolutionState.Idle
@@ -2663,27 +2977,51 @@ class StreamNovaViewModel(
           }
 
           if (chosenStream != null && !chosenStream.streamUrl.isNullOrBlank()) {
-            _availableSources.value = affinitySources
+            // La lista del selettore si arricchisce progressivamente: il flusso in
+            // riproduzione NON viene riavviato (vedi blocco commentato qui sotto).
+            publishResolvedSources(affinitySources)
             if (!hasOpenedPlayer) {
-              hasOpenedPlayer = true
-              currentBestUrl = chosenStream.streamUrl
-              _streamResolutionState.value = StreamResolutionState.Success(
-                streamUrl = chosenStream.streamUrl ?: "",
-                mediaItem = resolvedMediaItem,
-                episode = effectiveEpisode,
-                streamHeaders = chosenStream.headers,
-                quality = chosenStream.quality,
-                serverName = chosenStream.serverName,
-                isProgressive = chosenStream.isProgressive
+              // FIX BUFFERING: la sorgente che avvia il player e' scelta UNA volta
+              // sola. Dopo la prima emissione si attende una breve finestra di
+              // assestamento (per includere le sorgenti migliori dei provider
+              // piu' lenti) e poi il player parte: nessun ricaricamento.
+              //
+              // Le emissioni successive NON devono piu' sostituire il flusso in
+              // riproduzione. Un cambio di URL ricarica il download da capo
+              // (nuovo buffering, spesso bloccato) e, se cambiano anche gli
+              // headers HTTP, invalida la DataSource.Factory: l'ExoPlayer
+              // viene ricreato da zero. L'arricchimento successivo resta
+              // disponibile per il selettore sorgenti (_availableSources).
+              pendingAutoPick = chosenStream
+              if (StreamManager.isFullHdOrHigher(chosenStream)) {
+                // Sorgente gia' Full HD/4K: si parte subito, senza attese.
+                settleJob?.cancel()
+                settleJob = null
+                openAutoPickedSource(chosenStream)
+              } else if (settleJob == null) {
+                // Sorgente sotto 1080p: si attende una breve finestra perche'
+                // i provider piu' lenti possono portare una qualita' migliore.
+                settleJob = launch {
+                  delay(AUTO_PICK_SETTLE_WINDOW_MS)
+                  val pending = pendingAutoPick
+                  if (pending != null) {
+                    Log.i(
+                      TAG,
+                      "Auto-pick assestato: ${pending.serverName} (${pending.quality}) -> ${pending.streamUrl}"
+                    )
+                    openAutoPickedSource(pending)
+                  }
+                }
+              }
+            } else {
+              Log.i(
+                TAG,
+                "Sorgente aggiuntiva disponibile (${chosenStream.serverName} ${chosenStream.quality}): " +
+                  "il flusso in riproduzione non viene sostituito"
               )
-              _streamResult.value = StreamResult.Success(listOf(chosenStream))
-              openPlayer(resolvedMediaItem, effectiveEpisode, chosenStream)
-            } else if (chosenStream.streamUrl != currentBestUrl) {
-              currentBestUrl = chosenStream.streamUrl
-              upgradeStreamSource(chosenStream)
             }
           } else {
-            _availableSources.value = affinitySources
+            publishResolvedSources(affinitySources)
             _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
             _showSourceDialog.value = true
             _streamResolutionState.value = StreamResolutionState.Idle
@@ -2718,6 +3056,13 @@ class StreamNovaViewModel(
         Log.w(TAG, "Errore durante la risoluzione streaming: ${e.message}")
       }
 
+      // La raccolta delle sorgenti e' terminata: se il player non e' ancora
+      // partito ma esiste una sorgente auto-picked in attesa, si avvia subito
+      // (non si attende oltre la finestra di assestamento).
+      settleJob?.cancel()
+      settleJob = null
+      pendingAutoPick?.let { openAutoPickedSource(it) }
+
       withContext(Dispatchers.Main) {
         if (currentJobGeneration != loadStreamGeneration) return@withContext
         if (!hasOpenedPlayer && !_showSourceDialog.value) {
@@ -2743,6 +3088,16 @@ class StreamNovaViewModel(
     openStreamForMedia(media, episode)
   }
 
+  /**
+   * Sostituisce la sorgente in riproduzione con [source].
+   *
+   * NOTA: la risoluzione automatica NON usa questa funzione. Sostituire il
+   * flusso in riproduzione significa un nuovo URL: il download riparte da
+   * capo (nuovo buffering, spesso bloccato) e, se cambiano anche gli headers
+   * HTTP, la DataSource.Factory cambia e l'ExoPlayer viene ricreato da zero.
+   * Le emissioni tardive della risoluzione arricchiscono quindi solo la lista
+   * del selettore sorgenti ([availableSources]).
+   */
   fun upgradeStreamSource(source: StreamSource) {
     val current = _playbackState.value
     val sourceUrl = source.streamUrl ?: return
@@ -2758,11 +3113,66 @@ class StreamNovaViewModel(
     )
   }
 
+  /**
+   * Apre il selettore delle sorgenti video interno al player.
+   *
+   * Il selettore e' disponibile in ogni momento della sessione: durante la
+   * riproduzione, durante il buffering e anche in stato di errore (in quest'ultimo
+   * caso permette di ripartire subito con un'altra sorgente senza riavviare la
+   * ricerca).
+   */
+  fun openSourceSelector() {
+    Log.i(
+      TAG,
+      "Selettore sorgenti aperto dal player (candidati: ${_sourceCandidates.value.size})"
+    )
+    _showSourceSelector.value = true
+  }
+
+  /** Chiude il selettore delle sorgenti interno al player. */
+  fun dismissSourceSelector() {
+    _showSourceSelector.value = false
+  }
+
+  /**
+   * Sostituisce la sorgente in riproduzione con [source].
+   *
+   * La scelta e' esplicitamente MANUALE e quindi AUTOREVOLE:
+   *  - la risoluzione ancora in volo viene cancellata e invalidata
+   *    ([loadStreamGeneration]), cosi' le emissioni tardive degli altri provider
+   *    NON possono sostituire la sorgente scelta dall'utente;
+   *  - il selettore interno al player si chiude e la nuova sorgente subentra.
+   *
+   * @param source sorgente scelta dall'utente.
+   */
   fun selectSource(source: StreamSource) {
-    loadStreamJob?.cancel()
-    loadStreamJob = null
-    viewModelScope.launch {
-      val target = _sourceDialogMedia.value ?: return@launch
+    // Scelta manuale = nuovo ciclo di riproduzione: le sorgenti gia' tentate non
+    // contano piu' (l'utente puo' ritentare esplicitamente anche una sorgente
+    // fallita in precedenza).
+    attemptedSourceKeys.clear()
+    // La scelta manuale e' in corso: il fallback automatico non deve inserirsi
+    // finche' non e' stata applicata (il flag viene rilasciato alla fine del job,
+    // su qualunque percorso di uscita, inclusa la cancellazione).
+    manualSourceSelectionInFlight = true
+    // La scelta manuale dell'utente e' AUTOREVOLE: la risoluzione ancora in
+    // volo va interrotta e invalidata. Senza questo, l'emissione tardiva
+    // dell'auto-pick sovrascriverebbe la sorgente appena scelta dall'utente
+    // (e ricaricherebbe il player da capo -> nuovo buffering).
+    streamJob?.cancel()
+    streamJob = null
+    loadStreamGeneration++
+    // Il selettore interno al player si chiude: la nuova sorgente subentra.
+    _showSourceSelector.value = false
+    val selectionJob = viewModelScope.launch {
+      // Bersaglio del cambio: il titolo in riproduzione.
+      // - [_sourceDialogMedia] e' valorizzato dalla schermata di scelta iniziale;
+      // - quando invece la scelta arriva dal selettore interno al player (o da un
+      //   retry dopo un errore) si usa lo stato di riproduzione corrente.
+      val target = _sourceDialogMedia.value
+        ?: playbackState.value.media?.let { media ->
+          SourceDialogTarget(media, playbackState.value.currentEpisode)
+        }
+        ?: return@launch
       val media = target.media
       val episode = target.episode
 
@@ -2792,6 +3202,8 @@ class StreamNovaViewModel(
 
       _showSourceDialog.value = false
       _availableSources.value = emptyList()
+      // NOTA: [_sourceCandidates] NON viene azzerata: se la sorgente scelta
+      // fallisce l'utente deve poter riaprire il selettore e provarne un'altra.
       _sourceDialogMedia.value = null
       _isLoading.value = false
 
@@ -2807,8 +3219,99 @@ class StreamNovaViewModel(
         isProgressive = resolvedSource.isProgressive
       )
       _streamResult.value = StreamResult.Success(listOf(resolvedSource))
+      // Token di cambio sorgente: il player lo usa per ricaricare il flusso sulla
+      // STESSA istanza di ExoPlayer (nessuna duplicazione, nessun avvio concorrente).
+      _manualSourceSelectionToken.value = _manualSourceSelectionToken.value + 1
       openPlayer(media, episode, resolvedSource)
     }
+    // Scelta applicata (o abbandonata): il fallback automatico torna disponibile.
+    selectionJob.invokeOnCompletion { manualSourceSelectionInFlight = false }
+  }
+
+  /**
+   * Fallback automatico della sorgente video dopo un errore di riproduzione.
+   *
+   * Chiamato dal player da `onPlayerError`. Il cambio di sorgente avviene **solo**
+   * quando ricorrono tutte queste condizioni:
+   *  1. l'errore e' classificato come definitivo per la sorgente
+   *     ([PlayerSourceFallback.classify] ==
+   *     [PlayerSourceFallback.Verdict.SOURCE_DEFINITIVE]): un errore transitorio o
+   *     di codec/sottotitoli non fa mai cambiare flusso;
+   *  2. la callback riguarda la sorgente ATTUALMENTE attiva ([failedStreamUrl]
+   *     coincide con lo stream in riproduzione): una callback obsoleta (cambio
+   *     sorgente o episodio gia' avvenuto) viene scartata;
+   *  3. non c'e' una scelta manuale in corso di applicazione;
+   *  4. esiste un'alternativa fra le sorgenti gia' risolte, diversa dalla sorgente
+   *     fallita e da quelle gia' tentate in questo ciclo di riproduzione.
+   *
+   * Quando un'alternativa esiste viene avviata con lo STESSO meccanismo della
+   * scelta manuale ([_manualSourceSelectionToken] + [openPlayer]): il player
+   * ricarica il flusso sulla stessa istanza di ExoPlayer, preservando la posizione.
+   * La lista del selettore resta invariata: la sorgente fallita resta visibile e
+   * ritentabile a mano dall'utente.
+   *
+   * @param failedStreamUrl URL che il player stava riproducendo quando e' scattato
+   *   l'errore; serve a scartare le callback obsolete.
+   * @param verdict esito di [PlayerSourceFallback.classify] sull'errore Media3.
+   * @return true se un'alternativa e' stata trovata e avviata automaticamente.
+   *         Con `false` il player mantiene il comportamento esistente (errore
+   *         visibile e selettore manuale sempre disponibile).
+   */
+  fun handleSourcePlaybackFailure(
+    failedStreamUrl: String?,
+    verdict: PlayerSourceFallback.Verdict
+  ): Boolean {
+    if (verdict != PlayerSourceFallback.Verdict.SOURCE_DEFINITIVE) {
+      Log.d(TAG, "Fallback sorgente: nessun cambio (esito=$verdict)")
+      return false
+    }
+    if (manualSourceSelectionInFlight) {
+      Log.i(TAG, "Fallback sorgente: scelta manuale in corso, nessun cambio automatico")
+      return false
+    }
+    val state = _playbackState.value
+    val media = state.media ?: return false
+    val activeUrl = state.streamUrl?.takeIf { it.isNotBlank() } ?: return false
+    if (failedStreamUrl != null && failedStreamUrl != activeUrl) {
+      Log.i(
+        TAG,
+        "Fallback sorgente: errore obsoleto per una sorgente non piu' attiva " +
+          "($failedStreamUrl != $activeUrl), nessun cambio"
+      )
+      return false
+    }
+
+    val currentKey = state.currentSource?.let { PlayerSourceFallback.keyOf(it) }
+      ?: PlayerSourceFallback.keyForUrl(activeUrl)
+    // La sorgente appena fallita entra tra quelle tentate: non puo' essere
+    // riselezionata automaticamente in questo ciclo di riproduzione.
+    attemptedSourceKeys += currentKey
+
+    val alternative = PlayerSourceFallback.selectAlternative(
+      candidates = _sourceCandidates.value,
+      currentKey = currentKey,
+      attemptedKeys = attemptedSourceKeys
+    )
+    if (alternative == null) {
+      Log.w(
+        TAG,
+        "Fallback sorgente: nessuna alternativa disponibile " +
+          "(tentate=${attemptedSourceKeys.size}, candidati=${_sourceCandidates.value.size})"
+      )
+      return false
+    }
+
+    Log.i(
+      TAG,
+      "Fallback sorgente: ${state.currentSource?.serverName ?: activeUrl} " +
+        "(${state.streamQuality ?: "?"}) -> ${alternative.serverName} (${alternative.quality})"
+    )
+    _showSourceDialog.value = false
+    // Stesso segnale della scelta manuale: il player ricarica il flusso sulla
+    // stessa istanza di ExoPlayer, preservando la posizione corrente.
+    _manualSourceSelectionToken.value = _manualSourceSelectionToken.value + 1
+    openPlayer(media, state.currentEpisode, alternative)
+    return true
   }
 
   fun dismissSourceDialog() {
@@ -2817,6 +3320,7 @@ class StreamNovaViewModel(
     resetStreamState()
     _showSourceDialog.value = false
     _availableSources.value = emptyList()
+    _sourceCandidates.value = emptyList()
     _sourceDialogMedia.value = null
   }
 
@@ -2852,6 +3356,13 @@ class StreamNovaViewModel(
     )
     _onlineSubtitles.value = emptyList()
     _availableSources.value = emptyList()
+    // Sessione chiusa: la lista dei candidati del selettore non e' piu' valida.
+    _sourceCandidates.value = emptyList()
+    // Fine del ciclo di riproduzione: anche lo storico delle sorgenti tentate
+    // (fallback automatico) viene azzerato.
+    attemptedSourceKeys.clear()
+    manualSourceSelectionInFlight = false
+    _showSourceSelector.value = false
     val origin = screenBeforePlayer
     val previousSection = sectionBeforePlayer
     screenBeforePlayer = null
@@ -2861,15 +3372,43 @@ class StreamNovaViewModel(
     fallbackFromUnavailableSection()
     _screenState.value = origin
       ?: if (_selectedMedia.value != null) ScreenState.DETAIL else ScreenState.BROWSING
+    // Il focus torna sulla card che ha avviato la riproduzione (Home ancora composta sotto
+    // l'overlay del player): nessun altro effetto lo riancorerebbe al contenuto.
+    restoreFocusOnPlayerReturn()
     Log.d("BACK_TRACE", "STREAMNOVAVM: valore di _screenState dopo: ${_screenState.value}")
     Log.i(HTTP_TRACE, "[VM] closePlayer COMPLETE")
     Log.d("BACK_TRACE", "STREAMNOVAVM: uscita da closePlayer()")
   }
 
+  /**
+   * Ripristina il focus sulla card di origine al ritorno dal player.
+   *
+   * La provenienza ([playbackOriginTarget]) è consumata UNA SOLA VOLTA, QUALUNQUE sia la
+   * destinazione di rientro: una provenienza vecchia non deve sopravvivere alla sessione di
+   * riproduzione che l'ha generata.
+   *
+   * Il ripristino avviene SOLO quando il player rientra davvero nel contenuto della Home
+   * (schermata BROWSING + sezione HOME): il rientro dal Dettaglio (player aperto dalla scheda)
+   * lascia il focus alla scheda, che ha il proprio percorso di ripristino.
+   *
+   * Il target viene pubblicato con le stesse primitive del percorso Dettaglio/Provider
+   * ([saveLastFocusedMedia] + [signalFocusRestore]): la Home applica così il SUO protocollo
+   * (richiesta pendente + attesa del mount della riga/card + conferma del focus), per IDENTITÀ
+   * e non per posizione — la riga «Continua a guardare» si riordina proprio per effetto del
+   * progresso appena salvato.
+   */
+  private fun restoreFocusOnPlayerReturn() {
+    val target = playbackOriginTarget ?: return
+    playbackOriginTarget = null
+    if (_screenState.value != ScreenState.BROWSING || _currentSection.value != SidebarSection.HOME) return
+    saveLastFocusedMedia(target.first, target.second)
+    signalFocusRestore(target.second)
+  }
+
   /** True se il Player è stato aperto partendo dal Dettaglio (catalogo -> Detail -> Player). */
   fun playerOpenedFromDetail(): Boolean = screenBeforePlayer == ScreenState.DETAIL
 
-  fun backToBrowsing() {
+fun backToBrowsing() {
     detailMediaStack.clear()
     _chainRestoreMediaId.value = null
     resetStreamState()
@@ -2878,10 +3417,10 @@ class StreamNovaViewModel(
     _screenState.value = ScreenState.BROWSING
   }
 
-  /**
-   * Gestione gerarchica del ritorno da una scheda di dettaglio (Punto 2: Consigliati e Backstack).
-   * Se l'utente ha aperto titoli a catena dai "Consigliati", risale al film precedente
-   * ripristinandone immediatamente lo stato del film senza mostrare schermate nere.
+/**
+   * Gestione gerarchica del ritorno da una scheda di dettaglio.
+   * Se lo stack dei dettagli contiene più elementi, risale al media precedente
+   * ripristinandone immediatamente lo stato senza mostrare schermate nere.
    * Se lo stack dei dettagli è esaurito, ritorna alla schermata precedente (Home/Provider)
    * e restituisce false.
    */
@@ -2893,8 +3432,7 @@ class StreamNovaViewModel(
     if (detailMediaStack.size > 1) {
       val closedMedia = detailMediaStack.removeLastOrNull()
       val previousMedia = detailMediaStack.last()
-      // Tornando alla scheda precedente della catena, il focus va sulla card del consiglio
-      // da cui era stata aperta la scheda chiusa (conferma del consumatore, vedi clearChainRestoreMedia).
+      // Al ritorno, il focus deve puntare alla card appena aperta e poi chiusa.
       _chainRestoreMediaId.value = closedMedia?.id ?: previousMedia.id
       _selectedMedia.value = previousMedia
       _screenState.value = ScreenState.DETAIL
@@ -2918,7 +3456,7 @@ class StreamNovaViewModel(
       return true
     } else {
       detailMediaStack.clear()
-      // La catena è esaurita: nessun ripristino pendente sulla scheda di dettaglio.
+      // La catena è terminata: non lasciare un target di focus pendente.
       _chainRestoreMediaId.value = null
       backFromDetail()
       return false
@@ -2927,11 +3465,11 @@ class StreamNovaViewModel(
 
   fun backFromDetail() {
     detailMediaStack.clear()
+    _chainRestoreMediaId.value = null
     resetStreamState()
     selectSeasonJob?.cancel()
     selectSeasonJob = null
     _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
-    _chainRestoreMediaId.value = null
     _selectedMedia.value = null
     if (_selectedProvider.value != null) {
       _screenState.value = ScreenState.PROVIDER
@@ -3066,6 +3604,9 @@ class StreamNovaViewModel(
                 )
                 if (combined.size > current.size) {
                   newTotal = combined.size
+                  // La cache congela l'ordine anche sulle pagine successive: le riaperture
+                  // emettono esattamente questa sequenza, senza rimescolamenti.
+                  providerCatalogCache[provider.id] = combined
                   map + (provider.id to combined)
                 } else {
                   map
@@ -3156,71 +3697,98 @@ class StreamNovaViewModel(
   }
 
   fun openProvider(provider: StreamingProvider) {
-    Log.d("PROVIDER_CATALOG", "Fetching catalog for provider=${provider.name} (tmdbId=${provider.tmdbProviderId})")
     _selectedProvider.value = provider
     _screenState.value = ScreenState.PROVIDER
     resetProviderPagination(provider.tmdbProviderId)
-    // Ogni apertura riparte dalla prima pagina di ogni catalogo Stremio.
-    StremioCatalogRepository.resetProviderPaging()
 
-    val initialLoad = viewModelScope.launch {
-      try {
-        // ESCLUSIONE RADICALE di Cinemeta: con addon di catalogo personalizzati attivi
-        // (Xperience / Easy Catalog / ...) nessuna riga Cinemeta resta nella pagina del
-        // provider, che deve derivare al 100% dai cataloghi degli addon attivi.
-        val page = StremioCatalogRepository.sanitizeProviderCatalogPage(
-          StremioCatalogRepository.loadProviderCatalogForProvider(provider)
-        )
-        val planned = StremioCatalogRepository.providerCoverage(provider)
-        // FULL vale SOLO se il fetch effettivo produce item: senza titoli la
-        // copertura degrada a PARTIAL e il catalogo TMDB resta disponibile.
-        val coverage = when {
-          planned == ProviderCoverage.NONE -> ProviderCoverage.NONE
-          page.items.isEmpty() -> ProviderCoverage.PARTIAL
-          else -> planned
-        }
-        if (coverage != ProviderCoverage.NONE) {
-          // Copertura Stremio attiva: Stremio è la fonte primaria del provider.
-          // Ordine stabile (Film poi Serie) identico a ogni riapertura.
-          _stremioProviderMedia.update {
-            it + (provider.id to StremioCatalogRepository.stabilizeProviderOrder(page.items))
-          }
-          _stremioProviderStates.update {
-            it + (provider.id to StremioProviderCatalogState(
-              hasConfirmedBindings = page.hasConfirmedBindings,
-              itemCount = page.items.size,
-              confirmedCatalogs = page.targets.size,
-              coverage = coverage,
-              fallbackToDefault = page.fallbackToDefault
-            ))
-          }
-          Log.d(
-            "PROVIDER_CATALOG",
-            "Stremio provider=${provider.id}: coverage=$coverage, " +
-              "${page.targets.size} cataloghi confermati, ${page.items.size} titoli"
-          )
+    val cachedCatalog = providerCatalogCache[provider.id]
+    if (!cachedCatalog.isNullOrEmpty()) {
+      // CACHE HIT: emetti SUBITO la lista salvata, con l'ORDINE congelato, e NON lanciare
+      // una nuova richiesta di rete che rimescoli i poster. La paginazione Stremio NON viene
+      // resettata: l'offset riparte da dove era rimasto, quindi le pagine successive si
+      // ACCODANO alla lista congelata invece di ricaricare (e rimescolare) la prima pagina.
+      Log.d(
+        "PROVIDER_CATALOG",
+        "Cache hit provider=${provider.id}: ${cachedCatalog.size} titoli (nessuna fetch)"
+      )
+      _stremioProviderMedia.update { it + (provider.id to cachedCatalog) }
+      _stremioProviderStates.update { states ->
+        if (states.containsKey(provider.id)) {
+          states
         } else {
-          // Nessun binding confermato: si mantiene il catalogo nativo TMDB.
-          _stremioProviderMedia.update { it - provider.id }
-          _stremioProviderStates.update { it - provider.id }
-          Log.d(
-            "PROVIDER_CATALOG",
-            "Nessun binding Stremio confermato per ${provider.id}: coverage=NONE, usa catalogo TMDB"
-          )
+          states + (provider.id to StremioProviderCatalogState(
+            coverage = StremioCatalogRepository.providerCoverage(provider),
+            itemCount = cachedCatalog.size
+          ))
         }
-      } catch (e: Exception) {
-        Log.w(TAG, "Stremio provider catalog error: ${e.message}")
-        // Fetch fallito con binding dichiarati: non si può considerare FULL,
-        // la schermata deve poter completare con il catalogo TMDB.
-        if (StremioCatalogRepository.providerCoverage(provider) != ProviderCoverage.NONE) {
-          _stremioProviderStates.update {
-            it + (provider.id to StremioProviderCatalogState(coverage = ProviderCoverage.PARTIAL))
+      }
+      providerInitialLoad = null
+    } else {
+      Log.d("PROVIDER_CATALOG", "Fetching catalog for provider=${provider.name} (tmdbId=${provider.tmdbProviderId})")
+      // Solo al cache miss ogni apertura riparte dalla prima pagina di ogni catalogo Stremio.
+      StremioCatalogRepository.resetProviderPaging()
+
+      val initialLoad = viewModelScope.launch {
+        try {
+          // ESCLUSIONE RADICALE di Cinemeta: con addon di catalogo personalizzati attivi
+          // (Xperience / Easy Catalog / ...) nessuna riga Cinemeta resta nella pagina del
+          // provider, che deve derivare al 100% dai cataloghi degli addon attivi.
+          val page = StremioCatalogRepository.sanitizeProviderCatalogPage(
+            StremioCatalogRepository.loadProviderCatalogForProvider(provider)
+          )
+          val planned = StremioCatalogRepository.providerCoverage(provider)
+          // FULL vale SOLO se il fetch effettivo produce item: senza titoli la
+          // copertura degrada a PARTIAL e il catalogo TMDB resta disponibile.
+          val coverage = when {
+            planned == ProviderCoverage.NONE -> ProviderCoverage.NONE
+            page.items.isEmpty() -> ProviderCoverage.PARTIAL
+            else -> planned
+          }
+          if (coverage != ProviderCoverage.NONE) {
+            // Copertura Stremio attiva: Stremio è la fonte primaria del provider.
+            // Ordine stabile (Film poi Serie) identico a ogni riapertura: la lista viene
+            // congelata in cache e riedita identica alle riaperture successive.
+            val stabilized = StremioCatalogRepository.stabilizeProviderOrder(page.items)
+            providerCatalogCache[provider.id] = stabilized
+            _stremioProviderMedia.update { it + (provider.id to stabilized) }
+            _stremioProviderStates.update {
+              it + (provider.id to StremioProviderCatalogState(
+                hasConfirmedBindings = page.hasConfirmedBindings,
+                itemCount = page.items.size,
+                confirmedCatalogs = page.targets.size,
+                coverage = coverage,
+                fallbackToDefault = page.fallbackToDefault
+              ))
+            }
+            Log.d(
+              "PROVIDER_CATALOG",
+              "Stremio provider=${provider.id}: coverage=$coverage, " +
+                "${page.targets.size} cataloghi confermati, ${page.items.size} titoli"
+            )
+          } else {
+            // Nessun binding confermato: si mantiene il catalogo nativo TMDB.
+            providerCatalogCache.remove(provider.id)
+            _stremioProviderMedia.update { it - provider.id }
+            _stremioProviderStates.update { it - provider.id }
+            Log.d(
+              "PROVIDER_CATALOG",
+              "Nessun binding Stremio confermato per ${provider.id}: coverage=NONE, usa catalogo TMDB"
+            )
+          }
+        } catch (e: Exception) {
+          Log.w(TAG, "Stremio provider catalog error: ${e.message}")
+          // Fetch fallito con binding dichiarati: non si può considerare FULL,
+          // la schermata deve poter completare con il catalogo TMDB.
+          if (StremioCatalogRepository.providerCoverage(provider) != ProviderCoverage.NONE) {
+            _stremioProviderStates.update {
+              it + (provider.id to StremioProviderCatalogState(coverage = ProviderCoverage.PARTIAL))
+            }
           }
         }
       }
+      providerInitialLoad = initialLoad
+      initialLoad.invokeOnCompletion { if (providerInitialLoad === initialLoad) providerInitialLoad = null }
     }
-    providerInitialLoad = initialLoad
-    initialLoad.invokeOnCompletion { if (providerInitialLoad === initialLoad) providerInitialLoad = null }
 
     // Crunchyroll (283): catalogo primariamente TV/anime -> prima le serie TV
     if (provider.tmdbProviderId == 283) {

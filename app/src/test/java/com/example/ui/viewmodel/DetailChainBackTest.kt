@@ -13,10 +13,10 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Regressione del bug di Back nella catena «Altro come questo».
+ * Regressione del bug di Back nella catena ┬½Altro come questo┬╗.
  *
  * Segnalazione sulla Fire TV: aprendo un dettaglio dai Consigliati, il primo Back non
- * riportava al contesto «Altro come questo» e il secondo saltava direttamente alla Home.
+ * riportava al contesto ┬½Altro come questo┬╗ e il secondo saltava direttamente alla Home.
  * Il contratto dello stack dei dettagli deve essere:
  *
  *   Dettaglio originale -> Altro come questo -> Dettaglio consigliato
@@ -70,19 +70,19 @@ class DetailChainBackTest {
     assertEquals(original.id, viewModel.selectedMedia.value?.id)
     assertNull(viewModel.chainRestoreMediaId.value)
 
-    // 2) Scheda originale, tab «Altro come questo»: click sul consiglio
+    // 2) Scheda originale, tab ┬½Altro come questo┬╗: click sul consiglio
     viewModel.openDetail(recommended)
     assertEquals(recommended.id, viewModel.selectedMedia.value?.id)
     assertEquals(ScreenState.DETAIL, viewModel.screenState.value)
 
-    // 3) Back dal dettaglio consigliato -> contesto «Altro come questo» della scheda
+    // 3) Back dal dettaglio consigliato -> contesto ┬½Altro come questo┬╗ della scheda
     //    originale, con target di focus sulla card appena chiusa.
     assertTrue(viewModel.popDetail())
     assertEquals(ScreenState.DETAIL, viewModel.screenState.value)
     assertEquals(original.id, viewModel.selectedMedia.value?.id)
     assertEquals(recommended.id, viewModel.chainRestoreMediaId.value)
 
-    // Consumatore UI: il focus è tornato sulla card -> azzera il target.
+    // Consumatore UI: il focus ├¿ tornato sulla card -> azzera il target.
     viewModel.clearChainRestoreMedia()
     assertNull(viewModel.chainRestoreMediaId.value)
   }
@@ -99,7 +99,7 @@ class DetailChainBackTest {
     assertEquals(recommended.id, viewModel.selectedMedia.value?.id)
     assertEquals(third.id, viewModel.chainRestoreMediaId.value)
 
-    // Back da seconda -> prima (il consumo del target è responsabilità della UI).
+    // Back da seconda -> prima (il consumo del target ├¿ responsabilit├á della UI).
     assertTrue(viewModel.popDetail())
     assertEquals(original.id, viewModel.selectedMedia.value?.id)
     assertEquals(recommended.id, viewModel.chainRestoreMediaId.value)

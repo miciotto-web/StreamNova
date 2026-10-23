@@ -361,7 +361,7 @@ fun CompanyDetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     modifier = Modifier.fillMaxWidth()
                   ) {
-                    itemsIndexed(rowItems, key = { index, item -> "sec_${rowIndex}_${index}_${item.id}" }) { index, item ->
+                    itemsIndexed(rowItems, key = { index, item -> "sec_${rowIndex}_${index}_${item.id}" }, contentType = { index, item -> "sec_${rowIndex}_${item.type}" }) { index, item ->
                       PosterMediaCard(
                         media = item,
                         onClick = { onMediaClick(item) },

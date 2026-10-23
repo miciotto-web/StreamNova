@@ -143,6 +143,7 @@ object StremioCatalogMapper {
       posterUrl = posterUrlOf(meta, rawId, isTv),
       logoUrl = meta.logo?.takeIf { it.isNotBlank() },
       tmdbId = tmdbId,
+      imdbId = imdbIdOf(rawId),
       type = if (isTv) MediaType.SERIE_TV else MediaType.FILM,
       year = resolveYear(meta),
       rating = ratingVal,
@@ -150,6 +151,15 @@ object StremioCatalogMapper {
       provider = addonName,
       tmdbRating = ratingVal.takeIf { it > 0f }
     )
+  }
+
+  /**
+   * IMDb id nativo del meta (`tt...`), usato per risolvere l'id TMDB quando il
+   * catalogo Stremio (es. Cinemeta) non espone `tmdb:` nell'id.
+   */
+  private fun imdbIdOf(rawId: String): String? {
+    val id = rawId.substringBefore(":").trim()
+    return id.takeIf { it.startsWith("tt", ignoreCase = true) && it.length > 2 }
   }
 
   /**

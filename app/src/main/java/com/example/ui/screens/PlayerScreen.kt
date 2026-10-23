@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
@@ -134,6 +135,7 @@ import com.example.data.prefs.SubtitleBackground
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklEpisodePayload
 import com.example.data.repository.SimklMediaPayload
+import com.example.data.streaming.diagnostics.StreamDiagnostics
 import com.example.ui.screens.player.SimklScrobbler
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaBackground
@@ -155,6 +157,14 @@ import kotlinx.coroutines.launch
 
 /** Auto-hide dei controlli del player dopo N ms di inattività con il telecomando. */
 private const val CONTROLS_HIDE_DELAY_MS = 4_000L
+
+/**
+ * User-Agent HTTP di default per il player.
+ *
+ * Restato identico a quello usato in precedenza: nessun timeout, nessuna
+ * policy di buffering e nessun header di rete viene modificato.
+ */
+private const val DEFAULT_HTTP_USER_AGENT = "StreamNovaTV/1.0 (Linux; Android TV; Media3 ExoPlayer)"
 
 private fun simklProgressPercent(positionMs: Long, durationMs: Long): Double =
   if (durationMs > 0L) (positionMs.toDouble() / durationMs.toDouble() * 100.0).coerceIn(0.0, 100.0) else 0.0
@@ -268,6 +278,20 @@ fun PlayerScreen(
   val onlineSubtitles by viewModel.onlineSubtitles.collectAsState()
   val isOnlineSubtitlesLoading by viewModel.isOnlineSubtitlesLoading.collectAsState()
 
+  // ── Selettore sorgenti interno al player ───────────────────────────────
+  // Sorgenti valide disponibili per il titolo corrente (aggiornate in modo
+  // progressivo man mano che i provider rispondono) e visibilita' del
+  // selettore. Il comando e' disponibile durante la riproduzione, il buffering
+  // e lo stato di errore.
+  val sourceCandidates by viewModel.sourceCandidates.collectAsState()
+  val showSourceSelector by viewModel.showSourceSelector.collectAsState()
+  // Token di cambio sorgente: permette di ricaricare il flusso sulla stessa
+  // istanza di ExoPlayer anche quando l'URL non cambia.
+  val manualSourceSelectionToken by viewModel.manualSourceSelectionToken.collectAsState()
+  val sourceSelectorEntries = remember(sourceCandidates, playbackState.currentSource) {
+    PlayerSourceSelector.buildEntries(sourceCandidates, playbackState.currentSource)
+  }
+
   val media = playbackState.media ?: return
   val episode = playbackState.currentEpisode
   val simklCoroutineScope = rememberCoroutineScope()
@@ -369,6 +393,10 @@ fun PlayerScreen(
   var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
   var resizeFeedbackText by remember { mutableStateOf<String?>(null) }
 
+  // Messaggio discreto del cambio automatico di sorgente (fallback su errore
+  // definitivo): nessun dialog, nessuna pausa della riproduzione.
+  var sourceSwitchNotice by remember { mutableStateOf<String?>(null) }
+
   // Velocità di riproduzione
   var currentSpeed by remember { mutableFloatStateOf(1.0f) }
 
@@ -384,7 +412,8 @@ fun PlayerScreen(
   var manualSubtitleSelection by remember { mutableStateOf<ManualSubtitleSelection?>(null) }
   var manualAudioSelection by remember { mutableStateOf<ManualAudioSelection?>(null) }
 
-  val anyModalOpen = showTrackQuickPanel || showSubtitleModal || showQualityModal || showSpeedModal
+  val anyModalOpen = showTrackQuickPanel || showSubtitleModal || showQualityModal || showSpeedModal ||
+    showSourceSelector
 
   LaunchedEffect(showSubtitleModal) {
     if (showSubtitleModal) {
@@ -405,6 +434,13 @@ fun PlayerScreen(
   val introBannerFocusRequester = remember { FocusRequester() }
   val nextEpisodeFocusRequester = remember { FocusRequester() }
   val idleFocusRequester = remember { FocusRequester() }
+  // Requester DEDICATO al comando "Sorgente video" dell'HUD: il focus va ripristinato
+  // qui alla chiusura del selettore (D-pad su Android TV).
+  val sourceSelectorFocusRequester = remember { FocusRequester() }
+  // Requester del comando "Sorgente video" mostrato negli overlay di buffering/errore.
+  val sourceSelectorOverlayFocusRequester = remember { FocusRequester() }
+  // Nodo a cui restituire il focus alla chiusura del selettore.
+  var sourceSelectorReturnRequester by remember { mutableStateOf<FocusRequester?>(null) }
   val focusScope = rememberCoroutineScope()
 
   var hudHasFocus by remember { mutableStateOf(false) }
@@ -469,16 +505,30 @@ fun PlayerScreen(
     Log.d("THE_PITT_PLAYER", "PlayerScreen: media.tmdbId=318508, videoUrl=$videoUrl, streamUrl=${playbackState.streamUrl}, isDemoSeed=${MediaRepository.isDemoSeedItem(media.id)}")
   }
 
-  val httpDataSourceFactory = remember(streamHeaders) {
+  // Factory HTTP STABILE: le intestazioni della sorgente attiva possono cambiare
+  // (cambio manuale di sorgente dal player) senza dover ricreare l'ExoPlayer.
+  //
+  // `DefaultHttpDataSource.Factory` applica le "default request properties" al
+  // momento della creazione del DataSource (cioe' al prepare()): aggiornarle in
+  // place mantiene la STESSA istanza di player e evita duplicazioni/ricreazioni.
+  // Con la ricreazione il player ripartirebbe da zero (nuovo buffering, decoder
+  // da riavviare, posizione persa).
+  val httpDataSourceFactory = remember {
     val factory = DefaultHttpDataSource.Factory()
-      .setUserAgent(streamHeaders["User-Agent"] ?: "StreamNovaTV/1.0 (Linux; Android TV; Media3 ExoPlayer)")
+      .setUserAgent(DEFAULT_HTTP_USER_AGENT)
       .setAllowCrossProtocolRedirects(true)
       .setConnectTimeoutMs(15000)
       .setReadTimeoutMs(20000)
-    if (streamHeaders.isNotEmpty()) {
-      factory.setDefaultRequestProperties(streamHeaders)
-    }
     factory
+  }
+  // Le intestazioni vengono aggiornate DURANTE la composizione (non in un
+  // SideEffect): quando il player viene ricreato (es. passaggio HLS <-> link
+  // progressivo) il nuovo player carica il flusso subito, nello stesso ciclo di
+  // composizione, e deve quindi trovare gia' le intestazioni aggiornate.
+  // Il blocco `remember` e' dichiarato PRIMA del `remember` che crea il player.
+  remember(streamHeaders) {
+    httpDataSourceFactory.setUserAgent(streamHeaders["User-Agent"] ?: DEFAULT_HTTP_USER_AGENT)
+    httpDataSourceFactory.setDefaultRequestProperties(streamHeaders)
   }
 
   // Sottotitoli esterni della sorgente attiva: vengono solo allegati al Media3
@@ -1278,6 +1328,10 @@ fun PlayerScreen(
 
   val currentEpKey = "${currentEp?.seasonNumber}_${currentEp?.episodeNumber}"
   var lastLoadedEpKey by remember { mutableStateOf(currentEpKey) }
+  // Token dell'ultimo cambio sorgente manuale gia' applicato al player.
+  // Inizializzato al token corrente del ViewModel: alla creazione del player
+  // non deve quindi scattare alcun ricaricamento (il flusso e' gia' caricato).
+  var lastLoadedSourceToken by remember { mutableStateOf(manualSourceSelectionToken) }
 
   // Sorgente assente per un titolo TMDB: mostra lo stato di errore, SENZA avviare video demo.
   // La sessione viene marcata come fallita: nessun auto-next da errore di risoluzione.
@@ -1348,13 +1402,24 @@ fun PlayerScreen(
   // ricreazione del player (cambio HLS<->progressivo, headers, impostazioni di
   // riproduzione) lasciava il NUOVO player senza media item: la vista restava ferma
   // su "Caricamento" con nessun setMediaItem() mai eseguito sull'istanza corrente.
-  LaunchedEffect(currentEpKey, videoUrl, exoPlayer) {
+  //
+  // `manualSourceSelectionToken` copre il cambio sorgente MANUALE dal player: il
+  // token cambia a ogni scelta, quindi il flusso viene ricaricato anche quando
+  // l'URL coincide (cambiano comunque header e metadati della sorgente).
+  LaunchedEffect(currentEpKey, videoUrl, exoPlayer, manualSourceSelectionToken) {
     val url = videoUrl ?: return@LaunchedEffect
     val isEpisodeChange = currentEpKey != lastLoadedEpKey
     val currentUri = exoPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
     val isUrlChange = currentUri == null || currentUri != url
+    // Cambio di sorgente manuale: l'utente ha scelto un altro flusso, quindi il
+    // player DEVE ricaricarlo (nessun avvio concorrente: l'istanza di ExoPlayer
+    // resta la stessa, cambia solo il contenuto).
+    val isManualSourceChange = manualSourceSelectionToken != lastLoadedSourceToken
+    if (isManualSourceChange) {
+      lastLoadedSourceToken = manualSourceSelectionToken
+    }
 
-    if (isEpisodeChange || isUrlChange) {
+    if (isEpisodeChange || isUrlChange || isManualSourceChange) {
       val targetPos = if (isEpisodeChange) {
         lastLoadedEpKey = currentEpKey
         playbackState.currentPositionMs
@@ -1362,10 +1427,15 @@ fun PlayerScreen(
         exoPlayer.currentPosition.takeIf { it > 0 } ?: playbackState.currentPositionMs
       }
 
-      Log.i("PlayerScreen", "Caricamento stream: url=$url, isEpisodeChange=$isEpisodeChange, pos=$targetPos")
+      Log.i(
+        "PlayerScreen",
+        "Caricamento stream: url=$url, isEpisodeChange=$isEpisodeChange, " +
+          "isManualSourceChange=$isManualSourceChange, pos=$targetPos"
+      )
       Log.d(
         "[NEXT_EP_DEBUG]",
-        "Ricarico ExoPlayer con nuovo URL: $url (isEpisodeChange=$isEpisodeChange, pos=$targetPos, player=$exoPlayer)"
+        "Ricarico ExoPlayer con nuovo URL: $url (isEpisodeChange=$isEpisodeChange, " +
+          "isManualSourceChange=$isManualSourceChange, pos=$targetPos, player=$exoPlayer)"
       )
       isBuffering = true
       playbackFailed = false
@@ -1378,7 +1448,11 @@ fun PlayerScreen(
         player = exoPlayer,
         url = url,
         positionMs = targetPos,
-        source = if (isEpisodeChange) "cambio-episodio" else "cambio-url"
+        source = when {
+          isEpisodeChange -> "cambio-episodio"
+          isManualSourceChange -> "cambio-sorgente-manuale"
+          else -> "cambio-url"
+        }
       )
     } else {
       Log.d(
@@ -1469,6 +1543,15 @@ fun PlayerScreen(
     if (resizeFeedbackText != null) {
       delay(2000L)
       resizeFeedbackText = null
+    }
+  }
+
+  // Il messaggio di cambio automatico della sorgente resta visibile pochi
+  // secondi: informa senza interrompere la riproduzione.
+  LaunchedEffect(sourceSwitchNotice) {
+    if (sourceSwitchNotice != null) {
+      delay(4000L)
+      sourceSwitchNotice = null
     }
   }
 
@@ -1679,6 +1762,21 @@ fun PlayerScreen(
             .filterIsInstance<HttpDataSource.HttpDataSourceException>()
             .firstOrNull()
         val failingUri = httpException?.dataSpec?.uri?.toString()
+        // Diagnostica sanificata della richiesta fallita: tipo sorgente (HLS o
+        // progressivo), SOLO host, status HTTP (se disponibile) e nome del codice
+        // di errore Media3. Nessun URL completo, path, query o token viene registrato:
+        // l'host e' l'identificativo minimo per attribuire il fallimento alla richiesta.
+        val failedRequestUrl = failingUri ?: playbackState.streamUrl
+        val failedHttpStatus = generateSequence<Throwable>(error) { it.cause }
+            .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
+            .firstOrNull()
+            ?.responseCode
+        Log.w(
+          "STREAM_HTTP_FAIL",
+          "source=${if (isHlsStream) "hls" else "progressive"} " +
+            "host=${StreamDiagnostics.hostId(failedRequestUrl) ?: "unknown"} " +
+            "status=${failedHttpStatus ?: "n/a"} code=${error.errorCodeName}"
+        )
         val failedSubtitle = stremioSubtitles.firstOrNull { sub ->
             sub.url.isNotBlank() && (
                 sub.url == failingUri ||
@@ -1748,6 +1846,29 @@ fun PlayerScreen(
           }
         }
 
+        // Fallback automatico della sorgente: un errore DEFINITIVO della sorgente
+        // attiva (link scaduto o protetto -> 403/404, contenuto non video,
+        // manifest/container illeggibile) non deve lasciare l'utente sulla
+        // schermata di errore se in lista esiste gia' un'altra sorgente risolta.
+        // Il ViewModel esclude la sorgente fallita e quelle gia' tentate (nessun
+        // ciclo, nessun ping-pong) e avvia l'alternativa con lo stesso meccanismo
+        // della scelta manuale: stessa istanza di ExoPlayer, posizione preservata.
+        // Buffering e seek non passano di qui: non generano `onPlayerError`.
+        if (viewModel.handleSourcePlaybackFailure(
+            failedStreamUrl = playbackState.streamUrl,
+            verdict = PlayerSourceFallback.classify(error)
+          )
+        ) {
+          isBuffering = true
+          playbackFailed = false
+          playbackErrorMessage = null
+          val switched = viewModel.playbackState.value
+          sourceSwitchNotice = switched.currentSource
+            ?.let { PlayerSourceSelector.labelOf(it).takeIf { label -> label.isNotBlank() } }
+            ?: switched.streamServer
+          return
+        }
+
         isBuffering = false
         playbackEnded = false
         playbackFailed = true
@@ -1756,7 +1877,7 @@ fun PlayerScreen(
     }
     exoPlayer.addListener(listener)
     // --- DIAGNOSTICA 4K (solo log): decoder video, input format, codec error, primo frame ---
-    val diagAnalyticsListener = StreamNova4KDiag.createAnalyticsListener()
+    val diagAnalyticsListener = StreamNova4KDiag.createAnalyticsListener(isHls = isHlsStream)
     exoPlayer.addAnalyticsListener(diagAnalyticsListener)
 
     onDispose {
@@ -1954,6 +2075,35 @@ fun PlayerScreen(
       }
     }
     areControlsVisible = false
+  }
+
+  /**
+   * Apre il selettore delle sorgenti video interno al player.
+   *
+   * @param returnTo nodo a cui il focus viene ripristinato alla chiusura
+   *   (null = nessun ripristino). Su Android TV e' il pulsante che ha aperto il
+   *   selettore, cosi' la navigazione D-pad riparte da dove l'utente era.
+   */
+  fun openSourceSelector(returnTo: FocusRequester?) {
+    sourceSelectorReturnRequester = returnTo
+    viewModel.openSourceSelector()
+  }
+
+  /**
+   * Chiude il selettore delle sorgenti e ripristina il focus sul nodo di apertura.
+   *
+   * La chiusura NON avvia alcun cambio di sorgente: solo la scelta esplicita
+   * di una riga lo fa.
+   */
+  fun closeSourceSelector() {
+    viewModel.dismissSourceSelector()
+    val target = sourceSelectorReturnRequester
+    sourceSelectorReturnRequester = null
+    if (target != null) {
+      focusScope.launch {
+        runCatching { target.requestFocusAfterFrame() }
+      }
+    }
   }
 
   /**
@@ -2418,6 +2568,31 @@ fun PlayerScreen(
       }
     }
 
+    // Messaggio discreto del cambio automatico di sorgente (fallback): pill in
+    // alto, nessun dialog e nessuna interruzione della riproduzione.
+    AnimatedVisibility(
+      visible = sourceSwitchNotice != null,
+      enter = fadeIn(),
+      exit = fadeOut(),
+      modifier = Modifier
+        .align(Alignment.TopCenter)
+        .padding(top = 96.dp)
+    ) {
+      Box(
+        modifier = Modifier
+          .background(Color.Black.copy(alpha = 0.82f), RoundedCornerShape(20.dp))
+          .border(1.dp, NovaCyan.copy(alpha = 0.7f), RoundedCornerShape(20.dp))
+          .padding(horizontal = 20.dp, vertical = 8.dp)
+      ) {
+        Text(
+          text = stringResource(R.string.player_source_fallback_switched, sourceSwitchNotice ?: ""),
+          color = NovaTextPrimary,
+          fontSize = 13.sp,
+          fontWeight = FontWeight.Medium
+        )
+      }
+    }
+
     // Buffering indicator: durante lo scrubbing resta fuori schermo
     // (l'unico elemento a video è l'overlay di anteprima della posizione).
     if (isBuffering && playbackErrorMessage == null && !isScrubbing) {
@@ -2446,6 +2621,15 @@ fun PlayerScreen(
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold
           )
+          // Durante il buffering il comando "Sorgente video" resta raggiungibile:
+          // l'utente non e' mai costretto ad aspettare la fine del caricamento.
+          if (sourceCandidates.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            PlayerSourceOverlayButton(
+              modifier = Modifier.focusRequester(sourceSelectorOverlayFocusRequester),
+              onClick = { openSourceSelector(sourceSelectorOverlayFocusRequester) }
+            )
+          }
         }
       }
     }
@@ -2532,6 +2716,14 @@ fun PlayerScreen(
                 )
               }
             }
+          }
+          // In errore il selettore sorgenti resta raggiungibile: l'utente puo'
+          // ripartire subito con un'altra sorgente senza riavviare la ricerca.
+          if (sourceCandidates.isNotEmpty()) {
+            PlayerSourceOverlayButton(
+              modifier = Modifier.focusRequester(sourceSelectorOverlayFocusRequester),
+              onClick = { openSourceSelector(sourceSelectorOverlayFocusRequester) }
+            )
           }
         }
       }
@@ -2929,6 +3121,20 @@ fun PlayerScreen(
                    showTrackQuickPanel = true
                  }
                )
+
+              // 8. Sorgente video: selettore manuale delle sorgenti del titolo.
+              // Disponibile in ogni momento della sessione (riproduzione,
+              // buffering, errore): il comando e' sempre raggiungibile e il
+              // focus viene ripristinato sul pulsante alla chiusura.
+              PlayerControlIconButton(
+                icon = Icons.Default.SwapHoriz,
+                contentDescription = stringResource(R.string.player_cd_video_source),
+                modifier = Modifier.focusRequester(sourceSelectorFocusRequester),
+                onClick = {
+                  kickAutoHide()
+                  openSourceSelector(sourceSelectorFocusRequester)
+                }
+              )
             }
 
             // LATO DESTRO: Minutaggio formattato (es. "00:02 / 41:54")
@@ -3250,6 +3456,21 @@ if (showTrackQuickPanel) {
       )
     }
 
+    // Selettore delle sorgenti video (comando "Sorgente video" del player).
+    // La scelta di una riga avvia la sorgente scelta dall'utente; la chiusura
+    // (BACK o tap fuori) NON cambia nulla e ripristina il focus sul pulsante
+    // di apertura.
+    if (showSourceSelector) {
+      PlayerSourceSelectorDialog(
+        entries = sourceSelectorEntries,
+        onSelect = { source ->
+          closeSourceSelector()
+          viewModel.selectSource(source)
+        },
+        onDismiss = { closeSourceSelector() }
+      )
+    }
+
     // Stats for Nerds / Debug Info Overlay (non focalizzabile da D-pad)
     if (playbackSettings.debugOverlayEnabled) {
       StatsForNerdsOverlay(
@@ -3391,6 +3612,53 @@ fun PlayerControlIconButton(
         modifier = Modifier.size(24.dp)
       )
     }
+  }
+}
+
+/**
+ * Pulsante compatto "Sorgente video" per gli overlay del player (buffering ed
+ * errore).
+ *
+ * A differenza di [PlayerControlIconButton] mostra anche l'etichetta e
+ * risponde al TOUCH (mobile): e' quindi sia `focusable()` (D-pad su Android TV)
+ * sia `clickable`.
+ */
+@Composable
+private fun PlayerSourceOverlayButton(
+  modifier: Modifier = Modifier,
+  onClick: () -> Unit
+) {
+  var isFocused by remember { mutableStateOf(false) }
+  Row(
+    modifier = modifier
+      .background(
+        if (isFocused) NovaCyan else NovaSurfaceVariant,
+        RoundedCornerShape(10.dp)
+      )
+      .border(
+        1.dp,
+        if (isFocused) NovaCyanBright else Color.Transparent,
+        RoundedCornerShape(10.dp)
+      )
+      .onFocusChanged { isFocused = it.isFocused }
+      .focusable()
+      .clickable { onClick() }
+      .padding(horizontal = 12.dp, vertical = 10.dp),
+    horizontalArrangement = Arrangement.spacedBy(7.dp),
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    Icon(
+      imageVector = Icons.Default.SwapHoriz,
+      contentDescription = null,
+      tint = if (isFocused) Color.Black else NovaCyanBright,
+      modifier = Modifier.size(18.dp)
+    )
+    Text(
+      text = stringResource(R.string.player_cd_video_source),
+      color = if (isFocused) Color.Black else NovaTextPrimary,
+      fontSize = 12.sp,
+      fontWeight = FontWeight.Bold
+    )
   }
 }
 

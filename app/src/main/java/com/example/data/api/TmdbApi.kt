@@ -248,7 +248,8 @@ data class TmdbMovieDetailDto(
   val credits: TmdbCreditsDto? = null,
   val similar: TmdbPaginatedResponse<TmdbMovieDto>? = null,
   @Json(name = "release_dates") val releaseDates: TmdbMovieReleaseDatesResponseDto? = null,
-  @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList()
+  @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList(),
+  val translations: TmdbTranslationsDto? = null
 )
 
 data class TmdbCreatedByDto(
@@ -278,7 +279,32 @@ data class TmdbTvDetailDto(
   val similar: TmdbPaginatedResponse<TmdbTvDto>? = null,
   val seasons: List<TmdbSeasonInfoDto>? = emptyList(),
   @Json(name = "content_ratings") val contentRatings: TmdbTvContentRatingsResponseDto? = null,
-  @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList()
+  @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList(),
+  val translations: TmdbTranslationsDto? = null
+)
+
+/**
+ * Blocco `translations` restituito da `append_to_response=translations`.
+ * Usato per recuperare la sinossi localizzata quando la lingua richiesta non
+ * ha una `overview` (TMDB restituisce la versione originale, spesso inglese).
+ */
+data class TmdbTranslationsDto(
+  val translations: List<TmdbTranslationDto>? = emptyList()
+)
+
+data class TmdbTranslationDto(
+  @Json(name = "iso_639_1") val iso6391: String? = null,
+  @Json(name = "iso_3166_1") val iso31661: String? = null,
+  val name: String? = null,
+  @Json(name = "english_name") val englishName: String? = null,
+  val data: TmdbTranslationDataDto? = null
+)
+
+data class TmdbTranslationDataDto(
+  val name: String? = null,
+  val title: String? = null,
+  val overview: String? = null,
+  val tagline: String? = null
 )
 
 data class TmdbSeasonInfoDto(
@@ -358,7 +384,7 @@ interface TmdbApiService {
     @Path("movie_id") movieId: Int,
     @Query("api_key") apiKey: String,
     @Query("language") language: String = "it-IT",
-    @Query("append_to_response") append: String = "credits,similar,release_dates"
+    @Query("append_to_response") append: String = "credits,similar,release_dates,translations"
   ): TmdbMovieDetailDto
 
   @GET("tv/{series_id}")
@@ -366,7 +392,7 @@ interface TmdbApiService {
     @Path("series_id") seriesId: Int,
     @Query("api_key") apiKey: String,
     @Query("language") language: String = "it-IT",
-    @Query("append_to_response") append: String = "credits,similar,content_ratings"
+    @Query("append_to_response") append: String = "credits,similar,content_ratings,translations"
   ): TmdbTvDetailDto
 
   @GET("trending/movie/week")

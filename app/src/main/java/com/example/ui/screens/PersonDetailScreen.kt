@@ -402,7 +402,7 @@ fun PersonDetailScreen(
                   horizontalArrangement = Arrangement.spacedBy(16.dp),
                   modifier = Modifier.fillMaxWidth()
                 ) {
-                  itemsIndexed(credits, key = { _, item -> "credit_${item.id}" }) { index, item ->
+                  itemsIndexed(credits, key = { _, item -> "credit_${item.id}" }, contentType = { _, _ -> "credit" }) { index, item ->
                     PosterMediaCard(
                       media = item,
                       onClick = { onMediaClick(item) },
