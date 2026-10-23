@@ -21,7 +21,7 @@ StreamNova V1.0 is the first stable release for Android TV and Fire TV Stick fol
 
 ## Verification
 
-The Release build completed successfully. The `armeabi-v7a` APK signature and package metadata were verified. The GitHub update tests passed; the full unit test suite is being checked separately.
+The complete automated unit test suite passed: 1,180 tests, 0 failures, and 2 skipped. The final signed Release APK is being rebuilt from this verified source state before publication.
 
 ## Signing
 
