@@ -154,6 +154,7 @@ import com.example.ui.components.stabilizeFirstSeenOrder
 import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusBringIntoView
+import com.example.ui.components.TvFocusGridBringIntoView
 import com.example.ui.components.TvFocusAttachment
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.components.guard
@@ -1402,9 +1403,13 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
             }
 
             Row(
+              // Nessun margine inferiore: lo spazio verticale guadagnato va all'area
+              // scrollabile dei poster. Su un TV 1080p a densita' 2 il viewport e' appena
+              // piu' alto di una riga di card: con i 14dp di margine la card focalizzata
+              // (ingrandita del 6%) superava il bordo inferiore e l'anno veniva tagliato.
               modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 14.dp),
+                .padding(bottom = 0.dp),
               horizontalArrangement = Arrangement.SpaceBetween,
               verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1510,7 +1515,7 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                   .fillMaxWidth()
                   .weight(1f)
               ) {
-                TvFocusBringIntoView {
+                TvFocusGridBringIntoView {
                   LazyVerticalGrid(
                     state = categoryGridState,
                     columns = GridCells.Adaptive(minSize = 150.dp),
@@ -1599,7 +1604,7 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                   .fillMaxWidth()
                   .weight(1f)
               ) {
-                TvFocusBringIntoView {
+                TvFocusGridBringIntoView {
                   LazyVerticalGrid(
                     state = gridState,
                     columns = GridCells.Adaptive(minSize = 150.dp),

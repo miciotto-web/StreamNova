@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
 
 /**
  * Bring-into-view spec TV condiviso per contenitori scrollabili (LazyVerticalGrid, LazyColumn).
@@ -105,6 +106,113 @@ object TvFocusRowBringIntoViewSpec : BringIntoViewSpec {
       // Gi completamente visibile: nessuno scorrimento, niente sobbalzi.
       else -> 0f
     }
+  }
+}
+
+/**
+ * Bring-into-view TV per GRIGLIE di poster (LazyVerticalGrid) il cui viewport e' appena piu'
+ * alto di una riga di card (schermate Cerca/Provider: 1-2 righe visibili).
+ *
+ * Perche' non riusa [TvFocusBringIntoViewSpec]: quello spec aggancia la riga focalizzata a un
+ * BORDO del viewport (D-pad DOWN -> fondo area risultati, UP -> 64dp dall'alto). Con un
+ * viewport che contiene poco piu' di una riga questo produce lo scorrimento difettoso
+ * segnalato: la riga in ingresso resta incollata al bordo inferiore, la riga precedente resta
+ * tagliata a meta' sull'altro bordo e le card sembrano tagliate/posizionate male.
+ *
+ * Questo spec invece porta la riga focalizzata AL CENTRO del viewport quando la riga ENTRA in
+ * scena (non era interamente visibile all'inizio della richiesta):
+ * 1. le card in ingresso si fermano al centro, completamente visibili, con lo spazio libero
+ *    distribuito sopra e sotto;
+ * 2. le righe precedenti escono progressivamente dal bordo superiore (e quelle successive da
+ *    quello inferiore) tramite il normale scorrimento, senza sovrapposizioni;
+ * 3. il clipping avviene solo ai confini reali del viewport: la riga focalizzata non tocca mai
+ *    un bordo, quindi non viene tagliata;
+ * 4. se la riga era GIA' interamente visibile quando riceve il focus (es. si preme LEFT/RIGHT
+ *    nella stessa riga, o la card e' ripristinata dal Dettaglio), lo spec restituisce 0f e la
+ *    griglia non si muove: nessun micro-sobbalzo verticale.
+ *
+ * Il ritorno a 0f e' anche il segnale che Compose usa per considerare soddisfatta la richiesta
+ * bring-into-view: durante il centraggio della riga in ingresso va quindi continuato a
+ * restituire la distanza anche quando la riga e' gia' "visibile", altrimenti l'animazione si
+ * fermerebbe a meta' strada incollando la riga al bordo inferiore.
+ *
+ * Il centraggio e' clampato NATIVAMENTE dal range di scroll della griglia, quindi la prima e
+ * l'ultima riga restano ai bordi (con il contentPadding inferiore) senza mai tagliare le card
+ * che devono essere visualizzate per intero. Se una riga fosse piu' alta del viewport (non
+ * centrabile) viene allineata in alto.
+ *
+ * L'istanza e' VOLUTAMENTE stateful (una per griglia, creata da [TvFocusGridBringIntoView]):
+ * lo stato ricorda solo se e' in corso il centraggio di una riga in ingresso.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+class TvFocusGridBringIntoViewSpec : BringIntoViewSpec {
+
+  /**
+   * Tolleranza subpixel: il centraggio deve essere preciso. Su un TV 1080p il viewport della
+   * griglia e' solo poco piu' alto di una riga di card e l'ingrandimento del focus (1.06)
+   * consuma quasi tutto lo spazio libero: fermarsi a qualche pixel dal centro farebbe uscire
+   * la card focalizzata dal bordo inferiore (anno tagliato). Gli spostamenti orizzontali non
+   * dipendono da questa tolleranza (v. il ramo "riga gia' interamente visibile").
+   */
+  private val centerTolerancePx: Float = 1f
+
+  /**
+   * Meta' dell'ingrandimento applicato alla card focalizzata ([PosterMediaCard] scala a 1.06
+   * attorno al centro): il rect bring-into-view della card in focus e' quello GIA' scalato,
+   * quindi il suo bordo superiore e' spostato in alto di `size * 0.03`. Compensando, il centro
+   * VISIVO della riga coincide con il centro del viewport.
+   */
+  private val focusScaleHalfGrowth: Float = 0.03f
+
+  /** True mentre stiamo centrando una riga che e' entrata in scena dal bordo. */
+  private var centering = false
+
+  override val scrollAnimationSpec: AnimationSpec<Float> =
+    tween(durationMillis = 150, easing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f))
+
+  override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
+    if (size <= 0f || containerSize <= 0f) {
+      centering = false
+      return 0f
+    }
+
+    // Riga piu' alta del viewport: non e' centrabile, allineala in alto.
+    if (size >= containerSize) {
+      centering = false
+      return offset
+    }
+
+    val centeredOffset = (containerSize - size) / 2f - size * focusScaleHalfGrowth
+    val distance = offset - centeredOffset
+
+    if (centering) {
+      if (abs(distance) <= centerTolerancePx) {
+        centering = false
+        return 0f
+      }
+      return distance
+    }
+
+    // Riga gia' interamente visibile: nessuno scroll (LEFT/RIGHT, ripristino dal Dettaglio,
+    // riposizionamenti di layout). Solo una riga in ingresso va centrata.
+    val fullyVisible = offset >= -1f && offset + size <= containerSize + 1f
+    if (fullyVisible) return 0f
+
+    centering = true
+    return distance
+  }
+}
+
+/**
+ * Applica [TvFocusGridBringIntoViewSpec] a una griglia di card (LazyVerticalGrid). Da usare
+ * al posto di [TvFocusBringIntoView] quando il viewport contiene solo poche righe di poster.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun TvFocusGridBringIntoView(content: @Composable () -> Unit) {
+  val spec = remember { TvFocusGridBringIntoViewSpec() }
+  CompositionLocalProvider(LocalBringIntoViewSpec provides spec) {
+    content()
   }
 }
 
