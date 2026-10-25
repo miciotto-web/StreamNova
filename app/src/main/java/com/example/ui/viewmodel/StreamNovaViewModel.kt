@@ -59,6 +59,11 @@ import com.example.ui.components.FOCUS_ROW_ANY
 import java.util.concurrent.ConcurrentHashMap
 import com.example.ui.screens.player.NextEpisodePromptUtils
 import com.example.ui.screens.player.PlayerSourceFallback
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
+import com.example.ui.screens.player.PlayerChapter
+import com.example.ui.screens.player.PlayerChapterUtils
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
@@ -742,6 +747,29 @@ class StreamNovaViewModel(
 
   private val _playbackState = MutableStateFlow(PlayerPlaybackState())
   val playbackState: StateFlow<PlayerPlaybackState> = _playbackState.asStateFlow()
+
+  // Scrubbing virtuale disaccoppiato con debounce, accelerazione a step e navigazione capitoli
+  private val _uiSeekPosition = MutableStateFlow<Long?>(null)
+  val uiSeekPosition: StateFlow<Long?> = _uiSeekPosition.asStateFlow()
+
+  private val _isScrubbing = MutableStateFlow(false)
+  val isScrubbing: StateFlow<Boolean> = _isScrubbing.asStateFlow()
+
+  private val _seekStepDelta = MutableStateFlow(0L)
+  val seekStepDelta: StateFlow<Long> = _seekStepDelta.asStateFlow()
+
+  private val _chapters = MutableStateFlow<List<PlayerChapter>>(emptyList())
+  val chapters: StateFlow<List<PlayerChapter>> = _chapters.asStateFlow()
+
+  private val _currentStepMs = MutableStateFlow(10_000L)
+  val currentStepMs: StateFlow<Long> = _currentStepMs.asStateFlow()
+
+  private var scrubDebounceJob: Job? = null
+  private var lastSeekPressTimestampMs: Long = 0L
+  private var consecutiveSeekPressCount: Int = 0
+  private var scrubOriginPositionMs: Long = 0L
+  private var attachedPlayer: Player? = null
+  internal var currentTimeProvider: () -> Long = { System.currentTimeMillis() }
 
   private val _onlineSubtitles = MutableStateFlow<List<Subtitle>>(emptyList())
   val onlineSubtitles: StateFlow<List<Subtitle>> = _onlineSubtitles.asStateFlow()
@@ -3338,6 +3366,7 @@ class StreamNovaViewModel(
     currentMediaFetchJob?.cancel()
     currentMediaFetchJob = null
     resetStreamState()
+    detachPlayer()
     currentSession = null
     currentlyUnlockedMediaId = null
     _showSourceDialog.value = false
@@ -4175,6 +4204,178 @@ fun backToBrowsing() {
     _playbackState.update { current ->
       val updated = (current.subtitles + subtitle).distinctBy { it.id.ifBlank { it.url } }
       current.copy(subtitles = updated)
+    }
+  }
+
+  // ===========================================================================
+  // SCRUBBING OTTIMIZZATO, SEEK VIRTUALE E NAVIGAZIONE CAPITOLI
+  // ===========================================================================
+
+  fun attachPlayer(player: Player?) {
+    this.attachedPlayer = player
+    if (player != null) {
+      updateChapters(player)
+    } else {
+      _chapters.value = emptyList()
+    }
+  }
+
+  fun detachPlayer() {
+    this.attachedPlayer = null
+    _chapters.value = emptyList()
+    cancelScrub()
+  }
+
+  fun updateChapters(player: Player) {
+    _chapters.value = PlayerChapterUtils.extractChapters(player)
+  }
+
+  fun setChapters(chaptersList: List<PlayerChapter>) {
+    _chapters.value = chaptersList
+  }
+
+  /**
+   * Avanzamento temporale con telecomando D-Pad RIGHT.
+   */
+  fun onSeekForward(
+    player: Player? = attachedPlayer,
+    isLive: Boolean = false
+  ) {
+    handleSeekStep(direction = 1, player = player, isLive = isLive)
+  }
+
+  /**
+   * Arretramento temporale con telecomando D-Pad LEFT.
+   */
+  fun onSeekBackward(
+    player: Player? = attachedPlayer,
+    isLive: Boolean = false
+  ) {
+    handleSeekStep(direction = -1, player = player, isLive = isLive)
+  }
+
+  private fun handleSeekStep(
+    direction: Int,
+    player: Player?,
+    isLive: Boolean
+  ) {
+    val p = player ?: attachedPlayer
+    val duration = p?.duration ?: _playbackState.value.durationMs
+
+    // Isolamento flussi live e durate non valide
+    if (isLive || duration <= 0L || (p != null && !p.isCurrentMediaItemSeekable)) {
+      return
+    }
+
+    val now = currentTimeProvider()
+    if (now - lastSeekPressTimestampMs < 400L) {
+      consecutiveSeekPressCount++
+    } else {
+      consecutiveSeekPressCount = 1
+    }
+    lastSeekPressTimestampMs = now
+
+    // Accelerazione Adattiva (Step Curve):
+    // Pressioni 1-2: 10s (10_000L)
+    // Pressioni 3-5: 30s (30_000L)
+    // Pressioni > 5 consecutive: 60s (60_000L)
+    val stepSize = when {
+      consecutiveSeekPressCount <= 2 -> 10_000L
+      consecutiveSeekPressCount <= 5 -> 30_000L
+      else -> 60_000L
+    }
+    _currentStepMs.value = stepSize
+
+    if (!_isScrubbing.value || _uiSeekPosition.value == null) {
+      scrubOriginPositionMs = (p?.currentPosition ?: _playbackState.value.currentPositionMs).coerceAtLeast(0L)
+      _isScrubbing.value = true
+    }
+
+    val currentTarget = _uiSeekPosition.value ?: scrubOriginPositionMs
+    val newTarget = (currentTarget + direction * stepSize).coerceIn(0L, duration)
+
+    _uiSeekPosition.value = newTarget
+    _seekStepDelta.value = newTarget - scrubOriginPositionMs
+
+    // Debounce a 500ms prima di eseguire la seek reale su ExoPlayer
+    scrubDebounceJob?.cancel()
+    scrubDebounceJob = viewModelScope.launch {
+      delay(500L)
+      executeCommitSeek(player = p, targetPosition = newTarget)
+    }
+  }
+
+  private fun executeCommitSeek(player: Player?, targetPosition: Long) {
+    Log.i("SeekSync", "COMMIT_DEBOUNCE: targetPosition=${targetPosition}ms (SeekParameters.EXACT)")
+    val p = player ?: attachedPlayer
+    (p as? ExoPlayer)?.setSeekParameters(SeekParameters.EXACT)
+    p?.seekTo(targetPosition)
+    resetScrubbingState()
+  }
+
+  /**
+   * Commit Immediato con D-Pad OK / Center:
+   * Se l'utente preme il tasto centrale del D-Pad mentre isScrubbing == true:
+   * 1. Cancella immediatamente il job del debounce.
+   * 2. Chiama exoPlayer.seekTo(targetPosition).
+   * 3. Resetta lo stato di scrubbing all'istante senza attendere il timeout.
+   */
+  fun commitSeekImmediately(player: Player? = attachedPlayer) {
+    if (!_isScrubbing.value) return
+    val target = _uiSeekPosition.value ?: return
+    Log.i("SeekSync", "COMMIT_IMMEDIATE: targetPosition=${target}ms (SeekParameters.EXACT)")
+    scrubDebounceJob?.cancel()
+    scrubDebounceJob = null
+    val p = player ?: attachedPlayer
+    (p as? ExoPlayer)?.setSeekParameters(SeekParameters.EXACT)
+    p?.seekTo(target)
+    resetScrubbingState()
+  }
+
+  /**
+   * Annulla la sessione di scrubbing (es. tasto BACK): nessuna seek reale eseguita.
+   */
+  fun cancelScrub() {
+    resetScrubbingState()
+  }
+
+  private fun resetScrubbingState() {
+    scrubDebounceJob?.cancel()
+    scrubDebounceJob = null
+    _isScrubbing.value = false
+    _uiSeekPosition.value = null
+    _seekStepDelta.value = 0L
+    _currentStepMs.value = 10_000L
+    consecutiveSeekPressCount = 0
+    lastSeekPressTimestampMs = 0L
+    scrubOriginPositionMs = 0L
+  }
+
+  /**
+   * Navigazione Capitoli D-Pad UP:
+   * Salta direttamente all'inizio del capitolo successivo ed esegue il seek immediato.
+   */
+  fun onChapterNext(player: Player? = attachedPlayer) {
+    val p = player ?: attachedPlayer ?: return
+    val chList = _chapters.value.ifEmpty { PlayerChapterUtils.extractChapters(p) }
+    val nextTarget = PlayerChapterUtils.getNextChapterPosition(chList, p.currentPosition)
+    if (nextTarget != null) {
+      cancelScrub()
+      p.seekTo(nextTarget)
+    }
+  }
+
+  /**
+   * Navigazione Capitoli D-Pad DOWN:
+   * Salta all'inizio del capitolo corrente (o al precedente se ci si trova nei primi 3 secondi).
+   */
+  fun onChapterPrevious(player: Player? = attachedPlayer) {
+    val p = player ?: attachedPlayer ?: return
+    val chList = _chapters.value.ifEmpty { PlayerChapterUtils.extractChapters(p) }
+    val prevTarget = PlayerChapterUtils.getPreviousOrCurrentChapterPosition(chList, p.currentPosition)
+    if (prevTarget != null) {
+      cancelScrub()
+      p.seekTo(prevTarget)
     }
   }
 }

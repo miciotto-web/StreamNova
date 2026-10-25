@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -108,6 +109,14 @@ import androidx.media3.common.C
 import androidx.media3.common.PlaybackException as ExoPlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import com.example.ui.screens.player.PlayerScrub
+import com.example.ui.screens.player.PlayerScrubController
+import com.example.ui.screens.player.PlayerScrubUiState
+import com.example.ui.screens.player.PlayerSeekPreviewExtractor
+import com.example.ui.screens.player.SeekPreviewController
+import com.example.ui.screens.player.SeekPreviewModel
+import com.example.ui.screens.player.SeekPreviewRegistry
+import com.example.ui.screens.player.SeekPreviewState
 import com.example.ui.screens.player.PlayerIntroUtils
 import com.example.ui.screens.player.PlayerIntroUtils.IntroWindow
 import com.example.data.repository.IntroSkipRepository
@@ -118,6 +127,9 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
+import com.example.ui.screens.player.PlayerChapter
+import com.example.ui.screens.player.PlayerChapterUtils
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -157,6 +169,17 @@ import kotlinx.coroutines.launch
 
 /** Auto-hide dei controlli del player dopo N ms di inattività con il telecomando. */
 private const val CONTROLS_HIDE_DELAY_MS = 4_000L
+
+/**
+ * Passo della navigazione temporale ◀ / ▶ con il focus sulla TIMELINE dei controlli.
+ *
+ * È lo stesso passo della navigazione rapida già usata in player (i tasti MEDIA
+ * FAST_FORWARD / REWIND e la ricerca veloce a video pulito spostano di 10 s): percorso
+ * DISTINTO da quello della ricerca veloce, che resta l'unico ad aprire l'anteprima dei
+ * fotogrammi. Tenendo premuto il tasto il passo viene moltiplicato per le ripetizioni
+ * (stessa accelerazione dei tasti MEDIA).
+ */
+private const val TIMELINE_SEEK_STEP_MS = 10_000L
 
 /**
  * User-Agent HTTP di default per il player.
@@ -347,6 +370,11 @@ fun PlayerScreen(
   // scrubbing l'HUD resta fuori schermo e l'unico elemento a video è l'overlay di anteprima.
   var scrubState by remember { mutableStateOf<PlayerScrubUiState?>(null) }
   val isScrubbing = scrubState != null
+  var activePreviewPositionMs by remember { mutableLongStateOf(0L) }
+  var activePreviewDeltaMs by remember { mutableLongStateOf(0L) }
+  var isSeekSettling by remember { mutableStateOf(false) }
+  val chapters by viewModel.chapters.collectAsState()
+  val isLive = viewModel.isLiveChannel(media.id)
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
 
   // FLAG CRITICO: Indica se siamo in fase di transizione verso il prossimo episodio.
@@ -701,6 +729,9 @@ fun PlayerScreen(
       .setLoadControl(loadControl)
       .setVideoChangeFrameRateStrategy(frameRateStrategy)
       .build().apply {
+        // Aggancio Keyframe Istantaneo: azzera tempi di attesa decodifica frame intermedi
+        setSeekParameters(SeekParameters.CLOSEST_SYNC)
+
         // Punto 1 – Selezione automatica lingua preferita (allineamento NuvioTV):
         // parametri di selezione predefiniti del player che privilegiano l'audio
         // preferito (default italiano "it"/"ita") e impediscono la selezione
@@ -1598,7 +1629,44 @@ fun PlayerScreen(
     Log.d("[NEXT_EP_DEBUG]", "DisposableEffect player: listener agganciati a $exoPlayer")
     var subtitleErrorRecoveries = 0
     val listener = object : Player.Listener {
+      override fun onPositionDiscontinuity(
+        oldPosition: Player.PositionInfo,
+        newPosition: Player.PositionInfo,
+        reason: Int
+      ) {
+        val reasonStr = when (reason) {
+          Player.DISCONTINUITY_REASON_SEEK -> "SEEK"
+          Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> "AUTO_TRANSITION"
+          Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT -> "SEEK_ADJUSTMENT"
+          Player.DISCONTINUITY_REASON_INTERNAL -> "INTERNAL"
+          Player.DISCONTINUITY_REASON_REMOVE -> "REMOVE"
+          Player.DISCONTINUITY_REASON_SKIP -> "SKIP"
+          else -> "UNKNOWN($reason)"
+        }
+        Log.i(
+          "SeekSync",
+          "[SeekSync] MAIN_PLAYER onPositionDiscontinuity: reason=$reasonStr " +
+            "oldPos=${oldPosition.positionMs} newPos=${newPosition.positionMs} " +
+            "playerCurrentPos=${exoPlayer.currentPosition}"
+        )
+        if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) {
+          (exoPlayer as? ExoPlayer)?.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+        }
+      }
+
       override fun onPlaybackStateChanged(state: Int) {
+        val stateStr = when (state) {
+          Player.STATE_IDLE -> "IDLE"
+          Player.STATE_BUFFERING -> "BUFFERING"
+          Player.STATE_READY -> "READY"
+          Player.STATE_ENDED -> "ENDED"
+          else -> "UNKNOWN($state)"
+        }
+        Log.i(
+          "SeekSync",
+          "[SeekSync] MAIN_PLAYER onPlaybackStateChanged: state=$stateStr($state) " +
+            "currentPos=${exoPlayer.currentPosition} playWhenReady=${exoPlayer.playWhenReady}"
+        )
         Log.d(
           "[NEXT_EP_DEBUG]",
           "onPlaybackStateChanged: state=$state (1=IDLE, 2=BUFFERING, 3=READY, 4=ENDED) playWhenReady=${exoPlayer.playWhenReady}"
@@ -2012,9 +2080,9 @@ fun PlayerScreen(
   val isIntroActive = !isIntroDismissed &&
     PlayerIntroUtils.isButtonVisible(currentPosition, introWindow)
 
-  // Durante lo scrubbing l'HUD resta nascosto anche a video in pausa: l'unico elemento a
-  // video è l'overlay di anteprima della posizione.
-  val hudShown = (areControlsVisible || !isPlaying) && !isScrubbing
+  // Durante lo scrubbing l'HUD resta nascosto anche a video in pausa o durante il settling:
+  // l'unico elemento a video è l'overlay di anteprima della posizione.
+  val hudShown = (areControlsVisible || !isPlaying) && !isScrubbing && !isSeekSettling
 
   val showSkipIntro = isIntroActive && !hudShown && !isScrubbing
 
@@ -2136,8 +2204,109 @@ fun PlayerScreen(
   // (COMMIT_DELAY_MS di silenzio oppure OK). BACK annulla senza seek.
   // ---------------------------------------------------------------------------
   val scrubScope = rememberCoroutineScope()
+
+  // Sincronizzazione dell'istanza ExoPlayer e listener capitoli con il ViewModel
+  DisposableEffect(exoPlayer) {
+    viewModel.attachPlayer(exoPlayer)
+    val listener = object : Player.Listener {
+      override fun onTracksChanged(tracks: Tracks) {
+        viewModel.updateChapters(exoPlayer)
+      }
+    }
+    exoPlayer.addListener(listener)
+    viewModel.updateChapters(exoPlayer)
+    onDispose {
+      exoPlayer.removeListener(listener)
+      viewModel.detachPlayer()
+    }
+  }
+
+  // Anteprima video dello scrubbing. Il controller coordina cache/conflazione/prefetch; la
+  // sorgente è un decoder DEDICATO (secondo ExoPlayer + ImageReader), quindi lo scrubbing
+  // non sposta mai il player principale: pausa, seek di conferma e BACK restano quelli del
+  // ViewModel. Vitale per la schermata: al dispose il decoder viene rilasciato.
+  val seekPreview = remember { SeekPreviewController(scrubScope) }
+  val seekPreviewState by seekPreview.state.collectAsState()
+
+  /** Warm-up del decoder dedicato già fatto per la sessione di scrubbing corrente. */
+  val scrubSessionWarmed = remember { mutableStateOf(false) }
+  DisposableEffect(seekPreview) {
+    onDispose {
+      seekPreview.release()
+      SeekPreviewRegistry.clear()
+    }
+  }
+
   val scrub = remember(exoPlayer) {
-    PlayerScrubController(scrubScope, exoPlayer) { state -> scrubState = state }
+    PlayerScrubController(scrubScope, exoPlayer) { state ->
+      scrubState = state
+      if (state != null) {
+        activePreviewPositionMs = state.positionMs
+        activePreviewDeltaMs = state.deltaMs
+        isSeekSettling = false
+        seekPreview.setSource(
+          key = SeekPreviewController.sourceKeyOf(playbackState.media?.id, videoUrl),
+          seekable = exoPlayer.isCurrentMediaItemSeekable
+        )
+        if (!scrubSessionWarmed.value) {
+          scrubSessionWarmed.value = true
+          seekPreview.warmUp()
+        }
+        seekPreview.show(
+          positionMs = state.positionMs,
+          prefetch = SeekPreviewModel.prefetchPositions(
+            positionMs = state.positionMs,
+            durationMs = state.durationMs,
+            stepMs = 10_000L
+          )
+        )
+      } else if (activePreviewPositionMs > 0L) {
+        isSeekSettling = true
+        seekPreview.finishAndDismiss(
+          targetPositionMs = activePreviewPositionMs,
+          fallbackTimeoutMs = 1500L,
+          holdDurationMs = 650L,
+          onDismissed = {
+            isSeekSettling = false
+            activePreviewPositionMs = 0L
+            scrubSessionWarmed.value = false
+          }
+        )
+      } else {
+        isSeekSettling = false
+        seekPreview.hide()
+        scrubSessionWarmed.value = false
+      }
+    }
+  }
+
+  // Nessun job e nessuna sessione residui quando il player viene ricreato o la schermata esce.
+  DisposableEffect(exoPlayer) {
+    onDispose { scrub.release() }
+  }
+
+  /**
+   * Sorgente dell'anteprima: decoder DEDICATO costruito sulla stessa MediaSource.Factory
+   * del player (quindi stessi URL, header HTTP, cookie, redirect, proxy, HLS/DASH/DRM).
+   * Cambiare episodio o fonte sostituisce la sorgente: il registro rilascia la precedente
+   * e il controller azzera cache e overlay. Nessun riferimento alla superficie del player.
+   */
+  val previewSource = remember(videoUrl, playbackMediaSourceFactory) {
+    videoUrl?.takeIf { it.isNotBlank() }?.let { url ->
+      PlayerSeekPreviewExtractor(
+        context = context,
+        mediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, emptyList()),
+        mediaSourceFactory = playbackMediaSourceFactory
+      )
+    }
+  }
+  DisposableEffect(previewSource) {
+    if (previewSource != null) {
+      SeekPreviewRegistry.install(previewSource)
+    } else {
+      SeekPreviewRegistry.clear()
+    }
+    onDispose { SeekPreviewRegistry.clear() }
   }
 
   /** Pressione (o ripetizione) di ◀ / ▶ a controlli nascosti: apre o prosegue lo scrubbing. */
@@ -2152,12 +2321,11 @@ fun PlayerScreen(
 
   /** BACK durante lo scrubbing: nessuna seek, si riprende dal punto di partenza. */
   fun cancelScrub() {
+    isSeekSettling = false
+    activePreviewPositionMs = 0L
+    seekPreview.hide()
+    (exoPlayer as? ExoPlayer)?.setSeekParameters(SeekParameters.CLOSEST_SYNC)
     scrub.cancel()
-  }
-
-  // Nessun job e nessuna sessione residui quando il player viene ricreato o la schermata esce.
-  DisposableEffect(exoPlayer) {
-    onDispose { scrub.release() }
   }
 
   // (1) Richiesta focus iniziale
@@ -2234,10 +2402,11 @@ fun PlayerScreen(
     hudHasFocus,
     playerHasFocus,
     isScrubbing,
+    isSeekSettling,
     anyModalOpen,
     isNextEpisodePromptVisible
   ) {
-    if (anyModalOpen || isNextEpisodePromptVisible) return@LaunchedEffect
+    if (anyModalOpen || isNextEpisodePromptVisible || isSeekSettling) return@LaunchedEffect
     if (hudShown) {
       if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
     } else if (!isScrubbing && !playerHasFocus) {
@@ -2251,7 +2420,10 @@ fun PlayerScreen(
   BackHandler(enabled = !anyModalOpen) {
     Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler")
     Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
-    if (showSkipIntro) {
+    if (isScrubbing || isSeekSettling) {
+      Log.i("SeekSync", "PLAYERSCREEN: BackHandler durante scrubbing/settling: annulla scrubbing")
+      cancelScrub()
+    } else if (showSkipIntro) {
       Log.d("BACK_TRACE", "PLAYERSCREEN: BACK con banner Salta Intro visibile: chiusura banner")
       isIntroDismissed = true
       try {
@@ -2309,8 +2481,8 @@ fun PlayerScreen(
           if (!isKeyDown) return@onPreviewKeyEvent true
         }
 
-        if (scrub.isScrubbing) {
-          // Con l'anteprima aperta il telecomando appartiene allo scrubbing: ogni pressione
+        if (scrub.isScrubbing || isSeekSettling) {
+          // Con l'anteprima aperta o in settling il telecomando appartiene allo scrubbing: ogni pressione
           // (comprese le ripetizioni del sistema) vale un passo, OK conferma, BACK annulla.
           when {
             keyCode == KeyEvent.KEYCODE_BACK -> {
@@ -2319,8 +2491,10 @@ fun PlayerScreen(
             }
             keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER -> {
               if (isKeyDown) {
-                commitScrub()
-                scrubOkReleasePending.value = true
+                if (scrub.isScrubbing) {
+                  commitScrub()
+                  scrubOkReleasePending.value = true
+                }
               }
               return@onPreviewKeyEvent true
             }
@@ -2338,7 +2512,7 @@ fun PlayerScreen(
         // aperta) l'evento NON viene toccato: resta a Compose, che sposta il focus fra i
         // controlli a video (Play, Tracce audio, Sottotitoli, ...).
         if (scrubDirection != 0) {
-          if (hudShown || anyModalOpen) return@onPreviewKeyEvent false
+          if (hudShown || anyModalOpen || isLive || totalDuration <= 0) return@onPreviewKeyEvent false
           if (isKeyDown) onScrubArrowPressed(scrubDirection)
           return@onPreviewKeyEvent true
         }
@@ -2354,7 +2528,10 @@ fun PlayerScreen(
         if (keyCode == KeyEvent.KEYCODE_BACK) {
           if (isKeyDown && native.repeatCount == 0) {
             Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent KEYCODE_BACK down, anyModalOpen=$anyModalOpen")
-            if (anyModalOpen) {
+            if (isScrubbing || isSeekSettling) {
+              Log.i("SeekSync", "PLAYERSCREEN: onKeyEvent BACK su scrubbing/settling: annulla scrubbing")
+              cancelScrub()
+            } else if (anyModalOpen) {
               showTrackQuickPanel = false
               showSubtitleModal = false
               showQualityModal = false
@@ -2450,12 +2627,12 @@ fun PlayerScreen(
           // Frecce Sinistra / Destra: gestite nell'handler di PREVIEW (focus fra i controlli
           // con l'HUD a schermo, scrubbing a video pulito). Qui restano solo Su / Giù.
 
-// Frecce Su / Giù
+          // Frecce Su / Giù
           KeyEvent.KEYCODE_DPAD_UP -> {
-            // A HUD visibile la barra di scorrimento esiste ed è il target naturale. A video
-            // pulito NON si consuma il tasto (la barra non è montata): così la ricerca di focus
-            // può raggiungere il banner "Salta intro" invece di essere bloccata a vuoto.
-            if (hudShown) {
+            if (chapters.isNotEmpty() && hudShown && !anyModalOpen) {
+              viewModel.onChapterNext(exoPlayer)
+              true
+            } else if (hudShown) {
               requestFocusOn(seekBarFocusRequester)
               true
             } else {
@@ -2463,6 +2640,10 @@ fun PlayerScreen(
             }
           }
           KeyEvent.KEYCODE_DPAD_DOWN -> when {
+            chapters.isNotEmpty() && hudShown && !anyModalOpen -> {
+              viewModel.onChapterPrevious(exoPlayer)
+              true
+            }
             !hudShown -> {
               showControls(focusPrimary = false)
               true
@@ -2907,11 +3088,11 @@ fun PlayerScreen(
           // -------------------------------------------------------------------
           // 2. BARRA DI SCORRIMENTO (Timeline)
           // -------------------------------------------------------------------
-          val progressFraction = if (totalDuration > 0) {
+          val progressFraction = if (totalDuration > 0 && !isLive) {
             (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
           } else 0f
 
-          val bufferFraction = if (totalDuration > 0) {
+          val bufferFraction = if (totalDuration > 0 && !isLive) {
             (exoPlayer.bufferedPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
           } else 0f
 
@@ -2927,10 +3108,26 @@ fun PlayerScreen(
                 .onKeyEvent { keyEvent ->
                   val native = keyEvent.nativeKeyEvent
                   if (native.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
-                  // Le frecce ◀ / ▶ non sono gestite qui: la barra non deve intercettare
-                  // la ricerca veloce continua (né consumarla con salti di 10 secondi).
-                  // UP/DOWN spostano il focus fra barra, Salta Intro e pulsanti.
                   when (native.keyCode) {
+                    // Navigazione temporale della timeline (percorso PROPRIO della modalità
+                    // "controlli a schermo"): ◀ / ▶ arretrano e avanzano la riproduzione a
+                    // passi, anche tenendo premuto il tasto. Qui la posizione è applicata
+                    // subito dal player e NON passa dallo scrubbing con anteprima: nessuna
+                    // sessione, nessun overlay di fotogrammi, nessuno stato pendente.
+                    // L'uscita dalla timeline verso gli altri controlli resta Su / Giù
+                    // (Giù = Play): ◀ / ▶ sono ormai il comando temporale dell'elemento.
+                    // Su un canale live non c'è navigazione temporale: il tasto resta a
+                    // Compose, che sposta il focus fra i controlli come prima.
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                      if (isLive) return@onKeyEvent false
+                      seekBy(-TIMELINE_SEEK_STEP_MS, native.repeatCount)
+                      true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                      if (isLive) return@onKeyEvent false
+                      seekBy(TIMELINE_SEEK_STEP_MS, native.repeatCount)
+                      true
+                    }
                     KeyEvent.KEYCODE_DPAD_UP -> {
                       if (isIntroActive) {
                         requestFocusOn(skipIntroFocusRequester)
@@ -2943,14 +3140,22 @@ fun PlayerScreen(
                       requestFocusOn(playPauseFocusRequester)
                       true
                     }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                      togglePlayPause()
+                      true
+                    }
                     else -> false
                   }
                 },
               shape = RoundedCornerShape(8.dp),
               focusedScale = 1.0f,
-              focusedBorderColor = NovaCyanBright,
-              borderWidth = 2.dp,
-              onClick = { togglePlayPause() }
+              focusedBorderColor = if (isLive) Color.Transparent else NovaCyanBright,
+              borderWidth = if (isLive) 0.dp else 2.dp,
+              onClick = {
+                if (!isLive) {
+                  togglePlayPause()
+                }
+              }
             ) { isFocused ->
               BoxWithConstraints(
                 modifier = Modifier
@@ -2989,21 +3194,23 @@ fun PlayerScreen(
                 }
 
                 // Thumb / Indicatore di avanzamento
-                val thumbOffset = (widthPx - 14.dp) * progressFraction
-                Box(
-                  modifier = Modifier
-                    .padding(start = thumbOffset.coerceAtLeast(0.dp))
-                    .size(if (isFocused) 14.dp else 9.dp)
-                    .shadow(
-                      elevation = if (isFocused) 10.dp else 2.dp,
-                      shape = CircleShape,
-                      spotColor = NovaCyanBright
-                    )
-                    .background(
-                      if (isFocused) NovaCyanBright else Color.White,
-                      CircleShape
-                    )
-                )
+                if (!isLive) {
+                  val thumbOffset = (widthPx - 14.dp) * progressFraction
+                  Box(
+                    modifier = Modifier
+                      .padding(start = thumbOffset.coerceAtLeast(0.dp))
+                      .size(if (isFocused) 14.dp else 9.dp)
+                      .shadow(
+                        elevation = if (isFocused) 10.dp else 2.dp,
+                        shape = CircleShape,
+                        spotColor = NovaCyanBright
+                      )
+                      .background(
+                        if (isFocused) NovaCyanBright else Color.White,
+                        CircleShape
+                      )
+                  )
+                }
               }
             }
           }
@@ -3139,7 +3346,7 @@ fun PlayerScreen(
 
             // LATO DESTRO: Minutaggio formattato (es. "00:02 / 41:54")
             Text(
-              text = formatTimePair(currentPosition, totalDuration),
+              text = if (isLive) "LIVE" else formatTimePair(currentPosition, totalDuration),
               color = Color.White,
               fontSize = 16.sp,
               fontWeight = FontWeight.SemiBold
@@ -3235,10 +3442,11 @@ fun PlayerScreen(
     }
 
     // Overlay di scrubbing: anteprima della posizione scelta con ◀ / ▶ mentre i controlli
-    // sono nascosti. Visibile solo durante lo scrubbing, senza dissolvenza: la barra deve
-    // comparire e sparire nello stesso frame della pressione, anche a pressioni ravvicinate.
-    val scrubPreview = scrubState
-    if (scrubPreview != null) {
+    // sono nascosti. Mostrato durante lo scrubbing attivo e durante il settling del frame finale.
+    val showScrubOverlay = isScrubbing || isSeekSettling
+    if (showScrubOverlay) {
+      val overlayPosition = if (scrubState != null) scrubState!!.positionMs else activePreviewPositionMs
+      val overlayDelta = if (scrubState != null) scrubState!!.deltaMs else activePreviewDeltaMs
       Box(
         modifier = Modifier
           .align(Alignment.BottomCenter)
@@ -3246,7 +3454,12 @@ fun PlayerScreen(
           .padding(bottom = 64.dp),
         contentAlignment = Alignment.Center
       ) {
-        PlayerScrubOverlay(state = scrubPreview)
+        PlayerScrubOverlay(
+          positionMs = overlayPosition,
+          durationMs = totalDuration,
+          deltaMs = overlayDelta,
+          previewState = seekPreviewState
+        )
       }
     }
 
@@ -4344,87 +4557,170 @@ fun TrackSelectionDialog(
  * di quanto si è spostata rispetto al punto di partenza. Nessun pulsante e nessun focus:
  * gli unici comandi sono OK (conferma) e BACK (annulla), quindi i controlli restano
  * fuori schermo per tutta la durata dello scrubbing.
+ *
+ * Sopra la barra di anteprima, allineata alla posizione proposta, vive il componente
+ * [SeekPreview]: se il fotogramma è disponibile compare l'immagine 16:9 con il timestamp,
+ * altrimenti lo stesso riquadro mostra il placeholder. L'elemento è decorativo (nessun
+ * focus, nessun tasto), quindi non modifica la navigazione D-pad né il flusso di conferma.
  */
 @Composable
-private fun PlayerScrubOverlay(state: PlayerScrubUiState) {
-  val fraction = if (state.durationMs > 0L) {
-    (state.positionMs.toFloat() / state.durationMs.toFloat()).coerceIn(0f, 1f)
+private fun PlayerScrubOverlay(
+  positionMs: Long,
+  durationMs: Long,
+  deltaMs: Long,
+  previewState: SeekPreviewState? = null
+) {
+  val fraction = if (durationMs > 0L) {
+    (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
   } else 0f
 
-  Column(
-    modifier = Modifier
-      .widthIn(min = 420.dp, max = 760.dp)
-      .shadow(elevation = 18.dp, shape = RoundedCornerShape(18.dp), spotColor = NovaCyanBright)
-      .background(color = Color(0xE60B111E), shape = RoundedCornerShape(18.dp))
-      .border(width = 1.5.dp, color = NovaCyan.copy(alpha = 0.85f), shape = RoundedCornerShape(18.dp))
-      .padding(horizontal = 26.dp, vertical = 20.dp),
-    verticalArrangement = Arrangement.spacedBy(14.dp)
+  BoxWithConstraints(
+    modifier = Modifier.widthIn(min = 420.dp, max = 760.dp),
+    contentAlignment = Alignment.Center
   ) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically
+    val previewWidth = (maxWidth * SEEK_PREVIEW_WIDTH_FRACTION).coerceIn(160.dp, 340.dp)
+
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .shadow(elevation = 18.dp, shape = RoundedCornerShape(18.dp), spotColor = NovaCyanBright)
+        .background(color = Color(0xE60B111E), shape = RoundedCornerShape(18.dp))
+        .border(width = 1.5.dp, color = NovaCyan.copy(alpha = 0.85f), shape = RoundedCornerShape(18.dp))
+        .padding(horizontal = 26.dp, vertical = 20.dp),
+      verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
       Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        Icon(
-          imageVector = if (state.deltaMs >= 0L) Icons.Default.FastForward else Icons.Default.FastRewind,
-          contentDescription = null,
-          tint = NovaCyanBright,
-          modifier = Modifier.size(22.dp)
-        )
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          Icon(
+            imageVector = if (deltaMs >= 0L) Icons.Default.FastForward else Icons.Default.FastRewind,
+            contentDescription = null,
+            tint = NovaCyanBright,
+            modifier = Modifier.size(22.dp)
+          )
+          Box(
+            modifier = Modifier
+              .clip(RoundedCornerShape(6.dp))
+              .background(NovaCyanBright.copy(alpha = 0.22f))
+              .padding(horizontal = 8.dp, vertical = 4.dp)
+          ) {
+            Text(
+              text = formatAccumulatedDelta(deltaMs),
+              color = NovaCyanBright,
+              fontSize = 18.sp,
+              fontWeight = FontWeight.ExtraBold
+            )
+          }
+        }
         Text(
-          text = formatScrubDelta(state.deltaMs),
-          color = NovaCyanBright,
-          fontSize = 20.sp,
-          fontWeight = FontWeight.Bold
+          text = formatTimePair(positionMs, durationMs),
+          color = Color.White,
+          fontSize = 18.sp,
+          fontWeight = FontWeight.SemiBold
         )
       }
-      Text(
-        text = formatTimePair(state.positionMs, state.durationMs),
-        color = Color.White,
-        fontSize = 18.sp,
-        fontWeight = FontWeight.SemiBold
-      )
-    }
 
-    // Barra di anteprima: stessa forma della timeline dell'HUD, ma senza focus e senza
-    // pulsanti (nessun elemento dello scrubbing è raggiungibile dal D-pad).
-    BoxWithConstraints(
-      modifier = Modifier.fillMaxWidth(),
-      contentAlignment = Alignment.CenterStart
-    ) {
-      val widthPx = maxWidth
+      // Anteprima video (stile YouTube): sopra la barra, orizzontalmente ancorata alla
+      // posizione proposta ma sempre dentro i bordi dell'overlay.
+      val preview = previewState
+        ?: SeekPreviewState.Unavailable(positionMs)
       Box(
         modifier = Modifier
           .fillMaxWidth()
-          .height(8.dp)
-          .clip(RoundedCornerShape(4.dp))
-          .background(Color.White.copy(alpha = 0.22f))
+          .heightIn(max = 260.dp),
+        contentAlignment = Alignment.Center
       ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+          val clampedCenter = SeekPreviewModel.clampedCenterFraction(
+            preferredCenterFraction = SeekPreviewModel.preferredCenterFraction(
+              positionMs = preview.positionMs,
+              durationMs = durationMs
+            ),
+            previewWidthFraction = SEEK_PREVIEW_WIDTH_FRACTION
+          )
+          val offset = (maxWidth - previewWidth) * clampedCenter - (maxWidth - previewWidth) / 2f
+          SeekPreview(
+            state = preview,
+            durationMs = durationMs,
+            width = previewWidth,
+            modifier = Modifier
+              .align(Alignment.Center)
+              .offset(x = offset)
+          )
+        }
+      }
+
+      // Barra di anteprima: stessa forma della timeline dell'HUD, ma senza focus e senza
+      // pulsanti (nessun elemento dello scrubbing è raggiungibile dal D-pad).
+      BoxWithConstraints(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.CenterStart
+      ) {
+        val widthPx = maxWidth
         Box(
           modifier = Modifier
-            .fillMaxWidth(fraction)
-            .fillMaxHeight()
-            .background(Brush.horizontalGradient(listOf(NovaCyan, NovaCyanBright)))
+            .fillMaxWidth()
+            .height(8.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color.White.copy(alpha = 0.22f))
+        ) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth(fraction)
+              .fillMaxHeight()
+              .background(Brush.horizontalGradient(listOf(NovaCyan, NovaCyanBright)))
+          )
+        }
+        Box(
+          modifier = Modifier
+            .padding(start = ((widthPx - 16.dp) * fraction).coerceAtLeast(0.dp))
+            .size(16.dp)
+            .shadow(elevation = 10.dp, shape = CircleShape, spotColor = NovaCyanBright)
+            .background(NovaCyanBright, CircleShape)
         )
       }
-      Box(
-        modifier = Modifier
-          .padding(start = ((widthPx - 16.dp) * fraction).coerceAtLeast(0.dp))
-          .size(16.dp)
-          .shadow(elevation = 10.dp, shape = CircleShape, spotColor = NovaCyanBright)
-          .background(NovaCyanBright, CircleShape)
-      )
     }
+  }
+}
 
-    Text(
-      text = stringResource(R.string.player_scrub_hint),
-      color = NovaTextSecondary,
-      fontSize = 12.sp
-    )
+/**
+ * Delta di anteprima formattato con segno e unità chiare (es. "+30s", "+1m", "-10s").
+ */
+internal fun formatAccumulatedDelta(deltaMs: Long): String {
+  val sign = if (deltaMs >= 0L) "+" else "-"
+  val totalSec = kotlin.math.abs(deltaMs) / 1000L
+  val hours = totalSec / 3600L
+  val minutes = (totalSec % 3600L) / 60L
+  val seconds = totalSec % 60L
+  return when {
+    hours > 0L && minutes > 0L -> "$sign${hours}h ${minutes}m"
+    hours > 0L -> "$sign${hours}h"
+    minutes > 0L && seconds > 0L -> "$sign${minutes}m ${seconds}s"
+    minutes > 0L -> "$sign${minutes}m"
+    else -> "$sign${seconds}s"
+  }
+}
+
+/**
+ * Formatta un singolo timestamp in base alla presenza di ore nel totale.
+ */
+private fun formatSingleTime(ms: Long, totalMs: Long): String {
+  val sec = (ms / 1000).coerceAtLeast(0)
+  val totSec = (totalMs / 1000).coerceAtLeast(0)
+  val hasHours = totSec >= 3600
+  val h = sec / 3600
+  val m = (sec % 3600) / 60
+  val s = sec % 60
+  return if (hasHours || h > 0) {
+    "%02d:%02d:%02d".format(h, m, s)
+  } else {
+    "%02d:%02d".format(m, s)
   }
 }
 

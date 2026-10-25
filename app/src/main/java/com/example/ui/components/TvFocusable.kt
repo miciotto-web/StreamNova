@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -180,22 +182,22 @@ fun TvFocusableBox(
       .focusable()
       .then(
         if (isFocused) {
-          Modifier
-            .shadow(
-              elevation = 16.dp,
-              shape = shape,
-              spotColor = NovaCyan,
-              ambientColor = NovaCyanGlow
-            )
-            .border(
-              BorderStroke(
-                width = borderWidth,
-                brush = Brush.horizontalGradient(
-                  listOf(NovaCyan, NovaCyanBright)
-                )
-              ),
-              shape = shape
-            )
+          // L'evidenziazione del focus è bordo ciano + scala: NESSUNA ombra portata.
+          // L'elevazione disegna l'ombra-silhouette della piattaforma spostata verso il
+          // basso, che su elementi di menu (pill e righe) appare come una BARRA SCURA nella
+          // parte inferiore dell'elemento evidenziato — e con `spotColor`/`ambientColor`
+          // ignorati sotto API 28 è nera piena. È il difetto risolto a monte anche da
+          // [HeroBanner] e dalla sinossi del Dettaglio ("banda netta"/"fascia scura").
+          // Il bordo e la scala bastano come indicatore di focus per il D-pad.
+          Modifier.border(
+            BorderStroke(
+              width = borderWidth,
+              brush = Brush.horizontalGradient(
+                listOf(NovaCyan, NovaCyanBright)
+              )
+            ),
+            shape = shape
+          )
         } else if (unfocusedBorderColor != Color.Transparent) {
           Modifier.border(borderWidth, unfocusedBorderColor, shape)
         } else {
@@ -401,12 +403,28 @@ fun MediaContextMenu(
   val firstItemFocusRequester = remember { FocusRequester() }
   var canClick by remember { mutableStateOf(false) }
 
+  // Il long-press che ha aperto questo menu lascia il tasto di conferma ANCORA PREMUTO: al
+  // rilascio il KeyUp viene consegnato all'item già a fuoco e, senza guardia, il suo
+  // TvFocusableBox lo leggerebbe come un click normale (avvio della riproduzione o altra
+  // azione implicita). Questo flag ricorda se dopo l'apertura è arrivata una pressione
+  // NUOVA (`repeatCount == 0`): finché non arriva, ogni KeyUp di conferma è il rilascio del
+  // long-press e va scartato, qualunque sia la durata della pressione. Il flag non
+  // disabilita nulla in modo permanente: la prima pressione genuina riabilita l'attivazione.
+  var freshConfirmKeyDown by remember { mutableStateOf(false) }
+
   val isConfirmKey = remember {
     { keyCode: Int ->
       keyCode == android.view.KeyEvent.KEYCODE_DPAD_CENTER ||
       keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
       keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER
     }
+  }
+
+  // Segnala all'Activity che un modale in-window è aperto: mentre lo è, la gesture LEFT
+  // (che apre la sidebar) resta disattivata e il focus non può fuggire dal menu.
+  DisposableEffect(Unit) {
+    ModalOverlayState.onShown()
+    onDispose { ModalOverlayState.onHidden() }
   }
 
   LaunchedEffect(Unit) {
@@ -440,6 +458,36 @@ fun MediaContextMenu(
         indication = null,
         onClick = onDismiss
       )
+      .onPreviewKeyEvent { keyEvent ->
+        // GUARDIA DEL RILASCIO DEL LONG-PRESS (vedi `freshConfirmKeyDown`).
+        //
+        // In PREVIEW perché è l'unico punto che vede il tasto prima degli item del menu: nel
+        // bubble gli item consumano il KeyUp per conto proprio e questo handler non lo
+        // riceverebbe mai (era il limite della sola guardia `canClick`, che copre solo i
+        // rilasci entro 250 ms dall'apertura).
+        val native = keyEvent.nativeKeyEvent
+        if (!isConfirmKey(native.keyCode)) return@onPreviewKeyEvent false
+        when (keyEvent.type) {
+          KeyEventType.KeyDown -> {
+            // Solo la pressione iniziale è "nuova": le ripetizioni del tasto tenuto premuto
+            // non devono riabilitare l'attivazione, altrimenti il rilascio del long-press
+            // tornerebbe a valere come click.
+            if (native.repeatCount == 0) freshConfirmKeyDown = true
+            false
+          }
+
+          KeyEventType.KeyUp -> {
+            if (freshConfirmKeyDown) {
+              freshConfirmKeyDown = false
+              false
+            } else {
+              true
+            }
+          }
+
+          else -> false
+        }
+      }
       .onKeyEvent { keyEvent ->
         if (!canClick && keyEvent.type == KeyEventType.KeyUp && isConfirmKey(keyEvent.nativeKeyEvent.keyCode)) {
           true

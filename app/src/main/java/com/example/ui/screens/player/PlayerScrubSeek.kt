@@ -3,6 +3,8 @@ package com.example.ui.screens.player
 import android.util.Log
 import android.view.KeyEvent
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -210,11 +212,12 @@ internal class PlayerScrubController(
     val active = session ?: return
     session = null
     if (applyPreview) {
+      (player as? ExoPlayer)?.setSeekParameters(SeekParameters.EXACT)
       player.seekTo(active.positionMs)
       if (active.wasPlaying) player.play()
       Log.i(
         TAG,
-        "Scrubbing confermato: seek a ${active.positionMs}ms (da ${active.originPositionMs}ms, " +
+        "Scrubbing confermato: seek EXACT a ${active.positionMs}ms (da ${active.originPositionMs}ms, " +
           "delta=${active.deltaMs}ms), ripresa=${active.wasPlaying}"
       )
     } else {

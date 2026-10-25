@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
 import com.example.R
+import com.example.HOME_CONTENT_ANCHOR_ROW
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.HomeCatalogs
@@ -2123,7 +2124,24 @@ fun HomeMainBrowsingContent(
       media = media,
       onPlay = { handleRowPlayClick("section_continue_watching", media) },
       onDetails = { handleRowMediaClick("section_continue_watching", continueIndex, media) },
-      onRemoveFromContinueWatching = { onRemoveFromContinueWatching(media.id) },
+      onRemoveFromContinueWatching = {
+        // L'eliminazione smonta la card (e, se era l'ultima, l'intera riga) mentre il focus è
+        // sulla voce del menu: Compose azzera il focus del nodo smontato senza riattivare alcun
+        // restorer, quindi la prima pressione del telecomando verrebbe risolta dalla ricerca
+        // geometrica — e la superficie focalizzabile più a sinistra è la SIDEBAR (icone a bordo
+        // schermo contro i 60 dp di padding del contenuto Home). Destinazione esplicita, quindi:
+        // richiesta pendente sull'anchor canonico della Home (l'Hero), completata dall'unico
+        // percorso autorevole [HomeVerticalFocusSync] invece che dalla ricerca geometrica.
+        onRemoveFromContinueWatching(media.id)
+        // Ancoraggio: l'Hero è la cella canonica della Home; se non è disegnato (catalogo
+        // senza hero) si ripiega sulla prima riga attiva, mai su "nessuna destinazione".
+        // Colonna 0: la superficie Hero è una cella unica (come in ogni altro ripristino).
+        val anchorRow = HOME_CONTENT_ANCHOR_ROW.takeIf { it in coordinator.activeRowKeys }
+          ?: coordinator.activeRowKeys.firstOrNull()
+        if (anchorRow != null) {
+          coordinator.requestPendingFocus(anchorRow, 0)
+        }
+      },
       onDismiss = { contextMenuMedia = null }
     )
   }
