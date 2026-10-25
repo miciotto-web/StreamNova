@@ -2,6 +2,7 @@ package com.example.data.update
 
 import android.content.Context
 import android.os.Build
+import android.os.Process
 import android.util.Log
 import com.example.BuildConfig
 import kotlinx.coroutines.CoroutineScope
@@ -60,12 +61,22 @@ sealed interface UpdateDownloadState {
 }
 
 /**
- * ABI supportate dal dispositivo nell'ordine di preferenza dichiarato dal
- * sistema: è l'ordine con cui [selectApkAsset] sceglie lo split da scaricare.
- * Una lista vuota (ambiente senza ABI dichiarate) non è un errore: senza
- * corrispondenza la selezione non sceglie nulla e il download non parte.
+ * ABI su cui basare la selezione dell'APK, in ordine di preferenza: le ABI
+ * dichiarate dal sistema che ospiteranno l'APK (`Build.SUPPORTED_ABIS`) con
+ * davanti quelle della larghezza di parola **del processo di questa app**
+ * (`Process.is64Bit()`), non della CPU. Un dispositivo a 64 bit che esegue una
+ * installazione a 32 bit dichiara `arm64-v8a` prima di `armeabi-v7a`: seguendo
+ * quell'ordine si offrirebbe l'APK a 64 bit a una app a 32 bit, cambiandole
+ * architettura con l'aggiornamento. Una lista vuota (ambiente senza ABI
+ * dichiarate) non è un errore: senza corrispondenza la selezione non sceglie
+ * nulla e il download non parte.
  */
-private fun deviceSupportedAbis(): List<String> = Build.SUPPORTED_ABIS?.toList().orEmpty()
+private fun installationAbis(): List<String> = abiPreferenceOrder(
+  installedIs64BitProcess = Process.is64Bit(),
+  supportedAbis = Build.SUPPORTED_ABIS?.toList().orEmpty(),
+  supported32BitAbis = Build.SUPPORTED_32_BIT_ABIS?.toList().orEmpty(),
+  supported64BitAbis = Build.SUPPORTED_64_BIT_ABIS?.toList().orEmpty()
+)
 
 /**
  * Decisione pura sul risultato del controllo, separata dall'I/O così da poter
@@ -175,7 +186,7 @@ object UpdateRepository {
             "Versione installata non valida: $currentVersion"
           )
         val latest = client.fetchLatestRelease()
-        val selected = selectApkAsset(latest.assets, deviceSupportedAbis())
+        val selected = selectApkAsset(latest.assets, installationAbis())
         evaluateUpdate(installed, latest, selected).also { result ->
           // Solo una release offribile diventa la sorgente del download: una
           // release incoerente, non più recente o senza un APK compatibile con

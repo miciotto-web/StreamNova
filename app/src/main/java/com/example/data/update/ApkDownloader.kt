@@ -235,6 +235,50 @@ private fun abiTagOf(assetName: String): String? {
 private fun isMarkedUniversal(assetName: String): Boolean =
   UNIVERSAL_TAG_PATTERN.containsMatchIn(assetStem(assetName))
 
+/** Sigle ripulite, non vuote e senza duplicati: input omogeneo per l'ordinamento. */
+private fun List<String>.cleanAbis(): List<String> =
+  map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+/**
+ * Ordine di preferenza delle ABI con cui [selectApkAsset] sceglie l'APK.
+ *
+ * [supportedAbis] è l'elenco dichiarato dal sistema (`Build.SUPPORTED_ABIS`) e
+ * resta l'**insieme chiuso** delle ABI scegliibili: ogni APK che esce dalla
+ * selezione appartiene per costruzione a questo elenco, quindi il sistema
+ * riesce a eseguirlo. [supported32BitAbis] e [supported64BitAbis] sono lo
+ * stesso elenco separato per larghezza di parola (`Build.SUPPORTED_32_BIT_ABIS`,
+ * `Build.SUPPORTED_64_BIT_ABIS`).
+ *
+ * [installedIs64BitProcess] è la larghezza di parola **del processo di questa
+ * app** (`android.os.Process.is64Bit()`), non della CPU. Su una Fire TV a 64 bit
+ * che esegue una installazione a 32 bit il sistema dichiara `arm64-v8a` prima di
+ * `armeabi-v7a`: seguendo l'ordine del sistema si offrirebbe a una app a 32 bit
+ * l'APK a 64 bit, cioè un cambio di architettura durante l'aggiornamento. Le ABI
+ * della stessa larghezza di parola del processo vengono quindi messe davanti,
+ * nell'ordine dichiarato dal sistema: l'aggiornamento resta sull'architettura su
+ * cui l'app gira già. Se la release non pubblica più un APK per quella
+ * architettura si ripiega sulle altre ABI dichiarate dal sistema — mai su una
+ * ABI che il sistema non esegue.
+ */
+internal fun abiPreferenceOrder(
+  installedIs64BitProcess: Boolean,
+  supportedAbis: List<String>,
+  supported32BitAbis: List<String>,
+  supported64BitAbis: List<String>
+): List<String> {
+  val declared32 = supported32BitAbis.cleanAbis()
+  val declared64 = supported64BitAbis.cleanAbis()
+  val runnable = supportedAbis.cleanAbis().ifEmpty { (declared32 + declared64).distinct() }
+  val sameWidthOfProcess = if (installedIs64BitProcess) declared64 else declared32
+  val preferred = runnable.filter { abi ->
+    sameWidthOfProcess.any { canonicalAbi(it) == canonicalAbi(abi) }
+  }
+  if (preferred.isEmpty()) return runnable
+  return preferred + runnable.filterNot { abi ->
+    preferred.any { canonicalAbi(it) == canonicalAbi(abi) }
+  }
+}
+
 /**
  * Seleziona l'APK della release compatibile con le ABI del dispositivo.
  * Funzione pura e deterministica: a parità di asset e di ABI il risultato è
@@ -244,9 +288,11 @@ private fun isMarkedUniversal(assetName: String): Boolean =
  *  1. gli asset con sigla ABI nel nome (`StreamNova-1.0.1-arm64-v8a.apk`,
  *     `StreamNova-arm64-v8a-release.apk`) sono gli unici che dichiarano
  *     l'architettura: si sceglie quello corrispondente alla prima ABI
- *     supportata dal dispositivo, nell'ordine dichiarato da Android. Se per
- *     quell'ABI la release pubblica due file, la scelta dipenderebbe
- *     dall'ordine di elenco: la release è ambigua e non si seleziona nulla;
+ *     dell'elenco ricevuto. L'elenco è quello prodotto da [abiPreferenceOrder],
+ *     che mette davanti le ABI della larghezza di parola del processo di questa
+ *     app e poi segue l'ordine dichiarato dal sistema. Se per quell'ABI la
+ *     release pubblica due file, la scelta dipenderebbe dall'ordine di elenco:
+ *     la release è ambigua e non si seleziona nulla;
  *  2. se nessuno split corrisponde al dispositivo si ripiega su un APK
  *     dichiarato esplicitamente universale (`...-universal...`), che per
  *     costruzione contiene tutte le ABI; se ce n'è più d'uno è ambiguo e non
@@ -258,12 +304,16 @@ private fun isMarkedUniversal(assetName: String): Boolean =
  *
  * Un file che non dichiara la propria architettura non viene mai scelto, anche
  * quando è l'unico APK della release: `app-release.apk` è il caso storico, e
- * uno split ribattezzato a mano verrebbe offerto a tutti i dispositivi. Il
- * progetto produce soltanto split per ABI (`isUniversalApk = false` in
- * `app/build.gradle.kts`) e l'unica release pubblicata (`v1.0.0-build.1002`)
- * espone i quattro asset con la sigla ABI nel nome, quindi la regola legacy
- * per le build senza split non ha più nulla da coprire: per pubblicare un APK
- * unico lo si dichiara `...-universal...`.
+ * uno split ribattezzato a mano verrebbe offerto a tutti i dispositivi.
+ *
+ * Dalla 1.0.2 la release pubblica anche un APK universale con quel nome esatto
+ * (`isUniversalApk = true` in `app/build.gradle.kts`): serve **solo** all'updater
+ * della 1.0.0, che sceglie per nome o per posizione in elenco e non conosce né le
+ * ABI né l'universalità dichiarata. Restando senza sigla ABI, quel file non è
+ * selezionabile da qui e un client aggiornato continua a usare il proprio split:
+ * è il motivo per cui l'APK universale non si rinomina `...-universal...` — così
+ * lo prenderebbe anche la selezione nuova, che deve invece restare ancorata
+ * all'architettura del dispositivo.
  */
 fun selectApkAsset(assets: List<ReleaseAsset>, supportedAbis: List<String>): ReleaseAsset? {
   val apkAssets = assets.filter { it.name.endsWith(".apk", ignoreCase = true) }

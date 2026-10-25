@@ -21,8 +21,8 @@ android {
     targetSdk = 36
     // Release stabile ufficiale StreamNova V1.0.
     // Ogni release successiva deve incrementare versionCode.
-    versionCode = 1003
-    versionName = "1.0.1"
+    versionCode = 1004
+    versionName = "1.0.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     // TMDB API key is never hardcoded here: it would be committed and published.
@@ -97,12 +97,22 @@ android {
   // support: 32-bit ARM (older Fire TV Stick / Android TV boxes), 64-bit ARM
   // (current boxes and sticks) and x86/x86_64 (emulator and the few Intel-based
   // Android TV devices).
+  //
+  // isUniversalApk = true adds a fifth artifact that carries every ABI. It exists
+  // to reach installations still running 1.0.0: that updater predates the
+  // ABI-aware selection and simply takes the first APK of the release (or any file
+  // literally named app-release.apk), which on the published 1.0.1 release is the
+  // arm64 file — uninstallable on a 32-bit-only device such as a Fire TV Stick.
+  // Publishing the universal artifact under the exact name `app-release.apk` gives
+  // those clients a single file that every device can install; updaters from 1.0.1
+  // onwards ignore it (it does not declare an architecture) and keep using their
+  // own split. Revertible with this one line once 1.0.0 installations are gone.
   splits {
     abi {
       isEnable = true
       reset()
       include("x86", "x86_64", "armeabi-v7a", "arm64-v8a")
-      isUniversalApk = false
+      isUniversalApk = true
     }
   }
 

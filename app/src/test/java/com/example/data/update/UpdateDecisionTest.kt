@@ -1,6 +1,7 @@
 package com.example.data.update
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -79,6 +80,49 @@ class UpdateDecisionTest {
     installedVersion: AppVersion = installed
   ): UpdateCheckState =
     evaluateUpdate(installedVersion, release, selectApkAsset(release.assets, supportedAbis))
+
+  /**
+   * Dispositivo come lo dichiara il sistema: l'elenco completo delle ABI
+   * eseguibili e le due metà per larghezza di parola. `is64BitProcess` è la
+   * larghezza di parola del processo dell'app installata (`Process.is64Bit()`).
+   */
+  private data class Device(
+    val abis: List<String>,
+    val abis32: List<String>,
+    val abis64: List<String>
+  ) {
+    fun preferenceOrder(is64BitProcess: Boolean): List<String> =
+      abiPreferenceOrder(is64BitProcess, abis, abis32, abis64)
+
+    fun selectedAsset(release: LatestRelease, is64BitProcess: Boolean): ReleaseAsset? =
+      selectApkAsset(release.assets, preferenceOrder(is64BitProcess))
+  }
+
+  /** Fire TV / box ARM a 64 bit: `arm64-v8a` è la prima ABI dichiarata. */
+  private val arm64CapableArm = Device(
+    abis = listOf("arm64-v8a", "armeabi-v7a", "armeabi"),
+    abis32 = listOf("armeabi-v7a", "armeabi"),
+    abis64 = listOf("arm64-v8a")
+  )
+
+  /** Fire TV / box ARM che esegue solo codice a 32 bit. */
+  private val armv7Only = Device(
+    abis = listOf("armeabi-v7a", "armeabi"),
+    abis32 = listOf("armeabi-v7a", "armeabi"),
+    abis64 = emptyList()
+  )
+
+  /** Dispositivo Intel a 64 bit e dispositivo Intel solo a 32 bit. */
+  private val x86_64Capable = Device(
+    abis = listOf("x86_64", "x86"),
+    abis32 = listOf("x86"),
+    abis64 = listOf("x86_64")
+  )
+  private val x86Only = Device(
+    abis = listOf("x86"),
+    abis32 = listOf("x86"),
+    abis64 = emptyList()
+  )
 
   // ---------------------------------------------------------------- selezione
 
@@ -502,6 +546,277 @@ class UpdateDecisionTest {
     val state = check(releaseOf("v0.1.0", listOf("StreamNova-0.1.0-x86.apk")), arm64Device)
 
     assertTrue(state is UpdateCheckState.UpToDate)
+  }
+
+  // ------------------------------------------ ABI dell'installazione corrente
+
+  @Test
+  fun followingTheSystemOrderAloneWouldChangeTheArchitectureOfA32BitInstall() {
+    // Contro-prova del difetto segnalato: con l'elenco del sistema così com'è
+    // (l'unico input usato dalla selezione prima della correzione) a una app
+    // installata a 32 bit viene offerto l'APK a 64 bit solo perché il sistema lo
+    // dichiara eseguibile. È il caso "Fire TV a 64 bit con installazione a 32
+    // bit": il file scelto cambierebbe architettura all'app con l'aggiornamento.
+    val release = releaseOf("v1.0.1-build.1003", agpAssetNames)
+
+    assertEquals(
+      "StreamNova-arm64-v8a-release.apk",
+      selectApkAsset(release.assets, arm64CapableArm.abis)?.name
+    )
+  }
+
+  @Test
+  fun a32BitInstallKeepsThe32BitSplitOnA64BitCapableDevice() {
+    // Regresso del 2026-10-25: un dispositivo arm64 che esegue una installazione
+    // a 32 bit (l'APK per Fire TV della 1.0.0 era armeabi-v7a). Il sistema
+    // dichiara arm64-v8a per primo, ma l'app gira a 32 bit: l'aggiornamento deve
+    // restare sull'architettura dell'installazione, non cambiarla.
+    val release = releaseOf("v1.0.1-build.1003", agpAssetNames)
+
+    assertEquals(
+      "StreamNova-armeabi-v7a-release.apk",
+      arm64CapableArm.selectedAsset(release, is64BitProcess = false)?.name
+    )
+  }
+
+  @Test
+  fun a64BitInstallKeepsThe64BitSplit() {
+    // Stesso dispositivo, installazione a 64 bit: l'ordine del sistema resta
+    // quello giusto e nulla cambia rispetto a prima.
+    val release = releaseOf("v1.0.1-build.1003", agpAssetNames)
+
+    assertEquals(
+      "StreamNova-arm64-v8a-release.apk",
+      arm64CapableArm.selectedAsset(release, is64BitProcess = true)?.name
+    )
+  }
+
+  @Test
+  fun aDeviceThatRunsOnly32BitArmGetsThe32BitSplitEitherWay() {
+    // Fire TV solo a 32 bit: l'elenco del sistema contiene già solo ABI a 32 bit,
+    // quindi la larghezza di parola del processo non cambia il risultato.
+    val release = releaseOf("v1.0.1-build.1003", agpAssetNames)
+
+    assertEquals(
+      "StreamNova-armeabi-v7a-release.apk",
+      armv7Only.selectedAsset(release, is64BitProcess = false)?.name
+    )
+  }
+
+  @Test
+  fun intelDevicesFollowTheSameWidthOfProcessRule() {
+    val release = releaseOf("v1.0.1-build.1003", agpAssetNames)
+
+    assertEquals(
+      "StreamNova-x86-release.apk",
+      x86_64Capable.selectedAsset(release, is64BitProcess = false)?.name
+    )
+    assertEquals(
+      "StreamNova-x86_64-release.apk",
+      x86_64Capable.selectedAsset(release, is64BitProcess = true)?.name
+    )
+    assertEquals(
+      "StreamNova-x86-release.apk",
+      x86Only.selectedAsset(release, is64BitProcess = false)?.name
+    )
+  }
+
+  @Test
+  fun thePreferredAbisAreTheOnesOfTheProcessWidthInSystemOrder() {
+    assertEquals(
+      listOf("armeabi-v7a", "armeabi", "arm64-v8a"),
+      arm64CapableArm.preferenceOrder(is64BitProcess = false)
+    )
+    assertEquals(
+      listOf("arm64-v8a", "armeabi-v7a", "armeabi"),
+      arm64CapableArm.preferenceOrder(is64BitProcess = true)
+    )
+    assertEquals(
+      listOf("x86", "x86_64"),
+      x86_64Capable.preferenceOrder(is64BitProcess = false)
+    )
+  }
+
+  @Test
+  fun theProcessWidthNeverMakesAnUndeclaredAbiSelectable() {
+    // La CPU a 32 bit non aggiunge nulla a un elenco di sistema che dichiara
+    // solo arm64-v8a: l'insieme delle ABI scegliibili resta quello dichiarato.
+    val device = Device(
+      abis = listOf("arm64-v8a"),
+      abis32 = emptyList(),
+      abis64 = listOf("arm64-v8a")
+    )
+
+    assertEquals(listOf("arm64-v8a"), device.preferenceOrder(is64BitProcess = false))
+  }
+
+  @Test
+  fun anEmptyAbiListStaysEmptyAndSelectsNothing() {
+    val device = Device(abis = emptyList(), abis32 = emptyList(), abis64 = emptyList())
+
+    assertEquals(emptyList<String>(), device.preferenceOrder(is64BitProcess = false))
+    assertEquals(emptyList<String>(), device.preferenceOrder(is64BitProcess = true))
+    assertNull(device.selectedAsset(releaseOf("v1.0.1-build.1003", agpAssetNames), false))
+  }
+
+  @Test
+  fun duplicatedOrBlankAbisDoNotDuplicateThePreferenceOrder() {
+    val device = Device(
+      abis = listOf(" arm64-v8a ", "arm64-v8a", "", "armeabi-v7a", "armeabi-v7a"),
+      abis32 = listOf("armeabi-v7a", " "),
+      abis64 = listOf("arm64-v8a")
+    )
+
+    assertEquals(
+      listOf("armeabi-v7a", "arm64-v8a"),
+      device.preferenceOrder(is64BitProcess = false)
+    )
+  }
+
+  @Test
+  fun a32BitInstallPicksTheSameSplitWhateverOrderGitHubListsTheAssets() {
+    val permutations = listOf(
+      agpAssetNames,
+      agpAssetNames.reversed(),
+      agpAssetNames.shuffled(Random(1004)),
+      listOf(
+        agpAssetNames[3],
+        agpAssetNames[1],
+        agpAssetNames[0],
+        agpAssetNames[2]
+      )
+    )
+
+    permutations.forEach { names ->
+      val release = releaseOf("v1.0.1-build.1003", names)
+      assertEquals(
+        "Ordine: $names",
+        "StreamNova-armeabi-v7a-release.apk",
+        arm64CapableArm.selectedAsset(release, is64BitProcess = false)?.name
+      )
+    }
+  }
+
+  @Test
+  fun aReleaseWithoutTheInstalledArchitectureFallsBackToTheOtherRunnableAbis() {
+    // La release non pubblica più lo split a 32 bit ARM: l'aggiornamento resta
+    // possibile con l'altra ABI che il sistema dichiara di eseguire, mai con una
+    // che non compare nel suo elenco.
+    val release = releaseOf("v1.0.1-build.1003", listOf("StreamNova-arm64-v8a-release.apk"))
+
+    assertEquals(
+      "StreamNova-arm64-v8a-release.apk",
+      arm64CapableArm.selectedAsset(release, is64BitProcess = false)?.name
+    )
+  }
+
+  @Test
+  fun aReleaseWithOnlyUnexecutableSplitsIsNotOfferedToA32BitInstall() {
+    // Dispositivo che esegue solo arm64-v8a e release che pubblica solo lo split
+    // a 32 bit ARM: nessun APK eseguibile, nessuna proposta.
+    val device = Device(
+      abis = listOf("arm64-v8a"),
+      abis32 = emptyList(),
+      abis64 = listOf("arm64-v8a")
+    )
+    val release = releaseOf("v1.0.1-build.1003", listOf("StreamNova-armeabi-v7a-release.apk"))
+
+    assertNull(device.selectedAsset(release, is64BitProcess = false))
+    val state = evaluateUpdate(
+      installed,
+      release,
+      device.selectedAsset(release, is64BitProcess = false)
+    )
+    assertEquals(
+      UpdateCheckErrorReason.NO_COMPATIBLE_APK,
+      (state as UpdateCheckState.Error).reason
+    )
+  }
+
+  @Test
+  fun duplicatedAssetsForTheInstalledAbiStopTheUpdateInsteadOfChangingArchitecture() {
+    // Due file per la stessa ABI dell'installazione corrente: la scelta
+    // dipenderebbe dall'ordine di elenco, quindi non si sceglie nulla — e non si
+    // ripiega sullo split arm64, che cambierebbe architettura all'app.
+    val release = releaseOf(
+      "v1.0.1-build.1003",
+      listOf(
+        "StreamNova-armeabi-v7a-release.apk",
+        "StreamNova-1.0.1-armeabi-v7a.apk",
+        "StreamNova-arm64-v8a-release.apk"
+      )
+    )
+
+    assertNull(arm64CapableArm.selectedAsset(release, is64BitProcess = false))
+    val state = evaluateUpdate(
+      installed,
+      release,
+      arm64CapableArm.selectedAsset(release, is64BitProcess = false)
+    )
+    assertEquals(
+      UpdateCheckErrorReason.NO_COMPATIBLE_APK,
+      (state as UpdateCheckState.Error).reason
+    )
+  }
+
+  @Test
+  fun theUniversalBridgeNamedAppReleaseApkIsInvisibleToThisSelection() {
+    // La release 1.0.2 pubblica un APK universale chiamato esattamente
+    // `app-release.apk` perché è il nome che l'updater della 1.0.0 preferisce:
+    // quello è l'unico percorso con cui un'installazione ferma alla 1.0.0 può
+    // aggiornarsi. Per questa selezione quel file non esiste — non dichiara
+    // architettura, quindi non è né uno split né un universale dichiarato — e
+    // resta in uso lo split del dispositivo. Se lo si rinominasse
+    // `...-universal...` diventerebbe un ripiego selezionabile: il test fissa
+    // che non lo sia.
+    val release = releaseOf("v1.0.2-build.1004", agpAssetNames + "app-release.apk")
+
+    assertEquals(
+      "StreamNova-armeabi-v7a-release.apk",
+      arm64CapableArm.selectedAsset(release, is64BitProcess = false)?.name
+    )
+    assertEquals(
+      "StreamNova-arm64-v8a-release.apk",
+      arm64CapableArm.selectedAsset(release, is64BitProcess = true)?.name
+    )
+    assertNull(
+      selectApkAsset(listOf(apk("app-release.apk")), arm64CapableArm.preferenceOrder(false))
+    )
+  }
+
+  @Test
+  fun theUrlOfTheSplitChosenForA32BitInstallIsTheUrlOfThatSameAsset() {
+    // Identità asset → URL anche sul percorso a 32 bit: l'URL scaricato è quello
+    // dell'asset scelto, non quello di un altro split della release.
+    val release = releaseOf("v1.0.1-build.1003", agpAssetNames)
+    val selected = arm64CapableArm.selectedAsset(release, is64BitProcess = false)!!
+
+    assertEquals("StreamNova-armeabi-v7a-release.apk", selected.name)
+    assertTrue(
+      "URL dell'asset scelto: ${selected.downloadUrl}",
+      selected.downloadUrl.endsWith("/${selected.name}")
+    )
+    assertNotEquals(
+      agpAssetNames.first { it.contains("arm64-v8a") },
+      selected.downloadUrl.substringAfterLast('/')
+    )
+  }
+
+  @Test
+  fun thePlannedForRealReleaseOfA32BitFireTvIsTheArmV7Split() {
+    // Nomi realmente pubblicati per la 1.0.1 (`StreamNova-<abi>-release.apk`,
+    // nessuna versione nel nome) e installazione a 32 bit su dispositivo arm64.
+    val release = releaseOf("v1.0.1-build.1003", agpAssetNames, body = "selezione per ABI")
+    val state = evaluateUpdate(
+      AppVersion.parse("1.0.0")!!,
+      release,
+      arm64CapableArm.selectedAsset(release, is64BitProcess = false)
+    )
+
+    val available = state as UpdateCheckState.UpdateAvailable
+    assertEquals("1.0.1", available.newVersion)
+    assertEquals("StreamNova-armeabi-v7a-release.apk", available.assetName)
+    assertEquals("v1.0.1-build.1003", available.tagName)
   }
 
   // ------------------------------------------------- integrità dell'asset scelto
