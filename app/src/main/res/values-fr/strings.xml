@@ -219,6 +219,7 @@
     <string name="settings_update_error_not_found">Aucune version disponible sur le serveur</string>
     <string name="settings_update_error_network">Connexion absente ou interrompue</string>
     <string name="settings_update_error_invalid_release">La version publiée ne contient pas de mise à jour valide</string>
+    <string name="settings_update_error_no_compatible_apk">Cette version ne contient pas d\'APK installable sur cet appareil</string>
     <string name="settings_update_install_failed_file">Le fichier de mise à jour n\'est plus disponible : téléchargez-le à nouveau</string>
     <string name="settings_update_install_failed_permission">L\'autorisation d\'installer des applications depuis cette source est manquante</string>
     <string name="settings_update_install_failed_generic">Impossible de lancer l\'installateur du système</string>

@@ -219,6 +219,7 @@
     <string name="settings_update_error_not_found">Nessuna release disponibile sul server</string>
     <string name="settings_update_error_network">Connessione assente o interrotta</string>
     <string name="settings_update_error_invalid_release">La release pubblicata non contiene un aggiornamento valido</string>
+    <string name="settings_update_error_no_compatible_apk">La release non contiene un APK installabile su questo dispositivo</string>
     <string name="settings_update_install_failed_file">Il file dell\'aggiornamento non è più disponibile: scaricalo di nuovo</string>
     <string name="settings_update_install_failed_permission">Manca l\'autorizzazione a installare app da questa sorgente</string>
     <string name="settings_update_install_failed_generic">Impossibile avviare l\'installer di sistema</string>

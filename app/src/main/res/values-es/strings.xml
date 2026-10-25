@@ -219,6 +219,7 @@
     <string name="settings_update_error_not_found">No hay ninguna versión disponible en el servidor</string>
     <string name="settings_update_error_network">Sin conexión o conexión interrumpida</string>
     <string name="settings_update_error_invalid_release">La versión publicada no contiene una actualización válida</string>
+    <string name="settings_update_error_no_compatible_apk">Esta versión no contiene un APK instalable en este dispositivo</string>
     <string name="settings_update_install_failed_file">El archivo de actualización ya no está disponible: vuelve a descargarlo</string>
     <string name="settings_update_install_failed_permission">Falta el permiso para instalar aplicaciones desde esta fuente</string>
     <string name="settings_update_install_failed_generic">No se pudo iniciar el instalador del sistema</string>

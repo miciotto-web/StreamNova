@@ -3099,6 +3099,8 @@ private fun updateCheckErrorText(reason: UpdateCheckErrorReason): String = when 
     stringResource(R.string.settings_update_error_network)
   UpdateCheckErrorReason.INVALID_RELEASE ->
     stringResource(R.string.settings_update_error_invalid_release)
+  UpdateCheckErrorReason.NO_COMPATIBLE_APK ->
+    stringResource(R.string.settings_update_error_no_compatible_apk)
   UpdateCheckErrorReason.UNKNOWN ->
     stringResource(R.string.settings_update_error)
 }

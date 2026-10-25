@@ -179,13 +179,112 @@ internal fun verifyDownloadedApk(
 }
 
 /**
- * Seleziona l'asset APK da scaricare: solo estensione .apk, con preferenza
- * per "app-release.apk". Restituisce null se la release non contiene APK.
+ * Sigle ABI riconoscibili nel nome di un asset, nell'ordine in cui vanno
+ * confrontate: le sigle più lunghe vengono prima, così `x86_64` non viene mai
+ * letto come `x86` e `armeabi-v7a` non come `armeabi`.
  */
-fun selectApkAsset(assets: List<ReleaseAsset>): ReleaseAsset? {
+private val KNOWN_ABI_TAGS = listOf(
+  "arm64-v8a",
+  "armeabi-v7a",
+  "armeabi",
+  "x86_64",
+  "x86-64",
+  "x86",
+  "arm64",
+  "mips64",
+  "mips",
+  "riscv64"
+)
+
+/** Sigla delimitata da separatori: evita di leggere `x86` dentro `x86_64`. */
+private fun tokenPattern(token: String): Regex =
+  Regex("(^|[^0-9a-z])${Regex.escape(token)}($|[^0-9a-z])")
+
+private val ABI_TAG_PATTERNS: List<Pair<String, Regex>> =
+  KNOWN_ABI_TAGS.map { it to tokenPattern(it) }
+
+/**
+ * Alias accettati nei nomi rinominati a mano, ricondotti alla sigla ABI di
+ * Android: `arm64` è `arm64-v8a` e `x86-64` è `x86_64`, quindi un asset
+ * ribattezzato così resta utilizzabile dal dispositivo giusto.
+ */
+private val ABI_ALIASES = mapOf(
+  "arm64" to "arm64-v8a",
+  "x86-64" to "x86_64"
+)
+
+/** Sigla ABI canonica: confronto fra nome dell'asset e ABI del dispositivo. */
+private fun canonicalAbi(abi: String): String {
+  val normalized = abi.trim().lowercase()
+  return ABI_ALIASES[normalized] ?: normalized
+}
+
+private val UNIVERSAL_TAG_PATTERN = tokenPattern("universal")
+
+/** Nome asset senza estensione, in minuscolo: base dei riconoscimenti. */
+private fun assetStem(assetName: String): String =
+  assetName.substringBeforeLast('.', assetName).lowercase()
+
+/** Sigla ABI dichiarata nel nome dell'asset, o null se il nome non la contiene. */
+private fun abiTagOf(assetName: String): String? {
+  val stem = assetStem(assetName)
+  return ABI_TAG_PATTERNS.firstOrNull { (_, pattern) -> pattern.containsMatchIn(stem) }?.first
+}
+
+/** true se il nome dichiara esplicitamente un APK universale (`...-universal...`). */
+private fun isMarkedUniversal(assetName: String): Boolean =
+  UNIVERSAL_TAG_PATTERN.containsMatchIn(assetStem(assetName))
+
+/**
+ * Seleziona l'APK della release compatibile con le ABI del dispositivo.
+ * Funzione pura e deterministica: a parità di asset e di ABI il risultato è
+ * sempre lo stesso, e l'ordine con cui GitHub elenca gli asset non conta.
+ *
+ * Regole, in ordine di priorità:
+ *  1. gli asset con sigla ABI nel nome (`StreamNova-1.0.1-arm64-v8a.apk`,
+ *     `StreamNova-arm64-v8a-release.apk`) sono gli unici che dichiarano
+ *     l'architettura: si sceglie quello corrispondente alla prima ABI
+ *     supportata dal dispositivo, nell'ordine dichiarato da Android. Se per
+ *     quell'ABI la release pubblica due file, la scelta dipenderebbe
+ *     dall'ordine di elenco: la release è ambigua e non si seleziona nulla;
+ *  2. se nessuno split corrisponde al dispositivo si ripiega su un APK
+ *     dichiarato esplicitamente universale (`...-universal...`), che per
+ *     costruzione contiene tutte le ABI; se ce n'è più d'uno è ambiguo e non
+ *     viene scelto;
+ *  3. in ogni altro caso restituisce null — nessun APK, soli APK di ABI
+ *     incompatibili, oppure asset che non dichiarano né architettura né
+ *     universalità — e il chiamante non avvia alcun download. Mai "il primo
+ *     APK disponibile".
+ *
+ * Un file che non dichiara la propria architettura non viene mai scelto, anche
+ * quando è l'unico APK della release: `app-release.apk` è il caso storico, e
+ * uno split ribattezzato a mano verrebbe offerto a tutti i dispositivi. Il
+ * progetto produce soltanto split per ABI (`isUniversalApk = false` in
+ * `app/build.gradle.kts`) e l'unica release pubblicata (`v1.0.0-build.1002`)
+ * espone i quattro asset con la sigla ABI nel nome, quindi la regola legacy
+ * per le build senza split non ha più nulla da coprire: per pubblicare un APK
+ * unico lo si dichiara `...-universal...`.
+ */
+fun selectApkAsset(assets: List<ReleaseAsset>, supportedAbis: List<String>): ReleaseAsset? {
   val apkAssets = assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
-  return apkAssets.firstOrNull { it.name.equals("app-release.apk", ignoreCase = true) }
-    ?: apkAssets.firstOrNull()
+  if (apkAssets.isEmpty()) return null
+
+  val splits = apkAssets.mapNotNull { asset -> abiTagOf(asset.name)?.let { asset to it } }
+  val universal = apkAssets.filter { isMarkedUniversal(it.name) }
+
+  if (splits.isNotEmpty()) {
+    supportedAbis.forEach { deviceAbi ->
+      val matching = splits.filter { (_, abi) -> canonicalAbi(abi) == canonicalAbi(deviceAbi) }
+      if (matching.isNotEmpty()) {
+        // Due asset con la stessa ABI: sceglierne uno significherebbe dipendere
+        // dall'ordine di elenco di GitHub, quindi non si sceglie nulla.
+        return matching.singleOrNull()?.first
+      }
+    }
+  }
+
+  // Nessuno split per questo dispositivo: resta l'APK dichiarato universale.
+  return universal.singleOrNull()
 }
 
 /**

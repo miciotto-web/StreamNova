@@ -219,6 +219,7 @@
     <string name="settings_update_error_not_found">No release available on the server</string>
     <string name="settings_update_error_network">No connection or connection lost</string>
     <string name="settings_update_error_invalid_release">The published release does not contain a valid update</string>
+    <string name="settings_update_error_no_compatible_apk">This release does not contain an APK installable on this device</string>
     <string name="settings_update_install_failed_file">The update file is no longer available: download it again</string>
     <string name="settings_update_install_failed_permission">Permission to install apps from this source is missing</string>
     <string name="settings_update_install_failed_generic">Could not start the system installer</string>

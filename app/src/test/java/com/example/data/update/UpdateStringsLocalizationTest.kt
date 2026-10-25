@@ -90,7 +90,8 @@ class UpdateStringsLocalizationTest {
       "settings_update_error_rate_limited",
       "settings_update_error_not_found",
       "settings_update_error_network",
-      "settings_update_error_invalid_release"
+      "settings_update_error_invalid_release",
+      "settings_update_error_no_compatible_apk"
     )
 
     locales.forEach { locale ->

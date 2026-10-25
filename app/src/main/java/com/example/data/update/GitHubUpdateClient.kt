@@ -134,6 +134,13 @@ enum class UpdateCheckErrorReason {
   /** Release incoerente: JSON non valido, tag non numerico o campi mancanti. */
   INVALID_RELEASE,
 
+  /**
+   * Release più recente che non offre un APK installabile su questo
+   * dispositivo: nessun asset APK, oppure solo asset di ABI incompatibili o
+   * ambigui. L'aggiornamento non viene proposto e nessun download parte.
+   */
+  NO_COMPATIBLE_APK,
+
   /** Fallimento non altrimenti classificabile. */
   UNKNOWN
 }

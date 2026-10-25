@@ -76,6 +76,24 @@ class AppVersionTest {
   }
 
   @Test
+  fun extractsVersionFromThePlannedAssetNamesOfRelease101() {
+    // Nomi previsti per la 1.0.1: la versione va letta per intero, senza che le
+    // cifre delle sigle ABI ("v8a", "v7a", "x86_64") entrino nel confronto.
+    listOf(
+      "StreamNova-1.0.1-arm64-v8a.apk",
+      "StreamNova-1.0.1-armeabi-v7a.apk",
+      "StreamNova-1.0.1-x86.apk",
+      "StreamNova-1.0.1-x86_64.apk"
+    ).forEach { name ->
+      assertEquals("Versione errata per $name", AppVersion(1, 0, 1), AppVersion.fromAssetName(name))
+    }
+    assertEquals(
+      AppVersion(1, 0, 1),
+      AppVersion.fromAssetName("StreamNova-1.0.1-arm64-v8a-release.apk")
+    )
+  }
+
+  @Test
   fun neverReadsAbiTagsAsVersions() {
     // "arm64-v8a", "armeabi-v7a" e "x86_64" non contengono una coppia di
     // componenti numeriche separate da punto: non sono versioni.
@@ -83,6 +101,9 @@ class AppVersionTest {
     assertNull(AppVersion.fromAssetName("app-armeabi-v7a.apk"))
     assertNull(AppVersion.fromAssetName("app-x86_64.apk"))
     assertNull(AppVersion.fromAssetName("arm64-v8a"))
+    // Nomi senza versione prodotti da AGP con gli ABI split (release 1.0.0).
+    assertNull(AppVersion.fromAssetName("StreamNova-arm64-v8a-release.apk"))
+    assertNull(AppVersion.fromAssetName("StreamNova-x86_64-release.apk"))
   }
 
   @Test
