@@ -320,9 +320,10 @@ fun PersonDetailScreen(
                   )
                 }
 
-                if (!person.placeOfBirth.isNullOrBlank()) {
+                val placeOfBirth = person.placeOfBirth
+                if (!placeOfBirth.isNullOrBlank()) {
                   Text(
-                    text = person.placeOfBirth,
+                    text = placeOfBirth,
                     color = NovaTextSecondary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Medium

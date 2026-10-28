@@ -1,6 +1,8 @@
 package com.example.data.repository
 
 import com.example.BuildConfig
+import com.example.data.config.StreamNovaClientConfig
+import com.example.data.config.StreamNovaConfig
 import com.example.data.prefs.AppSettingsRepository
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -108,6 +110,19 @@ class SimklClientIdConfigurationTest {
 
   @Test
   fun ilRuntimeLeggeIFlussiDiBuildPrimaDellAmbienteDelDispositivo() {
+    // La configurazione arriva dall'Application dell'app: nei test JVM non viene
+    // eseguita, quindi la si installa qui con gli stessi valori della build TV.
+    StreamNovaConfig.install(
+      StreamNovaClientConfig(
+        appId = "tv-test",
+        versionName = BuildConfig.VERSION_NAME,
+        isDebug = true,
+        simklClientIdChannels = listOf(
+          channel("build:ENV_SIMKL_CLIENT_ID", BuildConfig.ENV_SIMKL_CLIENT_ID),
+          channel("build:SIMKL_CLIENT_ID", BuildConfig.SIMKL_CLIENT_ID)
+        )
+      )
+    )
     val channels = SimklRepository.simklClientIdChannels()
 
     // Contratto dei canali: due valori inclusi nell'APK, più il residuo su disco scritto

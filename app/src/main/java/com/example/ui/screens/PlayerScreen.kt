@@ -118,7 +118,7 @@ import com.example.ui.screens.player.SeekPreviewModel
 import com.example.ui.screens.player.SeekPreviewRegistry
 import com.example.ui.screens.player.SeekPreviewState
 import com.example.ui.screens.player.PlayerIntroUtils
-import com.example.ui.screens.player.PlayerIntroUtils.IntroWindow
+import com.example.domain.model.IntroWindow
 import com.example.data.repository.IntroSkipRepository
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks

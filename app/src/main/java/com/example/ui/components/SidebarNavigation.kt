@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.example.R
+import com.example.core.designsystem.R as DesignSystemR
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaSurface
@@ -191,7 +192,7 @@ fun SidebarNavigation(
        ) {
          // Icona sempre visibile (sidebar chiusa e aperta)
          Image(
-           painter = painterResource(id = R.drawable.streamnova_icon),
+           painter = painterResource(id = DesignSystemR.drawable.streamnova_icon),
            contentDescription = "StreamNova",
            modifier = Modifier.size(40.dp),
            contentScale = ContentScale.Fit
@@ -204,7 +205,7 @@ fun SidebarNavigation(
          ) {
            Spacer(modifier = Modifier.width(12.dp))
            Image(
-             painter = painterResource(id = R.drawable.streamnova_text),
+             painter = painterResource(id = DesignSystemR.drawable.streamnova_text),
              contentDescription = "StreamNova",
              modifier = Modifier.height(22.dp),
              contentScale = ContentScale.Fit

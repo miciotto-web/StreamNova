@@ -593,7 +593,9 @@ fun StreamNovaApp(
           val currentMedia = when (val state = detailUiState) {
             is MediaDetailUiState.Success -> {
               val candidate = state.media
-              if ((candidate.tmdbId != null && candidate.tmdbId > 0 && (candidate.tmdbId == baseMedia.tmdbId || baseMedia.tmdbId == null || baseMedia.tmdbId <= 0)) || (baseMedia.id.isNotBlank() && (candidate.id.equals(baseMedia.id, ignoreCase = true) || baseMedia.id.startsWith("tt", ignoreCase = true)))) {
+              val candidateTmdbId = candidate.tmdbId
+              val baseTmdbId = baseMedia.tmdbId
+              if ((candidateTmdbId != null && candidateTmdbId > 0 && (candidateTmdbId == baseTmdbId || baseTmdbId == null || baseTmdbId <= 0)) || (baseMedia.id.isNotBlank() && (candidate.id.equals(baseMedia.id, ignoreCase = true) || baseMedia.id.startsWith("tt", ignoreCase = true)))) {
                 candidate
               } else {
                 baseMedia

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.StreamNovaMobile" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">#07090E</item>
+        <item name="android:statusBarColor">#07090E</item>
+        <item name="android:navigationBarColor">#07090E</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

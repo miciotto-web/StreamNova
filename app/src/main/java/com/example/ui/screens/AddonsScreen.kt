@@ -412,10 +412,11 @@ private fun AddonCard(
             )
           }
         }
-        if (!manifest.description.isNullOrBlank()) {
+        val description = manifest.description
+        if (!description.isNullOrBlank()) {
           Spacer(modifier = Modifier.height(6.dp))
           Text(
-            text = manifest.description,
+            text = description,
             color = NovaTextMuted,
             fontSize = 13.sp,
             maxLines = 3,

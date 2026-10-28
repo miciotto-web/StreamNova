@@ -258,6 +258,10 @@ configurations.all {
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
 dependencies {
+  implementation(project(":core:model"))
+  implementation(project(":core:designsystem"))
+  implementation(project(":core:data"))
+  implementation(project(":core:player"))
   implementation(platform(libs.androidx.compose.bom))
   implementation(platform(libs.firebase.bom))
   // implementation(libs.accompanist.permissions)
@@ -283,19 +287,6 @@ dependencies {
   implementation(libs.coil.compose)
 
   // NuvioTV Media3 forked AARs (replace stock Media3)
-  implementation(files("libs/lib-common-release.aar"))
-  implementation(files("libs/lib-datasource-release.aar"))
-  implementation(files("libs/lib-datasource-okhttp-release.aar"))
-  implementation(files("libs/lib-exoplayer-release.aar"))
-  implementation(files("libs/lib-exoplayer-hls-release.aar"))
-  implementation(files("libs/lib-extractor-release.aar"))
-  implementation(files("libs/lib-nuvio-engine-android-0.1.2.aar"))
-  implementation(files("libs/lib-ui-release.aar"))
-  implementation(files("libs/lib-decoder-ffmpeg-release.aar"))
-  implementation(files("libs/lib-decoder-av1-release.aar"))
-  implementation(files("libs/lib-decoder-iamf-release.aar"))
-  implementation(files("libs/lib-decoder-mpegh-release.aar"))
-  implementation(files("libs/nextlib-mediainfo-local.aar"))
 
   // Stock Media3 modules from Maven (coherent 1.8.0)
   implementation(libs.androidx.media3.decoder)

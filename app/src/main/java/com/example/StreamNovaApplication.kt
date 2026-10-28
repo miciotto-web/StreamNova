@@ -1,6 +1,9 @@
 package com.example
 
 import android.app.Application
+import com.example.data.config.MediaSampleAssets
+import com.example.data.config.StreamNovaClientConfig
+import com.example.data.config.StreamNovaConfig
 import com.example.data.local.StreamNovaDatabase
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.SettingsRepository
@@ -23,6 +26,36 @@ class StreamNovaApplication : Application() {
 
   override fun onCreate() {
     super.onCreate()
+    // Configurazione esplicita del client TV: credenziali risolte dalla build
+    // (mai scritte nel sorgente) e asset demo dell'app. Il core condiviso non
+    // legge più BuildConfig/R del modulo :app.
+    StreamNovaConfig.install(
+      StreamNovaClientConfig(
+        appId = "tv",
+        versionName = BuildConfig.VERSION_NAME,
+        isDebug = BuildConfig.DEBUG,
+        tmdbApiKeyCandidates = listOf(
+          BuildConfig.TMDB_API_KEY,
+          BuildConfig.ENV_TMDB_API_KEY
+        ),
+        simklClientIdChannels = listOf(
+          SimklRepository.SimklClientIdChannel(
+            "build:ENV_SIMKL_CLIENT_ID",
+            BuildConfig.ENV_SIMKL_CLIENT_ID
+          ),
+          SimklRepository.SimklClientIdChannel(
+            "build:SIMKL_CLIENT_ID",
+            BuildConfig.SIMKL_CLIENT_ID
+          )
+        ),
+        mediaSampleAssets = MediaSampleAssets(
+          lastOfUs = R.drawable.banner_lastofus,
+          cosmos = R.drawable.banner_cosmos,
+          dune = R.drawable.banner_dune
+        )
+      )
+    )
+
     // Initialize Room Database
     val db = StreamNovaDatabase.init(this)
 

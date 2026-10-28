@@ -1903,9 +1903,10 @@ fun EpisodeRowItem(
         }
 
         // Air date if available
-        if (!episode.airDate.isNullOrBlank()) {
+        val airDate = episode.airDate
+        if (!airDate.isNullOrBlank()) {
           Text(
-            text = stringResource(R.string.detail_air_date_format, episode.airDate),
+            text = stringResource(R.string.detail_air_date_format, airDate),
             color = NovaTextMuted,
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium
@@ -2065,10 +2066,11 @@ fun ProductionCompanyCard(
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
           )
-          if (!company.originCountry.isNullOrBlank()) {
+          val originCountry = company.originCountry
+          if (!originCountry.isNullOrBlank()) {
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-              text = company.originCountry,
+              text = originCountry,
               color = NovaTextMuted,
               fontSize = 11.sp,
               fontWeight = FontWeight.Medium

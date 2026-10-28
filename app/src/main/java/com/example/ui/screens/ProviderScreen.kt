@@ -406,9 +406,10 @@ fun ProviderScreen(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp)
       ) {
-        if (provider.logoResId != null) {
+        val logoResId = provider.logoResId
+        if (logoResId != null) {
           Image(
-            painter = painterResource(id = provider.logoResId),
+            painter = painterResource(id = logoResId),
             contentDescription = provider.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier

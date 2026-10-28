@@ -191,7 +191,8 @@ internal suspend fun resolveAutoPickSource(
     val playable = if (useDebridUnlock && candidate.infoHash != null && candidate.streamUrl == null) {
       // Caso A: Debrid attiva e configurata -> sblocco del primo flusso Debrid.
       TorBoxRepository.setRequestMetadata(season, episode)
-      val directUrl = TorBoxRepository.resolveInfoHash(candidate.infoHash, candidate.fileIdx)
+      val candidateInfoHash = candidate.infoHash!!
+      val directUrl = TorBoxRepository.resolveInfoHash(candidateInfoHash, candidate.fileIdx)
       if (directUrl != null) candidate.copy(streamUrl = directUrl) else null
     } else {
       candidate
@@ -3230,7 +3231,8 @@ class StreamNovaViewModel(
      val currentDetail = detailUiState.value
     val enrichedMedia = if (currentDetail is MediaDetailUiState.Success) {
       val candidate = currentDetail.media
-      val matches = (mediaItem.tmdbId != null && mediaItem.tmdbId > 0 && candidate.tmdbId == mediaItem.tmdbId) ||
+      val mediaTmdbId = mediaItem.tmdbId
+      val matches = (mediaTmdbId != null && mediaTmdbId > 0 && candidate.tmdbId == mediaTmdbId) ||
         (mediaItem.id.isNotBlank() && (candidate.id == mediaItem.id || candidate.id.equals(mediaItem.id, ignoreCase = true)))
       if (matches) candidate else null
     } else null
@@ -3715,7 +3717,8 @@ class StreamNovaViewModel(
           "1. DATI STREAM DALL'ADDON [Manuale] -> server='${source.serverName}', title='${source.releaseTitle}', infoHash=${source.infoHash}, quality/resolution='${source.declaredQuality ?: source.quality}', details='${source.details}'"
         )
         TorBoxRepository.setRequestMetadata(episode?.seasonNumber, episode?.episodeNumber)
-        val directUrl = TorBoxRepository.resolveInfoHash(source.infoHash, source.fileIdx)
+        val sourceInfoHash = source.infoHash!!
+        val directUrl = TorBoxRepository.resolveInfoHash(sourceInfoHash, source.fileIdx)
         if (directUrl != null) {
           Log.i(TAG, "TorBox: flusso sbloccato -> $directUrl")
           source.copy(streamUrl = directUrl)

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">StreamNova</string>
+
+    <string name="nav_home">Home</string>
+    <string name="nav_movies">Film</string>
+    <string name="nav_series">Serie TV</string>
+    <string name="nav_search">Cerca</string>
+    <string name="nav_favorites">Preferiti</string>
+    <string name="settings">Impostazioni</string>
+
+    <string name="home_continue">Continua a guardare</string>
+    <string name="home_popular">Popolari</string>
+    <string name="home_top10">Top 10 della settimana</string>
+    <string name="home_movies">Film</string>
+    <string name="home_series">Serie TV</string>
+    <string name="home_for_you">Per te</string>
+
+    <string name="action_play">Guarda</string>
+    <string name="action_resume">Riprendi</string>
+    <string name="action_retry">Riprova</string>
+    <string name="action_back">Indietro</string>
+    <string name="action_settings">Impostazioni</string>
+    <string name="action_favorite_add">Aggiungi ai preferiti</string>
+    <string name="action_favorite_remove">Rimuovi dai preferiti</string>
+
+    <string name="search_hint">Cerca film e serie TV</string>
+    <string name="search_empty_title">Cerca nel catalogo</string>
+    <string name="search_empty_body">Scrivi almeno due caratteri per cercare un titolo.</string>
+    <string name="search_no_results">Nessun risultato per questa ricerca.</string>
+    <string name="search_all">Tutti</string>
+
+    <string name="favorites_empty_title">Nessun preferito</string>
+    <string name="favorites_empty_body">Aggiungi un titolo ai preferiti dalla scheda dettaglio.</string>
+    <string name="catalog_empty">Nessun titolo disponibile.</string>
+
+    <string name="detail_synopsis">Trama</string>
+    <string name="detail_seasons">Stagioni</string>
+    <string name="detail_episodes">Episodi</string>
+    <string name="detail_episode">Episodio</string>
+    <string name="detail_no_episodes">Nessun episodio disponibile per questa stagione.</string>
+    <string name="detail_min">min</string>
+    <string name="detail_rating">voto</string>
+    <string name="detail_episodes_loading">Caricamento episodi…</string>
+
+    <string name="settings_title">Impostazioni</string>
+    <string name="settings_playback">Riproduzione</string>
+    <string name="settings_auto_resume">Riprendi automaticamente</string>
+    <string name="settings_autoplay">Riproduci l\'episodio successivo</string>
+    <string name="settings_italian_audio">Preferisci audio italiano</string>
+    <string name="settings_subtitles">Sottotitoli attivi</string>
+    <string name="settings_resolution">Risoluzione preferita</string>
+    <string name="settings_engine">Motore di streaming</string>
+    <string name="settings_engine_http">Web streaming</string>
+    <string name="settings_engine_debrid">Debrid TorBox</string>
+    <string name="settings_torbox_key">Chiave API TorBox</string>
+    <string name="settings_torbox_key_hint">Inserisci la chiave API</string>
+    <string name="settings_save">Salva</string>
+    <string name="settings_parental">Controllo genitori</string>
+    <string name="settings_parental_enabled">Abilita controllo genitori</string>
+    <string name="settings_parental_level">Limite di età</string>
+    <string name="settings_parental_pin">PIN (4 cifre)</string>
+    <string name="settings_parental_pin_hint">Imposta un PIN per proteggere le impostazioni</string>
+    <string name="settings_parental_pin_required">Imposta un PIN di 4 cifre per attivare il controllo genitori.</string>
+    <string name="settings_parental_pin_saved">PIN salvato.</string>
+    <string name="settings_about">Informazioni</string>
+    <string name="settings_version">Versione</string>
+    <string name="settings_app_id">Application ID</string>
+
+    <string name="player_loading">Preparazione del flusso…</string>
+    <string name="player_error_title">Riproduzione non disponibile</string>
+    <string name="player_error_body">Nessuna sorgente riproducibile è stata trovata. Verifica la connessione o riprova.</string>
+    <string name="player_back">Esci dal player</string>
+</resources>

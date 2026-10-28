@@ -25,3 +25,8 @@ dependencyResolutionManagement {
 rootProject.name = "StreamNova"
 
 include(":app")
+include(":core:model")
+include(":core:designsystem")
+include(":core:data")
+include(":core:player")
+include(":mobile")
