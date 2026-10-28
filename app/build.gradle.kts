@@ -40,8 +40,8 @@ android {
     targetSdk = 36
     // Release stabile ufficiale StreamNova V1.0.
     // Ogni release successiva deve incrementare versionCode.
-    versionCode = 1004
-    versionName = "1.0.2"
+    versionCode = 1005
+    versionName = "1.0.3"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     // TMDB API key is never hardcoded here: it would be committed and published.

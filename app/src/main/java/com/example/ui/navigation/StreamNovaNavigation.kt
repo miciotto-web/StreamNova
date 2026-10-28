@@ -9,18 +9,31 @@ import com.example.data.model.MediaType
 sealed class Screen(val route: String) {
   object Browsing : Screen("browsing")
 
-  object Detail : Screen("detail/{mediaType}/{tmdbId}") {
+  object Detail : Screen("detail/{mediaType}/{tmdbId}?fromPlayer={fromPlayer}") {
     const val ARG_MEDIA_TYPE = "mediaType"
     const val ARG_TMDB_ID = "tmdbId"
 
+    /**
+     * `true` quando la scheda viene aperta come RIENTRO dal player (vedi
+     * [com.example.ui.viewmodel.PlayerDetailReturn]): la destinazione viene applicata SOTTO
+     * l'overlay del player, quindi deve comparire senza transizione animata — è già opaca e
+     * disegnata sopra la Home nella cornice in cui il player si chiude.
+     */
+    const val ARG_FROM_PLAYER = "fromPlayer"
+
     val arguments: List<NamedNavArgument> = listOf(
       navArgument(ARG_MEDIA_TYPE) { type = NavType.StringType },
-      navArgument(ARG_TMDB_ID) { type = NavType.IntType }
+      navArgument(ARG_TMDB_ID) { type = NavType.IntType },
+      navArgument(ARG_FROM_PLAYER) {
+        type = NavType.BoolType
+        defaultValue = false
+      }
     )
 
-    fun createRoute(mediaType: MediaType, tmdbId: Int): String {
+    fun createRoute(mediaType: MediaType, tmdbId: Int, fromPlayer: Boolean = false): String {
       val typeStr = if (mediaType == MediaType.SERIE_TV) "TV" else "MOVIE"
-      return "detail/$typeStr/$tmdbId"
+      val base = "detail/$typeStr/$tmdbId"
+      return if (fromPlayer) "$base?$ARG_FROM_PLAYER=true" else base
     }
   }
 

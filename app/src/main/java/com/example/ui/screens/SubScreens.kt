@@ -484,6 +484,39 @@ fun CategoryBrowsingScreen(
   }
 }
 
+/**
+ * Chiave stabile di una scheda dei Preferiti nella [LazyVerticalGrid]: identifica il contenuto
+ * (non la posizione) e consente all'ancora di recupero di risalire all'id dall'elemento
+ * visibile letto dal `layoutInfo`.
+ */
+private const val FAVORITE_CARD_KEY_PREFIX = "fav_grid_"
+
+private fun favoriteCardKey(mediaId: String): String = "$FAVORITE_CARD_KEY_PREFIX$mediaId"
+
+/**
+ * Posizione della scheda di Preferiti da RIPRISTINARE, risolta per identità del contenuto.
+ *
+ * La scheda aperta è quella che il catalogo mostrava al momento del click; mentre il Dettaglio
+ * è aperto l'elenco può cambiare (l'osservatore Room riordina `allMedia` quando i dettagli
+ * arricchiti vengono persistiti, e i Preferiti deduplicano una scheda per titolo). Quindi:
+ *
+ * - prima la corrispondenza DIRETTA sull'id della scheda aperta;
+ * - in mancanza, la scheda che rappresenta lo STESSO contenuto secondo [MediaIdentity] (una
+ *   scheda TMDB e la sua gemella IMDb/Stremio hanno id diversi ma sono lo stesso titolo);
+ * - `-1` quando il titolo non è più fra i Preferiti: nessuna scheda viene indovinata per
+ *   posizione.
+ */
+internal fun favoriteRestoreIndex(
+  favorites: List<MediaItem>,
+  allMedia: List<MediaItem>,
+  mediaId: String
+): Int {
+  val exact = favorites.indexOfFirst { it.id == mediaId }
+  if (exact >= 0) return exact
+  val seed = allMedia.firstOrNull { it.id == mediaId } ?: return -1
+  return favorites.indexOfFirst { MediaIdentity.isSameTitle(it, seed) }
+}
+
 @Composable
 fun FavoritesScreen(
   allMedia: List<MediaItem>,
@@ -493,30 +526,95 @@ fun FavoritesScreen(
 ) {
   // Una griglia per TITOLO: con due schede dello stesso contenuto in catalogo (una TMDB, una
   // IMDb/Stremio) la stessa card comparirebbe due volte (vedi `MediaIdentity`).
-  val favorites = MediaIdentity.dedupeFavorites(allMedia)
+  // L'istanza è stabile per ricomposizione: la chiave dell'effetto di ripristino è l'elenco.
+  val favorites = remember(allMedia) { MediaIdentity.dedupeFavorites(allMedia) }
 
-  // Focus restoration: riceve il segnale dal ViewModel
-  val focusRestoreSignal = remember { mutableStateOf<String?>(null) }
-  LaunchedEffect(viewModel) {
-    viewModel?.focusRestoreSignal?.collect { mediaId ->
-      focusRestoreSignal.value = mediaId
+  // Posizione di scroll PERSISTENTE attraverso la navigazione (come le griglie di Film, Serie
+  // TV e Provider): al BACK dal Dettaglio la griglia ritrova la stessa posizione, quindi la
+  // scheda ripristinata resta nella riga e nella posizione visiva da cui si era entrati.
+  val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+
+  // Canali di ripristino della Home (MainActivity -> HomeScreen): TARGET salvato al click,
+  // TOKEN dell'evento (riattiva il tentativo anche su ritorni consecutivi dalla stessa
+  // scheda) e rilascio del target quando il focus è DAVVERO sulla scheda.
+  val restoreMediaId = LocalLastFocusedMediaId.current
+  val focusRestoreToken = LocalFocusRestoreToken.current
+  val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
+
+  // Un FocusRequester per IDENTITÀ di scheda: il ripristino deve atterrare sulla scheda di
+  // origine — non su una cella fissa della griglia, che con `FocusRequester` agganciato a un
+  // nodo non focalizzabile non riceve mai il focus.
+  val cellFocusRequesters = remember { mutableMapOf<String, FocusRequester>() }
+  fun cellFocusRequester(mediaId: String): FocusRequester =
+    cellFocusRequesters.getOrPut(mediaId) { FocusRequester() }
+
+  /**
+   * Prima scheda GIÀ visibile della griglia (id del contenuto), attesa al massimo pochi frame
+   * quando il layout non è ancora misurato: nessun `delay()` arbitrario.
+   */
+  suspend fun firstVisibleFavoriteId(): String? {
+    var frames = 0
+    while (gridState.layoutInfo.visibleItemsInfo.isEmpty() && frames < 8) {
+      withFrameNanos { }
+      frames++
     }
+    val key = gridState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String ?: return null
+    return key.removePrefix(FAVORITE_CARD_KEY_PREFIX)
   }
 
-  val gridState = rememberLazyGridState()
-  val focusRequester = remember { FocusRequester() }
-  LaunchedEffect(focusRestoreSignal.value, gridState) {
-    val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
-    focusRestoreSignal.value = null
+  // Ancora di recupero quando il target NON è più la scheda a schermo (titolo uscito dai
+  // Preferiti, oppure visualizzato dalla scheda "gemella" con id diverso). Il rilascio del
+  // target apre il gate `canFocus` delle card e riavvia l'effetto di ripristino, quindi
+  // l'ancora vive in un effetto DEDICATO: parte dopo la ricomposizione, quando il gate è già
+  // aperto, e la richiesta di focus non viene respinta.
+  var recoveryAnchorId by remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(recoveryAnchorId) {
+    val anchorId = recoveryAnchorId ?: return@LaunchedEffect
+    recoveryAnchorId = null
+    requestFocusWhenAttached(cellFocusRequester(anchorId))
+  }
 
-    val index = favorites.indexOfFirst { it.id == mediaId }
-    if (index >= 0) {
-      gridState.scrollToItem(index)
-      kotlinx.coroutines.delay(100)
-      try {
-        focusRequester.requestFocus()
-      } catch (_: Exception) {}
+  // UNICO punto di ingresso del ripristino dal Dettaglio: risolve la scheda per IDENTITÀ e
+  // richiede il focus SU QUELLA. È il protocollo delle griglie di Film/Serie TV e Provider,
+  // che è l'unico a garantire che al ritorno il focus non resti fuori dal contenuto (sulla
+  // sidebar) quando la griglia viene ricomposta.
+  LaunchedEffect(restoreMediaId, focusRestoreToken, favorites) {
+    val mediaId = restoreMediaId ?: return@LaunchedEffect
+    val index = favoriteRestoreIndex(favorites, allMedia, mediaId)
+    val target = favorites.getOrNull(index)
+    if (target == null) {
+      // Titolo non più fra i Preferiti: il target viene rilasciato (le card tornano
+      // focalizzabili) e il focus va alla prima scheda GIÀ visibile. Nessuno scroll in cima,
+      // nessuna scheda indovinata per posizione, nessuna schermata senza focus.
+      recoveryAnchorId = firstVisibleFavoriteId()
+      clearLastFocusedMedia?.invoke()
+      return@LaunchedEffect
     }
+    if (target.id != mediaId) {
+      // Lo stesso titolo è a schermo con un identificatore DIVERSO (scheda TMDB aperta, ora
+      // visualizzata la gemella IMDb/Stremio): il gate `canFocus` delle card confronta l'id,
+      // quindi il target viene rilasciato e l'ancora porta il focus sulla scheda realmente
+      // presente.
+      recoveryAnchorId = target.id
+      clearLastFocusedMedia?.invoke()
+      return@LaunchedEffect
+    }
+    // La visibilità del target si valuta solo su una griglia GIÀ misurata (almeno una cella in
+    // composizione): finché `visibleItemsInfo` è vuoto ogni verdetto sarebbe falso.
+    var measuredFrames = 0
+    while (gridState.layoutInfo.visibleItemsInfo.isEmpty() && measuredFrames < 8) {
+      withFrameNanos { }
+      measuredFrames++
+    }
+    val targetVisible = gridState.layoutInfo.visibleItemsInfo.any { it.index == index }
+    if (!targetVisible && !gridState.isScrollInProgress) {
+      try {
+        gridState.scrollToItemVerified(index)
+      } catch (_: Exception) {
+        // La richiesta di focus sotto attende comunque il montaggio della scheda.
+      }
+    }
+    requestFocusWhenAttached(cellFocusRequester(mediaId))
   }
 
   Column(
@@ -597,16 +695,27 @@ fun FavoritesScreen(
           verticalArrangement = Arrangement.spacedBy(16.dp),
           modifier = Modifier.fillMaxSize()
         ) {
-          itemsIndexed(favorites, key = { _, item -> "fav_grid_${item.id}" }, contentType = { _, _ -> "media_poster" }) { index, item ->
+          itemsIndexed(favorites, key = { _, item -> favoriteCardKey(item.id) }, contentType = { _, _ -> "media_poster" }) { _, item ->
             Box(
               modifier = Modifier
-                .fillMaxWidth()
-                .then(if (index == 0) Modifier.focusRequester(focusRequester) else Modifier),
+                .fillMaxWidth(),
               contentAlignment = Alignment.TopCenter
             ) {
               PosterMediaCard(
                 media = item,
-                onClick = { onMediaClick(item) }
+                // L'identità della scheda aperta viene salvata PRIMA di navigare: senza target
+                // il ripristino al BACK non ha nulla da ricondurre alla scheda di origine.
+                onClick = {
+                  viewModel?.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
+                  onMediaClick(item)
+                },
+                // Requester DELLA scheda (nodo focalizzabile della card): una richiesta via
+                // `focusRequester` su una Box non focalizzabile non può mai essere consegnata.
+                focusRequester = cellFocusRequester(item.id),
+                // Protocollo con CONFERMA del focus reale: il target viene rilasciato solo
+                // quando la scheda lo ha davvero acquisito, quindi al ritorno nessuna
+                // richiesta prematura resta senza esito.
+                confirmFocusRestore = true
               )
             }
           }

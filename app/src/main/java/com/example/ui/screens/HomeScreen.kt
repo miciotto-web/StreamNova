@@ -1291,11 +1291,13 @@ fun HomeMainBrowsingContent(
   /**
    * Avvio della riproduzione da una card di riga (es. «Continua a guardare»).
    *
-   * La provenienza del focus (riga + ID del contenuto) viene registrata QUI, al click: questa
-   * riproduzione non passa dal Dettaglio, quindi al ritorno dal player la Home è l'unica a
-   * poter riportare il focus sulla card di origine, per identità e non per posizione. Il
-   * target di ripristino vero e proprio NON viene pubblicato adesso: la Home resta composta
-   * sotto l'overlay del player e lo consumerebbe subito (vedi
+   * La provenienza della riproduzione (riga + ID del contenuto) viene registrata QUI, al
+   * click: questa riproduzione non passa dal Dettaglio, quindi la destinazione del rientro va
+   * decisa a posteriori, quando il player si chiude. Al BACK dal player si rientra nella
+   * scheda DETTAGLIO del contenuto appena riprodotto — non sulla card di origine — e il focus
+   * è quello della scheda (la sua card di riproduzione/ripresa del contenuto): la Home non
+   * riceve alcun target di ripristino, perché il target vero e proprio verrebbe consumato dal
+   * proprio ciclo di vita mentre la Home è ancora composta sotto l'overlay del player (vedi
    * [StreamNovaViewModel.savePlaybackFocusOrigin]).
    */
   val handleRowPlayClick: (String, MediaItem) -> Unit = { rowKey, item ->

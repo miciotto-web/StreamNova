@@ -12,6 +12,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -201,6 +203,34 @@ fun StreamNovaApp(
   val startupUpdatePrompt by viewModel.startupUpdatePrompt.collectAsState()
   val updateDownloadState by viewModel.updateDownloadState.collectAsState()
 
+  // Rientro dal player nella SCHEDA DETTAGLIO del contenuto appena riprodotto: la richiesta
+  // arriva dal ViewModel (vedi [StreamNovaViewModel.playerDetailReturn]) e qui si traduce nella
+  // navigazione del NavHost. La chiusura del player è DIFFERITA (vedi
+  // [StreamNovaViewModel.completePlayerClose]): l'overlay resta composto — e copre la
+  // destinazione sottostante — finché la scheda non è davvero composta a schermo, e viene
+  // smontato solo allora. La cornice che sostituisce il player ha quindi già la scheda
+  // Dettaglio: la Home non è mai visibile, nemmeno per un frame. La richiesta è l'evento di UN
+  // rientro (la riproduzione avviata da una card di «Continua a guardare»), non uno stato
+  // della Home.
+  val playerDetailReturn by viewModel.playerDetailReturn.collectAsState()
+  LaunchedEffect(playerDetailReturn) {
+    val request = playerDetailReturn ?: return@LaunchedEffect
+    Log.d("BACK_TRACE", "MAINACTIVITY: rientro dal player nella scheda Dettaglio")
+    viewModel.consumePlayerDetailReturn()
+    // Scheda Dettaglio già attiva (rientro ripetuto sullo stesso titolo): la destinazione è
+    // quella, non ne va impilata una seconda, e la chiusura differita si conclude subito.
+    if (navController.currentDestination?.route != Screen.Detail.route) {
+      val media = request.media
+      // `fromPlayer = true` apre la scheda senza transizione d'ingresso: è già opaca e
+      // disegnata sopra la Home quando il player (che la copre) viene smontato.
+      navController.navigate(
+        Screen.Detail.createRoute(media.type, media.tmdbId ?: 0, fromPlayer = true)
+      )
+    } else {
+      viewModel.completePlayerClose()
+    }
+  }
+
   // Feedback errore di risoluzione sorgenti (es. timeout o nessuna sorgente):
   // mostra un toast con il messaggio di errore e reimposta lo stato su Idle
   LaunchedEffect(streamResolutionState) {
@@ -249,7 +279,20 @@ fun StreamNovaApp(
       navController = navController,
       startDestination = Screen.Browsing.route
     ) {
-      composable(route = Screen.Browsing.route) {
+      composable(
+        route = Screen.Browsing.route,
+        // La Home esce SENZA transizione quando la destinazione entrante è la scheda aperta dal
+        // rientro dal player (vedi Screen.Detail.ARG_FROM_PLAYER): la scheda è già opaca e
+        // disegnata sopra, quindi la Home non resta in scena — nemmeno durante una sfumatura.
+        // Per tutte le altre navigazioni resta la transizione di default del NavHost.
+        exitTransition = {
+          if (targetState.arguments?.getBoolean(Screen.Detail.ARG_FROM_PLAYER) == true) {
+            ExitTransition.None
+          } else {
+            null
+          }
+        }
+      ) {
         // Stato apertura sidebar: false sin dal primo frame.
         var isSidebarExpanded by remember { mutableStateOf(false) }
 
@@ -495,8 +538,29 @@ fun StreamNovaApp(
 
       composable(
         route = Screen.Detail.route,
-        arguments = Screen.Detail.arguments
+        arguments = Screen.Detail.arguments,
+        // Rientro dal player (vedi Screen.Detail.ARG_FROM_PLAYER): la destinazione viene
+        // applicata SOTTO l'overlay del player, che resta composto finché la scheda non è
+        // realmente composta a schermo. Senza transizione d'ingresso la scheda è già opaca
+        // nella prima cornice in cui il player si smonta e viene disegnata SOPRA la Home:
+        // nessuna cornice di Home, nessuno stato intermedio (né sfumature, né schermate vuote).
+        // `null` = transizione di default del NavHost per tutte le altre aperture della scheda.
+        enterTransition = {
+          if (targetState.arguments?.getBoolean(Screen.Detail.ARG_FROM_PLAYER) == true) {
+            EnterTransition.None
+          } else {
+            null
+          }
+        }
       ) { backStackEntry ->
+        // Rientro dal player: la scheda è COMPOSTA (dietro l'overlay del player, che la copre
+        // per intero). Solo ora la chiusura differita del player si conclude: da questa cornice
+        // in poi la destinazione corrente è la scheda, quindi smontare l'overlay non scopre mai
+        // la Home. È l'unico punto in cui la chiusura viene completata (fuori da qui il player
+        // resta composto).
+        if (backStackEntry.arguments?.getBoolean(Screen.Detail.ARG_FROM_PLAYER) == true) {
+          LaunchedEffect(Unit) { viewModel.completePlayerClose() }
+        }
         val args = DetailNavArgs.fromBundle(backStackEntry.arguments)
         val selectedMedia by viewModel.selectedMedia.collectAsState()
         var cachedMedia by remember(backStackEntry.id) { mutableStateOf<MediaItem?>(null) }

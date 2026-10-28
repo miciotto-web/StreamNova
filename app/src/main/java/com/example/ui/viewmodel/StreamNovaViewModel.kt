@@ -601,6 +601,24 @@ data class PlaybackSession(
 )
 
 /**
+ * Rientro nella scheda Dettaglio dopo la chiusura del player.
+ *
+ * La riproduzione avviata da una card di riga (es. «Continua a guardare») non passa dal
+ * Dettaglio: al BACK dal player la destinazione è la scheda Dettaglio del contenuto
+ * effettivamente riprodotto, con l'EPISODIO appena visto come punto di ripresa ([media]).
+ *
+ * L'identità è quella del media riprodotto (id/TMDB del contenuto davvero in riproduzione),
+ * mai quella di una scheda gemella dello stesso titolo con un identificatore diverso: è la
+ * stessa scheda che il player sta usando, quindi non esiste ambiguità su quale film o serie
+ * si sta riaprendo.
+ *
+ * È un EVENTO, non uno stato persistente: la destinazione viene preparata dal ViewModel
+ * ([openDetail]) e consumata da MainActivity, che la traduce nella navigazione del NavHost
+ * ([consumePlayerDetailReturn]).
+ */
+data class PlayerDetailReturn(val media: MediaItem)
+
+/**
  * Stato del download di un sottotitolo della sezione "Sottotitoli Online (OpenSubtitles)".
  *
  * La selezione NON passa più l'URL remoto direttamente al player: il file viene scaricato
@@ -758,6 +776,20 @@ class StreamNovaViewModel(
     // Incrementa il token per forzare l'attivazione nelle card
     _focusRestoreToken.value = _focusRestoreToken.value + 1
     _focusRestoreSignal.tryEmit(mediaId)
+  }
+
+  /**
+   * Rientro nella scheda Dettaglio richiesto alla chiusura del player (vedi
+   * [PlayerDetailReturn]): `null` quando il rientro non passa dal Dettaglio. La destinazione
+   * è già preparata ([openDetail]); MainActivity la traduce in navigazione e CONSUMA la
+   * richiesta, che non sopravvive al rientro che l'ha generata.
+   */
+  private val _playerDetailReturn = MutableStateFlow<PlayerDetailReturn?>(null)
+  val playerDetailReturn: StateFlow<PlayerDetailReturn?> = _playerDetailReturn.asStateFlow()
+
+  /** Consuma la richiesta di rientro nel Dettaglio (vedi [PlayerDetailReturn]). */
+  fun consumePlayerDetailReturn() {
+    _playerDetailReturn.value = null
   }
 
   // Focus retention TV per Cast (Punto 5, 7)
@@ -1191,24 +1223,38 @@ class StreamNovaViewModel(
   private var sectionBeforePlayer: SidebarSection = SidebarSection.HOME
 
   /**
-   * Provenienza del focus della riproduzione avviata da una card di riga: coppia
-   * (rowKey, mediaId) registrata al click della card (es. «Continua a guardare»).
+   * Provenienza della riproduzione avviata da una card di riga: coppia (rowKey, mediaId)
+   * registrata al click della card (es. «Continua a guardare»).
    *
    * La riproduzione avviata direttamente da una card NON passa dal Dettaglio: la Home resta
-   * composta sotto l'overlay del player e al ritorno nessun segnale di ripristino veniva
-   * emesso (il target di [saveLastFocusedMedia] è del percorso Dettaglio/Provider), quindi il
-   * focus restava alla prima superficie focalizzabile (la sidebar). La provenienza viene
-   * consumata UNA SOLA VOLTA alla chiusura del player (vedi [restoreFocusOnPlayerReturn]).
+   * composta sotto l'overlay del player e al ritorno nessun segnale riportava il focus dentro
+   * il contenuto (il target di [saveLastFocusedMedia] è del percorso Dettaglio/Provider),
+   * quindi il focus restava alla prima superficie focalizzabile (la sidebar). Al BACK dal
+   * player la destinazione è ora la SCHEDA DETTAGLIO del contenuto appena riprodotto (vedi
+   * [PlayerDetailReturn]); la provenienza viene consumata UNA SOLA VOLTA alla chiusura del
+   * player (vedi [publishPlayerReturnTarget]).
    *
-   * Non è il target di ripristino: finché il player è aperto la Home è ancora composta e un
-   * target attivo verrebbe consumato dal proprio ciclo di vita (gate `canFocus` + rilascio da
-   * `onFocusChanged`) prima che il player si chiuda.
+   * Non è il target di ripristino della Home: finché il player è aperto la Home è ancora
+   * composta e un target attivo verrebbe consumato dal proprio ciclo di vita (gate `canFocus`
+   * + rilascio da `onFocusChanged`) prima che il player si chiuda.
    */
   private var playbackOriginTarget: Pair<String, String>? = null
 
   /**
+   * Rientro nella scheda Dettaglio in attesa che MainActivity applichi la navigazione
+   * ([deferCloseForDetailReturn] -> [completePlayerClose]).
+   *
+   * Finché è valorizzato il player NON è stato smontato: resta composto a tutto schermo e copre
+   * la destinazione sottostante (la Home), quindi il passaggio dal player alla scheda Dettaglio
+   * non mostra mai la Home — nemmeno per una cornice. La navigazione avviene sotto l'overlay e
+   * la chiusura vera e propria viene conclusa con la destinazione ormai corrente.
+   */
+  private var pendingDetailReturnClose: PlayerDetailReturn? = null
+
+  /**
    * Registra la PROVENIENZA della riproduzione avviata dalla card ([rowKey], [mediaId]) di una
-   * riga della Home: al ritorno dal player il focus deve tornare su QUELLA card, per identità.
+   * riga della Home (es. «Continua a guardare»): al BACK dal player si rientra nei Dettagli
+   * del contenuto riprodotto (vedi [PlayerDetailReturn]).
    */
   fun savePlaybackFocusOrigin(rowKey: String, mediaId: String) {
     playbackOriginTarget = rowKey to mediaId
@@ -3814,9 +3860,90 @@ class StreamNovaViewModel(
     // Salva il progresso PRIMA di azzerare lo stato, usando il pacchetto atomico della
     // sessione corrente (mai variabili globali mutevoli).
     val current = _playbackState.value
+    // Contenuto e episodio DELLA SESSIONE APPENA CHIUSA: servono a decidere la destinazione
+    // del rientro e vanno letti PRIMA della pulizia della sessione.
+    val playedMedia = current.media
+    val playedSession = currentSession
     if (current.currentPositionMs > 0L) {
       saveCurrentPlaybackProgress(current.currentPositionMs)
     }
+
+    // Rientro nella scheda Dettaglio (riproduzione avviata da una card di riga della Home): la
+    // destinazione viene decisa QUI, con la sessione ancora integra, ma il player NON viene
+    // smontato adesso. Resta composto — a tutto schermo, sopra la destinazione sottostante —
+    // finché la scheda non è realmente composta a schermo; solo allora MainActivity conclude la
+    // chiusura con [completePlayerClose]. La cornice che smonta il player ha quindi già la
+    // scheda come destinazione: la Home non è visibile nemmeno per un frame.
+    if (deferCloseForDetailReturn(playedMedia, playedSession)) {
+      Log.d("BACK_TRACE", "STREAMNOVAVM: chiusura differita per il rientro nel Dettaglio")
+      return
+    }
+
+    finishPlayerClose(playedMedia, playedSession)
+    Log.d("BACK_TRACE", "STREAMNOVAVM: valore di _screenState dopo: ${_screenState.value}")
+    Log.i(HTTP_TRACE, "[VM] closePlayer COMPLETE")
+    Log.d("BACK_TRACE", "STREAMNOVAVM: uscita da closePlayer()")
+  }
+
+  /**
+   * Predispone il rientro nella scheda Dettaglio SENZA smontare il player.
+   *
+   * Condizioni del rientro nel Dettaglio (le stesse del percorso normale, valutate però con la
+   * sessione ancora integra): riproduzione avviata da una card di riga della Home
+   * ([savePlaybackFocusOrigin]) e provenienza BROWSING + sezione HOME.
+   *
+   * Se il rientro è quello, la richiesta viene pubblicata ([PlayerDetailReturn]): MainActivity
+   * la traduce nella navigazione verso la scheda, che avviene sotto l'overlay del player (quindi
+   * invisibile) e si conclude con [completePlayerClose] quando la scheda è composta. Finché la
+   * scheda non è a schermo il player resta esattamente com'è: una seconda pressione di BACK
+   * nello stesso istante non lo smonta due volte (la chiusura è già in corso).
+   *
+   * @return true se la chiusura è differita: la conclude [completePlayerClose].
+   */
+  private fun deferCloseForDetailReturn(
+    playedMedia: MediaItem?,
+    playedSession: PlaybackSession?
+  ): Boolean {
+    if (pendingDetailReturnClose != null) return true
+    if (screenBeforePlayer != ScreenState.BROWSING) return false
+    if (sectionBeforePlayer != SidebarSection.HOME) return false
+    if (playbackOriginTarget == null) return false
+    val detailMedia = playedMedia?.let { mediaWithPlayedEpisode(it, playedSession) } ?: return false
+    playbackOriginTarget = null
+    val request = PlayerDetailReturn(detailMedia)
+    pendingDetailReturnClose = request
+    _playerDetailReturn.value = request
+    return true
+  }
+
+  /**
+   * Conclude la chiusura differita del player ([deferCloseForDetailReturn]).
+   *
+   * Va invocata quando la scheda Dettaglio è realmente composta a schermo — dietro l'overlay del
+   * player, che la copre per intero (vedi MainActivity). Da quel momento la destinazione corrente
+   * è la scheda, quindi smontare il player non scopre mai la Home: la cornice che lo sostituisce
+   * disegna il contenuto riprodotto, già preparato qui (media selezionato, stagione ed episodio
+   * appena visti), senza stati intermedi visibili.
+   */
+  fun completePlayerClose() {
+    val request = pendingDetailReturnClose ?: return
+    pendingDetailReturnClose = null
+    // Contenuto e sessione sono ancora integri: la chiusura vera e propria avviene ora.
+    finishPlayerClose(_playbackState.value.media, currentSession)
+    Log.d("BACK_TRACE", "STREAMNOVAVM: completePlayerClose, screenState=${_screenState.value}")
+    val detailMedia = request.media
+    if (isLiveChannel(detailMedia.id)) openLiveChannel(detailMedia) else openDetail(detailMedia)
+  }
+
+  /**
+   * Smontaggio del player e ripristino della schermata di provenienza.
+   *
+   * È il corpo storico di [closePlayer] (sessione, stream, dialoghi, sezione di partenza e
+   * destinazione del rientro): vale sia per la chiusura immediata sia per la conclusione della
+   * chiusura differita, dove la richiesta di rientro è già stata pubblicata e consumata
+   * ([publishPlayerReturnTarget] non ripubblica nulla).
+   */
+  private fun finishPlayerClose(playedMedia: MediaItem?, playedSession: PlaybackSession?) {
     // Pulizia totale della sessione: la prossima riproduzione parte da tabula rasa.
     currentMediaFetchJob?.cancel()
     currentMediaFetchJob = null
@@ -3856,37 +3983,69 @@ class StreamNovaViewModel(
     fallbackFromUnavailableSection()
     _screenState.value = origin
       ?: if (_selectedMedia.value != null) ScreenState.DETAIL else ScreenState.BROWSING
-    // Il focus torna sulla card che ha avviato la riproduzione (Home ancora composta sotto
-    // l'overlay del player): nessun altro effetto lo riancorerebbe al contenuto.
-    restoreFocusOnPlayerReturn()
-    Log.d("BACK_TRACE", "STREAMNOVAVM: valore di _screenState dopo: ${_screenState.value}")
-    Log.i(HTTP_TRACE, "[VM] closePlayer COMPLETE")
-    Log.d("BACK_TRACE", "STREAMNOVAVM: uscita da closePlayer()")
+    // Destinazione del rientro: la provenienza della riproduzione decide dove si torna.
+    publishPlayerReturnTarget(playedMedia, playedSession)
   }
 
   /**
-   * Ripristina il focus sulla card di origine al ritorno dal player.
+   * Destinazione del rientro dal player.
    *
    * La provenienza ([playbackOriginTarget]) è consumata UNA SOLA VOLTA, QUALUNQUE sia la
    * destinazione di rientro: una provenienza vecchia non deve sopravvivere alla sessione di
    * riproduzione che l'ha generata.
    *
-   * Il ripristino avviene SOLO quando il player rientra davvero nel contenuto della Home
-   * (schermata BROWSING + sezione HOME): il rientro dal Dettaglio (player aperto dalla scheda)
-   * lascia il focus alla scheda, che ha il proprio percorso di ripristino.
-   *
-   * Il target viene pubblicato con le stesse primitive del percorso Dettaglio/Provider
-   * ([saveLastFocusedMedia] + [signalFocusRestore]): la Home applica così il SUO protocollo
-   * (richiesta pendente + attesa del mount della riga/card + conferma del focus), per IDENTITÀ
-   * e non per posizione — la riga «Continua a guardare» si riordina proprio per effetto del
-   * progresso appena salvato.
+   * - Riproduzione avviata da una CARD DI RIGA (es. «Continua a guardare»): si rientra nella
+   *   SCHEDA DETTAGLIO del contenuto appena riprodotto, con l'episodio appena visto come punto
+   *   di ripresa ([mediaWithPlayedEpisode]). Il focus appartiene alla scheda, che lo porta
+   *   sulla propria card di riproduzione del contenuto (protocollo della schermata: la
+   *   richiesta si ripete finché il focus non viene confermato, quindi nessuna richiesta
+   *   prematura). Nessun target per la Home viene pubblicato: il focus non può più tornare
+   *   sulla card di «Continua a guardare».
+   * - Ogni altro ingresso al player (scheda Dettaglio, Provider, …): comportamento invariato —
+   *   il rientro è della schermata che ha aperto il player e il focus resta dove si trova.
    */
-  private fun restoreFocusOnPlayerReturn() {
-    val target = playbackOriginTarget ?: return
+  private fun publishPlayerReturnTarget(playedMedia: MediaItem?, playedSession: PlaybackSession?) {
+    val origin = playbackOriginTarget
     playbackOriginTarget = null
+    // Il contenuto della Home è l'unica destinazione in cui la provenienza da una card di riga
+    // conta: gli altri rientri (Dettaglio/Provider/sezioni) restano quelli di sempre.
     if (_screenState.value != ScreenState.BROWSING || _currentSection.value != SidebarSection.HOME) return
-    saveLastFocusedMedia(target.first, target.second)
-    signalFocusRestore(target.second)
+    if (origin == null) return
+    val detailMedia = playedMedia?.let { mediaWithPlayedEpisode(it, playedSession) }
+    if (detailMedia == null) {
+      // Nessuna sessione da riaprire (player chiuso prima che il contenuto fosse associato):
+      // si conserva il rientro sulla card di origine invece di lasciare la Home senza
+      // destinazione di focus.
+      saveLastFocusedMedia(origin.first, origin.second)
+      signalFocusRestore(origin.second)
+      return
+    }
+    _playerDetailReturn.value = PlayerDetailReturn(detailMedia)
+    // Destinazione preparata QUI (schermata + media + metadati): MainActivity deve solo
+    // navigare il NavHost sulla scheda Dettaglio (vedi [PlayerDetailReturn]). Un canale LIVE
+    // usa la scheda del canale (nessuna stagione/episodio da selezionare), come al click di
+    // una card canale da qualunque altra schermata.
+    if (isLiveChannel(detailMedia.id)) openLiveChannel(detailMedia) else openDetail(detailMedia)
+  }
+
+  /**
+   * Media da aprire nella scheda Dettaglio al rientro dal player.
+   *
+   * L'identità è quella del contenuto EFFETTIVAMENTE riprodotto ([media], lo stesso oggetto
+   * che il player ha in sessione): nessuna ricerca per titolo fra le schede del catalogo, dove
+   * lo stesso film o serie può comparire più volte con identificatori differenti (scheda TMDB
+   * e scheda IMDb/Stremio). L'episodio appena visto ([session]) diventa il punto di ripresa
+   * della scheda: nel player si può essere passati all'episodio successivo, quindi la stagione
+   * e la puntata da riprendere sono quelle della sessione, non quelle della card di partenza.
+   */
+  private fun mediaWithPlayedEpisode(media: MediaItem, session: PlaybackSession?): MediaItem {
+    val season = session?.seasonNumber
+    val episode = session?.episodeNumber
+    return if (session?.isSeries == true && season != null && episode != null) {
+      media.copy(lastWatchedSeason = season, lastWatchedEpisode = episode)
+    } else {
+      media
+    }
   }
 
   /** True se il Player è stato aperto partendo dal Dettaglio (catalogo -> Detail -> Player). */
