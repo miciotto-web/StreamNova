@@ -26,9 +26,11 @@ object OpenSubtitlesSubtitleAdapter {
    * `attributes.url` è l'URL della PAGINA WEB OpenSubtitles e non viene mai usato: caricare
    * quell'HTML come se fosse un file SubRip fa fallire la decodifica del sottotitolo.
    *
-   * Se non esiste un URL di download diretto valido l'elemento viene scartato (`null`),
-   * così il provider può comunque risolverlo tramite `file_id` tramite l'endpoint di
-   * download v3, senza generare Subtitle inutilizzabili.
+   * Se non esiste un URL di download diretto ma l'elemento ha un `file_id`, l'elemento
+   * NON viene scartato: viene emesso con `url` vuoto e [Subtitle.fileId] valorizzato, così
+   * può essere mostrato a schermo e risolto (POST /api/v1/download con file_id) solo quando
+   * l'utente lo seleziona — senza consumare quota download per risultati mai scelti e senza
+   * perdere risultati validi durante la ricerca.
    */
   fun toSubtitle(
     item: OpenSubtitlesItemDto,
@@ -46,20 +48,23 @@ object OpenSubtitlesSubtitleAdapter {
       ?: attr.files?.firstOrNull()?.downloadUrl
       ?: attr.files?.firstOrNull()?.link
 
-    val validUrl = rawUrl?.trim()?.takeIf { it.isNotBlank() && isValidDownloadUrl(it) } ?: return null
+    val validUrl = rawUrl?.trim()?.takeIf { it.isNotBlank() && isValidDownloadUrl(it) }
+    val fileId = attr.files?.firstOrNull()?.fileId?.takeIf { it > 0 }
+    if (validUrl == null && fileId == null) return null
 
     val lang = normalizeLanguage(attr.language)
     val label = buildLabel(attr)
 
     return Subtitle(
       id = "os-$rawId",
-      url = validUrl,
+      url = validUrl.orEmpty(),
       lang = lang,
       addonName = addonName,
       addonLogo = addonLogo,
       isStreamProvided = false,
       headers = null,
-      label = label
+      label = label,
+      fileId = fileId
     )
   }
 

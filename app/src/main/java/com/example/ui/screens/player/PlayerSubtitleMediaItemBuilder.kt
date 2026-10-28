@@ -61,12 +61,17 @@ internal object PlayerSubtitleMediaItemBuilder {
 
     val lowerUrl = url.lowercase()
     val lowerLabel = label?.lowercase().orEmpty()
+    // L'etichetta viene usata SOLO se TERMINA con l'estensione: una ricerca del
+    // semplice ".ass" nel testo dell'etichetta (es. "Matrix.Assassination.2020")
+    // classificherebbe come SSA un file che e' SubRip.
     return when {
-      lowerUrl.contains(".vtt") || lowerUrl.contains("format=vtt") || lowerUrl.contains("sub_format=vtt") || lowerLabel.contains(".vtt") ->
+      lowerUrl.contains(".vtt") || lowerUrl.contains("format=vtt") || lowerUrl.contains("sub_format=vtt") ||
+        lowerLabel.endsWith(".vtt") || lowerLabel.endsWith(".webvtt") ->
         MimeTypes.TEXT_VTT
-      lowerUrl.contains(".ass") || lowerUrl.contains(".ssa") || lowerLabel.contains(".ass") ->
+      lowerUrl.contains(".ass") || lowerUrl.contains(".ssa") ||
+        lowerLabel.endsWith(".ass") || lowerLabel.endsWith(".ssa") ->
         MimeTypes.TEXT_SSA
-      lowerUrl.contains(".ttml") || lowerLabel.contains(".ttml") ->
+      lowerUrl.contains(".ttml") || lowerLabel.endsWith(".ttml") || lowerLabel.endsWith(".dfxp") ->
         MimeTypes.APPLICATION_TTML
       else ->
         MimeTypes.APPLICATION_SUBRIP

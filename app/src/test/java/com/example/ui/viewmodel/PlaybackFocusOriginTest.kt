@@ -73,7 +73,9 @@ class PlaybackFocusOriginTest {
       override suspend fun fetchSubtitles(
         mediaItem: MediaItem,
         episode: Episode?,
-        preferredLanguage: String?
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
       ) = emptyList<Subtitle>()
     }
     createdViewModel = viewModel

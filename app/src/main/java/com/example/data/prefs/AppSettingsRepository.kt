@@ -76,6 +76,14 @@ object AppSettingsRepository {
   private val KEY_PARENTAL_CONTROL_PIN = stringPreferencesKey("parental_control_pin")
   private val KEY_PARENTAL_CONTROL_LEVEL = stringPreferencesKey("parental_control_level")
 
+  /**
+   * Switch "Usa TMDB come fallback per i generi" (sezione Ricerca).
+   *
+   * Chiave stabile: rinominarla farebbe perdere la scelta dell'utente dopo un
+   * aggiornamento. Nome coerente con le altre chiavi (`<area>_<feature>_enabled`).
+   */
+  private val KEY_TMDB_GENRE_FALLBACK_ENABLED = booleanPreferencesKey("tmdb_genre_fallback_enabled")
+
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   private val _torBoxApiKey = MutableStateFlow<String?>(null)
@@ -128,10 +136,30 @@ object AppSettingsRepository {
   /** Soglia di età del controllo genitori (default "18"). */
   val parentalControlLevel: StateFlow<String> = _parentalControlLevel.asStateFlow()
 
+  private val _tmdbGenreFallbackEnabled = MutableStateFlow(true)
+  /**
+   * Switch "Usa TMDB come fallback per i generi" (default ON: la ricerca resta più
+   * completa finché l'utente non lo disattiva).
+   *
+   * Riguarda SOLO la scoperta per tipo+genere della sezione Ricerca: quando nessun
+   * catalogo configurato copre la combinazione richiesta, TMDB viene interrogato con
+   * gli endpoint `discover`. Non tocca le altre funzionalità TMDB (metadati, dettagli,
+   * provider), che continuano a funzionare anche con lo switch disattivato.
+   */
+  val tmdbGenreFallbackEnabled: StateFlow<Boolean> = _tmdbGenreFallbackEnabled.asStateFlow()
+
   private var dataStore: DataStore<Preferences>? = null
 
+  /**
+   * Meccanismo di cifratura per la chiave API OpenSubtitles prima della persistenza:
+   * Android Keystore in produzione, finto in test. La sostituzione avviene in [init],
+   * prima di qualsiasi lettura/scrittura.
+   */
+  @Volatile
+  private var openSubtitlesCipher: ApiKeyCipher = AndroidKeystoreApiKeyCipher()
+
   /** Completa alla prima lettura effettiva da disco (serve ad attendere il load iniziale). */
-  private val loaded = CompletableDeferred<Unit>()
+  private var loaded = CompletableDeferred<Unit>()
 
   // Flag "scrittura locale": i read-back di DataStore (che arrivano in ritardo,
   // dopo l'edit asincrono) NON devono mai sovrascrivere un valore già aggiornato
@@ -148,9 +176,11 @@ object AppSettingsRepository {
   @Volatile private var parentalEnabledLocalWrite = false
   @Volatile private var parentalPinLocalWrite = false
   @Volatile private var parentalLevelLocalWrite = false
+  @Volatile private var tmdbGenreFallbackLocalWrite = false
 
-  fun init(context: Context) {
+  fun init(context: Context, cipher: ApiKeyCipher = AndroidKeystoreApiKeyCipher()) {
     if (dataStore != null) return
+    openSubtitlesCipher = cipher
     val store = context.applicationContext.appSettingsDataStore
     dataStore = store
     scope.launch {
@@ -159,7 +189,17 @@ object AppSettingsRepository {
           _torBoxApiKey.value = prefs[KEY_TORBOX_API_KEY]?.takeIf { it.isNotBlank() }
         }
         if (!openSubtitlesApiKeyLocalWrite) {
-          _openSubtitlesApiKey.value = prefs[KEY_OPENSUBTITLES_API_KEY]?.takeIf { it.isNotBlank() }
+          val storedKey = prefs[KEY_OPENSUBTITLES_API_KEY]?.takeIf { it.isNotBlank() }
+          _openSubtitlesApiKey.value = when {
+            storedKey == null -> null
+            ApiKeyCipherFormat.isEncrypted(storedKey) ->
+              // Blob cifrato: se non decifrabile (chiave Keystore invalidata) la
+              // configurazione è irreperibile → trattata come "non configurata".
+              openSubtitlesCipher.decrypt(storedKey)?.takeIf { it.isNotBlank() }
+            // Valore storico in chiaro scritto da una build precedente: resta
+            // utilizzabile; verrà ricifrato al primo salvataggio dalla UI.
+            else -> storedKey
+          }
         }
         if (!simklClientIdLocalWrite) {
           _simklClientId.value = prefs[KEY_SIMKL_CLIENT_ID]?.takeIf { it.isNotBlank() }
@@ -195,6 +235,9 @@ object AppSettingsRepository {
         if (!parentalLevelLocalWrite) {
           _parentalControlLevel.value = prefs[KEY_PARENTAL_CONTROL_LEVEL] ?: "18"
         }
+        if (!tmdbGenreFallbackLocalWrite) {
+          _tmdbGenreFallbackEnabled.value = prefs[KEY_TMDB_GENRE_FALLBACK_ENABLED] ?: true
+        }
         loaded.complete(Unit)
       }
     }
@@ -208,6 +251,42 @@ object AppSettingsRepository {
   suspend fun awaitLoaded(timeoutMs: Long = 3_000L) {
     if (dataStore == null) return
     withTimeoutOrNull(timeoutMs) { loaded.await() }
+  }
+
+  /**
+   * Azzera lo stato IN MEMORIA (solo test): simula il riavvio del processo lasciando
+   * intatto il DataStore su disco, così un test può verificare che una preferenza
+   * venga riletta da disco. Non usarla in produzione.
+   */
+  internal fun resetForTesting() {
+    dataStore = null
+    _torBoxApiKey.value = null
+    _openSubtitlesApiKey.value = null
+    _simklClientId.value = null
+    _torBoxInstantDebridEnabled.value = true
+    _installedAddonsJson.value = "[]"
+    _userProviderBindingsJson.value = "[]"
+    _streamingEngineMode.value = StreamingEngineMode.HTTP_WEB
+    _autoplayEnabled.value = false
+    _appLanguage.value = "it"
+    _parentalControlEnabled.value = false
+    _parentalControlPin.value = ""
+    _parentalControlLevel.value = "18"
+    _tmdbGenreFallbackEnabled.value = true
+    apiKeyLocalWrite = false
+    openSubtitlesApiKeyLocalWrite = false
+    simklClientIdLocalWrite = false
+    debridLocalWrite = false
+    addonsLocalWrite = false
+    userBindingsLocalWrite = false
+    streamingModeLocalWrite = false
+    autoplayLocalWrite = false
+    languageLocalWrite = false
+    parentalEnabledLocalWrite = false
+    parentalPinLocalWrite = false
+    parentalLevelLocalWrite = false
+    tmdbGenreFallbackLocalWrite = false
+    loaded = CompletableDeferred()
   }
 
   /** Snapshot corrente delle preferenze Debrid/TorBox. */
@@ -249,14 +328,24 @@ object AppSettingsRepository {
     }
   }
 
+  /**
+   * Salva (o rimuove, con null/blank) la chiave API OpenSubtitles.
+   *
+   * Lo [StateFlow] contiene il testo in chiaro (serve al client HTTP in memoria);
+   * sul disco la chiave viene scritta CIFRATA tramite [openSubtitlesCipher]: il file
+   * DataStore non contiene mai la chiave leggibile. La scrittura è asincrona.
+   */
   fun setOpenSubtitlesApiKey(value: String?) {
     val normalized = value?.trim()?.takeIf { it.isNotBlank() }
     openSubtitlesApiKeyLocalWrite = true
     _openSubtitlesApiKey.value = normalized
+    // Il cipher viene catturato alla chiamata: una eventuale re-init (test) con un
+    // altro cipher non altera una scrittura già in volo.
+    val cipher = openSubtitlesCipher
     scope.launch {
       dataStore?.edit { prefs ->
         if (normalized == null) prefs.remove(KEY_OPENSUBTITLES_API_KEY)
-        else prefs[KEY_OPENSUBTITLES_API_KEY] = normalized
+        else prefs[KEY_OPENSUBTITLES_API_KEY] = cipher.encrypt(normalized)
       }
     }
   }
@@ -307,6 +396,20 @@ object AppSettingsRepository {
     languageLocalWrite = true
     _appLanguage.value = language
     scope.launch { dataStore?.edit { it[KEY_APP_LANGUAGE] = language } }
+  }
+
+  /**
+   * Abilita o disabilita l'uso di TMDB come fallback per i generi della sezione
+   * Ricerca. La scelta è persistita: sopravvive alla chiusura e al riavvio dell'app.
+   *
+   * Disattivandola, le altre funzionalità TMDB (metadati, dettagli, provider) NON
+   * vengono toccate: cambia solo la scoperta per genere quando nessun catalogo
+   * configurato copre la combinazione tipo+genere richiesta.
+   */
+  fun setTmdbGenreFallbackEnabled(enabled: Boolean) {
+    tmdbGenreFallbackLocalWrite = true
+    _tmdbGenreFallbackEnabled.value = enabled
+    scope.launch { dataStore?.edit { it[KEY_TMDB_GENRE_FALLBACK_ENABLED] = enabled } }
   }
 
   /** Converte il codice lingua app ("it", "en", ecc.) nel formato ISO regionale per TMDB ("it-IT", "en-US", ecc.). */

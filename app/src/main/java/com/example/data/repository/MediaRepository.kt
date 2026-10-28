@@ -35,6 +35,7 @@ import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
 import com.example.data.model.WatchProgress
+import com.example.data.model.toEpisode
 import com.example.data.api.TmdbCompanyDetailDto
 import com.example.data.model.PersonDetails
 import com.example.data.model.ProductionCompany
@@ -733,6 +734,16 @@ object MediaRepository {
   }
 
   /**
+   * La scheda con lo stato utente più recente fra quelle dello stesso contenuto di [id]
+   * (identità forte: stesso `tmdb`/`imdb`). È la riga che «Continua a guardare» mostra e su
+   * cui va scritta una posizione remota: scrivere su una riga qualsiasi del gruppo lascerebbe
+   * la posizione nuova nascosta dietro quella più recente dell'altra scheda.
+   * `null` se l'id non esiste nel catalogo.
+   */
+  fun newestWatchingItem(id: String): MediaItem? =
+    MediaIdentity.newestStateById(_mediaList.value, id)
+
+  /**
    * Converte i record Room nella lista esposta alla UI completandoli con i dati non
    * persistiti (risorse drawable locali, episodi seed, logo TMDB) e con lo stato utente.
    * Se la tabella è ancora vuota (primissimo avvio) restituisce il catalogo seed.
@@ -1219,14 +1230,35 @@ object MediaRepository {
   }
 
   /**
+   * Durata **reale** misurata dal player per un episodio (`0` se mai misurata).
+   * Usata dalla sincronizzazione per convertire una percentuale in millisecondi con una
+   * durata vera e non con una stima.
+   */
+  suspend fun getMeasuredEpisodeDurationMs(mediaId: String, season: Int, episode: Int): Long =
+    withContext(Dispatchers.IO) {
+      runCatching {
+        database?.episodeProgressDao()?.getEpisodeProgress(mediaId, season, episode)?.durationMs ?: 0L
+      }.getOrDefault(0L)
+    }
+
+  /**
    * Aggiorna il progresso di un **film**.
    *
    * @param durationMs durata reale letta da ExoPlayer. Se `<= 0` (`C.TIME_UNSET`/0 prima
    *        di `STATE_READY` o durante uno switch) NON sovrascrive la durata valida gia'
    *        memorizzata: la card "Continua a guardare" continua a mostrare i minuti reali.
+   * @param lastWatchedAtMs istante dell'ultima visione. Il player lascia il valore
+   *        predefinito (adesso); la sincronizzazione SIMKL passa il `paused_at` della
+   *        sessione, così l'ordinamento della riga e il confronto "chi e' piu' recente"
+   *        restano fedeli alla fonte remota invece di adottare l'ora della sincronizzazione.
    */
-  fun updateProgress(id: String, progressMs: Long, durationMs: Long = 0L) {
-    val now = System.currentTimeMillis()
+  fun updateProgress(
+    id: String,
+    progressMs: Long,
+    durationMs: Long = 0L,
+    lastWatchedAtMs: Long = System.currentTimeMillis()
+  ) {
+    val now = lastWatchedAtMs
     // Durata risolta UNA volta: i millisecondi reali del player hanno priorita', altrimenti
     // si conserva quella gia' nota per il titolo (mai 0/negativa).
     val resolvedDurationMs = WatchProgress.resolveDuration(
@@ -1292,11 +1324,12 @@ object MediaRepository {
     seasonNumber: Int,
     episodeNumber: Int,
     progressMs: Long,
-    durationMs: Long
+    durationMs: Long,
+    lastWatchedAtMs: Long = System.currentTimeMillis()
   ) {
     val key = "${mediaId}_s${seasonNumber}e${episodeNumber}"
     episodeProgressMap[key] = progressMs
-    val now = System.currentTimeMillis()
+    val now = lastWatchedAtMs
 
     // Durata dell'EPISODIO corrente (mai quella della serie o di un episodio precedente):
     // millisecondi reali del player se disponibili, altrimenti la durata nota dell'episodio.
@@ -1404,12 +1437,278 @@ object MediaRepository {
     }
   }
 
-  suspend fun removeFromContinueWatching(mediaId: String) {
-    val rawId = mediaId.removePrefix("tmdb_m_").removePrefix("tmdb_tv_").removePrefix("movie_").removePrefix("tv_")
-    val idsToRemove = setOf(mediaId, rawId, "tmdb_m_$rawId", "tmdb_tv_$rawId", "movie_$rawId", "tv_$rawId")
-    val rawIds = idsToRemove.mapNotNull { it.toIntOrNull() }
+  /**
+   * Costruisce la scheda locale di un titolo TMDB **senza inserirla** nel catalogo.
+   *
+   * Usata dalla sincronizzazione SIMKL per i titoli presenti nell'account ma non ancora
+   * nel catalogo locale. Per le serie carica anche gli episodi della stagione richiesta:
+   * serve l'episodio esatto da riprendere.
+   *
+   * `totalDurationMs` resta **0** per un film il cui runtime TMDB è ignoto: la
+   * sincronizzazione non converte una percentuale in millisecondi senza una durata reale.
+   */
+  suspend fun buildExternalItem(
+    tmdbId: Int,
+    isTv: Boolean,
+    seasonNumber: Int? = null
+  ): MediaItem? = withContext(Dispatchers.IO) {
+    if (tmdbId <= 0) return@withContext null
+    val apiKey = getEffectiveApiKey()
+    if (apiKey.isBlank()) return@withContext null
+    try {
+      if (!isTv) {
+        val dto = TmdbApiClient.service.getMovieDetails(tmdbId, apiKey)
+        val item = detailsToMediaItem(movieDtoToExtended(dto, null))
+        val runtimeMinutes = dto.runtime?.takeIf { it > 0 }
+        item.copy(
+          totalDurationMs = runtimeMinutes?.let { it * 60_000L } ?: 0L,
+          imdbId = fetchExternalImdbId(tmdbId, isTv = false) ?: item.imdbId
+        )
+      } else {
+        val dto = TmdbApiClient.service.getTvDetails(tmdbId, apiKey)
+        val base = detailsToMediaItem(tvDtoToExtended(dto, null))
+        val season = seasonNumber?.takeIf { it > 0 }
+        val episodes = if (season != null) {
+          runCatching { getSeasonDetails(tmdbId, season) }
+            .getOrNull()
+            ?.episodes
+            ?.map { it.toEpisode(base.id, 0L, base.effectiveImdbId) }
+            ?: emptyList()
+        } else {
+          emptyList()
+        }
+        base.copy(
+          episodes = episodes,
+          lastWatchedSeason = season ?: base.lastWatchedSeason,
+          videoUrl = "",
+          imdbId = fetchExternalImdbId(tmdbId, isTv = true) ?: base.imdbId
+        )
+      }
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "buildExternalItem fallito per tmdbId=$tmdbId (isTv=$isTv): ${e.message}")
+      null
+    }
+  }
 
-    Log.d("REMOVE_CW", "Removing mediaId=$mediaId rawId=$rawId idsToRemove=$idsToRemove rawIds=$rawIds")
+  /**
+   * ID IMDb (`tt…`) di un titolo TMDB, best-effort: serve agli addon Stremio, che
+   * risolvono per ID nativo. Un errore non deve mai impedire l'importazione del titolo.
+   */
+  private suspend fun fetchExternalImdbId(tmdbId: Int, isTv: Boolean): String? = runCatching {
+    val apiKey = getEffectiveApiKey()
+    val dto = if (isTv) {
+      TmdbApiClient.service.getTvExternalIds(tmdbId, apiKey)
+    } else {
+      TmdbApiClient.service.getMovieExternalIds(tmdbId, apiKey)
+    }
+    dto.imdbId?.takeIf { it.isNotBlank() }
+  }.getOrNull()
+
+  /**
+   * Inserisce (o aggiorna) nel catalogo locale una scheda esterna preservando lo stato
+   * utente già presente (progresso, preferito, episodio corrente). Restituisce la scheda
+   * effettiva con l'**id stabile** del catalogo: è su quello che va scritto il progresso.
+   *
+   * Gli episodi NON sono piu' "tutto o niente": la lista locale viene completata con gli
+   * episodi che solo la scheda importata conosce (stessa identita' stagione/episodio).
+   * Senza questo completamento la sincronizzazione perdeva l'episodio da riprendere —
+   * e con esso la sua durata reale — ogni volta che il titolo era gia' in catalogo con
+   * un elenco episodi generato.
+   *
+   * @param markFavorite `true` per la watchlist SIMKL ("Plan to Watch"): porta il titolo nei
+   *        Preferiti senza mai toglierlo da lì. Non elimina mai righe esistenti.
+   */
+  suspend fun upsertExternalItem(item: MediaItem, markFavorite: Boolean = false): MediaItem? =
+    withContext(Dispatchers.IO) {
+    val existing = _mediaList.value.firstOrNull { candidate ->
+      candidate.id == item.id ||
+        (item.tmdbId != null && item.tmdbId > 0 && candidate.tmdbId == item.tmdbId && candidate.type == item.type) ||
+        (!item.imdbId.isNullOrBlank() && candidate.imdbId == item.imdbId && candidate.type == item.type)
+    }
+    val merged = if (existing != null) {
+      item.copy(
+        id = existing.id,
+        tmdbId = existing.tmdbId ?: item.tmdbId,
+        currentProgressMs = existing.currentProgressMs,
+        totalDurationMs = if (existing.totalDurationMs > 0L) existing.totalDurationMs else item.totalDurationMs,
+        lastWatchedSeason = existing.lastWatchedSeason ?: item.lastWatchedSeason,
+        lastWatchedEpisode = existing.lastWatchedEpisode ?: item.lastWatchedEpisode,
+        lastWatchedAt = existing.lastWatchedAt,
+        isFavorite = existing.isFavorite || markFavorite,
+        episodes = mergeEpisodes(existing.episodes, item.episodes),
+        posterUrl = existing.posterUrl ?: item.posterUrl,
+        backdropUrl = existing.backdropUrl ?: item.backdropUrl,
+        provider = existing.provider
+      )
+    } else {
+      if (markFavorite) item.copy(isFavorite = true) else item
+    }
+    // Una serie importata senza episodi resta senza elenco finché non arriva l'emissione
+    // dell'osservatore Room (che li genera). Generarli subito tiene memoria e archivio
+    // coerenti anche quando l'importazione avviene mentre la schermata è già composta.
+    val effective = if (merged.type == MediaType.SERIE_TV && merged.episodes.isEmpty()) {
+      merged.copy(
+        episodes = generateEpisodesForTv(
+          tvId = merged.tmdbId ?: (merged.id.hashCode() and 0x7FFFFFFF),
+          tvTitle = merged.title,
+          backdropUrl = merged.backdropUrl,
+          posterUrl = merged.posterUrl,
+          seasons = merged.seasonsCount ?: 2
+        )
+      )
+    } else {
+      merged
+    }
+    try {
+      database?.cachedMediaDao()?.insertOrUpdate(effective.toEntity())
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "upsertExternalItem: scrittura Room fallita per ${effective.id}: ${e.message}")
+      return@withContext null
+    }
+    // Aggiornamento immediato in memoria (l'osservatore Room riemette comunque lo stesso stato).
+    _mediaList.update { list ->
+      if (list.any { it.id == effective.id }) list.map { if (it.id == effective.id) effective else it }
+      else list + effective
+    }
+    effective
+  }
+
+  /**
+   * Unione degli elenchi episodi per identita' (stagione + numero).
+   *
+   * L'episodio gia' noto **vince** sul nuovo (lo stato di visione resta quello locale) ma i
+   * suoi dati mancanti vengono completati con quelli appena importati: una durata reale al
+   * posto di una stimata, un titolo al posto di un segnaposto. Gli episodi assenti in locale
+   * vengono aggiunti in coda, senza duplicare quelli con la stessa identita'.
+   */
+  internal fun mergeEpisodes(existing: List<Episode>, incoming: List<Episode>): List<Episode> {
+    if (incoming.isEmpty()) return existing
+    if (existing.isEmpty()) return incoming
+    val incomingByKey = incoming.associateBy { it.seasonNumber to it.episodeNumber }
+    val merged = existing.map { current ->
+      val fresh = incomingByKey[current.seasonNumber to current.episodeNumber] ?: return@map current
+      current.copy(
+        title = current.title.takeIf { it.isNotBlank() } ?: fresh.title,
+        synopsis = current.synopsis.takeIf { it.isNotBlank() } ?: fresh.synopsis,
+        durationMinutes = if (current.durationMinutes > 0) current.durationMinutes else fresh.durationMinutes,
+        totalDurationMs = if (current.totalDurationMs > 0L) current.totalDurationMs else fresh.totalDurationMs,
+        thumbnailUrl = current.thumbnailUrl ?: fresh.thumbnailUrl,
+        videoUrl = current.videoUrl.takeIf { it.isNotBlank() } ?: fresh.videoUrl
+      )
+    }
+    val knownKeys = existing.map { it.seasonNumber to it.episodeNumber }.toSet()
+    return merged + incoming.filter { (it.seasonNumber to it.episodeNumber) !in knownKeys }
+  }
+
+  /**
+   * Porta un titolo nei Preferiti (`true`) senza mai toglierlo. Usato dalla sincronizzazione
+   * SIMKL per la watchlist: la UI legge i Preferiti da [mediaList], lo stesso archivio di
+   * questa scrittura (nessun secondo elenco parallelo). Un `id` sconosciuto non fa nulla.
+   *
+   * @return true se lo stato e' cambiato.
+   */
+  suspend fun markFavorite(id: String): Boolean = withContext(Dispatchers.IO) {
+    val current = _mediaList.value.firstOrNull { it.id == id } ?: return@withContext false
+    if (current.isFavorite) return@withContext false
+    _mediaList.update { list -> list.map { if (it.id == id) it.copy(isFavorite = true) else it } }
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id == id) {
+      _detailUiState.value = detail.copy(media = detail.media.copy(isFavorite = true))
+    }
+    try {
+      val dao = database?.cachedMediaDao()
+      if (dao != null) {
+        val persisted = dao.getMediaById(id)
+        if (persisted != null) {
+          dao.updateFavorite(id, true)
+        } else {
+          // Riga non ancora persistita: la crea con lo stato aggiornato (nessun preferito perso).
+          dao.insertOrUpdate(_mediaList.value.first { it.id == id }.toEntity())
+        }
+      }
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "markFavorite: scrittura Room fallita per $id: ${e.message}")
+      return@withContext false
+    }
+    true
+  }
+
+  /**
+   * Durata **reale** dell'episodio secondo TMDB (runtime dell'episodio nella sua stagione),
+   * `null` quando non e' nota o la credenziale TMDB non e' configurata.
+   *
+   * Serve alla sincronizzazione per convertire la percentuale SIMKL in millisecondi con un
+   * dato REALE: la percentuale da sola non basta e una durata inventata sarebbe peggio di
+   * nessun dato. Il valore risolto viene poi persistito dalla stessa
+   * [updateEpisodeProgress] come durata dell'episodio, quindi non viene richiesto due volte.
+   *
+   * L'aggancio e' sostituibile nei test (`episodeRuntimeProvider`) per non dipendere dalla rete.
+   */
+  suspend fun resolveEpisodeDurationMs(tmdbId: Int, season: Int, episode: Int): Long? {
+    if (tmdbId <= 0 || season <= 0 || episode <= 0) return null
+    val minutes = episodeRuntimeProvider(tmdbId, season, episode) ?: return null
+    return minutes.takeIf { it > 0 }?.let { it * 60_000L }
+  }
+
+  /**
+   * Minuti dell'episodio secondo TMDB. Di default interroga TMDB (cache Room inclusa);
+   * i test lo sostituiscono con una funzione deterministica.
+   */
+  internal var episodeRuntimeProvider: suspend (tmdbId: Int, season: Int, episode: Int) -> Int? =
+    { tmdbId, season, episode ->
+      runCatching {
+        getSeasonDetails(tmdbId, season)
+          .episodes
+          .firstOrNull { it.episodeNumber == episode }
+          ?.durationMinutes
+      }.getOrNull()
+    }
+
+  /**
+   * Durata **reale** di un film secondo TMDB, `null` quando non e' nota o la credenziale
+   * TMDB non e' configurata.
+   *
+   * Stessa regola degli episodi: serve alla sincronizzazione per convertire la percentuale
+   * SIMKL in millisecondi con un dato reale. Una scheda di catalogo puo' avere la durata
+   * ignota (0): senza questa risoluzione la percentuale non sarebbe convertibile e il punto
+   * di ripresa resterebbe in attesa finche' il player non misura il film. Mai una stima.
+   */
+  suspend fun resolveMovieDurationMs(tmdbId: Int): Long? {
+    if (tmdbId <= 0) return null
+    val minutes = movieRuntimeProvider(tmdbId) ?: return null
+    return minutes.takeIf { it > 0 }?.let { it * 60_000L }
+  }
+
+  /** Minuti del film secondo TMDB; i test lo sostituiscono con una funzione deterministica. */
+  internal var movieRuntimeProvider: suspend (Int) -> Int? = { tmdbId ->
+    val apiKey = getEffectiveApiKey()
+    // Senza credenziale la richiesta sarebbe un 401 garantito: si dichiara "durata ignota".
+    if (apiKey.isBlank()) {
+      null
+    } else {
+      runCatching { TmdbApiClient.service.getMovieDetails(tmdbId, apiKey).runtime }.getOrNull()
+    }
+  }
+
+  /**
+   * Rimuove un titolo da «Continua a guardare».
+   *
+   * L'unità della rimozione è il TITOLO, non la riga: quando il catalogo contiene due schede
+   * dello stesso contenuto (una con id TMDB, una con id IMDb/Stremio) vanno rimosse entrambe,
+   * altrimenti la gemella — che conserva il proprio progresso — fa riapparire la card al giro
+   * successivo. Le varianti di id storiche (`tmdb_m_…`, `movie_…`, id nudo) restano coperte
+   * perché la card può arrivare qui con qualsiasi di esse.
+   */
+  suspend fun removeFromContinueWatching(mediaId: String) {
+    val family = MediaIdentity.groupById(_mediaList.value, mediaId)
+    fun variantsOf(id: String): Set<String> {
+      val raw = id.removePrefix("tmdb_m_").removePrefix("tmdb_tv_").removePrefix("movie_").removePrefix("tv_")
+      return setOf(id, raw, "tmdb_m_$raw", "tmdb_tv_$raw", "movie_$raw", "tv_$raw")
+    }
+    val idsToRemove = (family.map { it.id } + mediaId).flatMapTo(LinkedHashSet()) { variantsOf(it) }
+    val rawIds = (idsToRemove.mapNotNull { it.toIntOrNull() } + family.mapNotNull { it.tmdbId }).distinct()
+
+    Log.d("REMOVE_CW", "Removing mediaId=$mediaId family=${family.map { it.id }} idsToRemove=$idsToRemove rawIds=$rawIds")
     Log.d("REMOVE_CW", "Before filter: _mediaList size=${_mediaList.value.size}")
 
     _mediaList.update { list ->
@@ -2286,8 +2585,14 @@ object MediaRepository {
     )
   }
 
+  /**
+   * Titoli da riprendere, **una sola card per titolo**: se il catalogo contiene due schede
+   * dello stesso contenuto (una con id TMDB, una con id IMDb/Stremio — capita quando lo
+   * stesso film arriva dalle due sorgenti), vince quella con il progresso più recente.
+   * Senza questa deduplicazione la riga mostrava lo stesso titolo due volte.
+   */
   fun getContinueWatching(): List<MediaItem> {
-    return _mediaList.value.filter { it.currentProgressMs > 0 }
+    return MediaIdentity.dedupeByProgress(_mediaList.value)
   }
 
   fun getPopular(): List<MediaItem> {
@@ -2302,8 +2607,9 @@ object MediaRepository {
     return _mediaList.value.filter { it.type == MediaType.SERIE_TV }
   }
 
+  /** Preferiti, una scheda per titolo (stessa deduplicazione di [getContinueWatching]). */
   fun getFavorites(): List<MediaItem> {
-    return _mediaList.value.filter { it.isFavorite }
+    return MediaIdentity.dedupeFavorites(_mediaList.value)
   }
 
   // Categorie richieste: Top 10 Film, Top 10 Serie, Trending Film, Trending Serie, For You Film, For You Serie, Popolari
@@ -2380,6 +2686,123 @@ object MediaRepository {
   }
 
   const val DEFAULT_FALLBACK_TMDB_API_KEY = ""
+
+  /** Id del genere "Horror" TMDB: definito SOLO per i film (`/3/genre/movie/list`). */
+  private const val TMDB_GENRE_ID_HORROR = 27
+
+  /**
+   * Keyword TMDB canonica "horror" (id 315058) usata per la scoperta delle SERIE:
+   * TMDB TV non ha un genere Horror, quindi `discover/tv?with_genres=27` restituisce
+   * sempre zero risultati; `discover/tv?with_keywords=315058` restituisce le serie
+   * horror del catalogo TV (verificato su `/3/discover/tv`).
+   */
+  private const val TMDB_KEYWORD_TV_HORROR = 315058
+
+  /**
+   * Scoperta TMDB per UNA combinazione tipo+genere (fallback "Usa TMDB come fallback
+   * per i generi" della sezione Ricerca).
+   *
+   * Riusa i client e i converter già in uso ([loadCategoryPage]): stesso endpoint
+   * `discover/movie` o `discover/tv`, stesso ordinamento (`popularity.desc`), stessa
+   * lingua e stessa persistenza in Room. La differenza è che qui viene interrogato
+   * SOLO il tipo richiesto: il film non viene mai mostrato in una ricerca di serie TV.
+   *
+   * Un errore TMDB (rete/HTTP/credenziale) restituisce `null`: il chiamante deve
+   * dichiararlo come errore, mai presentarlo come "nessun risultato".
+   *
+    * @param mediaType tipo di contenuto (film o serie TV).
+    * @param genreId id di genere TMDB del tipo (es. 27 = Horror). Per le SERIE TV un
+    *        id che TMDB TV non definisce (es. Horror=27) viene servito dal keyword
+    *        canonico `horror` (315058), perché `with_genres=27` sull'endpoint TV
+    *        restituirebbe sempre zero risultati.
+    * @param page pagina Discover (1-based).
+   * @return titoli convertiti in [MediaItem], oppure `null` se la chiamata è fallita.
+   */
+  suspend fun discoverByGenre(
+    mediaType: MediaType,
+    genreId: Int,
+    page: Int = 1
+  ): List<MediaItem>? = withContext(Dispatchers.IO) {
+    val cleanKey = getEffectiveApiKey()
+    if (cleanKey.isBlank()) return@withContext null
+    val currentList = _mediaList.value
+    val results = try {
+      when (mediaType) {
+        MediaType.SERIE_TV -> {
+          // TMDB non definisce "Horror" tra i generi TV (`/3/genre/tv/list` non ha
+          // l'id 27): `discover/tv?with_genres=27` risponde 200 con zero risultati,
+          // quindi il fallback sembrerebbe riuscito senza mai produrre titoli.
+          // La scoperta delle serie horror usa il keyword TMDB canonico `horror`
+          // (id 315058), che restituisce le serie horror reali del catalogo TV.
+          val tvResponse = if (genreId == TMDB_GENRE_ID_HORROR) {
+            TmdbApiClient.service.discoverTvByKeyword(
+              apiKey = cleanKey,
+              keywordId = TMDB_KEYWORD_TV_HORROR.toString(),
+              sortBy = "popularity.desc",
+              language = "it-IT",
+              page = page
+            )
+          } else {
+            TmdbApiClient.service.discoverTvByGenre(
+              apiKey = cleanKey,
+              genreId = genreId.toString(),
+              sortBy = "popularity.desc",
+              language = "it-IT",
+              page = page
+            )
+          }
+          tvResponse.results
+            .filterNot { isBlockedTv(it.id, it.name) }
+            .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
+            .map { tvToMediaItem(it, currentList) }
+        }
+        else -> {
+          val movieResponse = TmdbApiClient.service.discoverMoviesByGenre(
+            apiKey = cleanKey,
+            genreId = genreId.toString(),
+            sortBy = "popularity.desc",
+            language = "it-IT",
+            page = page
+          )
+          movieResponse.results
+            .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
+            .map { movieToMediaItem(it, currentList) }
+        }
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(
+        "MediaRepository",
+        "Fallback TMDB per genere fallito (tipo=$mediaType, genere=$genreId, pag=$page): ${e.message}"
+      )
+      return@withContext null
+    }
+
+    if (results.isNotEmpty()) {
+      // Stessa cache-first di [loadCategoryPage]: la tabella Room resta la sorgente
+      // del catalogo, il fallback aggiunge solo i titoli che non vi erano ancora.
+      database?.let { db ->
+        try {
+          db.cachedMediaDao().insertOrUpdate(results.map { it.toEntity() })
+        } catch (e: Exception) {
+          Log.w("MediaRepository", "Errore salvataggio Room discoverByGenre: ${e.message}")
+        }
+      }
+      val updated = _mediaList.value.toMutableList()
+      var added = false
+      results.forEach { item ->
+        if (updated.none { it.id == item.id }) {
+          updated.add(item)
+          added = true
+        }
+      }
+      if (added) {
+        _mediaList.value = updated
+      }
+    }
+    results
+  }
 
   /**
    * Credenziale TMDB effettiva: **API key v3** (stringa esadecimale) oppure

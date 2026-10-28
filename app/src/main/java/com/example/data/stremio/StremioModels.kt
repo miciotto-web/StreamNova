@@ -175,6 +175,23 @@ data class StremioCatalogDefinition(
   fun genreOptions(): List<String> =
     extraList().firstOrNull { it.name.equals(EXTRA_GENRE, ignoreCase = true) }?.options.orEmpty()
 
+  /**
+   * true se il catalogo può ricevere [value] come filtro `genre`.
+   *
+   * Il protocollo Stremio NON obbliga a elencare le opzioni statiche: un catalogo che
+   * dichiara l'extra `genre` senza `options` accetta il valore (l'addon decide come
+   * filtrarlo). Se invece le opzioni sono dichiarate, solo una di esse è valida: mai
+   * inviare un genere che il catalogo non conosce (spesso sono generi di un ALTRO tipo,
+   * es. `Horror` film su un catalogo serie).
+   */
+  fun acceptsGenreValue(value: String?): Boolean {
+    if (!supportsGenre()) return false
+    val options = genreOptions()
+    if (options.isEmpty()) return !value.isNullOrBlank()
+    val cleanValue = value?.trim().orEmpty()
+    return cleanValue.isNotEmpty() && options.any { it.equals(cleanValue, ignoreCase = true) }
+  }
+
   /** true se supporta la paginazione / offset tramite "skip". */
   fun supportsSkip(): Boolean = supportsExtra(EXTRA_SKIP)
 

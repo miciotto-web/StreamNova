@@ -151,7 +151,18 @@
      <string name="search_screen_subtitle">Search by text or pick a category to explore all content</string>
      <string name="search_back_to_categories">Back to Categories</string>
      <string name="search_category_desc_addon">Addon catalog: %1$s</string>
-     <string name="search_category_desc_fallback">TMDB Discover fallback — addon catalog not loaded</string>
+     <string name="search_category_desc_fallback">%1$s results from TMDB</string>
+     <string name="search_category_loading">Loading addon catalog…</string>
+     <string name="search_category_type_movies">movies</string>
+     <string name="search_category_type_series">TV series</string>
+     <string name="search_category_tmdb_fallback_reason">No configured catalog covers this genre: titles shown from TMDB</string>
+     <string name="search_category_tmdb_after_empty_movies">No results from the addon catalog. Here are the movies found on TMDB.</string>
+     <string name="search_category_tmdb_after_empty_series">No results from the addon catalog. Here are the TV series found on TMDB.</string>
+    <string name="search_category_tmdb_no_results">No results for %1$s on TMDB either</string>
+     <string name="search_category_tmdb_disabled">No configured catalog covers the “%1$s” genre: turn on “Use TMDB as fallback for genres” in Settings to find titles on TMDB.</string>
+     <string name="search_category_tmdb_unavailable">TMDB search unavailable: check your connection and try again</string>
+     <string name="search_category_empty_type">%1$s catalog queried but returned no results</string>
+     <string name="search_category_failed_type">%1$s catalog unreachable: try again later</string>
      <string name="search_titles_available">%d Available Titles</string>
      <string name="search_no_content_for_category">No content found for %s</string>
      <string name="search_results_found">Results for \"%1$s\" (%2$d)</string>
@@ -193,6 +204,9 @@
      <string name="settings_update_installed_version">Installed version: %1$s</string>
      <string name="settings_update_upto_date">The app is up to date</string>
      <string name="settings_update_available">New version available: %1$s</string>
+     <string name="settings_update_prompt_title">Update available</string>
+     <string name="settings_update_prompt_update">Update now</string>
+     <string name="settings_update_prompt_later">Later</string>
      <string name="settings_update_error">Couldn\'t check for updates</string>
      <string name="settings_update_error_short">Error</string>
      <string name="settings_update_download">Download Update</string>
@@ -236,6 +250,9 @@
      <string name="settings_status_connected">Connected</string>
      <string name="settings_status_verify_account">Verify Account</string>
      <string name="settings_use_torbox_instant">Use TorBox Instant Debrid</string>
+     <string name="settings_search_section">Search and catalogs</string>
+     <string name="settings_tmdb_genre_fallback">Use TMDB as fallback for genres</string>
+     <string name="settings_tmdb_genre_fallback_desc">Find movies and TV series through TMDB when none of the configured catalogs supports the selected genre.</string>
      <string name="settings_value_on">ON</string>
      <string name="settings_value_off">OFF</string>
      <string name="settings_http_desc">In this mode StreamNova plays streams from free web scrapers directly (VixSrc, AnimeSaturn, CB01 and more): no Debrid account or external API key is required.</string>
@@ -262,7 +279,19 @@
      <string name="settings_subtitle_position">Subtitle Position</string>
 
      <string name="settings_forced_subtitles">Forced subtitles when available</string>
-     <string name="settings_sec_advanced">Advanced</string>
+     <!-- OpenSubtitles: API key configuration in Settings > Subtitles -->
+    <string name="settings_opensubtitles_api_key">OpenSubtitles API key</string>
+    <string name="settings_opensubtitles_key_hint">Paste your API key here (opensubtitles.com)</string>
+    <string name="settings_opensubtitles_verify_connection">Test connection</string>
+    <string name="settings_opensubtitles_connected">Connection successful</string>
+    <string name="settings_opensubtitles_verify_error">Verification failed: the key was rejected by OpenSubtitles or is not valid. Check your key on opensubtitles.com and try again.</string>
+    <string name="settings_opensubtitles_network_error">Network error: unable to verify the key. Check your connection and try again.</string>
+    <string name="settings_opensubtitles_http_error">OpenSubtitles is currently unavailable (service error). Please try again later.</string>
+    <string name="settings_opensubtitles_missing_desc">Without an API key, official OpenSubtitles search is unavailable: subtitles from the Stremio addon keep working normally.</string>
+    <string name="settings_opensubtitles_key_not_valid_desc">The saved key seems invalid: official OpenSubtitles search may fail. Test the connection or enter a new key.</string>
+    <string name="action_show_key">Show</string>
+    <string name="action_hide_key">Hide</string>
+    <string name="settings_sec_advanced">Advanced</string>
      <string name="settings_bug_reports">Bug Reports</string>
      <string name="settings_privacy_data">Privacy &amp; Data</string>
      <string name="settings_clear_cache">Clear Cache</string>
@@ -403,3 +432,4 @@
      <string name="parental_playback_restricted_subtitle">Enter PIN to continue</string>
      <string name="parental_playback_pin_incorrect">Incorrect PIN</string>
 </resources>
+

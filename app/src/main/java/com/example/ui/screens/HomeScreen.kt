@@ -51,6 +51,7 @@ import com.example.HOME_CONTENT_ANCHOR_ROW
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.HomeCatalogs
+import com.example.data.repository.MediaIdentity
 import com.example.data.repository.StremioCatalogRepository
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -1063,6 +1064,18 @@ private suspend fun awaitCondition(timeoutMs: Long, condition: () -> Boolean): B
  */
 private const val VERTICAL_SYNC_TIMEOUT_MS = 500L
 
+/** Riga «Continua a guardare»: l'unica riga della Home da cui si rimuovono contenuti. */
+private const val CONTINUE_WATCHING_ROW_KEY = "section_continue_watching"
+
+/**
+ * Attesa della conferma di focus dentro la riga «Continua a guardare» prima di applicare una
+ * rimozione (vedi [HomeMainBrowsingContent]).
+ */
+private const val CW_REMOVAL_FOCUS_TIMEOUT_MS = 500L
+
+/** Ripetizioni della richiesta di rientro nella riga prima di lasciare la rimozione in attesa. */
+private const val CW_REMOVAL_FOCUS_RETRIES = 3
+
 @Composable
 private fun HomeMediaLazyRow(
   rowState: LazyListState,
@@ -1094,13 +1107,20 @@ fun HomeMainBrowsingContent(
   viewModel: StreamNovaViewModel? = null,
   modifier: Modifier = Modifier
 ) {
-  // Liste dinamiche dai dati reali TMDB sincronizzati nel repository
+  // Liste dinamiche dai dati reali TMDB sincronizzati nel repository.
+  // Una card per TITOLO: quando il catalogo contiene due schede dello stesso contenuto (una
+  // con id TMDB, una con id IMDb/Stremio) vince quella con il progresso più recente, così la
+  // riga non mostra due volte lo stesso film (vedi `MediaIdentity`).
   val continueWatching = remember(allMedia) {
-    allMedia
-      .filter { it.currentProgressMs > 0 }
+    MediaIdentity.dedupeByProgress(allMedia)
       .sortedByDescending { it.lastWatchedAt ?: 0L }
   }
   var contextMenuMedia by remember { mutableStateOf<MediaItem?>(null) }
+
+  // Rimozioni da «Continua a guardare» in attesa della conferma di focus dentro la riga:
+  // l'applicazione è in DUE TEMPI (vedi il commento nell'handler del menu contestuale), così
+  // la card non viene mai smontata mentre un `focusRestorer` trattiene un PIN sul suo item.
+  val pendingCwRemovals = remember { mutableStateListOf<String>() }
 
   val hasCustomCatalogMovies = homeCatalogs?.hasCustomCatalogMovies == true
   val hasCustomCatalogSeries = homeCatalogs?.hasCustomCatalogSeries == true
@@ -1599,6 +1619,76 @@ fun HomeMainBrowsingContent(
     // Una richiesta vivente detiene ancora il ciclo di vita (self-healing in corso).
     if (coordinator.pendingFocusRequest != null) return@LaunchedEffect
     recoverNavigabilityAfterFailedRestore()
+  }
+
+  // SECONDO TEMPO della rimozione da «Continua a guardare» (il primo è nell'handler del menu
+  // contestuale). La card viene smontata SOLO con il focus confermato DENTRO la riga: è
+  // l'ingresso nel gruppo della riga che fa eseguire l'`enter` dei `focusRestorer` (riga e
+  // LazyColumn), e quella è l'unica release dei PIN che avviene con l'item ancora VIVO.
+  // Smontare la card con il pin trattenuto azzera il contatore del pin senza avvisare i
+  // restorer, che restano con un handle MORTO: la loro `release()` successiva — rientro nella
+  // riga, uscita, o `onDetach` quando la Home viene smontata (uscita dalla schermata, cambio
+  // sezione dalla sidebar) — esplode con `IllegalStateException: "Release should only be
+  // called once"`. Mai una rimozione con il focus fuori dalla riga.
+  LaunchedEffect(pendingCwRemovals.isEmpty()) {
+    if (pendingCwRemovals.isEmpty()) return@LaunchedEffect
+
+    // Fase 1 — rientro richiesto finché NESSUNA cella ha il focus (il menu contestuale è appena
+    // stato smontato e il suo item era quello focalizzato), con un tetto di tentativi.
+    var retriesLeft = CW_REMOVAL_FOCUS_RETRIES
+    while (pendingCwRemovals.isNotEmpty() &&
+      coordinator.focusedCell == null &&
+      retriesLeft > 0
+    ) {
+      retriesLeft--
+      val count = coordinator.rowItemCounts[CONTINUE_WATCHING_ROW_KEY] ?: 0
+      if (count > 0) {
+        val column = continueWatching.indexOfFirst { it.id == pendingCwRemovals.first() }
+          .takeIf { it >= 0 }
+          ?: coordinator.lastFocusedColumn(CONTINUE_WATCHING_ROW_KEY)
+          ?: coordinator.firstAttachedColumn(CONTINUE_WATCHING_ROW_KEY)
+          ?: 0
+        coordinator.requestPendingFocus(
+          CONTINUE_WATCHING_ROW_KEY,
+          column.coerceIn(0, count - 1)
+        )
+      }
+      awaitCondition(CW_REMOVAL_FOCUS_TIMEOUT_MS) {
+        coordinator.focusedCell != null || pendingCwRemovals.isEmpty()
+      }
+    }
+
+    // Fase 2 — attesa REATTIVA del rientro nella riga: nessun ciclo periodico, nessun furto del
+    // focus. Se l'utente naviga altrove la rimozione resta in attesa (finché la card non viene
+    // smontata lo stato è coerente) e si applica appena il focus rientra nella riga.
+    if (pendingCwRemovals.isNotEmpty() &&
+      coordinator.focusedCell?.first != CONTINUE_WATCHING_ROW_KEY
+    ) {
+      snapshotFlow { coordinator.focusedCell }
+        .first { it?.first == CONTINUE_WATCHING_ROW_KEY || pendingCwRemovals.isEmpty() }
+    }
+    if (pendingCwRemovals.isEmpty()) return@LaunchedEffect
+
+    val removedIds = pendingCwRemovals.toList()
+    pendingCwRemovals.clear()
+    removedIds.forEach { onRemoveFromContinueWatching(it) }
+
+    // Ancoraggio canonico della Home: la card rimossa era quella con il focus, quindi il
+    // cursore va riportato su una cella valida PRIMA che il primo tasto venga risolto dalla
+    // ricerca geometrica (che a sinistra trova la sidebar). L'Hero è la cella canonica; se non
+    // è disegnato (catalogo senza hero) o se è la riga stessa a sparire con l'ultima card, si
+    // ripiega sulla prima riga che sopravvive alla rimozione. Il conteggio viene dal
+    // coordinatore (dati vivi della composizione corrente), non da una lista catturata.
+    val cwRowWillBeEmpty =
+      (coordinator.rowItemCounts[CONTINUE_WATCHING_ROW_KEY] ?: 0) - removedIds.size <= 0
+    val anchorRow = HOME_CONTENT_ANCHOR_ROW.takeIf { it in coordinator.activeRowKeys }
+      ?: coordinator.activeRowKeys.firstOrNull {
+        !(cwRowWillBeEmpty && it == CONTINUE_WATCHING_ROW_KEY)
+      }
+      ?: coordinator.activeRowKeys.firstOrNull()
+    if (anchorRow != null) {
+      coordinator.requestPendingFocus(anchorRow, 0)
+    }
   }
 
   TvFocusBringIntoView(topOffsetDp = 0.dp) {
@@ -2125,21 +2215,36 @@ fun HomeMainBrowsingContent(
       onPlay = { handleRowPlayClick("section_continue_watching", media) },
       onDetails = { handleRowMediaClick("section_continue_watching", continueIndex, media) },
       onRemoveFromContinueWatching = {
-        // L'eliminazione smonta la card (e, se era l'ultima, l'intera riga) mentre il focus è
-        // sulla voce del menu: Compose azzera il focus del nodo smontato senza riattivare alcun
-        // restorer, quindi la prima pressione del telecomando verrebbe risolta dalla ricerca
-        // geometrica — e la superficie focalizzabile più a sinistra è la SIDEBAR (icone a bordo
-        // schermo contro i 60 dp di padding del contenuto Home). Destinazione esplicita, quindi:
-        // richiesta pendente sull'anchor canonico della Home (l'Hero), completata dall'unico
-        // percorso autorevole [HomeVerticalFocusSync] invece che dalla ricerca geometrica.
-        onRemoveFromContinueWatching(media.id)
-        // Ancoraggio: l'Hero è la cella canonica della Home; se non è disegnato (catalogo
-        // senza hero) si ripiega sulla prima riga attiva, mai su "nessuna destinazione".
-        // Colonna 0: la superficie Hero è una cella unica (come in ogni altro ripristino).
-        val anchorRow = HOME_CONTENT_ANCHOR_ROW.takeIf { it in coordinator.activeRowKeys }
-          ?: coordinator.activeRowKeys.firstOrNull()
-        if (anchorRow != null) {
-          coordinator.requestPendingFocus(anchorRow, 0)
+        // PRIMO TEMPO della rimozione: si accoda e si riporta il focus DENTRO la riga. La card
+        // NON si smonta qui.
+        //
+        // Causa dimostrata del crash: il menu contestuale è un overlay nella STESSA finestra,
+        // quindi prendendo il focus lo fa USCIRE dal gruppo della riga e i `focusRestorer`
+        // (riga e LazyColumn) nel loro `exit` eseguono `pinFocusedChild()`, trattenendo un PIN
+        // sull'item della card (`LazyLayoutPinnableItem.pin`). Smontando la card con quel pin
+        // ancora trattenuto, il suo smontaggio azzera il contatore del pin
+        // (`LazyLayoutPinnableItem.onDisposed`) lasciando ai restorer un handle MORTO: alla
+        // successiva `release()` — rientro nella riga, uscita, o `onDetach` quando la Home
+        // viene smontata (uscita dalla schermata o selezione di una voce della sidebar) —
+        // Compose lancia `IllegalStateException: "Release should only be called once"`.
+        //
+        // Qui si emette SOLO la richiesta di rientro nella riga (percorso autorevole:
+        // richiesta pendente completata da [HomeVerticalFocusSync]); l'applicazione avviene nel
+        // secondo tempo, appena il focus è confermato dentro la riga (vedi l'effetto dedicato),
+        // che è la condizione in cui i restorer hanno già rilasciato i loro pin.
+        if (media.id !in pendingCwRemovals) {
+          pendingCwRemovals.add(media.id)
+        }
+        // Il menu ha appena preso il focus: la conferma di focus delle celle è STANTIA (sarebbe
+        // quella della card di prima del long-press). Invalidarla è ciò che obbliga il secondo
+        // tempo ad attendere una conferma NUOVA dentro la riga, cioè il vero rientro.
+        coordinator.onCellFocusInvalidated()
+        val cwCount = coordinator.rowItemCounts[CONTINUE_WATCHING_ROW_KEY] ?: 0
+        if (cwCount > 0) {
+          coordinator.requestPendingFocus(
+            CONTINUE_WATCHING_ROW_KEY,
+            continueIndex.coerceIn(0, cwCount - 1)
+          )
         }
       },
       onDismiss = { contextMenuMedia = null }

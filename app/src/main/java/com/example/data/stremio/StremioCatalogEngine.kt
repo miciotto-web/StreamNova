@@ -146,6 +146,13 @@ object StremioCatalogEngine {
   /**
    * Filtra la mappa di parametri extra forniti, mantenendo SOLO quelli supportati
    * dal catalogo specifico, evitando hardcoding o parametri non dichiarati.
+   *
+   * Il filtro per genere viene validato in base al TIPO del catalogo, come i generi
+   * dei film non sono quelli delle serie):
+   *  - con opzioni statiche dichiarate, il valore DEVE essere una di quelle opzioni;
+   *  - senza opzioni statiche il valore è accettato (il protocollo non obbliga a
+   *    elencare le opzioni e molti addon filtrano comunque).
+   * Un `genre` destinato al tipo sbagliato non viene mai inviato.
    */
   fun sanitizeExtra(
     catalog: StremioCatalogDefinition,
@@ -153,7 +160,8 @@ object StremioCatalogEngine {
   ): Map<String, String> {
     if (requestedExtra.isEmpty()) return emptyMap()
     return requestedExtra.filter { (key, value) ->
-      key.isNotBlank() && value.isNotBlank() && catalog.supportsExtra(key)
+      key.isNotBlank() && value.isNotBlank() && catalog.supportsExtra(key) &&
+        (!key.equals(EXTRA_GENRE, ignoreCase = true) || catalog.acceptsGenreValue(value))
     }
   }
 
@@ -185,7 +193,12 @@ object StremioCatalogEngine {
     }
 
     val sanitizedExtra = sanitizeExtra(catalog, extra)
-    val cacheKey = "${target.baseUrl}|${target.type}|${target.catalogId}|${sanitizedExtra.toSortedMap()}"
+    // La chiave include TUTTI gli extra RICHIESTI, non solo quelli tenuti dal
+    // sanitize: un catalogo dell'addon A che accetta `genre` e un omonimo dell'addon B
+    // che lo ignora non devono mai condividere la stessa risposta in cache (né il
+    // single-flight). Lo stesso vale quando il chiamante non conosce l'id dell'addon.
+    val cacheKey = "${target.addonId}|${target.baseUrl}|${target.type}|${target.catalogId}|" +
+      "${sanitizedExtra.toSortedMap()}|req=${extra.toSortedMap()}"
 
     if (!skipCache) {
       cache[cacheKey]?.let { cached ->

@@ -52,6 +52,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -83,12 +85,21 @@ fun TextInputDialog(
   hint: String,
   initialText: String = "",
   confirmLabel: String? = null,
+  /**
+   * Modalità "segreto" (chiavi API): il testo è mascherato come password; il pulsante
+   * mostrare/nascondi consente di controllare l'inserimento senza rinunciare alla
+   * mascheratura. La mascheratura è ATTIVA di default: la chiave non appare mai in
+   * chiaro finché l'utente non la richiede esplicitamente durante la digitazione.
+   */
+  secure: Boolean = false,
   onConfirm: (String) -> Unit,
   onDismiss: () -> Unit
 ) {
   val resolvedConfirmLabel = confirmLabel ?: stringResource(R.string.action_save)
   var text by remember { mutableStateOf(initialText) }
+  var showSecureText by remember { mutableStateOf(false) }
   val fieldFocusRequester = remember { FocusRequester() }
+  val toggleFocusRequester = remember { FocusRequester() }
   val confirmFocusRequester = remember { FocusRequester() }
   val cancelFocusRequester = remember { FocusRequester() }
   val focusManager = LocalFocusManager.current
@@ -203,6 +214,11 @@ fun TextInputDialog(
           fontSize = 15.sp,
           fontWeight = FontWeight.Medium
         ),
+        visualTransformation = if (secure && !showSecureText) {
+          PasswordVisualTransformation('•')
+        } else {
+          VisualTransformation.None
+        },
         cursorBrush = SolidColor(NovaCyanBright),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = {
@@ -266,6 +282,39 @@ fun TextInputDialog(
           }
         }
       )
+
+      if (secure) {
+        Spacer(modifier = Modifier.height(10.dp))
+        // Toggle mostra/nascondi: D-pad navigabile, mantiene il focus dentro il popup.
+        TvFocusableBox(
+          modifier = Modifier
+            .focusRequester(toggleFocusRequester)
+            .focusProperties {
+              left = FocusRequester.Cancel
+              right = FocusRequester.Cancel
+            },
+          shape = RoundedCornerShape(50),
+          focusedScale = 1.05f,
+          onClick = { showSecureText = !showSecureText }
+        ) { isFocused ->
+          Text(
+            text = if (showSecureText) {
+              stringResource(R.string.action_hide_key)
+            } else {
+              stringResource(R.string.action_show_key)
+            },
+            color = if (isFocused) NovaSurface else NovaTextSecondary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+              .background(
+                if (isFocused) NovaTextSecondary else NovaSurfaceVariant,
+                RoundedCornerShape(50)
+              )
+              .padding(horizontal = 16.dp, vertical = 8.dp)
+          )
+        }
+      }
 
       Spacer(modifier = Modifier.height(20.dp))
 

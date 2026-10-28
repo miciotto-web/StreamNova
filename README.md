@@ -44,6 +44,26 @@ Ottieni una chiave gratuita su [themoviedb.org/settings/api](https://www.themovi
 
 > Nota: una chiave incorporata nell'APK è estraibile da chiunque. Configurarla fuori dal repository serve a non pubblicarla, non a tenerla segreta nell'app.
 
+## 🔐 Configurazione del Client ID SIMKL
+
+Il collegamento dell'account SIMKL (QR + codice temporaneo in Impostazioni) richiede un **Client ID applicativo**: è una configurazione dello sviluppatore, **non** un dato che l'utente debba procurarsi o inserire, quindi deve essere presente quando si compila l'APK. Impostala localmente in uno di questi modi (nessun file è tracciato da Git), in quest'ordine di priorità:
+
+1. **`local.properties`** — aggiungi `SIMKL_CLIENT_ID=<il-tuo-id>` accanto a `sdk.dir`.
+
+2. **Variabile d'ambiente** — prima di avviare Gradle:
+
+```powershell
+$env:SIMKL_CLIENT_ID = "<il-tuo-id>"
+```
+
+3. **File `.env`** — copia `.env.example` in `.env` e compila `SIMKL_CLIENT_ID`.
+
+L'ID si ottiene una volta sola da [simkl.com/settings/developer](https://simkl.com/settings/developer). Un client di tipo **TV, devices and command line** restituisce un QR la cui pagina si apre con il codice già inserito; gli altri client ripiegano sul PIN mostrato a schermo. In entrambi i casi il pannello mostra QR, codice temporaneo e conto alla rovescia.
+
+**Senza Client ID l'app compila, si installa e si avvia normalmente**, ma «Collega account SIMKL» può solo rispondere che il collegamento non è disponibile in quella build: nessun codice viene richiesto e nessun QR viene disegnato. La build lo dice in fase di configurazione con un avviso che indica dove impostare il valore; diagnosi completa, messaggi distinti per ogni guasto e analisi della regressione in [`simkl_client_id_report.md`](simkl_client_id_report.md).
+
+> Il Client ID identifica l'app, non l'utente: resta comunque fuori dal repository, così non finisce nel codice pubblicato insieme a chi lo legge.
+
 ## 📥 Download & Installazione
 
 1. Scarica il file **`StreamNova.apk`** dall'ultima release ufficiale.

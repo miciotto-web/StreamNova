@@ -98,7 +98,9 @@ class PlayNextEpisodeResolutionTest {
       override suspend fun fetchSubtitles(
         mediaItem: MediaItem,
         episode: Episode?,
-        preferredLanguage: String?
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
       ) = emptyList<com.example.domain.model.Subtitle>()
     }
 
@@ -188,7 +190,9 @@ class PlayNextEpisodeResolutionTest {
       override suspend fun fetchSubtitles(
         mediaItem: MediaItem,
         episode: Episode?,
-        preferredLanguage: String?
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
       ) = emptyList<com.example.domain.model.Subtitle>()
     }
 
@@ -277,7 +281,9 @@ class PlayNextEpisodeResolutionTest {
       override suspend fun fetchSubtitles(
         mediaItem: MediaItem,
         episode: Episode?,
-        preferredLanguage: String?
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
       ) = emptyList<com.example.domain.model.Subtitle>()
     }
     return viewModel
@@ -712,7 +718,9 @@ class PlayNextEpisodeResolutionTest {
       override suspend fun fetchSubtitles(
         mediaItem: MediaItem,
         episode: Episode?,
-        preferredLanguage: String?
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
       ) = emptyList<com.example.domain.model.Subtitle>()
     }
     viewModel.openPlayer(seriesFixture(), currentEpisodeFixture(), ep1Source)

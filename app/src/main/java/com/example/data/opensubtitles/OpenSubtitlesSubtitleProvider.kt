@@ -25,6 +25,15 @@ open class OpenSubtitlesSubtitleProvider(
 
   /**
    * Cerca e restituisce i sottotitoli disponibili da OpenSubtitles v3 per un media specifico.
+   *
+   * @param year anno del contenuto: inviato SOLO quando mancano IMDb e TMDB (ricerca
+   *   testuale), dove serve a disambiguare i titoli omonimi senza rischiare di filtrare
+   *   fuori risultati corretti della ricerca per identificativo.
+   * @param resolveLinksOnDemand quando true (comportamento storico usato all'avvio della
+   *   riproduzione) risolve subito il link di download per i primi risultati privi di URL
+   *   diretto, consumando quota download. Quando false (sezione "Sottotitoli Online") i
+   *   risultati vengono restituiti tutti con [Subtitle.fileId] valorizzato e il link viene
+   *   risolto solo alla selezione dell'utente.
    */
   open suspend fun fetchSubtitles(
     imdbId: String? = null,
@@ -33,7 +42,9 @@ open class OpenSubtitlesSubtitleProvider(
     isTv: Boolean = false,
     seasonNumber: Int? = null,
     episodeNumber: Int? = null,
-    languages: List<String> = DEFAULT_LANGUAGES
+    languages: List<String> = DEFAULT_LANGUAGES,
+    year: Int? = null,
+    resolveLinksOnDemand: Boolean = true
   ): List<Subtitle> = withContext(ioDispatcher) {
     try {
       withTimeoutOrNull(timeoutMs) {
@@ -41,7 +52,9 @@ open class OpenSubtitlesSubtitleProvider(
         val validTmdbId = tmdbId?.takeIf { it > 0 }
         val searchType = if (isTv) TYPE_EPISODE else TYPE_MOVIE
         val languagesParam = languages.filter { it.isNotBlank() }.joinToString(",").ifBlank { null }
-        val queryParam = if (numericImdbId == null && validTmdbId == null) title?.takeIf { it.isNotBlank() } else null
+        val hasTrustedIdentifier = numericImdbId != null || validTmdbId != null
+        val queryParam = if (!hasTrustedIdentifier) title?.takeIf { it.isNotBlank() } else null
+        val yearParam = if (!hasTrustedIdentifier) year?.takeIf { it > 0 } else null
 
         val response = try {
           api.searchSubtitles(
@@ -51,6 +64,7 @@ open class OpenSubtitlesSubtitleProvider(
             seasonNumber = if (isTv) seasonNumber else null,
             episodeNumber = if (isTv) episodeNumber else null,
             languages = languagesParam,
+            year = yearParam,
             query = queryParam
           )
         } catch (e: Exception) {
@@ -71,27 +85,46 @@ open class OpenSubtitlesSubtitleProvider(
         }
 
         val resultList = mutableListOf<Subtitle>()
+        var onDemandResolutions = 0
         for (item in items) {
           // Se l'elemento ha già un URL valido (diretto o dal file), mappalo subito
           val directSubtitle = OpenSubtitlesSubtitleAdapter.toSubtitle(item)
-          if (directSubtitle != null) {
+          if (directSubtitle != null && directSubtitle.url.isNotBlank()) {
             resultList.add(directSubtitle)
             continue
           }
 
-          // Se non ha URL diretto ma ha un file_id, tenta il recupero del link di download
-          val fileId = item.attributes?.files?.firstOrNull()?.fileId
-          if (fileId != null && resultList.size < MAX_ON_DEMAND_DOWNLOAD_RESOLUTIONS) {
+          val fileId = item.attributes?.files?.firstOrNull()?.fileId?.takeIf { it > 0 }
+          if (fileId == null) continue
+
+          // Rientra comunque nell'elenco (privo di URL di download diretto): verrà
+          // risolto con l'endpoint POST /download solo se l'utente lo seleziona.
+          val pendingSubtitle = directSubtitle?.copy(url = "", fileId = fileId)
+            ?: OpenSubtitlesSubtitleAdapter.toSubtitle(
+              item = item,
+              downloadUrlOverride = null
+            )?.copy(url = "", fileId = fileId)
+            ?: Subtitle(
+              id = "os-file-$fileId",
+              url = "",
+              lang = OpenSubtitlesSubtitleAdapter.normalizeLanguage(item.attributes?.language),
+              addonName = OpenSubtitlesSubtitleAdapter.PROVIDER_NAME,
+              label = item.attributes?.release,
+              fileId = fileId
+            )
+          resultList.add(pendingSubtitle)
+
+          // Risoluzione immediata (quota download): solo se richiesta e per un numero
+          // limitato di risultati, come nel comportamento storico all'avvio playback.
+          if (resolveLinksOnDemand && onDemandResolutions < MAX_ON_DEMAND_DOWNLOAD_RESOLUTIONS) {
             try {
               val downloadResp = api.requestDownloadLink(OpenSubtitlesDownloadRequest(fileId))
               if (downloadResp.isSuccessful) {
-                val link = downloadResp.body()?.link
-                val subtitleWithResolvedUrl = OpenSubtitlesSubtitleAdapter.toSubtitle(
-                  item = item,
-                  downloadUrlOverride = link
-                )
-                if (subtitleWithResolvedUrl != null) {
-                  resultList.add(subtitleWithResolvedUrl)
+                val link = downloadResp.body()?.link?.trim().orEmpty()
+                if (link.startsWith("http")) {
+                  val resolved = pendingSubtitle.copy(url = link)
+                  resultList[resultList.lastIndex] = resolved
+                  onDemandResolutions++
                 }
               }
             } catch (e: Exception) {
@@ -117,7 +150,9 @@ open class OpenSubtitlesSubtitleProvider(
   open suspend fun fetchSubtitles(
     mediaItem: MediaItem,
     episode: Episode? = null,
-    preferredLanguage: String? = null
+    preferredLanguage: String? = null,
+    year: Int? = null,
+    resolveLinksOnDemand: Boolean = true
   ): List<Subtitle> {
     val isTv = mediaItem.type == MediaType.SERIE_TV
     val season = if (isTv) episode?.seasonNumber ?: mediaItem.lastWatchedSeason ?: 1 else null
@@ -128,6 +163,8 @@ open class OpenSubtitlesSubtitleProvider(
     } else {
       episode?.id?.takeIf { it.startsWith("tt", ignoreCase = true) }?.substringBefore(':')
     }
+      ?: mediaItem.imdbId?.takeIf { it.isNotBlank() }
+      ?: episode?.seriesImdbId?.takeIf { it.isNotBlank() }
 
     val langs = if (!preferredLanguage.isNullOrBlank()) {
       listOf(preferredLanguage, "it", "en").distinct()
@@ -142,7 +179,9 @@ open class OpenSubtitlesSubtitleProvider(
       isTv = isTv,
       seasonNumber = season,
       episodeNumber = ep,
-      languages = langs
+      languages = langs,
+      year = year ?: mediaItem.year,
+      resolveLinksOnDemand = resolveLinksOnDemand
     )
   }
 

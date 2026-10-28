@@ -8,6 +8,7 @@ import com.example.data.stremio.StremioSubtitle
 import com.example.data.stremio.StremioSubtitleBridge
 import com.example.domain.model.Subtitle
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -394,5 +395,45 @@ class PlayerSubtitleMediaItemBuilderTest {
       addonName = "OpenSubtitles v3"
     )
     assertEquals(MimeTypes.APPLICATION_SUBRIP, PlayerSubtitleMediaItemBuilder.toSpec(srtSub)?.mimeType)
+  }
+
+  @Test
+  fun fileLocaleSrtDiventaTracciaEsternaConMimeEUriCorretti() {
+    // Il sottotitolo OpenSubtitles scaricato passa al player come FILE LOCALE (file://),
+    // mai come URL temporaneo remoto: il builder deve produrre una SubtitleConfiguration
+    // pronta per l'attivazione con MIME SubRip.
+    val localSub = Subtitle(
+      id = "os-42",
+      url = "file:///data/user/0/com.example/cache/subtitles/os_42.srt",
+      lang = "it",
+      addonName = "OpenSubtitles v3",
+      label = "Movie.2024.italian.srt"
+    )
+
+    val config = PlayerSubtitleMediaItemBuilder.toConfiguration(localSub)
+
+    assertNotNull(config)
+    assertEquals(MimeTypes.APPLICATION_SUBRIP, config!!.mimeType)
+    assertEquals("it", config.language)
+    assertEquals("file", config.uri.scheme)
+    assertTrue(config.uri.toString().endsWith("os_42.srt"))
+    assertEquals("os-42", config.id)
+  }
+
+  @Test
+  fun sottotitoloConSoloFileIdNonGeneraConfigurazione() {
+    // Resultato "solo file_id" (url vuoto) NON è allegabile finché non scaricato:
+    // toSpec/toConfiguration devono restituire null, senza mai creare configurazioni
+    // con uri vuoti.
+    val pending = Subtitle(
+      id = "os-pending",
+      url = "",
+      lang = "en",
+      addonName = "OpenSubtitles v3",
+      fileId = 101L
+    )
+
+    assertNull(PlayerSubtitleMediaItemBuilder.toSpec(pending))
+    assertNull(PlayerSubtitleMediaItemBuilder.toConfiguration(pending))
   }
 }

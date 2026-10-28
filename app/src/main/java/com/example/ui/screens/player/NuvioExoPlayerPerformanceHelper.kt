@@ -82,15 +82,26 @@ object NuvioExoPlayerPerformanceHelper {
     /**
      * Builds a [DefaultLoadControl] tuned for Nuvio performance when enabled,
      * or a standard ExoPlayer [DefaultLoadControl] when disabled.
+     *
+     * [bufferForPlaybackMsOverride] è il "Buffer iniziale" scelto dall'utente
+     * (Avvio Rapido 1.5 s / Standard 2.5 s / Stabile 3.5 s): è il tempo di media
+     * che ExoPlayer pretende in buffer prima di iniziare e, dopo uno stallo, prima
+     * di riprendere. Sotto la soglia di ripartenza non si scende mai.
      */
     fun buildLoadControl(
         context: Context? = null,
         chunkOverheadMb: Int = 0,
         targetBufferSizeMbOverride: Int? = null,
-        backBufferMsOverride: Int? = null
+        backBufferMsOverride: Int? = null,
+        bufferForPlaybackMsOverride: Int? = null
     ): DefaultLoadControl {
         val effectiveTargetMb = targetBufferSizeMbOverride ?: targetBufferSizeMb
         val effectiveBackMs = backBufferMsOverride ?: backBufferMs
+        val bufferForPlaybackMs = bufferForPlaybackMsOverride ?: BUFFER_FOR_PLAYBACK_MS
+        // Invariante di DefaultLoadControl: la soglia di ripartenza dopo un rebuffer non
+        // può essere inferiore a quella di avvio.
+        val bufferForPlaybackAfterRebufferMs =
+            maxOf(BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS, bufferForPlaybackMs)
 
         return if (enabled) {
             val effectiveTargetBufferMb = (effectiveTargetMb - chunkOverheadMb)
@@ -117,7 +128,7 @@ object NuvioExoPlayerPerformanceHelper {
                 "ExoPerformance",
                 "buildLoadControl: targetBufferSizeMb=$effectiveTargetMb, chunkOverheadMb=$chunkOverheadMb, targetBytes=$targetBufferBytes, " +
                     "bufferDurationsMs=$DEFAULT_NUVIO_MIN_BUFFER_MS/$DEFAULT_NUVIO_MAX_BUFFER_MS/" +
-                    "$BUFFER_FOR_PLAYBACK_MS/$BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS, backBufferMs=$backBufferToUse"
+                    "$bufferForPlaybackMs/$bufferForPlaybackAfterRebufferMs, backBufferMs=$backBufferToUse"
             )
             DefaultLoadControl.Builder()
                 .setAllocator(allocator)
@@ -125,8 +136,8 @@ object NuvioExoPlayerPerformanceHelper {
                 .setBufferDurationsMs(
                     DEFAULT_NUVIO_MIN_BUFFER_MS,
                     DEFAULT_NUVIO_MAX_BUFFER_MS,
-                    BUFFER_FOR_PLAYBACK_MS,
-                    BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
+                    bufferForPlaybackMs,
+                    bufferForPlaybackAfterRebufferMs
                 )
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .setBackBuffer(backBufferToUse, true)
@@ -138,8 +149,8 @@ object NuvioExoPlayerPerformanceHelper {
                 .setBufferDurationsMs(
                     DEFAULT_NUVIO_MIN_BUFFER_MS,
                     DEFAULT_NUVIO_MAX_BUFFER_MS,
-                    BUFFER_FOR_PLAYBACK_MS,
-                    BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
+                    bufferForPlaybackMs,
+                    bufferForPlaybackAfterRebufferMs
                 )
                 .setBackBuffer(effectiveBackMs.coerceAtLeast(0), true)
                 .build()

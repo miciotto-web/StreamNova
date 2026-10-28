@@ -482,6 +482,22 @@ interface TmdbApiService {
     @Query("page") page: Int = 1
   ): TmdbPaginatedResponse<TmdbTvDto>
 
+  /**
+   * Scoperta serie TV tramite KEYWORD (`discover/tv?with_keywords=...`).
+   *
+   * TMDB NON definisce il genere Horror tra i generi TV (cfr. `/3/genre/tv/list`):
+   * `discover/tv?with_genres=27` risponde 200 con zero risultati. Le serie horror
+   * si scoprono con il keyword canonico `horror` (id 315058).
+   */
+  @GET("discover/tv")
+  suspend fun discoverTvByKeyword(
+    @Query("api_key") apiKey: String,
+    @Query("with_keywords") keywordId: String,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
   @GET("movie/{movie_id}/images")
   suspend fun getMovieImages(
     @Path("movie_id") movieId: Int,
@@ -598,6 +614,28 @@ interface TmdbApiService {
 object TmdbApiClient {
   private const val BASE_URL = "https://api.themoviedb.org/3/"
   const val IMAGE_BASE_URL = "https://image.tmdb.org/t/p/"
+
+  /**
+   * Base URL dei servizi TMDB in uso.
+   *
+   * In produzione è sempre [BASE_URL]. I test la sostituiscono temporaneamente
+   * ([overrideServiceBaseUrl]) per servire risposte deterministiche da un server
+   * locale: nessun test dipende dalla rete o da credenziali reali.
+   */
+  @Volatile
+  private var serviceBaseUrl: String = BASE_URL
+
+  /**
+   * Sostituisce il servizio TMDB (solo test). Le richieste successive vengono
+   * ricostruite sulla nuova base URL; `null` ripristina [BASE_URL].
+   *
+   * L'API key non cambia: i test forniscono una credenziale fittizia con la stessa
+   * forma (≥ 20 caratteri), così il client resta lo stesso della produzione.
+   */
+  internal fun overrideServiceBaseUrl(baseUrl: String?) {
+    serviceBaseUrl = baseUrl?.takeIf { it.isNotBlank() } ?: BASE_URL
+    synchronized(serviceLock) { serviceCache = null }
+  }
 
   private const val TAG_AUTH = "TmdbAuth"
 
@@ -720,12 +758,20 @@ object TmdbApiClient {
     builder.build()
   }
 
-  val service: TmdbApiService by lazy {
-    Retrofit.Builder()
-      .baseUrl(BASE_URL)
-      .client(okHttpClient)
-      .addConverterFactory(MoshiConverterFactory.create(moshi))
-      .build()
-      .create(TmdbApiService::class.java)
-  }
+  private val serviceLock = Any()
+
+  /** Servizio Retrofit corrente: ricreato solo quando cambia la base URL (test). */
+  @Volatile
+  private var serviceCache: TmdbApiService? = null
+
+  val service: TmdbApiService
+    get() = serviceCache ?: synchronized(serviceLock) {
+      serviceCache ?: Retrofit.Builder()
+        .baseUrl(serviceBaseUrl)
+        .client(okHttpClient)
+        .addConverterFactory(MoshiConverterFactory.create(moshi))
+        .build()
+        .create(TmdbApiService::class.java)
+        .also { serviceCache = it }
+    }
 }

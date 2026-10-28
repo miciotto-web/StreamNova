@@ -133,10 +133,35 @@ internal fun evaluateUpdate(
 }
 
 /**
+ * Visibilità del popup dell'aggiornamento rilevato dal controllo AUTOMATICO di
+ * avvio: serve un aggiornamento da proporre, nessuna schermata che l'utente sta
+ * già usando e nessun altro modale aperto.
+ *
+ * La Home non viene mai interrotta: finché la splash è in corso, il player è in
+ * riproduzione o c'è un dialogo/pannello aperto, il popup resta in attesa
+ * (lo stato del controllo sopravvive) e compare appena la schermata è libera.
+ */
+internal fun shouldShowStartupUpdatePrompt(
+  hasPrompt: Boolean,
+  isSplashActive: Boolean,
+  isPlayerActive: Boolean,
+  isAnotherModalVisible: Boolean
+): Boolean = hasPrompt && !isSplashActive && !isPlayerActive && !isAnotherModalVisible
+
+/**
  * Repository dedicato al controllo degli aggiornamenti via GitHub Releases
- * (miciotto-web/StreamNova). Nessun controllo automatico all'avvio e nessun
- * download in background: check e download partono solo da azioni esplicite
- * dell'utente in Impostazioni. Logica di installazione in [ApkInstaller].
+ * (miciotto-web/StreamNova).
+ *
+ * Due percorsi distinti e indipendenti:
+ *  - il controllo MANUALE, avviato dall'utente in Impostazioni, che scrive su
+ *    [state] e mostra il proprio dialog con esito e download;
+ *  - il controllo AUTOMATICO di avvio, che parte una sola volta per sessione in
+ *    background, non tocca [state] e, se trova un aggiornamento, rende
+ *    disponibile [startupPrompt]: il popup che l'utente vede all'avvio.
+ *
+ * Il download resta in ogni caso subordinato a una scelta esplicita dell'utente
+ * (pulsante «Aggiorna» o «Scarica aggiornamento»): non esiste alcun download
+ * automatico. Logica di installazione in [ApkInstaller].
  */
 object UpdateRepository {
 
@@ -162,13 +187,34 @@ object UpdateRepository {
   val downloadState: StateFlow<UpdateDownloadState> = _downloadState.asStateFlow()
 
   /**
-   * APK compatibile con il dispositivo validato dal check più recente: unica
-   * sorgente ammessa per il download. La selezione avviene una sola volta, nel
-   * controllo, così il file scaricato è esattamente quello valutato lì e non
-   * una scelta tardiva potenzialmente diversa.
+   * Aggiornamento offerto dal controllo AUTOMATICO di avvio, da mostrare nel popup
+   * una sola volta per sessione. Null quando non c'è nulla da proporre, quando il
+   * controllo non è riuscito o quando l'utente ha già scelto «Più tardi».
+   *
+   * Canale separato da [state]: il controllo automatico non deve far comparire il
+   * dialog delle Impostazioni né accendere l'indicatore della riga «Controlla
+   * aggiornamenti», che restano l'esito di un'azione manuale.
+   */
+  private val _startupPrompt = MutableStateFlow<UpdateCheckState.UpdateAvailable?>(null)
+  val startupPrompt: StateFlow<UpdateCheckState.UpdateAvailable?> = _startupPrompt.asStateFlow()
+
+  /**
+   * APK compatibile con il dispositivo validato dal check più recente che ha
+   * prodotto un'offerta: unica sorgente ammessa per il download. La selezione
+   * avviene una sola volta, nel controllo (manuale o automatico), così il file
+   * scaricato è esattamente quello valutato lì e non una scelta tardiva
+   * potenzialmente diversa.
    */
   @Volatile
   private var validatedAsset: ReleaseAsset? = null
+
+  /** true quando il controllo automatico di questa sessione (processo) è già partito. */
+  @Volatile
+  private var startupCheckLaunched = false
+
+  /** true quando l'utente ha già risposto al popup di questa sessione. */
+  @Volatile
+  private var startupPromptAnswered = false
 
   private var downloadJob: Job? = null
 
@@ -179,27 +225,71 @@ object UpdateRepository {
       validatedAsset = null
       resetDownload()
       _state.value = UpdateCheckState.Checking
-      _state.value = runCatching {
-        val installed = AppVersion.parse(currentVersion)
-          ?: throw UpdateCheckException(
-            UpdateCheckErrorReason.INVALID_RELEASE,
-            "Versione installata non valida: $currentVersion"
-          )
-        val latest = client.fetchLatestRelease()
-        val selected = selectApkAsset(latest.assets, installationAbis())
-        evaluateUpdate(installed, latest, selected).also { result ->
-          // Solo una release offribile diventa la sorgente del download: una
-          // release incoerente, non più recente o senza un APK compatibile con
-          // il dispositivo non può alimentare l'installer.
-          if (result is UpdateCheckState.UpdateAvailable) validatedAsset = selected
-        }
-      }.getOrElse { error ->
-        Log.w(TAG, "Controllo aggiornamenti fallito: ${error.message}")
-        UpdateCheckState.Error(
-          (error as? UpdateCheckException)?.reason ?: UpdateCheckErrorReason.UNKNOWN
-        )
+      try {
+        val outcome = runCheck(currentVersion)
+        // Solo una release offribile diventa la sorgente del download: una
+        // release incoerente, non più recente o senza un APK compatibile con
+        // il dispositivo non può alimentare l'installer.
+        validatedAsset = outcome.selectedAsset
+        _state.value = outcome.state
+      } catch (e: CancellationException) {
+        throw e
+      } catch (error: Exception) {
+        _state.value = loggedCheckError(error)
       }
     }
+  }
+
+  /**
+   * Controllo automatico di avvio, in background su Dispatchers.IO: parte una sola
+   * volta per sessione e non blocca mai la Home.
+   *
+   * Se la release più recente è un aggiornamento offribile per questo dispositivo,
+   * l'APK scelto viene validato per il download e il popup diventa disponibile su
+   * [startupPrompt]. In ogni altro esito — app già aggiornata, release incoerente,
+   * nessun APK compatibile, assenza di rete, timeout, errore HTTP, JSON non valido —
+   * non viene mostrato nulla: un controllo che l'utente non ha chiesto non deve
+   * interromperlo con un errore, e senza scelta esplicita non parte alcun download.
+   *
+   * La guardia [startupCheckLaunched] rende innocui i richiami: la ricreazione
+   * dell'Activity allo stesso avvio non produce una seconda richiesta a GitHub.
+   */
+  fun checkForUpdatesOnStartup(currentVersion: String = BuildConfig.VERSION_NAME) {
+    if (startupCheckLaunched) return
+    startupCheckLaunched = true
+    scope.launch {
+      val outcome = try {
+        runCheck(currentVersion)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (error: Exception) {
+        Log.d(TAG, "Controllo aggiornamenti all'avvio non concluso: ${error.message}")
+        return@launch
+      }
+      Log.d(
+        TAG,
+        "Controllo automatico all'avvio concluso: ${outcome.state::class.simpleName} " +
+          "(installata $currentVersion)"
+      )
+      val available = outcome.state as? UpdateCheckState.UpdateAvailable ?: return@launch
+      if (startupPromptAnswered) return@launch
+      validatedAsset = outcome.selectedAsset
+      _startupPrompt.value = available
+      // Unica traccia lasciata dal controllo automatico: su una TV l'utente non ha
+      // altro modo di sapere che il controllo è avvenuto e non c'era nulla da proporre.
+      Log.i(TAG, "Aggiornamento disponibile: ${available.newVersion} (installata ${available.currentVersion})")
+    }
+  }
+
+  /**
+   * L'utente ha scelto «Più tardi» (o ha chiuso il popup): l'aggiornamento non
+   * viene più riproposto in questa sessione. L'APK validato resta invece
+   * scaricabile dal controllo manuale in Impostazioni, che è un'altra azione
+   * esplicita dell'utente.
+   */
+  fun dismissStartupPrompt() {
+    startupPromptAnswered = true
+    _startupPrompt.value = null
   }
 
   /**
@@ -262,4 +352,52 @@ object UpdateRepository {
     downloadJob = null
     _downloadState.value = UpdateDownloadState.Idle
   }
+
+  /**
+   * Riporta allo stato iniziale anche la sessione del controllo automatico: popup
+   * pendente e guardie «già avviato» / «già risposto». Riservato ai test, che
+   * devono poter osservare più avvii nella stessa JVM: in produzione la sessione
+   * dura quanto il processo e non è riazzerabile.
+   */
+  internal fun resetSessionForTests() {
+    startupCheckLaunched = false
+    startupPromptAnswered = false
+    _startupPrompt.value = null
+    reset()
+  }
+
+  /**
+   * Composizione unica del controllo: lettura dell'ultima release, scelta dell'APK
+   * per questo dispositivo e decisione. Condivisa dal percorso manuale e da quello
+   * automatico, così i due non possono divergere nella scelta dell'asset né nelle
+   * regole di offerta.
+   */
+  private fun runCheck(currentVersion: String): CheckOutcome {
+    val installed = AppVersion.parse(currentVersion)
+      ?: throw UpdateCheckException(
+        UpdateCheckErrorReason.INVALID_RELEASE,
+        "Versione installata non valida: $currentVersion"
+      )
+    val latest = client.fetchLatestRelease()
+    val selected = selectApkAsset(latest.assets, installationAbis())
+    val state = evaluateUpdate(installed, latest, selected)
+    return CheckOutcome(
+      state = state,
+      selectedAsset = if (state is UpdateCheckState.UpdateAvailable) selected else null
+    )
+  }
+
+  /** Logga l'errore del controllo e lo traduce nello stato mostrato all'utente. */
+  private fun loggedCheckError(error: Throwable): UpdateCheckState.Error {
+    Log.w(TAG, "Controllo aggiornamenti fallito: ${error.message}")
+    return UpdateCheckState.Error(
+      (error as? UpdateCheckException)?.reason ?: UpdateCheckErrorReason.UNKNOWN
+    )
+  }
+
+  /** Esito del controllo: stato da mostrare e asset scaricabile (solo se offribile). */
+  private data class CheckOutcome(
+    val state: UpdateCheckState,
+    val selectedAsset: ReleaseAsset?
+  )
 }

@@ -20,6 +20,7 @@ class OpenSubtitlesSubtitleProviderTest {
     var lastSeasonNumber: Int? = null
     var lastEpisodeNumber: Int? = null
     var lastLanguages: String? = null
+    var lastYear: Int? = null
     var lastQuery: String? = null
 
     var responseToReturn: Response<OpenSubtitlesSearchResponse>? = null
@@ -34,6 +35,7 @@ class OpenSubtitlesSubtitleProviderTest {
       seasonNumber: Int?,
       episodeNumber: Int?,
       languages: String?,
+      year: Int?,
       query: String?
     ): Response<OpenSubtitlesSearchResponse> {
       exceptionToThrow?.let { throw it }
@@ -43,6 +45,7 @@ class OpenSubtitlesSubtitleProviderTest {
       lastSeasonNumber = seasonNumber
       lastEpisodeNumber = episodeNumber
       lastLanguages = languages
+      lastYear = year
       lastQuery = query
       return responseToReturn ?: Response.success(OpenSubtitlesSearchResponse(data = emptyList()))
     }
@@ -301,5 +304,133 @@ class OpenSubtitlesSubtitleProviderTest {
     assertNull(OpenSubtitlesSubtitleProvider.parseImdbId(null))
     assertNull(OpenSubtitlesSubtitleProvider.parseImdbId(""))
     assertNull(OpenSubtitlesSubtitleProvider.parseImdbId("invalid"))
+  }
+
+  @Test
+  fun annoInviatoSoloNellaRicercaTestualeSenzaIdentificativi() = runBlocking {
+    val fakeApi = FakeOpenSubtitlesApi()
+    fakeApi.responseToReturn = Response.success(OpenSubtitlesSearchResponse(data = emptyList()))
+
+    val provider = OpenSubtitlesSubtitleProvider(api = fakeApi)
+
+    // Solo titolo + anno: l'anno serve a disambiguare i titoli omonimi.
+    provider.fetchSubtitles(title = "The Matrix", year = 1999)
+    assertEquals("The Matrix", fakeApi.lastQuery)
+    assertEquals(1999, fakeApi.lastYear)
+
+    // Con IMDb l'anno non viene inviato: non deve filtrare via risultati corretti.
+    provider.fetchSubtitles(imdbId = "tt0111161", year = 1999)
+    assertEquals(111161, fakeApi.lastImdbId)
+    assertNull(fakeApi.lastYear)
+    assertNull(fakeApi.lastQuery)
+
+    // Con TMDB l'anno non viene inviato.
+    provider.fetchSubtitles(tmdbId = 603, year = 1999)
+    assertEquals(603, fakeApi.lastTmdbId)
+    assertNull(fakeApi.lastYear)
+  }
+
+  @Test
+  fun resolveLinksOnDemandFalseRestituisceTuttiIFileIdSenzaConsumareQuota() = runBlocking {
+    val fakeApi = FakeOpenSubtitlesApi()
+    fakeApi.responseToReturn = Response.success(
+      OpenSubtitlesSearchResponse(
+        data = listOf(
+          OpenSubtitlesItemDto(
+            id = "direct-1",
+            attributes = OpenSubtitlesAttributesDto(
+              language = "ita",
+              downloadUrl = "https://sub.test/direct.srt"
+            )
+          ),
+          OpenSubtitlesItemDto(
+            id = "pending-1",
+            attributes = OpenSubtitlesAttributesDto(
+              language = "eng",
+              url = "https://www.opensubtitles.org/en/subtitles/111/a-en",
+              files = listOf(OpenSubtitlesFileDto(fileId = 101L, fileName = "pending-one.srt"))
+            )
+          ),
+          OpenSubtitlesItemDto(
+            id = "pending-2",
+            attributes = OpenSubtitlesAttributesDto(
+              language = "ita",
+              files = listOf(OpenSubtitlesFileDto(fileId = 202L, fileName = "pending-two.srt"))
+            )
+          )
+        )
+      )
+    )
+
+    val provider = OpenSubtitlesSubtitleProvider(api = fakeApi)
+    val results = provider.fetchSubtitles(
+      imdbId = "tt1234567",
+      resolveLinksOnDemand = false
+    )
+
+    // Nessuna chiamata a POST /download durante la ricerca: il link viene risolto
+    // solo alla selezione dell'utente.
+    assertEquals(0, fakeApi.downloadRequestCount)
+
+    assertEquals(3, results.size)
+
+    // Il risultato con URL diretto resta com'è.
+    assertEquals("os-direct-1", results[0].id)
+    assertEquals("https://sub.test/direct.srt", results[0].url)
+
+    // I risultati "solo file_id" NON vengono più scartati: restano in lista per
+    // essere risolti alla selezione.
+    val pending1 = results.first { it.id == "os-pending-1" }
+    assertEquals("", pending1.url)
+    assertEquals(101L, pending1.fileId)
+    assertEquals("OpenSubtitles v3", pending1.addonName)
+
+    val pending2 = results.first { it.id == "os-pending-2" }
+    assertEquals("", pending2.url)
+    assertEquals(202L, pending2.fileId)
+  }
+
+  @Test
+  fun cercaConTitoloFallbackQuandoMancaImdbEtmdb() = runBlocking {
+    val fakeApi = FakeOpenSubtitlesApi()
+    fakeApi.responseToReturn = Response.success(OpenSubtitlesSearchResponse(data = emptyList()))
+
+    // Media senza IMDb né TMDB: la ricerca parte comunque (per titolo), ora che il
+    // pannello "Sottotitoli Online" interroga l'API ufficiale e non solo l'addon.
+    val provider = OpenSubtitlesSubtitleProvider(api = fakeApi)
+    val results = provider.fetchSubtitles(title = "Corsari", isTv = false)
+
+    assertEquals("movie", fakeApi.lastType)
+    assertEquals("Corsari", fakeApi.lastQuery)
+    assertTrue(results.isEmpty())
+  }
+
+  @Test
+  fun risoluzioneSuRichiestaLimitataMaNessunRisultatoPerso() = runBlocking {
+    val fakeApi = FakeOpenSubtitlesApi()
+    fakeApi.responseToReturn = Response.success(
+      OpenSubtitlesSearchResponse(
+        data = (1L..4L).map { index ->
+          OpenSubtitlesItemDto(
+            id = "only-$index",
+            attributes = OpenSubtitlesAttributesDto(
+              language = "ita",
+              files = listOf(OpenSubtitlesFileDto(fileId = index, fileName = "f$index.srt"))
+            )
+          )
+        }
+      )
+    )
+
+    val provider = OpenSubtitlesSubtitleProvider(api = fakeApi)
+    val results = provider.fetchSubtitles(imdbId = "tt1234567", resolveLinksOnDemand = true)
+
+    // Quota download consumata solo finché serve (max 3), MA tutti i 4 risultati
+    // restano in lista: il quarto si risolve alla selezione.
+    assertEquals(3, fakeApi.downloadRequestCount)
+    assertEquals(4, results.size)
+    assertEquals(3, results.count { it.url.isNotBlank() })
+    val unresolved = results.first { it.url.isBlank() }
+    assertEquals(4L, unresolved.fileId)
   }
 }

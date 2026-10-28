@@ -65,6 +65,13 @@ internal object PlayerCodecErrorClassifier {
    * Riconosce: il renderer TextRenderer (o un renderer "text/subtitle"), il MIME type della
    * traccia in decodifica, le eccezioni di decodifica sottotitoli (es. SubRip) nella catena
    * delle cause e i messaggi tipici di un fallimento di decodifica sottotitoli.
+   *
+   * Riconosce inoltre il rifiuto del formato da parte del renderer di testo, che nella
+   * versione Media3 installata si manifesta come
+   * `IllegalStateException: Legacy decoding is disabled, can't handle application/x-subrip
+   * samples (expected application/x-media3-cues)`: l'errore e' di tipo "runtime check" e
+   * non ha renderer associato, quindi il MIME type citato nel messaggio e' l'unico
+   * indizio che dica a quale traccia si riferisce.
    */
   fun isSubtitleTrackError(error: PlaybackException): Boolean {
     if (rendererTrackType(error) == C.TRACK_TYPE_TEXT) return true
@@ -77,13 +84,32 @@ internal object PlayerCodecErrorClassifier {
       cause = cause.cause
     }
 
-    val message = buildString {
-      append(error.message.orEmpty())
-      append(' ')
-      append(error.cause?.message.orEmpty())
-    }.lowercase()
-    return SUBTITLE_ERROR_MARKERS.any { message.contains(it) }
+    // Messaggi di TUTTA la catena delle cause: il dettaglio utile (per esempio il MIME
+    // type rifiutato) e' spesso piu' in basso rispetto all'eccezioneMedia3.
+    val messages = generateSequence<Throwable>(error) { it.cause }
+      .mapNotNull { it.message }
+      .map { it.lowercase() }
+      .toList()
+    if (messages.any { message -> SUBTITLE_ERROR_MARKERS.any { message.contains(it) } }) return true
+    return rejectedSubtitleMimeType(messages) != null
   }
+
+  /**
+   * MIME type di sottotitoli rifiutato dal renderer, se il messaggio lo dichiara.
+   *
+   * Messaggio osservato: `Legacy decoding is disabled, can't handle application/x-subrip
+   * samples (expected application/x-media3-cues).`
+   */
+  private fun rejectedSubtitleMimeType(messages: List<String>): String? {
+    for (message in messages) {
+      val match = REJECTED_SAMPLE_MIME.find(message) ?: continue
+      val mime = match.groupValues[1]
+      if (isSubtitleMimeType(mime)) return mime
+    }
+    return null
+  }
+
+  private val REJECTED_SAMPLE_MIME = Regex("can't handle (\\S+) samples", RegexOption.IGNORE_CASE)
 
   /**
    * `true` se l'errore è effettivamente associato al renderer VIDEO.

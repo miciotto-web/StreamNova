@@ -437,7 +437,11 @@ object StremioCatalogRepository {
   data class CategoryCatalogRequest(
     val target: StremioCatalogTarget,
     val extra: Map<String, String> = emptyMap()
-  )
+  ) {
+    /** true se la richiesta invia realmente il filtro per genere all'addon. */
+    val isGenreFiltered: Boolean
+      get() = extra.keys.any { it.equals(EXTRA_GENRE, ignoreCase = true) }
+  }
 
   /**
    * Sezione caricata per una categoria, con gli extra usati nella chiamata:
@@ -468,8 +472,63 @@ object StremioCatalogRepository {
     val availableMovieCatalogs: Int = 0,
     /** Cataloghi SERIE dichiarati dai manifest degli addon attivi (a prescindere dalla categoria). */
     val availableSeriesCatalogs: Int = 0,
+    /**
+     * Film interrogati e falliti (errore/tipo non supportato): il tipo NON è "vuoto",
+     * semplicemente non ha prodotto dati validi ([matchedMovieTargets] - [failedMovieTargets]
+     * cataloghi riusciti).
+     */
+    val failedMovieTargets: Int = 0,
+    /** Serie interrogate e fallite (stesso criterio di [failedMovieTargets]). */
+    val failedSeriesTargets: Int = 0,
+    /** Numero di richieste che hanno realmente inviato il filtro `genre`. */
+    val genreFilteredRequests: Int = 0,
     val errors: List<String> = emptyList()
-  )
+  ) {
+    /**
+     * Stato del tipo [mediaType] nella categoria: fonte assente, incompatibile,
+     * interrogata-vuota, fallita oppure riuscita. Nessun valore è inferito da un
+     * ALTRO tipo, così un errore dei film non viene mai attribuito alle serie (e
+     * viceversa).
+     */
+    fun outcomeFor(mediaType: MediaType): CategoryTypeOutcome {
+      val matched =
+        if (mediaType == MediaType.SERIE_TV) matchedSeriesTargets else matchedMovieTargets
+      val failed =
+        if (mediaType == MediaType.SERIE_TV) failedSeriesTargets else failedMovieTargets
+      val available =
+        if (mediaType == MediaType.SERIE_TV) availableSeriesCatalogs else availableMovieCatalogs
+      return when {
+        matched == 0 ->
+          if (available > 0) CategoryTypeOutcome.NOT_SUPPORTED else CategoryTypeOutcome.NO_CATALOG
+        failed >= matched -> CategoryTypeOutcome.FAILED
+        entries.any { it.section.mediaType == mediaType && it.section.items.isNotEmpty() } ->
+          CategoryTypeOutcome.OK
+        else -> CategoryTypeOutcome.EMPTY
+      }
+    }
+  }
+
+  /**
+   * Stato di UN tipo di contenuto nel caricamento di una categoria della sezione
+   * Ricerca. Distingue le quattro situazioni che la UI non deve mai confondere:
+   * catalogo assente, incompatibile, interrogato-vuoto, fallito.
+   */
+  enum class CategoryTypeOutcome {
+    /** Nessun catalogo di questo tipo nel manifest → manca la fonte. */
+    NO_CATALOG,
+
+    /** Cataloghi dichiarati ma nessuno applica il filtro per genere → incompatibile. */
+    NOT_SUPPORTED,
+
+    /** Almeno un catalogo è stato caricato con successo ma senza contenuti. */
+    EMPTY,
+
+    /** Tutti i cataloghi selezionati per il tipo sono falliti (rete/HTTP/JSON). */
+    FAILED,
+
+    /** Almeno un catalogo ha restituito contenuti. */
+    OK
+  }
 
   /**
    * Selezione dei target di catalogo per una categoria della sezione Ricerca.
@@ -486,6 +545,9 @@ object StremioCatalogRepository {
    *     ricerca `search`) vengono esclusi;
    *  5. se nessun catalogo corrisponde → lista vuota: la categoria dichiara il
    *     fallback invece di fingere un caricamento addon riuscito.
+   *
+   * Il filtro per genere viene inviato anche quando il catalogo è COMPATIBILE ma
+   * non elenca opzioni statiche per `genre`: vedi [resolveGenreExtra].
    */
   fun findCategoryRequests(keywords: List<String>): List<CategoryCatalogRequest> {
     val terms = keywords
@@ -498,15 +560,81 @@ object StremioCatalogRepository {
     val userRequests = matchCategoryRequests(terms, getAvailableTargets())
     if (userRequests.isNotEmpty()) return userRequests
 
-    // 2. Nessun catalogo utente copre la categoria (o nessun addon installato):
-    //    Cinemeta, addon di sistema, è la fonte di default e copre il genere sui
-    //    cataloghi movie/series tramite `genre={NomeGenere}`.
+    // 2. Gli addon utente DICHIARANO cataloghi ma nessuno copre il genere: la categoria
+    //    NON deve rimandare a TMDB fingendo che l'addon la copra. I cataloghi esistenti
+    //    sono la risposta dell'addon (lo stato della categoria lo dichiara).
+    val userTargets = getAvailableTargets().filter { it.isMovie || it.isSeries }
+    if (userTargets.isNotEmpty()) return emptyList()
+
+    // 3. Nessun addon utente installato: Cinemeta, addon di sistema, è la fonte di
+    //    default e copre il genere sui cataloghi movie/series tramite `genre={NomeGenere}`.
     return matchCategoryRequests(terms, defaultCinemetaGenreTargets())
   }
 
   /**
+   * true se il catalogo [target] può restituire la lista di uno dei generi [keywords]
+   * senza inventare dati.
+   *
+   * È la STESSA regola usata da [matchCategoryRequests], estratta qui per rispondere
+   * alla domanda "esiste un catalogo film/serie configurato che copre questo genere?".
+   * La risposta dipende dal TIPO del catalogo: un catalogo film non copre mai la
+   * ricerca delle serie, e viceversa. Serve a decidere se il fallback TMDB è
+   * necessario, senza dedurlo dal comportamento di un singolo addon né da un errore.
+   */
+  internal fun catalogCoversGenre(target: StremioCatalogTarget, keywords: List<String>): Boolean {
+    // Regola UNICA con la ricerca reale: si riusa il matcher delle categorie su questo
+    // solo target, così la decisione "esiste un catalogo che copre il genere?" non può
+    // divergere da ciò che la categoria interroga davvero.
+    val terms = keywords
+      .mapNotNull { keyword -> termSegments(keyword).takeIf { it.isNotEmpty() } }
+      .distinct()
+    if (terms.isEmpty()) return false
+    return matchCategoryRequests(terms, listOf(target)).isNotEmpty()
+  }
+
+  /**
+   * true se [targets] (i cataloghi realmente configurati: addon installati e attivi,
+   * più i cataloghi di sistema) contengono almeno un catalogo del tipo [mediaType] che
+   * copre il genere [keywords].
+   *
+   * Un `false` significa "nessun catalogo configurato per questo tipo applica il
+   * filtro per genere": è la sola condizione che autorizza il fallback TMDB.
+   */
+  internal fun hasConfiguredCatalogCoveringGenre(
+    keywords: List<String>,
+    mediaType: MediaType,
+    targets: List<StremioCatalogTarget> = getAvailableTargets()
+  ): Boolean = targets.any { target ->
+    val targetType = when {
+      target.isMovie -> MediaType.FILM
+      target.isSeries -> MediaType.SERIE_TV
+      else -> null
+    }
+    targetType == mediaType && catalogCoversGenre(target, keywords)
+  }
+
+  /**
+   * Come [hasConfiguredCatalogCoveringGenre], ma sui SOLI cataloghi degli addon
+   * dell'utente (installati e attivi), senza i cataloghi di sistema come Cinemeta.
+   *
+   * Serve a decidere il fallback TMDB: se nessun addon dell'utente copre la
+   * combinazione tipo+genere, la fonte principale della categoria (Cinemeta, che
+   * dichiara `genre` per entrambi i tipi) non produce contenuti coerenti con il
+   * genere richiesto e la categoria deve procedere con TMDB.
+   */
+  internal fun hasUserCatalogCoveringGenre(
+    keywords: List<String>,
+    mediaType: MediaType
+  ): Boolean = hasConfiguredCatalogCoveringGenre(
+    keywords = keywords,
+    mediaType = mediaType,
+    targets = getAvailableTargets().filterNot { isSystemAddon(it.addonId) }
+  )
+
+  /**
    * Associa i [terms] della categoria ai [targets] disponibili applicando le regole
-   * dichiarative (match su id/titolo o su un'opzione `genre` realmente dichiarata).
+   * dichiarative (match su id/titolo, opzione `genre` realmente dichiarata oppure
+   * filtro `genre` supportato senza elenco statico di opzioni).
    */
   private fun matchCategoryRequests(
     terms: List<List<String>>,
@@ -519,32 +647,61 @@ object StremioCatalogRepository {
 
       val idSegments = termSegments(target.catalogId)
       val titleSegments = termSegments(target.title)
-      val matchesByIdOrTitle = terms.any { keyword ->
-        termMatches(keyword, idSegments) || termMatches(keyword, titleSegments)
-      }
+      val matchesById = terms.any { keyword -> termMatches(keyword, idSegments) }
+      val matchesByTitle = terms.any { keyword -> termMatches(keyword, titleSegments) }
 
-      // L'opzione `genre` segue l'ORDINE delle keyword della categoria (etichette
-      // localizzate, poi nomi canonici TMDB): scegliere la prima opzione del
-      // manifest darebbe priorità alla sua POSIZIONE nel manifest (es. "Drama"
-      // sta prima di "Romance" e catturerebbe la categoria Romance).
-      val genreOption = if (target.supportsGenre) {
-        terms.firstNotNullOfOrNull { keyword ->
-          target.genreOptions.firstOrNull { option ->
-            termMatches(keyword, termSegments(option))
-          }
-        }
-      } else {
-        null
-      }
+      // Extra `genre` realmente applicabile (esatta opzione dichiarata oppure valore
+      // accettato dal catalogo che non elenca opzioni statiche).
+      val genreExtra = resolveGenreExtra(target, terms)
 
-      if (!matchesByIdOrTitle && genreOption == null) return@mapNotNull null
+      // Un catalogo è pertinente se:
+      //  - il filtro per genere è applicabile (la lista restituita è del genere);
+      //  - oppure è un catalogo DEL GENERE identificato dall'id ("genre_*") e
+      //    supporta `genre` (lista curata dall'addon per quel genere);
+      //  - oppure è un catalogo tematico riconosciuto sia dall'id sia dal titolo.
+      // Un catalogo riconosciuto SOLO dal titolo, senza filtro `genre`, non è mai la
+      // risposta: mostrerebbe la sua lista generica come se fosse del genere scelto.
+      val isRelevant = genreExtra != null ||
+        (matchesById && target.supportsGenre) ||
+        (matchesById && matchesByTitle)
+      if (!isRelevant) return@mapNotNull null
 
-      val extra = if (genreOption != null) mapOf(EXTRA_GENRE to genreOption) else emptyMap()
+      val extra = genreExtra.orEmpty()
       val provided = extra.keys.map { it.lowercase() }
       if (target.catalog.requiredExtraNames().any { it !in provided }) return@mapNotNull null
 
       CategoryCatalogRequest(target, extra)
     }
+  }
+
+  /**
+   * Extra `genre` realmente applicabile al catalogo per i [terms] della categoria.
+   *
+   * @return `mapOf("genre" to valore)` oppure `null` se il catalogo non supporta il
+   *         filtro o non ha un genere corrispondente.
+   */
+  private fun resolveGenreExtra(
+    target: StremioCatalogTarget,
+    terms: List<List<String>>
+  ): Map<String, String>? {
+    if (!target.supportsGenre) return null
+    val options = target.genreOptions
+    if (options.isNotEmpty()) {
+      // Solo un'opzione DICHIARATA può essere inviata (per l'app l'ordine delle
+      // keyword della categoria conta: etichette localizzate, poi nomi TMDB).
+      val option = terms.firstNotNullOfOrNull { keyword ->
+        options.firstOrNull { option -> termMatches(keyword, termSegments(option)) }
+      } ?: return null
+      return mapOf(EXTRA_GENRE to option)
+    }
+    // Nessuna opzione dichiarata: il valore inviato è il nome canonico della
+    // categoria (alias dichiarato dall'app), mai un valore inventato. I termini sono
+    // già normalizzati per il confronto, quindi il valore viene ricostruito con la
+    // forma capitalized ("horror" → "Horror", "science fiction" → "Science Fiction").
+    val keyword = terms.firstOrNull() ?: return null
+    return mapOf(EXTRA_GENRE to keyword.joinToString(" ") { part ->
+      part.replaceFirstChar { it.uppercaseChar() }
+    })
   }
 
   /** Costruisce un target Stremio per un catalogo dell'addon di sistema Cinemeta. */
@@ -602,7 +759,7 @@ object StremioCatalogRepository {
   suspend fun loadCategoryCatalogs(keywords: List<String>): CategoryCatalogLoad = coroutineScope {
     val requests = findCategoryRequests(keywords)
     // Cataloghi dichiarati dai manifest attivi, per distinguere "nessun catalogo
-    // di questo tipo esiste" da "esiste ma non contiene il genere della categoria".
+    // di questo tipo esiste" da "esiste ma non applica il filtro per genere".
     val availableTargets = getAvailableTargets().filter { it.isMovie || it.isSeries }
     val availableMovie = availableTargets.count { it.isMovie }
     val availableSeries = availableTargets.count { it.isSeries }
@@ -633,12 +790,15 @@ object StremioCatalogRepository {
 
     val entries = mutableListOf<CategoryCatalogEntry>()
     val errors = mutableListOf<String>()
+    var failedMovies = 0
+    var failedSeries = 0
     outcomes.forEachIndexed { index, outcome ->
       val (section, errorMessage) = outcome
       if (section != null) {
         entries += CategoryCatalogEntry(section, requests[index].extra)
       } else {
         val target = requests[index].target
+        if (target.isMovie) failedMovies++ else failedSeries++
         errors += "${target.title} • ${target.addonName}: $errorMessage"
       }
     }
@@ -651,6 +811,9 @@ object StremioCatalogRepository {
       matchedSeriesTargets = requests.count { it.target.isSeries },
       availableMovieCatalogs = availableMovie,
       availableSeriesCatalogs = availableSeries,
+      failedMovieTargets = failedMovies,
+      failedSeriesTargets = failedSeries,
+      genreFilteredRequests = requests.count { it.isGenreFiltered },
       errors = errors
     )
   }

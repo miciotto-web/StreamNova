@@ -81,6 +81,21 @@ class SubtitleSyncViewModelTest {
     val viewModel = StreamNovaViewModel(ioDispatcher = dispatcher)
 
     viewModel.openSubtitlesProvider = object : com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider() {
+      var resolveLinksOnDemandRequested: Boolean? = null
+
+      override suspend fun fetchSubtitles(
+        mediaItem: MediaItem,
+        episode: com.example.data.model.Episode?,
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
+      ): List<Subtitle> {
+        resolveLinksOnDemandRequested = resolveLinksOnDemand
+        return listOf(
+          Subtitle(id = "os-api-1", url = "https://api.test/it.srt", lang = "ita", addonName = "OpenSubtitles v3")
+        )
+      }
+
       override suspend fun fetchFromStremioOpenSubtitles(type: String, id: String): List<Subtitle> {
         return listOf(
           Subtitle(id = "os-1", url = "https://subs.test/it.srt", lang = "ita", addonName = "OpenSubtitles v3")
@@ -93,8 +108,84 @@ class SubtitleSyncViewModelTest {
 
     testScheduler.advanceUntilIdle()
 
-    assertEquals(1, viewModel.onlineSubtitles.value.size)
-    assertEquals("os-1", viewModel.onlineSubtitles.value[0].id)
+    // La ricerca passa sia dall'API ufficiale sia dall'addon: i risultati sono uniti.
+    assertEquals(2, viewModel.onlineSubtitles.value.size)
     assertEquals(false, viewModel.isOnlineSubtitlesLoading.value)
+  }
+
+  @Test
+  fun loadOnlineSubtitlesSenzaImdbInterrogaComunqueApiUfficiale() = runTest {
+    val dispatcher = StandardTestDispatcher(testScheduler)
+    val viewModel = StreamNovaViewModel(ioDispatcher = dispatcher)
+
+    var officialApiCalled = false
+    viewModel.openSubtitlesProvider = object : com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider() {
+      override suspend fun fetchSubtitles(
+        mediaItem: MediaItem,
+        episode: com.example.data.model.Episode?,
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
+      ): List<Subtitle> {
+        officialApiCalled = true
+        assert(!resolveLinksOnDemand) { "La sezione online non deve consumare quota download in ricerca" }
+        return listOf(
+          Subtitle(id = "os-file-42", url = "", lang = "en", addonName = "OpenSubtitles v3", fileId = 42L)
+        )
+      }
+    }
+
+    // Media SENZA identificativo IMDb (solo TMDB): il vecchio percorso addon rispondeva
+    // subito lista vuota; ora l'API ufficiale viene comunque interrogata.
+    val movie = MediaItem(
+      id = "tmdb-603",
+      title = "Test Movie",
+      synopsis = "",
+      type = MediaType.FILM,
+      videoUrl = "",
+      tmdbId = 603
+    )
+    viewModel.loadOnlineSubtitles(mediaItem = movie, episode = null)
+
+    testScheduler.advanceUntilIdle()
+
+    assertEquals(true, officialApiCalled)
+    assertEquals(1, viewModel.onlineSubtitles.value.size)
+    assertEquals(42L, viewModel.onlineSubtitles.value[0].fileId)
+  }
+
+  @Test
+  fun loadOnlineSubtitlesUnisceSenzaDuplicatiURL() = runTest {
+    val dispatcher = StandardTestDispatcher(testScheduler)
+    val viewModel = StreamNovaViewModel(ioDispatcher = dispatcher)
+
+    viewModel.openSubtitlesProvider = object : com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider() {
+      override suspend fun fetchSubtitles(
+        mediaItem: MediaItem,
+        episode: com.example.data.model.Episode?,
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
+      ): List<Subtitle> = listOf(
+        Subtitle(id = "os-a", url = "https://sub.test/shared.srt", lang = "ita", addonName = "OpenSubtitles v3")
+      )
+
+      override suspend fun fetchFromStremioOpenSubtitles(type: String, id: String): List<Subtitle> {
+        // Stesso URL dell'API ufficiale: i due risultati sono lo stesso sottotitolo.
+        return listOf(
+          Subtitle(id = "os-b", url = "https://sub.test/shared.srt", lang = "ita", addonName = "OpenSubtitles v3"),
+          Subtitle(id = "os-c", url = "https://sub.test/extra.srt", lang = "eng", addonName = "OpenSubtitles v3")
+        )
+      }
+    }
+
+    val movie = MediaItem(id = "tt1234567", title = "Test Movie", synopsis = "", type = MediaType.FILM, videoUrl = "")
+    viewModel.loadOnlineSubtitles(mediaItem = movie, episode = null)
+
+    testScheduler.advanceUntilIdle()
+
+    assertEquals(2, viewModel.onlineSubtitles.value.size)
+    assertEquals("os-a", viewModel.onlineSubtitles.value[0].id)
+    assertEquals("os-c", viewModel.onlineSubtitles.value[1].id)
   }
 }

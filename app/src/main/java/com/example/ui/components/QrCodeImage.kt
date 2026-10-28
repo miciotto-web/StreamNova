@@ -26,6 +26,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -42,12 +44,18 @@ private val QrModule = Color(0xFF0f172a)
 private val QrAccent = Color(0xFF06b6d4)
 private val QrTextMuted = Color(0xFF94a3b8)
 
-/** Matrice di moduli (true = modulo scuro) generata da ZXing. */
-private class QrCodeMatrix(val size: Int, private val modules: BooleanArray) {
+/**
+ * Matrice di moduli (true = modulo scuro) generata da ZXing.
+ *
+ * Visibile ai test di `app/src/test`: il contenuto del QR del login SIMKL va verificato
+ * rileggendo la matrice, non solo contando i nodi a schermo.
+ */
+internal class QrCodeMatrix(val size: Int, private val modules: BooleanArray) {
   fun module(x: Int, y: Int): Boolean = modules[y * size + x]
 }
 
-private suspend fun encodeQrCode(content: String): QrCodeMatrix? = withContext(Dispatchers.Default) {
+/** `null` se il contenuto non è codificabile (ZXing non produce una matrice quadrata). */
+internal suspend fun encodeQrCode(content: String): QrCodeMatrix? = withContext(Dispatchers.Default) {
   try {
     val hints = mapOf(
       EncodeHintType.MARGIN to 1,
@@ -74,7 +82,12 @@ fun QrCodeImage(
     this.value = encodeQrCode(value)
   }
   val matrix = qr ?: return
-  Canvas(modifier = modifier.background(QrSurface, RoundedCornerShape(8.dp))) {
+  val semanticsModifier = if (contentDescription != null) {
+    Modifier.semantics { this.contentDescription = contentDescription }
+  } else {
+    Modifier
+  }
+  Canvas(modifier = modifier.then(semanticsModifier).background(QrSurface, RoundedCornerShape(8.dp))) {
     val moduleSize = size.minDimension / matrix.size
     val origin = Offset(
       (size.width - moduleSize * matrix.size) / 2f,

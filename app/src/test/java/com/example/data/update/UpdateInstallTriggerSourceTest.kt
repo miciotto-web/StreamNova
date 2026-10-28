@@ -11,42 +11,53 @@ import java.io.File
  * ("Installa") e mai da un effetto automatico legato al completamento del
  * download.
  *
+ * Il flusso vive in due posti — il dialog delle Impostazioni e il popup del
+ * controllo automatico di avvio, che condivide il blocco download/installa — e il
+ * contratto vale per ENTRAMBI: le sorgenti vengono lette tutte, e ogni chiamata
+ * all'installer trovata deve rispettarlo.
+ *
  * La verifica è su sorgente perché `ApkInstaller` è un object di sistema:
  * una dipendenza iniettabile per un test di UI non aggiungerebbe garanzie
  * reali sul comportamento osservato dall'utente.
  */
 class UpdateInstallTriggerSourceTest {
 
-  private fun settingsSource(): File? =
-    listOf(
-      File("src/main/java/com/example/ui/screens/SubScreens.kt"),
-      File("app/src/main/java/com/example/ui/screens/SubScreens.kt")
-    ).firstOrNull { it.isFile }
+  /** Sorgenti che possono avviare l'installer: Impostazioni e popup di avvio. */
+  private fun installerSources(): List<File> =
+    listOf("SubScreens.kt", "UpdateDialogs.kt")
+      .mapNotNull { name ->
+        listOf(
+          File("src/main/java/com/example/ui/screens/$name"),
+          File("app/src/main/java/com/example/ui/screens/$name")
+        ).firstOrNull { it.isFile }
+      }
 
   @Test
   fun installerIsOnlyLaunchedFromAnExplicitClickHandler() {
-    val source = settingsSource()
-    assumeTrue("Sorgente Impostazioni non raggiungibile", source != null)
-    val text = source!!.readText()
+    val sources = installerSources()
+    assumeTrue("Sorgenti dei dialog non raggiungibili", sources.isNotEmpty())
 
     val launchMarker = "ApkInstaller.launch("
-    var index = text.indexOf(launchMarker)
     var occurrences = 0
-    while (index >= 0) {
-      occurrences++
-      val before = text.substring(0, index)
-      val lastClick = before.lastIndexOf("onClick")
-      val lastEffect = before.lastIndexOf("LaunchedEffect(")
-      val lastButton = before.lastIndexOf("UpdateDialogButton(")
-      assertTrue(
-        "ApkInstaller.launch deve stare in un onClick di un pulsante",
-        lastClick >= 0 && lastClick > lastEffect
-      )
-      assertTrue(
-        "ApkInstaller.launch deve stare nel pulsante Installa",
-        lastButton >= 0 && lastButton > lastEffect && lastClick > lastButton
-      )
-      index = text.indexOf(launchMarker, index + 1)
+    sources.forEach { source ->
+      val text = source.readText()
+      var index = text.indexOf(launchMarker)
+      while (index >= 0) {
+        occurrences++
+        val before = text.substring(0, index)
+        val lastClick = before.lastIndexOf("onClick")
+        val lastEffect = before.lastIndexOf("LaunchedEffect(")
+        val lastButton = before.lastIndexOf("UpdateDialogButton(")
+        assertTrue(
+          "ApkInstaller.launch deve stare in un onClick di un pulsante (${source.name})",
+          lastClick >= 0 && lastClick > lastEffect
+        )
+        assertTrue(
+          "ApkInstaller.launch deve stare nel pulsante Installa (${source.name})",
+          lastButton >= 0 && lastButton > lastEffect && lastClick > lastButton
+        )
+        index = text.indexOf(launchMarker, index + 1)
+      }
     }
 
     assertTrue("Il pulsante Installa deve esistere", occurrences >= 1)
@@ -54,24 +65,26 @@ class UpdateInstallTriggerSourceTest {
 
   @Test
   fun noAutomaticInstallerLaunchedWhenTheDownloadCompletes() {
-    val source = settingsSource()
-    assumeTrue("Sorgente Impostazioni non raggiungibile", source != null)
-    val text = source!!.readText()
+    val sources = installerSources()
+    assumeTrue("Sorgenti dei dialog non raggiungibili", sources.isNotEmpty())
 
-    // Nessun effetto automatico deve menzionare l'installer o gli stati di
-    // download: il download completato mostra solo il pulsante Installa.
-    val effectBlocks = extractLaunchedEffectBlocks(text)
-    effectBlocks.forEach { block ->
+    sources.forEach { source ->
+      val text = source.readText()
+      // Nessun effetto automatico deve menzionare l'installer o gli stati di
+      // download: il download completato mostra solo il pulsante Installa.
+      val effectBlocks = extractLaunchedEffectBlocks(text)
+      effectBlocks.forEach { block ->
+        assertTrue(
+          "Un LaunchedEffect non deve avviare l'installer o osservare il download (${source.name})",
+          !block.contains("ApkInstaller") && !block.contains("downloadState")
+        )
+      }
+      // Il vecchio avvio automatico passava dal path del file completato.
       assertTrue(
-        "Un LaunchedEffect non deve avviare l'installer o osservare il download",
-        !block.contains("ApkInstaller") && !block.contains("downloadState")
+        "Nessun riferimento residuo a launchedApkPath (${source.name})",
+        !text.contains("launchedApkPath")
       )
     }
-    // Il vecchio avvio automatico passava dal path del file completato.
-    assertTrue(
-      "Nessun riferimento residuo a launchedApkPath",
-      !text.contains("launchedApkPath")
-    )
   }
 
   private fun extractLaunchedEffectBlocks(text: String): List<String> {

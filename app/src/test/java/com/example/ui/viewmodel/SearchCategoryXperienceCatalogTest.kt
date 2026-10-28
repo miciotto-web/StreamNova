@@ -3,6 +3,7 @@ package com.example.ui.viewmodel
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.MediaType
+import com.example.data.api.TmdbApiClient
 import com.example.data.repository.StremioCatalogRepository
 import com.example.data.stremio.StremioAddonRepository
 import com.example.ui.screens.GLOBAL_SEARCH_CATEGORIES
@@ -50,7 +51,7 @@ import org.robolectric.annotation.Config
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
-@Config(sdk = [36])
+@Config(sdk = [36], qualifiers = "it")
 class SearchCategoryXperienceCatalogTest {
 
   /**
@@ -67,14 +68,44 @@ class SearchCategoryXperienceCatalogTest {
   fun setUp() {
     testDispatcher = StandardTestDispatcher()
     Dispatchers.setMain(testDispatcher)
+    // Fallback TMDB deterministico: le serie non coperte dai cataloghi arrivano dal server
+    // locale della fixture, mai dalla rete.
+    TmdbApiClient.overrideServiceBaseUrl(stubTmdb.start())
   }
 
   @After
   fun tearDown() {
     createdViewModels.forEach { it.viewModelScope.cancel() }
     createdViewModels.clear()
+    stubTmdb.stop()
     Dispatchers.resetMain()
   }
+
+  /**
+   * Server TMDB locale: risponde alle `discover` con liste minime e valide. Serve solo a
+   * rendere deterministiche le categorie in cui le serie non hanno un catalogo compatibile
+   * (il comportamento del fallback è verificato in `SearchCategoryTmdbFallbackTest`).
+   */
+  private class StubTmdbServer {
+    private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+
+    fun start(): String {
+      server.createContext("/") { exchange ->
+        val body = """{"page":1,"results":[],"total_pages":1,"total_results":0}"""
+        val bytes = body.toByteArray()
+        exchange.responseHeaders.add("Content-Type", "application/json")
+        exchange.sendResponseHeaders(200, bytes.size.toLong())
+        exchange.responseBody.use { it.write(bytes) }
+        exchange.close()
+      }
+      server.start()
+      return "http://127.0.0.1:${server.address.port}/3/"
+    }
+
+    fun stop() = server.stop(0)
+  }
+
+  private val stubTmdb = StubTmdbServer()
 
   /** Crea un ViewModel tracciandolo: il suo scope viene cancellato in [tearDown]. */
   private fun createViewModel(): StreamNovaViewModel =
@@ -151,6 +182,7 @@ class SearchCategoryXperienceCatalogTest {
             {"type":"movie","id":"genre_thriller_movies","name":"Thriller Movies","extra":[{"name":"skip"}]},
             {"type":"series","id":"genre_thriller_series","name":"Thriller Series","extra":[{"name":"skip"}]},
             {"type":"movie","id":"genre_dramma_movies","name":"Dramma Movies","extra":[{"name":"skip"}]},
+            {"type":"movie","id":"genre_commedia_movies","name":"Commedia Movies","extra":[{"name":"skip"}]},
             {"type":"movie","id":"discover_genres","name":"Discover by Genre","extra":[{"name":"genre","options":["Horror","Animation"]}]},
             {"type":"movie","id":"xperience_search","name":"Search","extra":[{"name":"search","isRequired":true},{"name":"skip"}]}
           ]
@@ -196,6 +228,9 @@ class SearchCategoryXperienceCatalogTest {
         ),
         "/catalog/movie/genre_dramma_movies.json" to metas(
           meta("tt9400001", "movie", "Vite Sospese", "2018")
+        ),
+        "/catalog/movie/genre_commedia_movies.json" to metas(
+          meta("tt9500001", "movie", "Risate in Famiglia", "2019")
         ),
         "/catalog/movie/discover_genres/genre=Horror.json" to metas(
           meta("tt9000004", "movie", "Terrore in Campeggio", "2018")
@@ -397,14 +432,29 @@ class SearchCategoryXperienceCatalogTest {
           "La lista dell'horror non deve sopravvivere al cambio categoria",
           animationTitles.any { horrorTitles.contains(it) }
         )
-        assertEquals(SearchCategorySource.ADDON, viewModel.categoryState.value.source)
+        assertEquals(
+          "I film della categoria vengono dal catalogo compatibile",
+          GenreLoadReason.SUPPORTED_BY_CATALOG,
+          viewModel.lastGenreLoads.value.firstOrNull { it.mediaType == MediaType.FILM }?.reason
+        )
+        assertFalse(
+          "Nessun risultato TMDB per i FILM: la categoria non è servita dal fallback",
+          viewModel.lastGenreLoads.value
+            .firstOrNull { it.mediaType == MediaType.FILM }?.reason == GenreLoadReason.TMDB_FALLBACK
+        )
         assertEquals("animazione", viewModel.activeSearchCategoryId)
       } finally {
         cleanup(fixture)
       }
     }
 
-  // ── 4. Errore / risposta vuota: fallback dichiarato, mai "riuscito" ─────────
+  // ── 4. Errore: dichiarato, mai "riuscito"; vuoto: fallback TMDB ────────────
+  //
+  // Il catalogo FILM della categoria è compatibile con il genere: se FALLISCE resta la
+  // fonte (nessun fallback TMDB che mascheri l'errore, motivo FAILED). Se risponde HTTP
+  // 200 VUOTO non ci sono risultati utili dagli addon: i titoli arrivano dal fallback
+  // TMDB (qui la stub TMDB risponde con zero risultati, quindi il caso "nemmeno su
+  // TMDB" resta dichiarato, mai presentato come caricamento addon riuscito).
 
   @Test
   fun erroreDelCatalogoAddonNonVienePresentatoComeCaricamentoRiuscito(): Unit =
@@ -423,10 +473,18 @@ class SearchCategoryXperienceCatalogTest {
         assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
 
         val state = viewModel.categoryState.value
-        assertEquals("L'errore Xperience non può diventare un caricamento addon", SearchCategorySource.TMDB_FALLBACK, state.source)
-        assertNull("Nessuna etichetta addon quando il catalogo non è stato caricato", state.addonLabel)
-        assertNotNull("Il motivo del fallback deve essere mostrato in UI", state.statusMessage)
-        assertTrue("Motivo: ${state.statusMessage}", state.statusMessage.orEmpty().contains("non caricato"))
+        assertNull("Nessuna etichetta addon quando nessun catalogo ha contenuti", state.addonLabel)
+        // Catalogo FILM compatibile FALLITO: il motivo deve essere dichiarato, e TMDB non
+        // deve essere usato per i film (maschererebbe l'errore del catalogo).
+        assertEquals(
+          "Il fallback TMDB non è stato usato per i film (catalogo compatibile fallito)",
+          GenreLoadReason.FAILED,
+          viewModel.lastGenreLoads.value.firstOrNull { it.mediaType == MediaType.FILM }?.reason
+        )
+        assertTrue(
+          "Il motivo del fallimento deve essere mostrato in UI: ${state.statusMessage}",
+          state.statusMessage.orEmpty().contains("Catalogo film non raggiungibile")
+        )
         assertTrue(
           "Nessun poster dell'addon può comparire dopo un errore",
           viewModel.categoryItems.value.none { it.provider == "Xperience" }
@@ -437,28 +495,47 @@ class SearchCategoryXperienceCatalogTest {
     }
 
   @Test
-  fun rispostaVuotaDelCatalogoAddonNonVienePresentatoComeCaricamentoRiuscito(): Unit =
-    runTest(testDispatcher) {
-      val fixture = XperienceFixture(FixtureMode.EMPTY)
-      val baseUrl = fixture.start()
-      try {
-        StremioAddonRepository.installAddon(baseUrl)
-        val viewModel = createViewModel()
+  fun rispostaVuotaDelCatalogoAddonAttivaIlFallbackTmdb(): Unit = runTest(testDispatcher) {
+    val fixture = XperienceFixture(FixtureMode.EMPTY)
+    val baseUrl = fixture.start()
+    try {
+      StremioAddonRepository.installAddon(baseUrl)
+      val viewModel = createViewModel()
 
-        viewModel.initCategory("animazione", animationKeywords, movieGenreId = 16, tvGenreId = 16)
-        assertTrue(awaitCondition { viewModel.categoryState.value.source != null })
-        assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
+      viewModel.initCategory("animazione", animationKeywords, movieGenreId = 16, tvGenreId = 16)
+      assertTrue(awaitCondition { viewModel.categoryState.value.source != null })
+      assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
 
-        val state = viewModel.categoryState.value
-        assertEquals(SearchCategorySource.TMDB_FALLBACK, state.source)
-        assertNull(state.addonLabel)
-        assertNotNull("La risposta vuota deve essere dichiarata", state.statusMessage)
-        assertTrue("Motivo: ${state.statusMessage}", state.statusMessage.orEmpty().contains("catalogo vuoto"))
-        assertTrue(viewModel.categoryItems.value.none { it.provider == "Xperience" })
-      } finally {
-        cleanup(fixture)
-      }
+      val state = viewModel.categoryState.value
+      assertNull(state.addonLabel)
+      // Catalogo FILM COMPATIBILE (il genere è stato inviato) ma senza risultati: non è
+      // un errore, MA non ci sono risultati utili dagli addon → fallback TMDB. La stub
+      // TMDB risponde con zero risultati, quindi il caso resta dichiarato in UI.
+      val filmRecord = viewModel.lastGenreLoads.value.firstOrNull { it.mediaType == MediaType.FILM }
+      assertEquals(
+        "Catalogo compatibile e vuoto: fallback TMDB per completare la ricerca",
+        GenreLoadReason.TMDB_FALLBACK,
+        filmRecord?.reason
+      )
+      assertEquals(
+        "Il motivo registra il catalogo prima vuoto",
+        true,
+        filmRecord?.catalogWasEmpty
+      )
+      assertEquals("TMDB interrogato una volta", 1, filmRecord?.tmdbPages)
+      assertTrue(
+        "Il caso 'nemmeno su TMDB' è dichiarato: ${state.statusMessage}",
+        state.statusMessage.orEmpty().contains("nemmeno su TMDB")
+      )
+      assertTrue(
+        "La fonte non è presentata come addon",
+        state.source == SearchCategorySource.TMDB_FALLBACK
+      )
+      assertTrue(viewModel.categoryItems.value.none { it.provider == "Xperience" })
+    } finally {
+      cleanup(fixture)
     }
+  }
 
   // ── 5. Gli altri percorsi dei cataloghi restano funzionanti ─────────────────
 
@@ -630,19 +707,38 @@ class SearchCategoryXperienceCatalogTest {
         assertTrue(awaitCondition { viewModel.categoryItems.value.isNotEmpty() })
 
         val state = viewModel.categoryState.value
-        assertEquals(SearchCategorySource.ADDON, state.source)
-        assertNotNull("La mancanza del catalogo serie deve essere dichiarata", state.statusMessage)
-        assertTrue(
-          "Motivo dichiarato: ${state.statusMessage}",
-          state.statusMessage.orEmpty().contains("Categoria non supportata per le serie")
+        // Il manifest dichiara cataloghi serie ma NESSUNO applica il filtro per genere:
+        // i film restano dell'addon, le serie passano al fallback TMDB (switch attivo).
+        assertEquals(
+          "Film dal catalogo compatibile",
+          GenreLoadReason.SUPPORTED_BY_CATALOG,
+          viewModel.lastGenreLoads.value.firstOrNull { it.mediaType == MediaType.FILM }?.reason
+        )
+        assertEquals(
+          "Serie: nessun catalogo compatibile → TMDB",
+          GenreLoadReason.TMDB_FALLBACK,
+          viewModel.lastGenreLoads.value.firstOrNull { it.mediaType == MediaType.SERIE_TV }?.reason
+        )
+        // Nessun messaggio attribuisce ai FILM un limite che non hanno.
+        assertFalse(
+          "Nessun messaggio sui film: ${state.statusMessage}",
+          state.statusMessage.orEmpty().contains("Catalogo film")
         )
         assertTrue(
           "Film caricati: ${viewModel.categoryItems.value.map { it.title }}",
           viewModel.categoryItems.value.any { it.title == "Vite Sospese" }
         )
+        // Nessun catalogo serie è stato interrogato: la serie "Horror" dell'addon resta
+        // visibile in Home, ma non viene usata come se filtrasse il genere Dramma.
+        fixture.requested.clear()
+        val reloaded = StremioCatalogRepository.loadCategoryCatalogs(
+          drama.keywords + listOfNotNull(TMDB_MOVIE_GENRE_NAMES[drama.movieGenreId]) +
+            listOfNotNull(TMDB_TV_GENRE_NAMES[drama.tvGenreId])
+        )
+        assertTrue("Serie non richieste: ${fixture.requested}", reloaded.matchedSeriesTargets == 0)
         assertTrue(
-          "Nessuna serie inventata quando il manifest non la dichiara",
-          viewModel.categoryItems.value.none { it.type == MediaType.SERIE_TV }
+          "Nessuna richiesta a un catalogo serie non filtrato: ${fixture.requested}",
+          fixture.requested.none { it.startsWith("/catalog/series/") }
         )
       } finally {
         cleanup(fixture)
@@ -681,20 +777,30 @@ class SearchCategoryXperienceCatalogTest {
           "Nessun titolo della categoria precedente riutilizzato: $dramaTitles",
           dramaTitles.any { thrillerTitles.contains(it) }
         )
-        assertTrue("Solo film dopo il cambio", viewModel.categoryItems.value.none { it.type == MediaType.SERIE_TV })
         assertTrue(
-          "Anche la nuova categoria dichiara l'assenza del catalogo serie",
-          viewModel.categoryState.value.statusMessage.orEmpty().contains("Categoria non supportata per le serie")
+          "I film della nuova categoria vengono dal catalogo compatibile",
+          viewModel.categoryItems.value.any { it.type == MediaType.FILM }
+        )
+        assertEquals(
+          "Dramma: catalogo film compatibile, nessun fallback TMDB",
+          GenreLoadReason.SUPPORTED_BY_CATALOG,
+          viewModel.lastGenreLoads.value.firstOrNull { it.mediaType == MediaType.FILM }?.reason
+        )
+        assertFalse(
+          "Nessun risultato TMDB per i FILM: la categoria non è servita dal fallback",
+          viewModel.lastGenreLoads.value
+            .firstOrNull { it.mediaType == MediaType.FILM }?.reason == GenreLoadReason.TMDB_FALLBACK
         )
       } finally {
         cleanup(fixture)
       }
     }
 
-  // ── 10. Tutte le categorie: entrambi i tipi richiesti quando dichiarati ────
+
+  // ── 10. Tutte le categorie: nessun catalogo incompatibile usato per il genere ─
 
   @Test
-  fun tutteLeCategorieRichiedonoEntrambiITipiQuandoDichiarati(): Unit =
+  fun tutteLeCategorieUsanoEntrambiITipiQuandoDichiaratiENessunIncompatibile(): Unit =
     runTest(testDispatcher) {
       val fixture = XperienceFixture(FixtureMode.OK, manifestJson = generatedManifestJson())
       val baseUrl = fixture.start()
@@ -707,6 +813,8 @@ class SearchCategoryXperienceCatalogTest {
           val requests = StremioCatalogRepository.findCategoryRequests(cat.keywords)
           val found = requests.map { "${it.target.type}/${it.target.catalogId}" }
           println("CATREPORT ${cat.id} => richieste: $found")
+          // La categoria ha sia un equivalente per nome nel manifest sia, per la
+          // stessa keyword, cataloghi con filtro `genre` dichiarato: entrambi i tipi.
           assertTrue(
             "[${cat.id}] catalogo film non richiesto (slug $slug): $found",
             found.contains("movie/genre_${slug}_movies")
@@ -714,6 +822,16 @@ class SearchCategoryXperienceCatalogTest {
           assertTrue(
             "[${cat.id}] catalogo serie non richiesto NONOSTANTE dichiarato nel manifest (slug $slug): $found",
             found.contains("series/genre_${slug}_series")
+          )
+          // MAI un catalogo tematico generico (non filtrato per genere) per un tipo
+          // l'app può mostrare? Il manifest generato non ne contiene: nessun extra
+          // `genre` può essere inviato a cataloghi che non lo supportano.
+          assertTrue(
+            "[${cat.id}] extra genre inviato a un catalogo che non lo supporta: " +
+              requests.filter { it.extra.isNotEmpty() }.map { it.target.catalogId },
+            requests.all { request ->
+              request.extra.isEmpty() || request.target.supportsGenre
+            }
           )
         }
       } finally {

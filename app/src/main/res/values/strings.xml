@@ -151,7 +151,20 @@
     <string name="search_screen_subtitle">Cerca per testo o seleziona una categoria per esplorare tutti i contenuti</string>
     <string name="search_back_to_categories">Torna alle Categorie</string>
     <string name="search_category_desc_addon">Catalogo addon: %1$s</string>
-    <string name="search_category_desc_fallback">Fallback TMDB Discover — catalogo addon non caricato</string>
+    <string name="search_category_desc_fallback">Risultati %1$s da TMDB</string>
+    <string name="search_category_loading">Caricamento del catalogo addon…</string>
+    <!-- Fallback TMDB della sezione Ricerca: un messaggio per tipo (film / serie TV),
+         così nessun limite viene attribuito all'app o a un addon che non ne è la causa. -->
+    <string name="search_category_type_movies">film</string>
+    <string name="search_category_type_series">serie TV</string>
+    <string name="search_category_tmdb_fallback_reason">Nessun catalogo configurato copre questo genere: titoli mostrati da TMDB</string>
+    <string name="search_category_tmdb_after_empty_movies">Nessun risultato dal catalogo addon. Ecco i film trovati su TMDB.</string>
+    <string name="search_category_tmdb_after_empty_series">Nessun risultato dal catalogo addon. Ecco le serie TV trovate su TMDB.</string>
+    <string name="search_category_tmdb_no_results">Nessun risultato per %1$s nemmeno su TMDB</string>
+    <string name="search_category_tmdb_disabled">Nessun catalogo configurato copre il genere “%1$s”: attiva “Usa TMDB come fallback per i generi” nelle Impostazioni per trovare titoli su TMDB.</string>
+    <string name="search_category_tmdb_unavailable">Ricerca TMDB non disponibile: verifica la connessione e riprova</string>
+    <string name="search_category_empty_type">Catalogo %1$s interrogato ma senza risultati</string>
+    <string name="search_category_failed_type">Catalogo %1$s non raggiungibile: riprova più tardi</string>
     <string name="search_titles_available">%d Titoli Disponibili</string>
     <string name="search_no_content_for_category">Nessun contenuto trovato per %s</string>
     <string name="search_results_found">Risultati trovati per \"%1$s\" (%2$d)</string>
@@ -193,6 +206,9 @@
     <string name="settings_update_installed_version">Versione installata: %1$s</string>
     <string name="settings_update_upto_date">L\'app è aggiornata</string>
     <string name="settings_update_available">Nuova versione disponibile: %1$s</string>
+    <string name="settings_update_prompt_title">Aggiornamento disponibile</string>
+    <string name="settings_update_prompt_update">Aggiorna</string>
+    <string name="settings_update_prompt_later">Più tardi</string>
     <string name="settings_update_error">Impossibile controllare gli aggiornamenti</string>
     <string name="settings_update_error_short">Errore</string>
     <string name="settings_update_download">Scarica aggiornamento</string>
@@ -236,6 +252,9 @@
     <string name="settings_status_connected">Collegato</string>
     <string name="settings_status_verify_account">Verifica Account</string>
     <string name="settings_use_torbox_instant">Usa TorBox Instant Debrid</string>
+    <string name="settings_search_section">Ricerca e cataloghi</string>
+    <string name="settings_tmdb_genre_fallback">Usa TMDB come fallback per i generi</string>
+    <string name="settings_tmdb_genre_fallback_desc">Trova film e serie TV tramite TMDB quando nessuno dei cataloghi configurati supporta il genere selezionato.</string>
     <string name="settings_value_on">ON</string>
     <string name="settings_value_off">OFF</string>
     <string name="settings_http_desc">In questa modalità StreamNova riproduce direttamente i flussi degli scraper web gratuiti (VixSrc, AnimeSaturn, CB01 e altri): non servono account Debrid né chiavi API esterne.</string>
@@ -263,6 +282,20 @@
     <string name="settings_subtitle_position">Posizione dei sottotitoli</string>
 
     <string name="settings_forced_subtitles">Sottotitoli Forced se presenti nel video</string>
+
+    <!-- OpenSubtitles: configurazione chiave API nelle Impostazioni → Sottotitoli -->
+    <string name="settings_opensubtitles_api_key">Chiave API OpenSubtitles</string>
+    <string name="settings_opensubtitles_key_hint">Incolla qui la tua chiave API (opensubtitles.com)</string>
+    <string name="settings_opensubtitles_verify_connection">Verifica connessione</string>
+    <string name="settings_opensubtitles_connected">Connessione riuscita</string>
+    <string name="settings_opensubtitles_verify_error">Verifica non riuscita: chiave non valida o rifiutata da OpenSubtitles. Controlla la chiave su opensubtitles.com e riprova.</string>
+    <string name="settings_opensubtitles_network_error">Errore di rete: impossibile verificare la chiave. Controlla la connessione e riprova.</string>
+    <string name="settings_opensubtitles_http_error">OpenSubtitles non è raggiungibile al momento (errore del servizio). Riprova più tardi.</string>
+    <string name="settings_opensubtitles_missing_desc">Senza chiave API la ricerca ufficiale OpenSubtitles non è disponibile: i sottotitoli dell\'addon Stremio continuano a funzionare normalmente.</string>
+    <string name="settings_opensubtitles_key_not_valid_desc">La chiave salvata sembra non valida: la ricerca ufficiale OpenSubtitles può fallire. Verifica la connessione o inserisci una nuova chiave.</string>
+    <string name="action_show_key">Mostra</string>
+    <string name="action_hide_key">Nascondi</string>
+
     <string name="settings_sec_advanced">Avanzato</string>
     <string name="settings_adv_target_buffer">Dimensione Target Buffer</string>
     <string name="settings_adv_initial_buffer">Buffer Iniziale (Avvio)</string>
@@ -395,6 +428,13 @@
     <string name="player_subtitles_online_section">Sottotitoli Online (OpenSubtitles)</string>
     <string name="player_subtitles_online_loading">Ricerca su OpenSubtitles v3…</string>
     <string name="player_subtitles_online_empty">Nessun sottotitolo online trovato</string>
+    <string name="player_subtitles_online_download_running">Download del sottotitolo in corso…</string>
+    <string name="player_subtitles_online_download_retry">Riprova</string>
+    <string name="player_subtitles_online_download_error_network">Errore di rete durante il download del sottotitolo.</string>
+    <string name="player_subtitles_online_download_error_timeout">Il download del sottotitolo ha impiegato troppo tempo.</string>
+    <string name="player_subtitles_online_download_error_http">OpenSubtitles ha rifiutato la richiesta di download.</string>
+    <string name="player_subtitles_online_download_error_nolink">OpenSubtitles non ha restituito un link di download valido.</string>
+    <string name="player_subtitles_online_download_error_invalid">Il file scaricato non è un sottotitolo valido.</string>
     <string name="player_speed_dialog_title">Velocità di Riproduzione</string>
     <string name="player_speed_normal">1.0x (Normale)</string>
     <string name="player_quality_dialog_title">Seleziona Risoluzione Video</string>
@@ -445,3 +485,4 @@
     <string name="parental_playback_restricted_subtitle">Inserisci il PIN per continuare</string>
     <string name="parental_playback_pin_incorrect">PIN errato</string>
 </resources>
+

@@ -19,7 +19,25 @@ import androidx.media3.exoplayer.trackselection.MappingTrackSelector.MappedTrack
 object NuvioTrackSelector {
 
     private const val TAG = "NuvioTrackSelector"
-    private const val ADAPTIVE_QUALITY_INCREASE_MIN_DURATION_MS = 2_000
+
+    /**
+     * Soglia minima di buffer prima di autorizzare un AUMENTO di qualità (isteresi di
+     * `AdaptiveTrackSelection`): se il formato ideale ha bitrate più alto di quello in
+     * riproduzione e il buffer è più corto di questa soglia, il cambio viene rinviato.
+     *
+     * Il port di NuvioTV usava 2.000 ms; con una soglia così bassa il selettore può
+     * risalire di rendition subito dopo ogni svuotamento del buffer, quindi su CDN lenti
+     * la selezione oscilla (up → svuotamento → down → up). Ogni cambio di rendition su
+     * questi flussi HLS è NON adattivo (`adaptive=NOT_SUPPORTED` nei log di diagnostica),
+     * quindi riconfigura il decoder video: nei log del Fire TV del 24-25/10/2026 una
+     * riproduzione normale ha prodotto 7-8 cambi di formato al minuto, con un rilascio e
+     * una reinizializzazione completa del decoder in uno dei casi (~1,7 s di fermo).
+     *
+     * 10.000 ms è il valore stock di Media3: la qualità può risalire solo quando il buffer
+     * è di nuovo sano, il che spegne l'oscillazione senza toccare la qualità massima
+     * raggiungibile (la selezione iniziale resta guidata dalla stima di banda).
+     */
+    private const val QUALITY_INCREASE_MIN_BUFFER_MS = 10_000
 
     fun create(
         context: Context,
@@ -32,12 +50,7 @@ object NuvioTrackSelector {
         subtitlesEnabled: Boolean = false,
         forcedSubtitlesEnabled: Boolean = true
     ): DefaultTrackSelector {
-        val adaptiveTrackSelectionFactory = AdaptiveTrackSelection.Factory(
-            ADAPTIVE_QUALITY_INCREASE_MIN_DURATION_MS,
-            AdaptiveTrackSelection.DEFAULT_MAX_DURATION_FOR_QUALITY_DECREASE_MS,
-            AdaptiveTrackSelection.DEFAULT_MIN_DURATION_TO_RETAIN_AFTER_DISCARD_MS,
-            AdaptiveTrackSelection.DEFAULT_BANDWIDTH_FRACTION
-        )
+        val adaptiveTrackSelectionFactory = adaptiveTrackSelectionFactory()
 
         return object : DefaultTrackSelector(context, adaptiveTrackSelectionFactory) {
             override fun selectAllTracks(
@@ -168,4 +181,25 @@ object NuvioTrackSelector {
             StreamNova4KDiag.logParams("NuvioTrackSelector.create", parameters)
         }
     }
+
+    /**
+     * Factory della selezione video adattiva usata dal player (e dai test di regressione
+     * sull'oscillazione delle rendition).
+     *
+     * Il parametro [qualityIncreaseMinBufferMs] è l'isteresi di aumento qualità: il default
+     * è [QUALITY_INCREASE_MIN_BUFFER_MS], il valore di produzione. Il parametro è esposto
+     * perché i test possano ricostruire il comportamento precedente (2.000 ms) e dimostrare
+     * che era proprio quella soglia a lasciare il selettore libero di risalire di rendition.
+     */
+    internal fun adaptiveTrackSelectionFactory(
+        qualityIncreaseMinBufferMs: Int = QUALITY_INCREASE_MIN_BUFFER_MS
+    ): AdaptiveTrackSelection.Factory = AdaptiveTrackSelection.Factory(
+        qualityIncreaseMinBufferMs,
+        AdaptiveTrackSelection.DEFAULT_MAX_DURATION_FOR_QUALITY_DECREASE_MS,
+        AdaptiveTrackSelection.DEFAULT_MIN_DURATION_TO_RETAIN_AFTER_DISCARD_MS,
+        AdaptiveTrackSelection.DEFAULT_BANDWIDTH_FRACTION
+    )
+
+    /** Valore di produzione della soglia di aumento qualità (usato dai test). */
+    internal val qualityIncreaseMinBufferMs: Int get() = QUALITY_INCREASE_MIN_BUFFER_MS
 }

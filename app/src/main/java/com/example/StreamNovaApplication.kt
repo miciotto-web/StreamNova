@@ -6,13 +6,16 @@ import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.SettingsRepository
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
+import com.example.data.repository.SimklSyncManager
 import com.example.data.repository.LastWorkingStreamRepository
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.provider.ProviderCatalogResolvers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class StreamNovaApplication : Application() {
 
@@ -44,6 +47,13 @@ class StreamNovaApplication : Application() {
     // Preload cached media immediately on background thread
     appScope.launch {
       MediaRepository.loadFromCache()
+      // Sincronizzazione SIMKL all'avvio: il pull è gate su GET /sync/activities, quindi
+      // con l'account fermo costa una sola richiesta. Si attende che il catalogo locale
+      // sia in memoria, altrimenti i titoli già presenti verrebbero reimportati.
+      if (SimklRepository.accountState.value.isLoggedIn) {
+        withTimeoutOrNull(15_000L) { MediaRepository.mediaList.first { it.isNotEmpty() } }
+        runCatching { SimklSyncManager.sync() }
+      }
     }
   }
 }

@@ -176,6 +176,41 @@ class PlayerCodecErrorClassifierTest {
     assertNull(PlayerCodecErrorClassifier.fallbackMaxVideoSize(error))
   }
 
+  @Test
+  fun erroreDiRuntimeCheckCheRifiutaIlFormatoTestoEEUnErroreDiSottotitoli() {
+    // La versione Media3 installata ha la decodifica "legacy" dei sottotitoli
+    // disabilitata: l'errore e' un IllegalStateException ("runtime check"), senza
+    // renderer associato, e il MIME type rifiutato e' l'unico indizio. "text/vtt" non
+    // contiene nessuno dei marcatori testuali precedenti: senza questa regola
+    // l'errore finiva ai gestori della sorgente video.
+    val cause = IllegalStateException(
+      "Legacy decoding is disabled, can't handle text/vtt samples (expected application/x-media3-cues)."
+    )
+    val error = ExoPlaybackException.createForUnexpected(cause)
+
+    assertTrue(
+      "il rifiuto del formato testo deve essere riconosciuto come errore di sottotitoli",
+      PlayerCodecErrorClassifier.isSubtitleTrackError(error)
+    )
+    assertNull(
+      "un errore di sottotitoli non deve attivare il fallback codec video",
+      PlayerCodecErrorClassifier.fallbackMaxVideoSize(error, "Matrix")
+    )
+  }
+
+  @Test
+  fun erroreDiRuntimeCheckSuFormatoVideoNonEEUnErroreDiSottotitoli() {
+    val cause = IllegalStateException(
+      "Legacy decoding is disabled, can't handle video/avc samples (expected application/x-media3-cues)."
+    )
+    val error = ExoPlaybackException.createForUnexpected(cause)
+
+    assertFalse(
+      "un rifiuto di formato VIDEO non deve essere attribuito ai sottotitoli",
+      PlayerCodecErrorClassifier.isSubtitleTrackError(error)
+    )
+  }
+
   // ── MIME type sottotitoli ───────────────────────────────────────────────────
 
   @Test

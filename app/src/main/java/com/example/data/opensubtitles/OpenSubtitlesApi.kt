@@ -24,6 +24,10 @@ interface OpenSubtitlesApi {
 
   /**
    * Ricerca sottotitoli per film o episodi di serie.
+   *
+   * `year` filtra per l'anno del contenuto: utile solo per la ricerca testuale (senza
+   * IMDb/TMDB), dove disambigua i titoli omonimi; l'endpoint la accetta comunque e il
+   * provider la ignora quando sono presenti identificativi attendibili.
    */
   @GET("subtitles")
   suspend fun searchSubtitles(
@@ -33,6 +37,7 @@ interface OpenSubtitlesApi {
     @Query("season_number") seasonNumber: Int? = null,
     @Query("episode_number") episodeNumber: Int? = null,
     @Query("languages") languages: String? = null,
+    @Query("year") year: Int? = null,
     @Query("query") query: String? = null
   ): Response<OpenSubtitlesSearchResponse>
 

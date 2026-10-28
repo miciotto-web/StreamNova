@@ -103,7 +103,9 @@ class TorBoxMultiSourceResolutionTest {
       override suspend fun fetchSubtitles(
         mediaItem: MediaItem,
         episode: com.example.data.model.Episode?,
-        preferredLanguage: String?
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
       ): List<com.example.domain.model.Subtitle> = emptyList()
     }
 

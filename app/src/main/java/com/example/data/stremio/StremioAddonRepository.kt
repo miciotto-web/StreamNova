@@ -438,6 +438,9 @@ object StremioAddonRepository {
       persist(remaining)
       Log.i(TAG, "Addon rimosso: $id")
     }
+    // I cataloghi sono dati dell'addon: cambiare l'insieme degli addon installati
+    // invalida le risposte in cache (anche se l'addon non era presente).
+    StremioCatalogEngine.clearCache()
   }
 
   /** Abilita/disabilita un addon. */
@@ -1161,5 +1164,8 @@ object StremioAddonRepository {
   fun clearCaches() {
     streamCache.clear()
     imdbCache.clear()
+    // Le risposte dei cataloghi possono dipendere dal set di addon installati (id
+    // omonimi, extra diversi): vanno invalidate insieme all'addon rimosso/installato.
+    StremioCatalogEngine.clearCache()
   }
 }

@@ -151,7 +151,18 @@
      <string name="search_screen_subtitle">Recherchez par texte ou choisissez une catégorie pour tout explorer</string>
      <string name="search_back_to_categories">Retour aux Catégories</string>
      <string name="search_category_desc_addon">Catalogue de l’addon : %1$s</string>
-     <string name="search_category_desc_fallback">Repli TMDB Discover — catalogue de l’addon non chargé</string>
+     <string name="search_category_desc_fallback">Résultats %1$s depuis TMDB</string>
+     <string name="search_category_loading">Chargement du catalogue de l’addon…</string>
+     <string name="search_category_type_movies">films</string>
+     <string name="search_category_type_series">séries</string>
+     <string name="search_category_tmdb_fallback_reason">Aucun catalogue configuré ne couvre ce genre : titres affichés depuis TMDB</string>
+     <string name="search_category_tmdb_after_empty_movies">Aucun résultat du catalogue de l’addon. Voici les films trouvés sur TMDB.</string>
+     <string name="search_category_tmdb_after_empty_series">Aucun résultat du catalogue de l’addon. Voici les séries TV trouvées sur TMDB.</string>
+     <string name="search_category_tmdb_no_results">Aucun résultat pour %1$s même sur TMDB</string>
+     <string name="search_category_tmdb_disabled">Aucun catalogue configuré ne couvre le genre « %1$s » : activez « Utiliser TMDB comme repli pour les genres » dans les Réglages pour trouver des titres sur TMDB.</string>
+     <string name="search_category_tmdb_unavailable">Recherche TMDB indisponible : vérifiez la connexion et réessayez</string>
+     <string name="search_category_empty_type">Catalogue %1$s interrogé mais sans résultats</string>
+     <string name="search_category_failed_type">Catalogue %1$s inaccessible : réessayez plus tard</string>
      <string name="search_titles_available">%d Titres disponibles</string>
      <string name="search_no_content_for_category">Aucun contenu trouvé pour %s</string>
      <string name="search_results_found">Résultats pour \"%1$s\" (%2$d)</string>
@@ -193,6 +204,9 @@
      <string name="settings_update_installed_version">Version installée : %1$s</string>
      <string name="settings_update_upto_date">L\'application est à jour</string>
      <string name="settings_update_available">Nouvelle version disponible : %1$s</string>
+     <string name="settings_update_prompt_title">Mise à jour disponible</string>
+     <string name="settings_update_prompt_update">Mettre à jour</string>
+     <string name="settings_update_prompt_later">Plus tard</string>
      <string name="settings_update_error">Impossible de vérifier les mises à jour</string>
      <string name="settings_update_error_short">Erreur</string>
      <string name="settings_update_download">Télécharger la mise à jour</string>
@@ -236,6 +250,9 @@
      <string name="settings_status_connected">Connecté</string>
      <string name="settings_status_verify_account">Vérifier le compte</string>
      <string name="settings_use_torbox_instant">Utiliser TorBox Instant Debrid</string>
+     <string name="settings_search_section">Recherche et catalogues</string>
+     <string name="settings_tmdb_genre_fallback">Utiliser TMDB comme repli pour les genres</string>
+     <string name="settings_tmdb_genre_fallback_desc">Trouve des films et des séries via TMDB lorsqu’aucun des catalogues configurés ne prend en charge le genre sélectionné.</string>
      <string name="settings_value_on">ON</string>
      <string name="settings_value_off">OFF</string>
      <string name="settings_http_desc">Dans ce mode, StreamNova lit directement les flux des scrapers web gratuits (VixSrc, AnimeSaturn, CB01 et autres) : aucun compte Debrid ni clé API externe n\'est nécessaire.</string>
@@ -262,7 +279,19 @@
      <string name="settings_subtitle_position">Position des sous-titres</string>
 
      <string name="settings_forced_subtitles">Sous-titres Forcés si présents</string>
-     <string name="settings_sec_advanced">Avancé</string>
+     <!-- OpenSubtitles : configuration de la clé API dans Paramètres > Sous-titres -->
+    <string name="settings_opensubtitles_api_key">Clé API OpenSubtitles</string>
+    <string name="settings_opensubtitles_key_hint">Colle ici ta clé API (opensubtitles.com)</string>
+    <string name="settings_opensubtitles_verify_connection">Tester la connexion</string>
+    <string name="settings_opensubtitles_connected">Connexion réussie</string>
+    <string name="settings_opensubtitles_verify_error">Vérification échouée : la clé a été refusée par OpenSubtitles ou n\'est pas valide. Vérifie la clé sur opensubtitles.com et réessaie.</string>
+    <string name="settings_opensubtitles_network_error">Erreur réseau : impossible de vérifier la clé. Vérifie la connexion et réessaie.</string>
+    <string name="settings_opensubtitles_http_error">OpenSubtitles est momentanément indisponible (erreur du service). Réessaie plus tard.</string>
+    <string name="settings_opensubtitles_missing_desc">Sans clé API, la recherche officielle OpenSubtitles n\'est pas disponible : les sous-titres de l\'addon Stremio continuent de fonctionner normalement.</string>
+    <string name="settings_opensubtitles_key_not_valid_desc">La clé enregistrée semble invalide : la recherche officielle OpenSubtitles peut échouer. Teste la connexion ou saisis une nouvelle clé.</string>
+    <string name="action_show_key">Afficher</string>
+    <string name="action_hide_key">Masquer</string>
+    <string name="settings_sec_advanced">Avancé</string>
      <string name="settings_bug_reports">Rapports de bugs</string>
      <string name="settings_privacy_data">Confidentialité et données</string>
      <string name="settings_clear_cache">Vider le cache</string>
@@ -403,3 +432,4 @@
      <string name="parental_playback_restricted_subtitle">Entrez le code PIN pour continuer</string>
      <string name="parental_playback_pin_incorrect">Code PIN incorrect</string>
 </resources>
+

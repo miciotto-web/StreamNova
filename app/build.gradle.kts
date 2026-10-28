@@ -11,6 +11,25 @@ plugins {
   alias(libs.plugins.google.services)
 }
 
+// Il logger va preso qui: dentro i blocchi DSL annidati (`defaultConfig`, `signingConfigs`)
+// non c'è un receiver `Project` su cui risolverlo.
+val buildLogger = logger
+
+/**
+ * Vero per un Client ID SIMKL che può davvero essere usato. Regola gemella di
+ * `SimklRepository.sanitizeSimklClientId`, che resta l'unica applicata a runtime: qui
+ * serve solo a dire in fase di build, prima di installare l'APK, che il login non potrà
+ * funzionare. I segnaposto sono quelli di `.env.example`.
+ */
+val isUsableSimklClientId: (String) -> Boolean = { raw ->
+  val value = raw.trim().trim('"')
+  val upper = value.uppercase()
+  value.isNotEmpty() &&
+    !upper.startsWith("DEFAULT_") &&
+    !upper.startsWith("YOUR_") &&
+    upper != "SIMKL_CLIENT_ID"
+}
+
 android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -38,6 +57,46 @@ android {
       ?: localProps.getProperty("TMDB_API_KEY")
       ?: "").replace("\"", "")
     buildConfigField("String", "ENV_TMDB_API_KEY", "\"$tmdbKey\"")
+
+    // SIMKL client ID: developer-side configuration only. It is never asked to the
+    // user, so it must arrive with the build: environment variable, then
+    // local.properties, then .env (the file documented in .env.example). All three
+    // are git-ignored, so no credential enters the repository. .env also feeds
+    // BuildConfig.SIMKL_CLIENT_ID through the secrets plugin below; reading it here
+    // as well keeps the two channels in agreement, instead of leaving the plugin's
+    // placeholder as the only value when .env is missing.
+    val dotEnvProps = Properties().apply {
+      val dotEnvFile = rootProject.file(".env")
+      if (dotEnvFile.exists()) dotEnvFile.inputStream().use { load(it) }
+    }
+    val simklClientId = (System.getenv("SIMKL_CLIENT_ID")
+      ?: localProps.getProperty("SIMKL_CLIENT_ID")
+      ?: dotEnvProps.getProperty("SIMKL_CLIENT_ID")
+      ?: "").replace("\"", "")
+    buildConfigField("String", "ENV_SIMKL_CLIENT_ID", "\"$simklClientId\"")
+
+    // A build without a usable client ID installs and runs, but "Collega account
+    // SIMKL" can only answer "non disponibile": no code is ever requested. That
+    // silent hole shipped once, so the build says it out loud instead of leaving a
+    // panel that looks broken on device (simkl_client_id_report.md). Placeholders
+    // from .env.example count as missing; the authoritative check, which also runs
+    // at runtime, is SimklRepository.sanitizeSimklClientId.
+    // Testo senza accenti: questo messaggio viene stampato su console Windows, dove la
+    // code page può non essere UTF-8.
+    if (!isUsableSimklClientId(simklClientId)) {
+      buildLogger.warn(
+        """
+        |SIMKL_CLIENT_ID is not set for this build: SIMKL login will only answer
+        |"Il collegamento a SIMKL non e' disponibile in questa build di StreamNova."
+        |Set it before building, in one of these places (all git-ignored, never committed):
+        |  - local.properties:  SIMKL_CLIENT_ID=<id from https://simkl.com/settings/developer/>
+        |  - .env:              SIMKL_CLIENT_ID=<id>    (copy .env.example first)
+        |  - environment:       export SIMKL_CLIENT_ID=<id>
+        |                       (Windows PowerShell: ${'$'}env:SIMKL_CLIENT_ID="<id>")
+        |The ID is a developer credential: it is never invented, asked to the user, or committed.
+        """.trimMargin()
+      )
+    }
   }
 
   signingConfigs {

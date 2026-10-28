@@ -75,11 +75,37 @@ class UpdateStringsLocalizationTest {
   }
 
   @Test
+  fun promptStringsOfTheStartupPopupAreLocalized() {
+    val root = resRoot()
+    assumeTrue("Cartella delle risorse non raggiungibile", root != null)
+
+    // Il popup del controllo automatico deve parlare la lingua dell'utente: titolo e
+    // scelte «Aggiorna» / «Più tardi» non possono restare in italiano per chi usa
+    // l'app in un'altra lingua.
+    val required = listOf(
+      "settings_update_prompt_title",
+      "settings_update_prompt_update",
+      "settings_update_prompt_later"
+    )
+
+    locales.forEach { locale ->
+      val strings = readStrings(stringsFile(locale))
+      required.forEach { key ->
+        assertTrue("Stringa mancante $key in $locale", strings.containsKey(key))
+        assertTrue("Stringa vuota $key in $locale", strings.getValue(key).isNotBlank())
+      }
+    }
+  }
+
+  @Test
   fun integrityAndInstallerErrorsAreLocalized() {
     val root = resRoot()
     assumeTrue("Cartella delle risorse non raggiungibile", root != null)
 
     val required = listOf(
+      "settings_update_prompt_title",
+      "settings_update_prompt_update",
+      "settings_update_prompt_later",
       "settings_update_dl_error_size",
       "settings_update_dl_error_checksum",
       "settings_update_install_failed_file",

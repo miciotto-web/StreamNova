@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -39,6 +38,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -109,12 +109,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.snapshotFlow
 import androidx.annotation.StringRes
 import androidx.compose.ui.res.stringResource
@@ -122,8 +118,11 @@ import com.example.R
 import com.example.BuildConfig
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.opensubtitles.OpenSubtitlesVerifyError
+import com.example.data.repository.MediaIdentity
 import com.example.data.repository.SimklRepository
-import com.example.data.remote.simkl.SimklPinState
+import com.example.data.repository.SimklSyncManager
+import com.example.data.remote.simkl.SimklSyncStatus
 import com.example.data.model.SearchTypeFilter
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.BackBufferOption
@@ -137,9 +136,6 @@ import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.TargetBufferOption
-import com.example.data.update.ApkInstaller
-import com.example.data.update.DownloadErrorReason
-import com.example.data.update.UpdateCheckErrorReason
 import com.example.data.update.UpdateCheckState
 import com.example.data.update.UpdateDownloadState
 import com.example.ui.components.ContinueWatchingCard
@@ -161,7 +157,8 @@ import com.example.ui.components.guard
 import com.example.ui.components.tvFocusRequester
 import com.example.ui.components.TextInputDialog
 import com.example.ui.components.TvPinDialog
-import com.example.ui.components.QrCodeImage
+import com.example.ui.components.SimklLoginController
+import com.example.ui.components.SimklLoginDialog
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCardBgFocused
@@ -171,15 +168,14 @@ import com.example.ui.theme.NovaDivider
 import com.example.ui.theme.NovaGreen
 import com.example.ui.theme.NovaOrange
 import com.example.ui.theme.NovaRed
-import com.example.ui.theme.NovaSurface
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import com.example.ui.viewmodel.OpenSubtitlesConnectionState
 import com.example.ui.viewmodel.SearchCategorySource
 import com.example.ui.viewmodel.StreamNovaViewModel
 import com.example.ui.viewmodel.TorBoxAccountState
-import java.io.File
 
 enum class CategoryCatalogFilter(
   val id: String,
@@ -495,7 +491,9 @@ fun FavoritesScreen(
   modifier: Modifier = Modifier,
   viewModel: StreamNovaViewModel? = null
 ) {
-  val favorites = allMedia.filter { it.isFavorite }
+  // Una griglia per TITOLO: con due schede dello stesso contenuto in catalogo (una TMDB, una
+  // IMDb/Stremio) la stessa card comparirebbe due volte (vedi `MediaIdentity`).
+  val favorites = MediaIdentity.dedupeFavorites(allMedia)
 
   // Focus restoration: riceve il segnale dal ViewModel
   val focusRestoreSignal = remember { mutableStateOf<String?>(null) }
@@ -895,6 +893,10 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   resultsOverride: List<MediaItem>? = null
 ) {
   val query by viewModel.searchQuery.collectAsState()
+  // Contesto applicativo al ViewModel: i messaggi della categoria sono risorse
+  // localizzate risolte nel ViewModel (idempotente, nessun leak).
+  val appContext = LocalContext.current
+  LaunchedEffect(viewModel) { viewModel.attachContext(appContext) }
   val results = if (resultsOverride != null) {
     resultsOverride
   } else {
@@ -1437,13 +1439,22 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                 Text(
                   // Sottotitolo secondo la sorgente REALE dei poster: l'etichetta
                   // TMDB Discover appare solo quando il fallback TMDB è attivo.
+                  // Finché lo stato non è determinato (caricamento) non si annuncia
+                  // alcun catalogo addon: evita "Catalogo addon: X" con 0 titoli.
                   text = when (categoryState.source) {
                     SearchCategorySource.ADDON -> stringResource(
                       R.string.search_category_desc_addon,
                       categoryState.addonLabel.orEmpty()
                     )
-                    SearchCategorySource.TMDB_FALLBACK -> stringResource(R.string.search_category_desc_fallback)
-                    null -> ""
+                    SearchCategorySource.TMDB_FALLBACK -> stringResource(
+                      R.string.search_category_desc_fallback,
+                      stringResource(cat.labelRes)
+                    )
+                    null -> if (isCategoryLoading) {
+                      stringResource(R.string.search_category_loading)
+                    } else {
+                      ""
+                    }
                   },
                   color = if (categoryState.source == SearchCategorySource.TMDB_FALLBACK) {
                     NovaOrange
@@ -1775,18 +1786,31 @@ fun SettingsScreen(
   val torBoxApiKey = viewModel?.torBoxApiKey?.collectAsState()?.value
   val torBoxEnabled = viewModel?.torBoxInstantDebridEnabled?.collectAsState()?.value ?: true
   val torBoxState = viewModel?.torBoxAccountState?.collectAsState()?.value ?: TorBoxAccountState.Unknown
+  // Chiave/OpenSubtitles: la chiave è un dato condiviso con il client (AppSettingsRepository),
+  // lo stato di verifica vive nel ViewModel (con fallback "sconosciuto" fuori dall'app reale).
+  val openSubtitlesApiKey = viewModel?.openSubtitlesApiKey?.collectAsState()?.value
+    ?: AppSettingsRepository.openSubtitlesApiKey.collectAsState().value
+  val openSubtitlesConnectionState = viewModel?.openSubtitlesConnectionState?.collectAsState()?.value
+    ?: OpenSubtitlesConnectionState.Unknown
   val streamingEngineMode = AppSettingsRepository.streamingEngineMode.collectAsState().value ?: StreamingEngineMode.HTTP_WEB
   val autoplayEnabled = viewModel?.autoplayEnabled?.collectAsState()?.value ?: false
+  val tmdbGenreFallbackEnabled = viewModel?.tmdbGenreFallbackEnabled?.collectAsState()?.value ?: true
+  // Contesto al ViewModel: i messaggi della sezione Ricerca sono risorse localizzate
+  // risolte lì (fuori dalla composizione). Operazione idempotente, nessun leak.
+  LaunchedEffect(viewModel) { viewModel?.attachContext(context) }
   val appLanguage = viewModel?.appLanguage?.collectAsState()?.value ?: "it"
   val parentalControlEnabled = viewModel?.parentalControlEnabled?.collectAsState()?.value ?: false
   val parentalControlLevel = viewModel?.parentalControlLevel?.collectAsState()?.value ?: "18"
   val updateCheckState = viewModel?.updateCheckState?.collectAsState()?.value ?: UpdateCheckState.Idle
   val updateDownloadState = viewModel?.updateDownloadState?.collectAsState()?.value ?: UpdateDownloadState.Idle
   var showTorBoxKeyDialog by remember { mutableStateOf(false) }
-  // Ripristino del focus sulla riga che ha aperto il popup chiave API: al BACK (o
+  var showOpenSubtitlesKeyDialog by remember { mutableStateOf(false) }
+  // Ripristino del focus sulle righe che aprono i popup chiave API: al BACK (o
   // Salva/Annulla) il focus torna qui invece di perdersi sulla schermata.
   val torBoxKeyRowFocusRequester = remember { FocusRequester() }
+  val openSubtitlesKeyRowFocusRequester = remember { FocusRequester() }
   var restoreTorBoxKeyRowFocus by remember { mutableStateOf(false) }
+  var restoreOpenSubtitlesKeyRowFocus by remember { mutableStateOf(false) }
   var showResolutionDialog by remember { mutableStateOf(false) }
   var showSubtitleLanguageDialog by remember { mutableStateOf(false) }
   var showSubtitleSizeDialog by remember { mutableStateOf(false) }
@@ -1808,12 +1832,45 @@ fun SettingsScreen(
   var isClearingCache by remember { mutableStateOf(false) }
   var showUpdateResultDialog by remember { mutableStateOf(false) }
   val simklAccount by SimklRepository.accountState.collectAsState()
+  val simklSyncResult by SimklRepository.lastSyncResult.collectAsState()
+  val simklSyncing by SimklRepository.isSyncing.collectAsState()
   val simklScope = rememberCoroutineScope()
-  var simklPin by remember { mutableStateOf<SimklPinState?>(null) }
-  var simklStatus by remember { mutableStateOf<String?>(null) }
-  var simklLoading by remember { mutableStateOf(false) }
-  var showSimklClientIdDialog by remember { mutableStateOf(false) }
-  var simklClientIdDraft by remember { mutableStateOf("") }
+  var simklNotice by remember { mutableStateOf<String?>(null) }
+  var simklLastSyncAt by remember { mutableStateOf(SimklRepository.lastSyncAtEpochMs()) }
+
+  // Ciclo di vita del login SIMKL: richiesta del codice, QR nel modale, polling fino
+  // all'approvazione, annullamento. Il Client ID è una configurazione di build (vedi
+  // `.env.example`): non c'è nulla da chiedere all'utente in questa schermata.
+  val simklLoginController = remember(simklScope) {
+    SimklLoginController(
+      requestPrompt = { SimklRepository.startLogin() },
+      awaitAuthorization = { prompt -> SimklRepository.awaitLogin(prompt) },
+      // La sincronizzazione è il motivo per cui l'account viene collegato: parte subito
+      // dopo il login, e un suo errore non trasforma il login in un fallimento.
+      onAuthorized = { SimklSyncManager.sync(force = true) },
+      scope = simklScope
+    )
+  }
+  val simklLoginState by simklLoginController.state.collectAsState()
+
+  // Esito del login: avviso in schermata (un errore di sincronizzazione non lo cambia).
+  LaunchedEffect(simklLoginState.account) {
+    val state = simklLoginState.account ?: return@LaunchedEffect
+    simklNotice = buildString {
+      append("Account collegato")
+      state.username?.let { append(": $it") }
+      append(".")
+      if (state.isReadOnly) {
+        append(" Accesso in SOLA LETTURA: ricollega per abilitare lo scrobbling.")
+      }
+    }
+    simklLoginController.clearResult()
+  }
+
+  // "Ultima sincronizzazione" segue ogni pull riuscito, compreso quello dopo il login.
+  LaunchedEffect(simklSyncResult) {
+    simklLastSyncAt = SimklRepository.lastSyncAtEpochMs()
+  }
 
   // Verifica automatica (una sola volta) della chiave salvata: all'ingresso in
   // Impostazioni l'indicatore diventa verde "Collegato" se la chiave è valida.
@@ -1834,7 +1891,17 @@ fun SettingsScreen(
     }
   }
 
-  // Quando il popup della chiave API si chiude (BACK, Salva o Annulla) il focus torna
+  LaunchedEffect(restoreOpenSubtitlesKeyRowFocus) {
+    if (!restoreOpenSubtitlesKeyRowFocus) return@LaunchedEffect
+    restoreOpenSubtitlesKeyRowFocus = false
+    withFrameNanos { }
+    try {
+      openSubtitlesKeyRowFocusRequester.requestFocus()
+    } catch (_: Exception) {
+    }
+  }
+
+  // Quando il popup della chiave API TorBox si chiude (BACK, Salva o Annulla) il focus torna
   // sulla riga di Impostazioni che lo ha aperto, con una riga di frame di margine per
   // lasciare ricomporre lo sfondo.
   LaunchedEffect(restoreTorBoxKeyRowFocus) {
@@ -1872,94 +1939,100 @@ fun SettingsScreen(
       }
 
       // ── ACCOUNT SIMKL ────────────────────────────────────────────────────
+      // Nessun campo per il Client ID: è una configurazione dello sviluppatore che arriva
+      // con la build. Qui l'utente trova solo "Collega account SIMKL" e la sincronizzazione.
       item {
-        val simklClientId by AppSettingsRepository.simklClientId.collectAsState()
         SettingsSection(title = "Account SIMKL") {
           SettingsRow(
-            icon = Icons.Default.VpnKey,
-            title = "Client ID SIMKL",
-            value = simklClientId?.let { "••••${it.takeLast(4)}" } ?: "Non configurato",
-            valueColor = if (simklClientId.isNullOrBlank()) NovaOrange else NovaGreen,
-            onClick = {
-              simklClientIdDraft = simklClientId.orEmpty()
-              showSimklClientIdDialog = true
-            }
-          )
-          if (simklClientId.isNullOrBlank()) {
-            Text(
-              "Crea un client PIN per TV su simkl.com/settings/developer e inserisci il Client ID qui.",
-              color = NovaTextSecondary,
-              fontSize = 12.sp,
-              modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-          }
-          SettingsRow(
             icon = Icons.Default.CloudDone,
-            title = if (simklAccount.isLoggedIn) "Account collegato" else "Collega SIMKL",
+            title = if (simklAccount.isLoggedIn) "Account collegato" else "Collega account SIMKL",
             value = when {
-              !SimklRepository.hasClientId() -> "Configura SIMKL_CLIENT_ID"
-              simklLoading -> "In attesa di autorizzazione…"
               simklAccount.isLoggedIn -> simklAccount.username ?: "Collegato"
-              simklPin != null -> "Codice ${simklPin!!.userCode}"
+              simklLoginState.waiting -> "In attesa di autorizzazione…"
+              !SimklRepository.hasClientId() -> "Non disponibile"
               else -> "Non collegato"
             },
-            valueColor = if (simklAccount.isLoggedIn) NovaGreen else NovaCyanBright,
+            valueColor = when {
+              simklAccount.isLoggedIn && simklAccount.sessionExpired -> NovaOrange
+              simklAccount.isLoggedIn -> NovaGreen
+              !SimklRepository.hasClientId() -> NovaTextSecondary
+              else -> NovaCyanBright
+            },
             onClick = {
               if (simklAccount.isLoggedIn) {
                 simklScope.launch {
                   SimklRepository.signOut()
-                  simklStatus = "Account SIMKL scollegato."
+                  simklNotice = "Account SIMKL scollegato."
+                  simklLastSyncAt = null
                 }
-              } else if (!simklLoading && SimklRepository.hasClientId()) {
-                simklLoading = true
-                simklStatus = null
-                simklScope.launch {
-                  runCatching { SimklRepository.requestDeviceCode() }
-                    .onSuccess { pin ->
-                      simklPin = pin
-                      runCatching { SimklRepository.pollDeviceCode(pin) }
-                        .onSuccess {
-                          simklPin = null
-                          simklStatus = "Account collegato${it.username?.let { name -> ": $name" } ?: ""}."
-                        }
-                        .onFailure { simklStatus = it.localizedMessage ?: "Codice scaduto o errore SIMKL" }
-                    }
-                    .onFailure { simklStatus = it.localizedMessage ?: "Errore SIMKL" }
-                  simklLoading = false
-                }
+              } else {
+                simklLoginController.start()
               }
             }
           )
-          simklPin?.let { pin ->
-            Row(
-              modifier = Modifier.fillMaxWidth().padding(16.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
-              QrCodeImage(value = pin.verificationUri, modifier = Modifier.size(136.dp))
-              Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("1. Visita ${pin.verificationUri}", color = NovaTextSecondary, fontSize = 14.sp)
-                Text("2. Inserisci questo codice", color = NovaTextSecondary, fontSize = 14.sp)
-                Text(
-                  pin.userCode,
-                  color = NovaCyanBright,
-                  fontSize = 34.sp,
-                  fontWeight = FontWeight.Black,
-                  letterSpacing = 5.sp
-                )
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                  if (simklLoading) CircularProgressIndicator(color = NovaCyanBright, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                  Text(
-                    if (simklLoading) "In attesa dell'autorizzazione…" else "Codice scaduto. Seleziona Collega SIMKL per riprovare.",
-                    color = if (simklLoading) NovaCyanBright else NovaOrange,
-                    fontSize = 13.sp
-                  )
+          if (simklAccount.isLoggedIn) {
+            // Il login con QR lascia sul server un refresh token: la sincronizzazione è la
+            // ragione per cui l'account è collegato, quindi ha una riga dedicata.
+            SettingsRow(
+              icon = Icons.Default.Sync,
+              title = "Sincronizza ora",
+              value = when {
+                simklSyncing -> "Sincronizzazione in corso…"
+                simklLastSyncAt != null -> "Ultima: ${formatSyncTimestamp(simklLastSyncAt!!)}"
+                else -> "Mai eseguita"
+              },
+              valueColor = if (simklSyncing) NovaCyanBright else NovaTextSecondary,
+              onClick = {
+                if (!simklSyncing) {
+                  simklScope.launch {
+                    val result = SimklSyncManager.sync(force = true)
+                    simklLastSyncAt = result.finishedAtEpochMs
+                    simklNotice = result.message
+                  }
                 }
               }
+            )
+          }
+          val simklWarning = when {
+            !simklAccount.isLoggedIn -> null
+            simklAccount.sessionExpired ->
+              "Sessione SIMKL scaduta: seleziona \"Account collegato\" per scollegare e ricollegare l'account."
+            simklAccount.isReadOnly ->
+              "Autorizzazione di sola lettura: lo scrobbling e le scritture su SIMKL non funzioneranno. " +
+                "Ricollega l'account per concedere l'accesso in scrittura."
+            else -> null
+          }
+          simklWarning?.let { note ->
+            Text(
+              note,
+              color = NovaOrange,
+              fontSize = 12.sp,
+              modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+          }
+          simklSyncResult?.takeIf { simklNotice == null }?.let { result ->
+            // Esito dell'ultima sincronizzazione automatica (all'avvio/alla connessione).
+            // PARTIAL è un esito NON riuscito (una sezione non è stata scaricata): stesso
+            // colore di avviso di un errore, nessuna ambiguità con "tutto a posto".
+            if (result.status != SimklSyncStatus.UP_TO_DATE || result.adoptedTotal > 0 || result.watchlistImported > 0) {
+              Text(
+                "Ultima sincronizzazione: ${result.message}",
+                color = if (result.status == SimklSyncStatus.FAILED ||
+                  result.status == SimklSyncStatus.SESSION_EXPIRED ||
+                  result.status == SimklSyncStatus.PARTIAL
+                ) NovaOrange else NovaTextSecondary,
+                fontSize = 12.sp,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+              )
             }
           }
-          simklStatus?.let {
-            Text(it, color = if (simklAccount.isLoggedIn) NovaGreen else NovaOrange, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+          simklNotice?.let {
+            Text(
+              it,
+              color = if (simklAccount.isLoggedIn) NovaGreen else NovaOrange,
+              fontSize = 13.sp,
+              modifier = Modifier.padding(16.dp)
+            )
           }
         }
       }
@@ -2083,6 +2156,30 @@ fun SettingsScreen(
         }
       }
 
+      // ── RICERCA E CATALOGHI ─────────────────────────────────────────────
+      // Lo switch più vicino alla sua area di effetto: la sezione Ricerca e i
+      // cataloghi. Riga D-pad focalizzabile come le altre (SettingsRow), descrizione
+      // esplicita sotto la riga per spiegare quando TMDB viene interrogato.
+      item {
+        SettingsSection(title = stringResource(R.string.settings_search_section)) {
+          SettingsRow(
+            icon = Icons.Default.Search,
+            title = stringResource(R.string.settings_tmdb_genre_fallback),
+            value = if (tmdbGenreFallbackEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
+            valueColor = if (tmdbGenreFallbackEnabled) NovaGreen else NovaTextMuted,
+            onClick = { viewModel?.setTmdbGenreFallbackEnabled(!tmdbGenreFallbackEnabled) }
+          )
+          Text(
+            text = stringResource(R.string.settings_tmdb_genre_fallback_desc),
+            color = NovaTextSecondary,
+            fontSize = 12.sp,
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp, vertical = 8.dp)
+          )
+        }
+      }
+
       // ── RIPRODUZIONE ────────────────────────────────────────────────────
       item {
         SettingsSection(title = stringResource(R.string.settings_sec_playback)) {
@@ -2197,6 +2294,70 @@ fun SettingsScreen(
             valueColor = if (playbackSettings.forcedSubtitlesEnabled) NovaGreen else NovaTextMuted,
             onClick = { viewModel?.setForcedSubtitlesEnabled(!playbackSettings.forcedSubtitlesEnabled) }
           )
+        }
+      }
+
+      // ── OPENSUBTITLES ───────────────────────────────────────────────────
+      // Configurazione della chiave API per la ricerca ufficiale OpenSubtitles v3,
+      // già usata dal player ("Sottotitoli Online"). La chiave salvata vale per
+      // ricerca e download immediatamente (l'interceptor la rilegge a ogni richiesta,
+      // nessuna ricompilazione o riavvio). Senza chiave resta attiva l'altra sorgente
+      // (addon Stremio), come spiegato nella nota sotto.
+      item {
+        SettingsSection(title = "OpenSubtitles") {
+          SettingsRow(
+            icon = Icons.Default.VpnKey,
+            title = stringResource(R.string.settings_opensubtitles_api_key),
+            value = openSubtitlesApiKey?.let { maskApiKey(it) }
+              ?: stringResource(R.string.settings_not_configured),
+            valueColor = if (!openSubtitlesApiKey.isNullOrBlank()) NovaGreen else NovaTextMuted,
+            onClick = { showOpenSubtitlesKeyDialog = true },
+            modifier = Modifier.focusRequester(openSubtitlesKeyRowFocusRequester)
+          )
+          SettingsRow(
+            icon = Icons.Default.CloudDone,
+            title = stringResource(R.string.settings_opensubtitles_verify_connection),
+            value = when (openSubtitlesConnectionState) {
+              OpenSubtitlesConnectionState.Checking -> stringResource(R.string.settings_status_checking)
+              OpenSubtitlesConnectionState.Connected -> stringResource(R.string.settings_opensubtitles_connected)
+              OpenSubtitlesConnectionState.NotConfigured -> stringResource(R.string.settings_not_configured)
+              is OpenSubtitlesConnectionState.Error -> stringResource(R.string.settings_update_error_short)
+              OpenSubtitlesConnectionState.Unknown ->
+                if (openSubtitlesApiKey.isNullOrBlank()) stringResource(R.string.settings_not_configured) else null
+            },
+            valueColor = when {
+              openSubtitlesConnectionState is OpenSubtitlesConnectionState.Connected -> NovaGreen
+              openSubtitlesConnectionState is OpenSubtitlesConnectionState.Error -> NovaRed
+              else -> NovaCyanBright
+            },
+            onClick = { viewModel?.verifyOpenSubtitlesConnection() }
+          )
+          // Messaggio esplicativo: chiave mancante oppure esito negativo della verifica
+          // (motivo tipizzato, mai la chiave). Con lo stato Unknown nessun rumore.
+          val osNote = when {
+            openSubtitlesApiKey.isNullOrBlank() ->
+              stringResource(R.string.settings_opensubtitles_missing_desc)
+            openSubtitlesConnectionState is OpenSubtitlesConnectionState.Error &&
+              openSubtitlesConnectionState.error == OpenSubtitlesVerifyError.INVALID_KEY ->
+              stringResource(R.string.settings_opensubtitles_key_not_valid_desc)
+            openSubtitlesConnectionState is OpenSubtitlesConnectionState.Error &&
+              openSubtitlesConnectionState.error == OpenSubtitlesVerifyError.NETWORK ->
+              stringResource(R.string.settings_opensubtitles_network_error)
+            openSubtitlesConnectionState is OpenSubtitlesConnectionState.Error &&
+              openSubtitlesConnectionState.error == OpenSubtitlesVerifyError.HTTP ->
+              stringResource(R.string.settings_opensubtitles_http_error)
+            else -> null
+          }
+          osNote?.let { note ->
+            Text(
+              text = note,
+              color = NovaTextSecondary,
+              fontSize = 12.sp,
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+          }
         }
       }
 
@@ -2317,19 +2478,14 @@ fun SettingsScreen(
     )
   }
 
-  if (showSimklClientIdDialog) {
-    TextInputDialog(
-      title = "Client ID SIMKL",
-      hint = "Incolla il Client ID creato nelle impostazioni sviluppatore SIMKL",
-      initialText = simklClientIdDraft,
-      confirmLabel = stringResource(R.string.action_save),
-      onConfirm = { value ->
-        AppSettingsRepository.setSimklClientId(value)
-        simklClientIdDraft = value.trim()
-        showSimklClientIdDialog = false
-        simklStatus = "Client ID SIMKL salvato. Avvia il collegamento account."
-      },
-      onDismiss = { showSimklClientIdDialog = false }
+  // Pannello di login SIMKL: QR + codice temporaneo. Chiuderlo (Annulla o BACK) ferma il
+  // polling; "Nuovo codice" lo riavvia senza chiudere il pannello. Viene mostrato anche
+  // quando la richiesta del codice fallisce, così l'errore non resta invisibile.
+  if (simklLoginState.visible) {
+    SimklLoginDialog(
+      state = simklLoginState,
+      onRetry = { simklLoginController.retry() },
+      onDismiss = { simklLoginController.cancel() }
     )
   }
 
@@ -2348,6 +2504,27 @@ fun SettingsScreen(
       onDismiss = {
         showTorBoxKeyDialog = false
         restoreTorBoxKeyRowFocus = true
+      }
+    )
+  }
+
+  if (showOpenSubtitlesKeyDialog) {
+    TextInputDialog(
+      title = stringResource(R.string.settings_opensubtitles_api_key),
+      hint = stringResource(R.string.settings_opensubtitles_key_hint),
+      initialText = openSubtitlesApiKey ?: "",
+      confirmLabel = stringResource(R.string.action_save),
+      // Modalità segreto: mascherata di default + toggle mostra/nascondi durante la
+      // digitazione. La chiave non appare mai in chiaro nella schermata Impostazioni.
+      secure = true,
+      onConfirm = { key ->
+        showOpenSubtitlesKeyDialog = false
+        restoreOpenSubtitlesKeyRowFocus = true
+        viewModel?.setOpenSubtitlesApiKey(key)
+      },
+      onDismiss = {
+        showOpenSubtitlesKeyDialog = false
+        restoreOpenSubtitlesKeyRowFocus = true
       }
     )
   }
@@ -2797,343 +2974,10 @@ private fun decoderFallbackLabel(mode: DecoderFallbackMode): String = when (mode
   DecoderFallbackMode.PREFER -> stringResource(R.string.decoder_mode_prefer)
 }
 
-/**
- * Dialog con l'esito del controllo aggiornamenti e, quando disponibile, il
- * flusso download APK verificato + avvio ESPLICITO dell'installer.
- *
- * L'installer di sistema non viene mai aperto in automatico: parte solo alla
- * pressione del pulsante "Installa", dopo che il file è stato scaricato e
- * verificato.
- */
-@Composable
-private fun UpdateResultDialog(
-  state: UpdateCheckState,
-  downloadState: UpdateDownloadState,
-  onDownload: () -> Unit,
-  onDismiss: () -> Unit
-) {
-  val context = LocalContext.current
-  val canInstall = ApkInstaller.canInstall(context)
-  // Esito dell'ultimo tentativo ESPLICITO di avvio installer: resta visibile
-  // così l'utente non finisce in uno stato apparentemente completato.
-  var installErrorRes by remember { mutableStateOf<Int?>(null) }
-
-  Dialog(onDismissRequest = onDismiss) {
-    Column(
-      modifier = Modifier
-        .width(380.dp)
-        .background(NovaSurface, RoundedCornerShape(20.dp))
-        .border(1.5.dp, NovaCyan, RoundedCornerShape(20.dp))
-        .padding(24.dp)
-    ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        Text(
-          text = stringResource(R.string.settings_check_updates),
-          color = NovaTextPrimary,
-          fontSize = 18.sp,
-          fontWeight = FontWeight.Bold
-        )
-        Icon(
-          imageVector = Icons.Default.Close,
-          contentDescription = stringResource(R.string.action_close),
-          tint = NovaTextSecondary,
-          modifier = Modifier
-            .size(22.dp)
-            .clickable { onDismiss() }
-        )
-      }
-
-      Spacer(modifier = Modifier.height(16.dp))
-
-      when (state) {
-        is UpdateCheckState.UpToDate -> {
-          Text(
-            text = stringResource(
-              R.string.settings_update_installed_version,
-              state.currentVersion
-            ),
-            color = NovaTextSecondary,
-            fontSize = 14.sp
-          )
-          Spacer(modifier = Modifier.height(8.dp))
-          Text(
-            text = stringResource(R.string.settings_update_upto_date),
-            color = NovaGreen,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold
-          )
-        }
-        is UpdateCheckState.UpdateAvailable -> {
-          Text(
-            text = stringResource(
-              R.string.settings_update_installed_version,
-              state.currentVersion
-            ),
-            color = NovaTextSecondary,
-            fontSize = 14.sp
-          )
-          Spacer(modifier = Modifier.height(8.dp))
-          Text(
-            text = stringResource(R.string.settings_update_available, state.newVersion),
-            color = NovaCyanBright,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold
-          )
-          state.assetName?.let { assetName ->
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-              text = stringResource(R.string.settings_update_asset_name, assetName),
-              color = NovaTextMuted,
-              fontSize = 12.sp
-            )
-          }
-
-          // Changelog della release: area scorrevole di altezza contenuta,
-          // leggibile con il D-pad su Android TV.
-          UpdateChangelogBlock(state.changelog)
-
-          Spacer(modifier = Modifier.height(14.dp))
-
-          when (downloadState) {
-            UpdateDownloadState.Idle -> UpdateDialogButton(
-              text = stringResource(R.string.settings_update_download),
-              onClick = onDownload
-            )
-            is UpdateDownloadState.Downloading -> {
-              val percent = downloadState.percent
-              if (percent != null) {
-                LinearProgressIndicator(
-                  progress = { percent / 100f },
-                  modifier = Modifier.fillMaxWidth()
-                )
-              } else {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-              }
-              Spacer(modifier = Modifier.height(8.dp))
-              Text(
-                text = stringResource(R.string.settings_update_downloading) +
-                  if (percent != null) " $percent%" else "",
-                color = NovaTextSecondary,
-                fontSize = 13.sp
-              )
-            }
-            is UpdateDownloadState.Completed -> {
-              Text(
-                text = stringResource(R.string.settings_update_download_complete),
-                color = NovaGreen,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
-              )
-              Spacer(modifier = Modifier.height(10.dp))
-              if (canInstall) {
-                UpdateDialogButton(
-                  text = stringResource(R.string.settings_update_install),
-                  onClick = {
-                    val apk = File(downloadState.apkPath)
-                    val launched = ApkInstaller.launch(context, apk)
-                    installErrorRes = when {
-                      launched -> null
-                      !apk.exists() || apk.length() <= 0L ->
-                        R.string.settings_update_install_failed_file
-                      !ApkInstaller.canInstall(context) ->
-                        R.string.settings_update_install_failed_permission
-                      else -> R.string.settings_update_install_failed_generic
-                    }
-                  }
-                )
-              } else {
-                Text(
-                  text = stringResource(R.string.settings_update_install_permission_needed),
-                  color = NovaTextSecondary,
-                  fontSize = 13.sp
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                UpdateDialogButton(
-                  text = stringResource(R.string.settings_update_install_permission_button),
-                  onClick = { ApkInstaller.openInstallPermissionSettings(context) }
-                )
-              }
-              installErrorRes?.let { errorRes ->
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                  text = stringResource(errorRes),
-                  color = NovaRed,
-                  fontSize = 13.sp
-                )
-                if (errorRes == R.string.settings_update_install_failed_permission) {
-                  Spacer(modifier = Modifier.height(10.dp))
-                  UpdateDialogButton(
-                    text = stringResource(R.string.settings_update_install_permission_button),
-                    onClick = { ApkInstaller.openInstallPermissionSettings(context) }
-                  )
-                }
-              }
-            }
-            is UpdateDownloadState.Error -> {
-              Text(
-                text = downloadErrorText(downloadState.reason),
-                color = NovaRed,
-                fontSize = 14.sp
-              )
-              Spacer(modifier = Modifier.height(10.dp))
-              UpdateDialogButton(
-                text = stringResource(R.string.settings_update_download),
-                onClick = onDownload
-              )
-            }
-          }
-        }
-        is UpdateCheckState.VersionMismatch -> {
-          Text(
-            text = stringResource(
-              R.string.settings_update_installed_version,
-              state.currentVersion
-            ),
-            color = NovaTextSecondary,
-            fontSize = 14.sp
-          )
-          Spacer(modifier = Modifier.height(8.dp))
-          Text(
-            text = stringResource(
-              R.string.settings_update_mismatch,
-              state.tagVersion,
-              state.assetVersion ?: "?"
-            ),
-            color = NovaRed,
-            fontSize = 14.sp
-          )
-          state.assetName?.let { assetName ->
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-              text = stringResource(R.string.settings_update_asset_name, assetName),
-              color = NovaTextMuted,
-              fontSize = 12.sp
-            )
-          }
-        }
-        is UpdateCheckState.Error -> {
-          Text(
-            text = updateCheckErrorText(state.reason),
-            color = NovaRed,
-            fontSize = 14.sp
-          )
-        }
-        else -> Unit
-      }
-
-      Spacer(modifier = Modifier.height(20.dp))
-
-      UpdateDialogButton(text = stringResource(R.string.action_close), onClick = onDismiss)
-    }
-  }
-}
-
-/** Pulsante standard dei dialog: evidenziato ciano quando è in focus (D-pad). */
-@Composable
-private fun UpdateDialogButton(text: String, onClick: () -> Unit) {
-  TvFocusableBox(
-    shape = RoundedCornerShape(12.dp),
-    focusedScale = 1.02f,
-    onClick = onClick,
-    modifier = Modifier.fillMaxWidth()
-  ) { isFocused ->
-    Box(
-      modifier = Modifier
-        .fillMaxWidth()
-        .background(
-          if (isFocused) NovaCyanBright else NovaSurfaceVariant,
-          RoundedCornerShape(12.dp)
-        )
-        .padding(vertical = 10.dp),
-      contentAlignment = Alignment.Center
-    ) {
-      Text(
-        text = text,
-        color = if (isFocused) NovaBackground else NovaTextPrimary,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.Bold
-      )
-    }
-  }
-}
-
-/** Messaggio localizzato del motivo di errore del download. */
-@Composable
-private fun downloadErrorText(reason: DownloadErrorReason): String = when (reason) {
-  DownloadErrorReason.NO_APK_IN_RELEASE ->
-    stringResource(R.string.settings_update_dl_error_no_apk)
-  DownloadErrorReason.NO_NETWORK ->
-    stringResource(R.string.settings_update_dl_error_network)
-  DownloadErrorReason.TIMEOUT ->
-    stringResource(R.string.settings_update_dl_error_timeout)
-  DownloadErrorReason.HTTP_ERROR ->
-    stringResource(R.string.settings_update_dl_error_http)
-  DownloadErrorReason.HOST_NOT_ALLOWED ->
-    stringResource(R.string.settings_update_dl_error_host)
-  DownloadErrorReason.INTERRUPTED ->
-    stringResource(R.string.settings_update_dl_error_interrupted)
-  DownloadErrorReason.FILE_MISSING ->
-    stringResource(R.string.settings_update_dl_error_file)
-  DownloadErrorReason.INSUFFICIENT_SPACE ->
-    stringResource(R.string.settings_update_dl_error_space)
-  DownloadErrorReason.SIZE_MISMATCH ->
-    stringResource(R.string.settings_update_dl_error_size)
-  DownloadErrorReason.CHECKSUM_MISMATCH ->
-    stringResource(R.string.settings_update_dl_error_checksum)
-  DownloadErrorReason.UNKNOWN ->
-    stringResource(R.string.settings_update_dl_error_generic)
-}
-
-/** Messaggio localizzato del motivo di errore del controllo aggiornamenti. */
-@Composable
-private fun updateCheckErrorText(reason: UpdateCheckErrorReason): String = when (reason) {
-  UpdateCheckErrorReason.RATE_LIMITED ->
-    stringResource(R.string.settings_update_error_rate_limited)
-  UpdateCheckErrorReason.NOT_FOUND ->
-    stringResource(R.string.settings_update_error_not_found)
-  UpdateCheckErrorReason.NETWORK ->
-    stringResource(R.string.settings_update_error_network)
-  UpdateCheckErrorReason.INVALID_RELEASE ->
-    stringResource(R.string.settings_update_error_invalid_release)
-  UpdateCheckErrorReason.NO_COMPATIBLE_APK ->
-    stringResource(R.string.settings_update_error_no_compatible_apk)
-  UpdateCheckErrorReason.UNKNOWN ->
-    stringResource(R.string.settings_update_error)
-}
-
-/**
- * Changelog della release in area scorrevole ad altezza contenuta: leggibile
- * su Android TV con il D-pad senza far crescere il dialog a dismisura.
- */
-@Composable
-private fun UpdateChangelogBlock(changelog: String?) {
-  if (changelog.isNullOrBlank()) return
-  Spacer(modifier = Modifier.height(12.dp))
-  Text(
-    text = stringResource(R.string.settings_update_changelog),
-    color = NovaTextPrimary,
-    fontSize = 14.sp,
-    fontWeight = FontWeight.Bold
-  )
-  Spacer(modifier = Modifier.height(6.dp))
-  Box(
-    modifier = Modifier
-      .fillMaxWidth()
-      .heightIn(max = 180.dp)
-      .background(NovaSurfaceVariant, RoundedCornerShape(10.dp))
-      .padding(10.dp)
-  ) {
-    Text(
-      text = changelog,
-      color = NovaTextSecondary,
-      fontSize = 13.sp,
-      modifier = Modifier.verticalScroll(rememberScrollState())
-    )
-  }
+/** Data/ora dell'ultima sincronizzazione SIMKL, nel formato breve del telecomando. */
+internal fun formatSyncTimestamp(epochMs: Long): String {
+  val format = java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.ITALY)
+  return format.format(java.util.Date(epochMs))
 }
 
 /**

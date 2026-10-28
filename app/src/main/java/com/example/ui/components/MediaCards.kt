@@ -400,12 +400,14 @@ fun ContinueWatchingCard(
 
       // Badge "Xm rimanenti" in alto a destra: SEMPRE dai millisecondi reali salvati dal
       // player (posizione/durata); il runtime TMDB e' solo fallback per record legacy.
+      // Nessun badge quando non resta nulla da guardare: "0m rimanenti" non è un'informazione
+      // e comparirebbe su ogni episodio importato da SIMKL come "visto".
       val remainingMins = if (media.currentProgressMs > 0) {
         WatchProgress.remainingMinutes(
           totalDurationMs = media.totalDurationMs,
           resumePositionMs = media.currentProgressMs,
           runtimeMinutes = media.durationMinutes
-        )
+        )?.takeIf { it > 0 }
       } else null
       if (remainingMins != null) {
         Box(

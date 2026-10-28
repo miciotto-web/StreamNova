@@ -106,7 +106,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Dialog
 import com.example.R
 import androidx.media3.common.C
-import androidx.media3.common.PlaybackException as ExoPlaybackException
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import com.example.ui.screens.player.PlayerScrub
@@ -124,13 +124,14 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import com.example.ui.screens.player.PlayerChapter
 import com.example.ui.screens.player.PlayerChapterUtils
-import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
@@ -164,6 +165,8 @@ import com.example.ui.util.streamUnavailableMessage
 import java.util.Locale
 import com.example.ui.viewmodel.StreamNovaViewModel
 import com.example.ui.viewmodel.StreamResolutionState
+import com.example.ui.viewmodel.OnlineSubtitleDownloadState
+import com.example.data.opensubtitles.OpenSubtitlesDownloadError
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -189,8 +192,16 @@ private const val TIMELINE_SEEK_STEP_MS = 10_000L
  */
 private const val DEFAULT_HTTP_USER_AGENT = "StreamNovaTV/1.0 (Linux; Android TV; Media3 ExoPlayer)"
 
-private fun simklProgressPercent(positionMs: Long, durationMs: Long): Double =
-  if (durationMs > 0L) (positionMs.toDouble() / durationMs.toDouble() * 100.0).coerceIn(0.0, 100.0) else 0.0
+/**
+ * Percentuale di visione per lo scrobble SIMKL, **`null` quando la durata non è nota**.
+ *
+ * `C.TIME_UNSET`/0 (`exoPlayer.duration`) è la durata *sconosciuta*, non una durata di zero:
+ * restituire `0.0` direbbe a SIMKL "riprendi dall'inizio" e sovrascriverebbe il punto di
+ * ripresa con un dato inventato. Il `null` fa rifiutare l'evento, che resta così
+ * recuperabile quando la durata reale è disponibile.
+ */
+private fun simklProgressPercent(positionMs: Long, durationMs: Long): Double? =
+  if (durationMs > 0L) (positionMs.toDouble() / durationMs.toDouble() * 100.0).coerceIn(0.0, 100.0) else null
 
 /**
  * Tentativi massimi di ripresa dopo un errore di una traccia sottotitoli esterna.
@@ -300,6 +311,7 @@ fun PlayerScreen(
   val streamResolutionState by viewModel.streamResolutionState.collectAsState()
   val onlineSubtitles by viewModel.onlineSubtitles.collectAsState()
   val isOnlineSubtitlesLoading by viewModel.isOnlineSubtitlesLoading.collectAsState()
+  val onlineSubtitleDownload by viewModel.onlineSubtitleDownload.collectAsState()
 
   // ── Selettore sorgenti interno al player ───────────────────────────────
   // Sorgenti valide disponibili per il titolo corrente (aggiornate in modo
@@ -317,17 +329,6 @@ fun PlayerScreen(
 
   val media = playbackState.media ?: return
   val episode = playbackState.currentEpisode
-  val simklCoroutineScope = rememberCoroutineScope()
-  val simklMedia = remember(media.id, media.title, media.year, media.tmdbId, media.effectiveImdbId, episode?.seasonNumber, episode?.episodeNumber) {
-    SimklMediaPayload(
-      title = media.title,
-      year = media.year.takeIf { it > 0 },
-      tmdbId = media.tmdbId,
-      imdbId = episode?.effectiveImdbId ?: media.effectiveImdbId,
-      episode = episode?.let { SimklEpisodePayload(it.seasonNumber, it.episodeNumber) }
-    )
-  }
-  val simklScrobbler = remember(simklMedia) { SimklScrobbler(simklCoroutineScope, simklMedia) }
 
   // Selezione sorgente attiva: il flag del dialog basta da solo (anche con lista
   // vuota). Durante il fallback manuale dell'auto-pick del prossimo episodio la
@@ -349,6 +350,22 @@ fun PlayerScreen(
     } ?: media.episodes.firstOrNull()
   } else null
 
+  // Payload SIMKL: `currentEp` (non il solo `episode`) perché una serie riprodotta senza
+  // episodio esplicito veniva descritta come un FILM — `show`+`episode` assenti, id del
+  // titolo al posto di quelli dell'episodio: SIMKL non può agganciare quel progresso.
+  // Lo scrobbler non prende alcuno scope: le scritture sono accodate in `SimklRepository`
+  // e sopravvivono alla chiusura del player (vedi `SimklScrobbler`).
+  val simklMedia = remember(media.id, media.title, media.year, media.tmdbId, media.effectiveImdbId, currentEp?.seasonNumber, currentEp?.episodeNumber) {
+    SimklMediaPayload(
+      title = media.title,
+      year = media.year.takeIf { it > 0 },
+      tmdbId = media.tmdbId,
+      imdbId = currentEp?.effectiveImdbId ?: media.effectiveImdbId,
+      episode = currentEp?.let { SimklEpisodePayload(it.seasonNumber, it.episodeNumber) }
+    )
+  }
+  val simklScrobbler = remember(simklMedia) { SimklScrobbler(simklMedia) }
+
   // Sottotitolo episodio: visibile SOLO per Serie TV ("S1E1 • Titolo episodio")
   val episodeSubtitle = if (isTvShow && currentEp != null) {
     "S${currentEp.seasonNumber}E${currentEp.episodeNumber} • ${currentEp.title}"
@@ -361,6 +378,13 @@ fun PlayerScreen(
   val nextEpisode by viewModel.nextEpisode.collectAsState()
 
   var isBuffering by remember { mutableStateOf(true) }
+  // Overlay "Caricamento" con isteresi: NON è più la copia diretta di `isBuffering`.
+  // ExoPlayer entra in STATE_BUFFERING anche per transizioni brevissime che non sono uno
+  // stallo reale (riconfigurazione del decoder al cambio di rendition, seek): mostrare
+  // l'overlay a ogni transizione fa lampeggiare lo spinner a ripetizione. Lo stato qui
+  // sotto diventa `true` solo se il buffering dura almeno REVEAL_DELAY_MS e torna subito
+  // `false` quando la riproduzione riparte (o durante scrubbing/errore).
+  var showBufferingOverlay by remember { mutableStateOf(false) }
   var currentPosition by remember { mutableLongStateOf(playbackState.currentPositionMs) }
   var totalDuration by remember { mutableLongStateOf(playbackState.durationMs.coerceAtLeast(1L)) }
   var isPlaying by remember { mutableStateOf(true) }
@@ -376,6 +400,24 @@ fun PlayerScreen(
   val chapters by viewModel.chapters.collectAsState()
   val isLive = viewModel.isLiveChannel(media.id)
   var playbackErrorMessage by remember { mutableStateOf<String?>(null) }
+
+  // Isteresi dell'overlay di caricamento: la chiave dell'effetto comprende tutto ciò che
+  // può rendere (o non rendere più) visibile l'overlay, quindi ogni cambio cancella il
+  // `delay` in corso e rivaluta subito la condizione. Il conteggio dei millisecondi non
+  // serve: l'unica cosa da decidere è "il buffering è ancora in corso dopo il ritardo?".
+  LaunchedEffect(isBuffering, isScrubbing, playbackErrorMessage) {
+    if (PlayerBufferingOverlay.isCandidate(
+        isBuffering = isBuffering,
+        isScrubbing = isScrubbing,
+        hasErrorMessage = playbackErrorMessage != null
+      )
+    ) {
+      delay(PlayerBufferingOverlay.REVEAL_DELAY_MS)
+      showBufferingOverlay = true
+    } else {
+      showBufferingOverlay = false
+    }
+  }
 
   // FLAG CRITICO: Indica se siamo in fase di transizione verso il prossimo episodio.
   // Durante questa fase, videoUrl può essere temporaneamente null mentre la nuova
@@ -439,6 +481,14 @@ fun PlayerScreen(
   // automatica della preferenza Settings dopo una selezione manuale.
   var manualSubtitleSelection by remember { mutableStateOf<ManualSubtitleSelection?>(null) }
   var manualAudioSelection by remember { mutableStateOf<ManualAudioSelection?>(null) }
+
+  // Lingua del sottotitolo ONLINE appena selezionato dall'utente: quando non null, prevale
+  // sulle preferenze automatiche (Forced / Abilita automaticamente) finché l'utente non fa
+  // una nuova scelta. Senza questo "vincolo" l'effetto di ri-applicazione preferenze che
+  // reagisce al cambio di tracce (dopo ogni prepare) ri-disabilitava il renderer testo
+  // (con Forced ON + sottotitoli automatici OFF) e il sottotitolo scaricato non veniva
+  // mai mostrato.
+  var onlineSubtitleActivationLang by remember { mutableStateOf<String?>(null) }
 
   val anyModalOpen = showTrackQuickPanel || showSubtitleModal || showQualityModal || showSpeedModal ||
     showSourceSelector
@@ -549,6 +599,15 @@ fun PlayerScreen(
       .setReadTimeoutMs(20000)
     factory
   }
+  // Factory schema-aware usata dal player per TUTTE le sorgenti: http(s) viene delegato
+  // alla [httpDataSourceFactory] sopra (headers e User-Agent aggiornati in place), mentre
+  // `file://` viene aperto con FileDataSource. È il percorso dei sottotitoli OpenSubtitles
+  // scaricati su cache locale: DefaultHttpDataSource lancia UnsupportedSchemeException su
+  // `file://`, e il fallimento della traccia esterna veniva recuperato togliendo proprio
+  // il sottotitolo appena scaricato.
+  val playbackDataSourceFactory = remember {
+    DefaultDataSource.Factory(context, httpDataSourceFactory)
+  }
   // Le intestazioni vengono aggiornate DURANTE la composizione (non in un
   // SideEffect): quando il player viene ricreato (es. passaggio HLS <-> link
   // progressivo) il nuovo player carica il flusso subito, nello stesso ciclo di
@@ -564,10 +623,15 @@ fun PlayerScreen(
   // e quindi serve anche alle sidecar, come già avviene per le altre app Media3).
   val stremioSubtitles = playbackState.subtitles
 
-  val mediaSourceFactory = remember(httpDataSourceFactory) {
+  // Policy di errore di caricamento: riconosce le tracce sottotitoli (mai fatali), esclude
+  // la rendition di un segmento HLS che risponde 404 e usa una scala di retry corta sui
+  // timeout. Va applicata a OGNI MediaSource.Factory usata dal player, HLS compreso.
+  val loadErrorHandlingPolicy = remember { PlayerLoadErrorHandlingPolicy() }
+
+  val mediaSourceFactory = remember(playbackDataSourceFactory, loadErrorHandlingPolicy) {
     DefaultMediaSourceFactory(context)
-      .setDataSourceFactory(httpDataSourceFactory)
-      .setLoadErrorHandlingPolicy(PlayerLoadErrorHandlingPolicy())
+      .setDataSourceFactory(playbackDataSourceFactory)
+      .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
   }
 
   // Tipo dell'ultimo URL valido (HLS vs progressivo). Durante il passaggio al
@@ -599,12 +663,13 @@ fun PlayerScreen(
     if (videoUrl != null) lastIsHlsStream.value = computeIsHlsStream(videoUrl)
   }
 
-  val playbackMediaSourceFactory = remember(mediaSourceFactory, isHlsStream) {
-    if (isHlsStream) {
-      HlsMediaSource.Factory(httpDataSourceFactory)
-    } else {
-      mediaSourceFactory
-    }
+  val playbackMediaSourceFactory = remember(mediaSourceFactory, isHlsStream, loadErrorHandlingPolicy) {
+    resolvePlaybackMediaSourceFactory(
+      isHlsStream = isHlsStream,
+      httpDataSourceFactory = playbackDataSourceFactory,
+      progressiveMediaSourceFactory = mediaSourceFactory,
+      loadErrorHandlingPolicy = loadErrorHandlingPolicy
+    )
   }
 
   // Nuvio BandwidthMeter (stima iniziale a 50 Mbps per avvio al profilo a bitrate massimo)
@@ -655,6 +720,7 @@ fun PlayerScreen(
     bandwidthMeter,
     playbackSettings.preferredResolution,
     playbackSettings.targetBuffer,
+    playbackSettings.initialBuffer,
     playbackSettings.backBuffer,
     playbackSettings.audioPassthroughEnabled,
     playbackSettings.audioTunnelingEnabled,
@@ -712,11 +778,9 @@ fun PlayerScreen(
         )
       }
     }
-    val loadControl = NuvioExoPlayerPerformanceHelper.buildLoadControl(
-      context = context,
-      targetBufferSizeMbOverride = playbackSettings.targetBuffer.sizeMb,
-      backBufferMsOverride = playbackSettings.backBuffer.durationMs
-    )
+    // LoadControl dalle impostazioni: "Buffer iniziale" (Avvio Rapido / Standard /
+    // Stabile) è letto qui, non più solo scritto su DataStore.
+    val loadControl = buildPlayerLoadControl(playbackSettings)
     val frameRateStrategy = if (playbackSettings.autoFrameRateMatching) {
       C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
     } else {
@@ -1204,13 +1268,17 @@ fun PlayerScreen(
    *    - Se sottotitoli completi ON, applica selezione automatica standard per la lingua preferita.
    *    - Se sottotitoli completi OFF, disabilita il renderer testo (setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)).
    * 3. Rispetta sempre la selezione manuale dell'utente (manualSubtitleSelection) se attiva.
+   * 4. Rispetta la selezione ONLINE appena confermata (onlineActivationLanguage): il
+   *    renderer testo resta attivo e la traccia esterna con quella lingua viene selezionata,
+   *    anche dopo ogni re-prepare che rigenera le tracce.
    */
   fun applySubtitlesConfiguration(
     forcedEnabled: Boolean,
     fullSubtitlesEnabled: Boolean,
     preferredLanguage: String,
     tracks: Tracks,
-    manualSelection: ManualSubtitleSelection?
+    manualSelection: ManualSubtitleSelection?,
+    onlineActivationLanguage: String? = null
   ) {
     if (manualSelection != null) {
       if (manualSelection.isNone) {
@@ -1228,6 +1296,23 @@ fun PlayerScreen(
         trackSelector.setParameters(builder)
         Log.i("PlayerScreen", "Sottotitoli: selezione manuale traccia applicata (index=${manualSelection.trackIndex})")
       }
+      return
+    }
+
+    if (onlineActivationLanguage != null) {
+      // Selezione online attiva: il renderer testo NON va mai disabilitato e la lingua
+      // scelta guida la selezione automatica della traccia esterna (anche quando la
+      // traccia arriva dopo, al termine del prepare).
+      val builder = trackSelector.buildUponParameters()
+        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+        .setSelectUndeterminedTextLanguage(true)
+        .setPreferredTextLanguage(onlineActivationLanguage)
+      trackSelector.setParameters(builder)
+      Log.i(
+        "PlayerScreen",
+        "Sottotitoli: traccia online selezionata attiva (lang=$onlineActivationLanguage)"
+      )
       return
     }
 
@@ -1504,6 +1589,7 @@ fun PlayerScreen(
     initialQualityApplied = false
     manualSubtitleSelection = null
     manualAudioSelection = null
+    onlineSubtitleActivationLang = null
     nextEpisodeDismissed = false
     nextEpisodeCountdownSeconds = 0
   }
@@ -1526,14 +1612,16 @@ fun PlayerScreen(
     playbackSettings.preferredSubtitleLanguage,
     currentEpKey,
     currentTracksState,
-    manualSubtitleSelection
+    manualSubtitleSelection,
+    onlineSubtitleActivationLang
   ) {
     applySubtitlesConfiguration(
       forcedEnabled = playbackSettings.forcedSubtitlesEnabled,
       fullSubtitlesEnabled = playbackSettings.subtitlesEnabled,
       preferredLanguage = playbackSettings.preferredSubtitleLanguage,
       tracks = currentTracksState,
-      manualSelection = manualSubtitleSelection
+      manualSelection = manualSubtitleSelection,
+      onlineActivationLanguage = onlineSubtitleActivationLang
     )
   }
 
@@ -1543,6 +1631,82 @@ fun PlayerScreen(
   LaunchedEffect(exoPlayer, playbackSettings.preferredAudioLanguage, currentEpKey, manualAudioSelection) {
     if (manualAudioSelection == null) {
       applyAudioAutoSelection(playbackSettings.preferredAudioLanguage)
+    }
+  }
+
+  // ── Attivazione del sottotitolo ONLINE scaricato ─────────────────────────────
+  // Il ViewModel pubblica [OnlineSubtitleDownloadState.Ready] quando il file è stato
+  // scaricato e salvato in cache: qui il file LOCALE viene allegato a ExoPlayer come
+  // traccia esterna, selezionato per lingua e attivato (renderer testo abilitato).
+  // L'attivazione è esplicitamente "pinned" con [onlineSubtitleActivationLang] così
+  // sopravvive ai re-prepare e non viene disabilitata dalle preferenze automatiche
+  // (Forced / Abilita automaticamente) finché l'utente non sceglie altro.
+  fun attachDownloadedOnlineSubtitle(localSubtitle: com.example.domain.model.Subtitle) {
+    // Validazione del file SCARICATO: un percorso sbagliato, un file vuoto o una pagina
+    // HTML al posto del sottotitolo sono la CAUSA del fallimento della traccia. Il
+    // file non viene allegato al player (che cosi' non puo' fallire) e il problema
+    // viene segnalato all'utente.
+    val localPath = PlayerOnlineSubtitleFile.localPathOf(localSubtitle.url)
+    if (localPath != null) {
+      val validity = PlayerOnlineSubtitleFile.validate(java.io.File(localPath))
+      if (validity != PlayerOnlineSubtitleFile.Validity.OK) {
+        Log.w(
+          "THE_PITT_PLAYER",
+          "Sottotitolo online scaricato non utilizzabile ($validity): la traccia non viene allegata al player."
+        )
+        viewModel.clearOnlineSubtitleDownloadState()
+        return
+      }
+    }
+    val config = PlayerSubtitleMediaItemBuilder.toConfiguration(localSubtitle)
+    if (config == null) {
+      Log.w("PlayerScreen", "Sottotitolo online scaricato: configurazione Media3 non valida")
+      viewModel.clearOnlineSubtitleDownloadState()
+      return
+    }
+    val currentItem = exoPlayer.currentMediaItem
+    val currentPos = exoPlayer.currentPosition
+    val wasPlaying = exoPlayer.playWhenReady
+    // DIAG TEMP: traccia OpenSubtitles allegata (log sanificato: mime + basename + lang).
+    Log.i(
+      "SUB_FAIL_DIAG",
+      "attach_online_sub mime=${config.mimeType} file=${Uri.parse(config.uri.toString()).lastPathSegment ?: "?"} " +
+        "id=${config.id} lang=${localSubtitle.lang} pos=$currentPos playing=$wasPlaying"
+    )
+    viewModel.injectOnlineSubtitle(localSubtitle)
+    if (currentItem != null) {
+      val existing = currentItem.localConfiguration?.subtitleConfigurations.orEmpty()
+      val updatedConfigs = (existing.filter { it.uri != config.uri && it.id != config.id } + config)
+      val newItem = currentItem.buildUpon()
+        .setSubtitleConfigurations(updatedConfigs)
+        .build()
+
+      exoPlayer.setMediaItem(newItem, /* resetPosition = */ false)
+      if (currentPos > 0) {
+        exoPlayer.seekTo(currentPos)
+      }
+      exoPlayer.prepare()
+      exoPlayer.playWhenReady = wasPlaying
+    }
+    val normLang = PlayerSubtitleUtils.normalizeLanguageCode(localSubtitle.lang)
+    if (normLang.isNotBlank() && normLang != "und") {
+      viewModel.setPreferredSubtitleLanguage(normLang)
+    }
+    // Attivazione immediata + "pin" della selezione online per gli effetti successivi.
+    exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+      .buildUpon()
+      .setPreferredTextLanguage(normLang)
+      .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+      .build()
+    onlineSubtitleActivationLang = normLang.trim().takeIf { it.isNotBlank() }
+    manualSubtitleSelection = null
+    viewModel.clearOnlineSubtitleDownloadState()
+  }
+
+  LaunchedEffect(onlineSubtitleDownload) {
+    val state = onlineSubtitleDownload
+    if (state is OnlineSubtitleDownloadState.Ready) {
+      attachDownloadedOnlineSubtitle(state.localSubtitle)
     }
   }
 
@@ -1625,6 +1789,12 @@ fun PlayerScreen(
   // inserire `return` anticipati sopra, altrimenti AndroidView + questo effetto
   // escono dalla composizione durante la transizione.
   val currentSimklScrobbler by rememberUpdatedState(simklScrobbler)
+  // Elenco dei sottotitoli sempre AGGIORNATO: il listener del player vive in un
+  // DisposableEffect che NON viene ricreato a ogni ricomposizione, quindi una lista
+  // catturata alla creazione del player resterebbe STALE (il sottotitolo OpenSubtitles
+  // scaricato viene iniettato DOPO) e l'errore non potrebbe essere attribuito alla
+  // traccia che lo ha prodotto.
+  val currentSubtitles by rememberUpdatedState(stremioSubtitles)
   DisposableEffect(exoPlayer) {
     Log.d("[NEXT_EP_DEBUG]", "DisposableEffect player: listener agganciati a $exoPlayer")
     var subtitleErrorRecoveries = 0
@@ -1814,7 +1984,7 @@ fun PlayerScreen(
         }
       }
 
-      override fun onPlayerError(error: ExoPlaybackException) {
+      override fun onPlayerError(error: PlaybackException) {
         Log.e("[NEXT_EP_DEBUG]", "onPlayerError: ${error.errorCodeName} - ${error.message}", error)
         val displayMsg = PlayerRuntimeControllerErrorRecovery.toDisplayMessage(error, context)
         Log.e("THE_PITT_PLAYER", "Playback Error: ${error.errorCodeName} (${error.errorCode}) - $displayMsg", error)
@@ -1845,46 +2015,103 @@ fun PlayerScreen(
             "host=${StreamDiagnostics.hostId(failedRequestUrl) ?: "unknown"} " +
             "status=${failedHttpStatus ?: "n/a"} code=${error.errorCodeName}"
         )
-        val failedSubtitle = stremioSubtitles.firstOrNull { sub ->
-            sub.url.isNotBlank() && (
-                sub.url == failingUri ||
-                error.message?.contains(sub.url) == true ||
-                error.cause?.message?.contains(sub.url) == true
+        // ── Attribuzione dell'errore alla traccia che lo ha prodotto ──────────────
+        // L'errore viene attribuito usando l'errore e il contesto del renderer/sorgente
+        // (renderer di testo, URI fallito, MIME type rifiutato), NON il solo fatto che
+        // un sottotitolo fosse stato selezionato.
+        //
+        // L'elenco delle tracce sottotitoli e' quello AGGIORNATO (`currentSubtitles`):
+        // quello catturato alla creazione del player non conterrebbe il sottotitolo
+        // OpenSubtitles scaricato dopo. Il `currentMediaItem` non e' utilizzabile: se il
+        // fallimento avviene durante il prepare il player non ha ancora una timeline e
+        // `currentMediaItem` e' null.
+        val externalSubtitleUris = currentSubtitles.map { it.url }
+        val activeVideoUri = playbackState.streamUrl ?: videoUrl
+        val verdict = PlayerExternalSubtitleAttribution.attribute(
+            error = error,
+            videoUri = activeVideoUri,
+            externalSubtitleUris = externalSubtitleUris
+        )
+        // Diagnostica di attribuzione (sanificata e permanente): serve a distinguere in
+        // campo un errore di una traccia sottotitoli da un errore della sorgente video.
+        // Non registra API key, header, token, URL completi ne' contenuti: solo codice
+        // errore Media3, tipo/renderer, MIME type, classe dell'eccezione, l'attribuzione
+        // e gli identificativi delle tracce (id + schema).
+        run {
+            val exoError = error as? ExoPlaybackException
+            val causeChain = generateSequence<Throwable>(error) { it.cause }
+                .take(4)
+                .map { it.javaClass.simpleName }
+                .toList()
+            Log.e(
+                "SUB_FAIL_DIAG",
+                "code=${error.errorCodeName}(${error.errorCode}) " +
+                    "exoType=${exoError?.type ?: "n/a"} " +
+                    "renderer=${exoError?.rendererName ?: "n/a"} " +
+                    "mime=${exoError?.rendererFormat?.sampleMimeType ?: "n/a"} " +
+                    "cause=[${causeChain.joinToString(">")}] " +
+                    "attribution=${verdict.attribution} " +
+                    "failedSubtitleId=${currentSubtitles
+                        .firstOrNull { it.url == verdict.failedSubtitleUri }?.id ?: "n/a"} " +
+                    "attachedTracks=[${currentSubtitles
+                        .map { "${it.id}:${Uri.parse(it.url).scheme}" }
+                        .joinToString(",")}]"
             )
         }
         // Un errore di una traccia sottotitoli esterna (di caricamento O di decodifica)
         // non deve mai interrompere il video: si riprende senza quella traccia e senza
         // modificare maxVideoSize (che altrimenti escluderebbe il video 1080p/4K).
-        val isSubtitleError = PlayerCodecErrorClassifier.isSubtitleTrackError(error)
-        if (!playbackFailed && (failedSubtitle != null || isSubtitleError)) {
-          val remaining = if (failedSubtitle != null) {
-            stremioSubtitles.filter { it.url != failedSubtitle.url }
-          } else {
-            // Errore sottotitoli senza URL identificabile: si escludono solo le tracce
-            // esterne, mentre gli sottotitoli embedded Stremio restano attivi.
-            stremioSubtitles.filter { it.isStreamProvided }
-          }
-          val canDropSubtitleTrack = remaining.size < stremioSubtitles.size
-          if (!canDropSubtitleTrack && subtitleErrorRecoveries >= MAX_SUBTITLE_ERROR_RECOVERIES) {
-            Log.w("THE_PITT_PLAYER", "Errore sottotitoli senza traccia rimovibile (${error.errorCodeName}): nessun ulteriore tentativo di ripresa.")
-          } else {
-            subtitleErrorRecoveries++
-            Log.w("THE_PITT_PLAYER", "Errore traccia sottotitoli (${failedSubtitle?.url ?: error.errorCodeName}): ripresa riproduzione senza la traccia problematica (maxVideoSize invariato).")
-            val currentPos = exoPlayer.currentPosition
+        // Il ramo NON inoltra mai l'errore ai gestori della sorgente video
+        // (`handleReusedStreamFailure` / `handleSourcePlaybackFailure`): un errore
+        // attribuito con certezza al sottotitolo non deve cambiare sorgente.
+        if (!playbackFailed && verdict.isExternalSubtitle) {
             val wasPlaying = exoPlayer.playWhenReady
-            val newItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(videoUrl ?: "", remaining)
-            exoPlayer.setMediaItem(newItem)
-            if (currentPos > 0) exoPlayer.seekTo(currentPos)
-            exoPlayer.prepare()
-            exoPlayer.playWhenReady = wasPlaying
-            return
-          }
+            // Tracce dichiarate dal flusso (embedded): si conservano quando la traccia
+            // fallita non e' identificabile con precisione.
+            val streamProvidedIds = currentSubtitles
+                .filter { it.isStreamProvided }
+                .map { it.id }
+                .toSet()
+            val action = PlayerSubtitleErrorRecovery.decide(
+                failedSubtitleUri = verdict.failedSubtitleUri,
+                attachedUris = externalSubtitleUris,
+                streamProvidedIds = streamProvidedIds,
+                recoveriesExhausted = subtitleErrorRecoveries >= MAX_SUBTITLE_ERROR_RECOVERIES
+            )
+            val remainingSubtitles = PlayerSubtitleErrorRecovery.remainingSubtitles(
+                action = action,
+                subtitles = currentSubtitles,
+                failedSubtitleUri = verdict.failedSubtitleUri
+            )
+            val recovered = PlayerSubtitleErrorRecovery.apply(
+                player = exoPlayer,
+                action = action,
+                remainingSubtitles = remainingSubtitles,
+                videoUrl = activeVideoUri.orEmpty(),
+                wasPlaying = wasPlaying
+            )
+            if (recovered) {
+                subtitleErrorRecoveries++
+                Log.w(
+                    "SUB_FAIL_DIAG",
+                    "branch=subtitle_recovery (action=$action, " +
+                        "remaining=${remainingSubtitles.size}/${currentSubtitles.size}, " +
+                        "recoveries=$subtitleErrorRecoveries)"
+                )
+                Log.w(
+                    "THE_PITT_PLAYER",
+                    "Errore traccia sottotitoli (${error.errorCodeName}): ripresa della riproduzione video " +
+                        "(azione=$action, maxVideoSize invariato)."
+                )
+                return
+            }
         }
 
         // Fallback difensivo "Riusa l'ultimo link": se lo stream corrente proviene dalla
         // cache e non è riproducibile (link Debrid scaduto, 403/404 o errore di caricamento),
         // il ViewModel invalida la voce e riapre la risoluzione/selezione classica.
         if (viewModel.handleReusedStreamFailure()) {
+          Log.w("SUB_FAIL_DIAG", "branch=reused_stream_failure")
           Log.w("StreamNovaReuse", "Flusso riutilizzato non riproducibile (${error.errorCodeName}): fallback alle sorgenti")
           isBuffering = true
           return
@@ -1895,6 +2122,7 @@ fun PlayerScreen(
         val fallbackMaxVideoSize = PlayerCodecErrorClassifier.fallbackMaxVideoSize(error, media.title)
 
         if (fallbackMaxVideoSize != null && !playbackFailed) {
+          Log.w("SUB_FAIL_DIAG", "branch=720p_fallback")
           Log.w("THE_PITT_PLAYER", "Codec/Format error detected ($displayMsg). Attempting 720p fallback...")
           try {
             trackSelector.setParameters(
@@ -1927,6 +2155,7 @@ fun PlayerScreen(
             verdict = PlayerSourceFallback.classify(error)
           )
         ) {
+          Log.w("SUB_FAIL_DIAG", "branch=source_fallback (verdict=${PlayerSourceFallback.classify(error)})")
           isBuffering = true
           playbackFailed = false
           playbackErrorMessage = null
@@ -1941,6 +2170,7 @@ fun PlayerScreen(
         playbackEnded = false
         playbackFailed = true
         playbackErrorMessage = context.getString(R.string.player_playback_error_message, displayMsg)
+        Log.w("SUB_FAIL_DIAG", "branch=hard_fail (playbackFailed=true)")
       }
     }
     exoPlayer.addListener(listener)
@@ -2775,8 +3005,10 @@ fun PlayerScreen(
     }
 
     // Buffering indicator: durante lo scrubbing resta fuori schermo
-    // (l'unico elemento a video è l'overlay di anteprima della posizione).
-    if (isBuffering && playbackErrorMessage == null && !isScrubbing) {
+    // (l'unico elemento a video è l'overlay di anteprima della posizione) e, fuori dallo
+    // scrubbing, appare solo dopo l'isteresi di PlayerBufferingOverlay: gli stalli brevi
+    // da cambio di rendition non fanno lampeggiare lo spinner.
+    if (showBufferingOverlay && !isScrubbing && playbackErrorMessage == null) {
       Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -3537,12 +3769,14 @@ if (showTrackQuickPanel) {
         onSelectLocal = { idx ->
           if (idx == 0) {
             manualSubtitleSelection = ManualSubtitleSelection(null, -1)
+            onlineSubtitleActivationLang = null
             PlayerRuntimeControllerTrackSelection.disableSubtitles(exoPlayer)
             Log.i("PlayerScreen", "Sottotitoli disabilitati manualmente (Nessuno)")
           } else {
             val selectedOption = subtitleOptions.getOrNull(idx - 1)
             if (selectedOption != null) {
               manualSubtitleSelection = ManualSubtitleSelection(selectedOption.group, selectedOption.trackIndex)
+              onlineSubtitleActivationLang = null
               PlayerRuntimeControllerTrackSelection.selectSubtitleTrack(exoPlayer, idx - 1)
               selectedOption.language.trim().lowercase().takeIf { it.isNotBlank() && it != "und" }
                 ?.let(viewModel::setPreferredSubtitleLanguage)
@@ -3553,39 +3787,17 @@ if (showTrackQuickPanel) {
         },
         onlineSubtitles = onlineSubtitles,
         isOnlineLoading = isOnlineSubtitlesLoading,
+        onlineDownloadState = onlineSubtitleDownload,
+        onRetryOnlineDownload = { viewModel.retryOnlineSubtitleDownload() },
         onSelectOnline = { sub ->
-          val currentPos = exoPlayer.currentPosition
-          val wasPlaying = exoPlayer.playWhenReady
-          val config = PlayerSubtitleMediaItemBuilder.toConfiguration(sub)
-          if (config != null) {
-            viewModel.injectOnlineSubtitle(sub)
-            val currentItem = exoPlayer.currentMediaItem
-            if (currentItem != null) {
-              val existing = currentItem.localConfiguration?.subtitleConfigurations.orEmpty()
-              val updatedConfigs = (existing.filter { it.uri != config.uri && it.id != config.id } + config)
-              val newItem = currentItem.buildUpon()
-                .setSubtitleConfigurations(updatedConfigs)
-                .build()
-
-              exoPlayer.setMediaItem(newItem, /* resetPosition = */ false)
-              if (currentPos > 0) {
-                exoPlayer.seekTo(currentPos)
-              }
-              exoPlayer.prepare()
-              exoPlayer.playWhenReady = wasPlaying
-            }
-            val normLang = PlayerSubtitleUtils.normalizeLanguageCode(sub.lang)
-            if (normLang.isNotBlank() && normLang != "und") {
-              viewModel.setPreferredSubtitleLanguage(normLang)
-            }
-            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-              .buildUpon()
-              .setPreferredTextLanguage(normLang)
-              .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-              .build()
-            manualSubtitleSelection = null
-          }
-          showSubtitleModal = false
+          // La selezione NON applica più l'URL remoto al player: il file viene scaricato
+          // localmente dal ViewModel (file_id → link temporaneo → ZIP/GZIP → file locale)
+          // e solo a download completato la traccia viene allegata e attivata (effetto
+          // su onlineSubtitleDownload più sotto). Il dialog resta aperto per mostrare
+          // l'avanzamento e, in caso di errore, l'azione "Riprova".
+          manualSubtitleSelection = null
+          onlineSubtitleActivationLang = null
+          viewModel.selectOnlineSubtitle(sub)
         },
         offsetMs = playbackState.subtitleOffsetMs,
         onAdjustOffset = { delta -> viewModel.adjustSubtitleOffsetMs(delta) },
@@ -3595,6 +3807,7 @@ if (showTrackQuickPanel) {
         onHeaderSwitchToggle = { enabled ->
           viewModel.setForcedSubtitlesEnabled(enabled)
           manualSubtitleSelection = null
+          onlineSubtitleActivationLang = null
         },
         onDismiss = { showSubtitleModal = false }
       )
@@ -3688,6 +3901,10 @@ if (showTrackQuickPanel) {
     if (playbackSettings.debugOverlayEnabled) {
       StatsForNerdsOverlay(
         player = exoPlayer,
+        // Stima della banda misurata da ExoPlayer sullo stesso flusso in riproduzione:
+        // è il dato che distingue "il CDN/rete non regge il bitrate" da "il player cambia
+        // rendition a vuoto" quando l'utente vede lo spinner.
+        bandwidthEstimateBps = bandwidthMeter.bitrateEstimate,
         modifier = Modifier.align(Alignment.TopStart)
       )
     }
@@ -3696,11 +3913,13 @@ if (showTrackQuickPanel) {
 
 /**
  * Overlay diagnostico avanzato (Stats for Nerds) con metriche in tempo reale:
- * Risoluzione, Bitrate, Codec Audio/Video, Buffer rimanente e Frame persi.
+ * Risoluzione, Bitrate, Codec Audio/Video, Buffer rimanente, stima di banda e Frame persi.
  */
 @Composable
 fun StatsForNerdsOverlay(
   player: ExoPlayer,
+  /** Stima di banda in bit/s misurata dal BandwidthMeter del player; <= 0 = non disponibile. */
+  bandwidthEstimateBps: Long = -1L,
   modifier: Modifier = Modifier
 ) {
   var tick by remember { mutableIntStateOf(0) }
@@ -3784,6 +4003,18 @@ fun StatsForNerdsOverlay(
       Text(
         text = "Buffer: ${String.format(java.util.Locale.ROOT, "%.1f", bufferRemainingSec)}s | Frame persi: $droppedFrames",
         color = if (droppedFrames > 0) Color(0xFFFFB74D) else NovaGreen,
+        fontSize = 11.sp,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+      )
+      Text(
+        text = "Stima banda: ${
+          if (bandwidthEstimateBps > 0) {
+            String.format(java.util.Locale.ROOT, "%.1f Mbps", bandwidthEstimateBps / 1_000_000.0)
+          } else {
+            "N/A"
+          }
+        }",
+        color = Color(0xFFB0B0B0),
         fontSize = 11.sp,
         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
       )
@@ -3890,6 +4121,8 @@ fun PlayerSubtitleSelectionDialog(
   headerSwitchLabel: String? = null,
   headerSwitchChecked: Boolean = false,
   onHeaderSwitchToggle: ((Boolean) -> Unit)? = null,
+  onlineDownloadState: OnlineSubtitleDownloadState? = null,
+  onRetryOnlineDownload: () -> Unit = {},
   onDismiss: () -> Unit
 ) {
   val initialFocusRequester = remember { FocusRequester() }
@@ -4312,6 +4545,74 @@ fun PlayerSubtitleSelectionDialog(
               }
             }
           }
+        }
+
+        // Stato del download del sottotitolo online selezionato: avanzamento, errore
+        // comprensibile e azione "Riprova" senza chiudere il dialog né bloccare il player.
+        when (val downloadState = onlineDownloadState) {
+          is OnlineSubtitleDownloadState.Downloading -> {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              CircularProgressIndicator(
+                modifier = Modifier.size(14.dp),
+                color = NovaCyanBright,
+                strokeWidth = 2.dp
+              )
+              Text(
+                text = stringResource(R.string.player_subtitles_online_download_running),
+                color = NovaTextSecondary,
+                fontSize = 12.sp
+              )
+            }
+          }
+          is OnlineSubtitleDownloadState.Error -> {
+            val errorText = when (downloadState.error) {
+              OpenSubtitlesDownloadError.NETWORK ->
+                stringResource(R.string.player_subtitles_online_download_error_network)
+              OpenSubtitlesDownloadError.TIMEOUT ->
+                stringResource(R.string.player_subtitles_online_download_error_timeout)
+              OpenSubtitlesDownloadError.HTTP ->
+                stringResource(R.string.player_subtitles_online_download_error_http)
+              OpenSubtitlesDownloadError.NO_DOWNLOAD_LINK ->
+                stringResource(R.string.player_subtitles_online_download_error_nolink)
+              OpenSubtitlesDownloadError.EMPTY_FILE,
+              OpenSubtitlesDownloadError.INVALID_FILE ->
+                stringResource(R.string.player_subtitles_online_download_error_invalid)
+            }
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+              Text(
+                text = errorText,
+                color = NovaTextSecondary,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f, fill = false)
+              )
+              TvFocusableBox(
+                shape = RoundedCornerShape(10.dp),
+                focusedScale = 1.02f,
+                onClick = onRetryOnlineDownload
+              ) { isFocused ->
+                Text(
+                  text = stringResource(R.string.player_subtitles_online_download_retry),
+                  color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.Bold,
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+              }
+            }
+          }
+          else -> Unit
         }
       }
     }

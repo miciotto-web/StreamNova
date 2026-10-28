@@ -50,12 +50,19 @@ import com.example.data.streaming.StreamManager
 import com.example.data.streaming.StreamResult
 import com.example.data.streaming.StreamSource
 import com.example.data.streaming.diagnostics.StreamDiagnosticSinkFactory
+import com.example.data.opensubtitles.OpenSubtitlesConnectionCheck
+import com.example.data.opensubtitles.OpenSubtitlesConnectionVerifier
+import com.example.data.opensubtitles.OpenSubtitlesDownloadError
+import com.example.data.opensubtitles.OpenSubtitlesVerifyError
 import com.example.data.opensubtitles.OpenSubtitlesSubtitleAdapter
+import com.example.data.opensubtitles.OpenSubtitlesSubtitleDownloader
 import com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider
 import com.example.domain.model.Subtitle
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.FOCUS_ROW_ANY
+import java.io.File
+import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import com.example.ui.screens.player.NextEpisodePromptUtils
 import com.example.ui.screens.player.PlayerSourceFallback
@@ -352,12 +359,67 @@ enum class SearchCategorySource {
  * @param addonLabel etichetta del catalogo addon caricato ("catalogo • addon").
  * @param statusMessage motivo del fallback oppure errore riscontrato sugli addon:
  *        mostrato in UI per non mascherare un catalogo non caricato.
+ * @param genresCatalogsCopied true quando i cataloghi configurati possono coprire TUTTI
+ *        i tipi previsti dalla categoria (film e/o serie): la fonte sono gli addon e il
+ *        fallback TMDB non è stato usato.
+ * @param genresTmdbSkipped true quando TMDB è stato usato come fallback per i generi MA
+ *        lo switch "Usa TMDB come fallback per i generi" è disattivato: nessuna chiamata
+ *        TMDB per questa categoria, solo lo stato vuoto dichiarato.
  */
 data class SearchCategoryState(
   val source: SearchCategorySource? = null,
   val addonLabel: String? = null,
-  val statusMessage: String? = null
+  val statusMessage: String? = null,
+  val genresCatalogsCopied: Boolean = false,
+  val genresTmdbSkipped: Boolean = false
 )
+
+/**
+ * Esito del caricamento per genere di UN tipo di contenuto, registrato da
+ * [StreamNovaViewModel.initCategory].
+ *
+ * Serve a dimostrare in modo verificabile che TMDB è stato interrogato solo quando
+ * nessun catalogo realmente configurato copriva quella combinazione tipo+genere:
+ * ogni motivo corrisponde a un caso che la UI deve poter distinguere.
+ *
+ * @param mediaType tipo di contenuto selezionato (film o serie TV).
+ * @param reason motivo per cui TMDB è stato usato (o non lo è stato).
+ * @param tmdbPages pagine TMDB richieste per questo tipo (0 = nessuna chiamata).
+ * @param tmdbItems risultati TMDB grezzi, prima della deduplicazione.
+ * @param catalogWasEmpty true quando almeno un catalogo compatibile era stato
+ *        interrogato con successo ma ha risposto HTTP 200 senza metas: il fallback
+ *        TMDB è partito DOPO un catalogo vuoto, non per mancanza di copertura.
+ */
+data class GenreLoadRecord(
+  val mediaType: MediaType,
+  val reason: GenreLoadReason,
+  val tmdbPages: Int = 0,
+  val tmdbItems: Int = 0,
+  val catalogWasEmpty: Boolean = false
+)
+
+/**
+ * Motivo dell'esito di una combinazione tipo+genere della sezione Ricerca.
+ */
+enum class GenreLoadReason {
+  /** Almeno un catalogo configurato applica il filtro per genere: fonte = addon. */
+  SUPPORTED_BY_CATALOG,
+
+  /** Catalogo compatibile interrogato ma senza risultati, con il fallback TMDB disattivato. */
+  SUPPORTED_BUT_EMPTY,
+
+  /** Cataloghi compatibili falliti (rete/HTTP): il fallback TMDB NON deve mascherarli. */
+  FAILED,
+
+  /** Nessun catalogo configurato applica il filtro per genere: risultati da TMDB. */
+  TMDB_FALLBACK,
+
+  /** Nessun catalogo compatibile e switch disattivato: nessuna chiamata TMDB. */
+  TMDB_DISABLED,
+
+  /** Nessun catalogo compatibile e TMDB non configurato/non raggiungibile. */
+  TMDB_UNAVAILABLE
+}
 
 enum class SidebarSection(val title: String) {
   HOME("Home"),
@@ -390,6 +452,23 @@ sealed interface TorBoxAccountState {
   object NotConfigured : TorBoxAccountState
   data class Connected(val email: String?, val plan: String?) : TorBoxAccountState
   data class Error(val message: String) : TorBoxAccountState
+}
+
+/**
+ * Stato UI della verifica della connessione OpenSubtitles (`GET /api/v1/subtitles`):
+ * - [Unknown]: nessuna verifica eseguita in questa sessione.
+ * - [Checking]: richiesta in corso.
+ * - [Connected]: chiave accettata dal servizio ufficiale.
+ * - [NotConfigured]: nessuna chiave salvata (sorgente addon Stremio resta disponibile).
+ * - [Error]: esito negativo tipizzato ([OpenSubtitlesVerifyError]); la UI lo converte
+ *   in un messaggio localizzato che NON contiene la chiave.
+ */
+sealed interface OpenSubtitlesConnectionState {
+  object Unknown : OpenSubtitlesConnectionState
+  object Checking : OpenSubtitlesConnectionState
+  object NotConfigured : OpenSubtitlesConnectionState
+  object Connected : OpenSubtitlesConnectionState
+  data class Error(val error: OpenSubtitlesVerifyError) : OpenSubtitlesConnectionState
 }
 
 data class PlayerPlaybackState(
@@ -521,17 +600,62 @@ data class PlaybackSession(
   val episodeNumber: Int?
 )
 
+/**
+ * Stato del download di un sottotitolo della sezione "Sottotitoli Online (OpenSubtitles)".
+ *
+ * La selezione NON passa più l'URL remoto direttamente al player: il file viene scaricato
+ * sul disco (gestendo ZIP/GZIP), salvato in cache e solo il file locale viene allegato a
+ * ExoPlayer come traccia esterna. [Error] è recuperabile con un nuovo tentativo.
+ */
+sealed interface OnlineSubtitleDownloadState {
+  /** Nessun download in corso. */
+  object Idle : OnlineSubtitleDownloadState
+
+  /** Download in corso: la UI mostra un feedback e disabilita i doppi click. */
+  object Downloading : OnlineSubtitleDownloadState
+
+  /**
+   * File scaricato e salvato localmente: [localSubtitle] ha `url` che punta al file
+   * (uri `file://`) pronto per essere allegato al player e attivato.
+   */
+  data class Ready(val localSubtitle: Subtitle) : OnlineSubtitleDownloadState
+
+  /** Download fallito: la UI mostra il motivo e consente di riprovare. */
+  data class Error(val error: OpenSubtitlesDownloadError) : OnlineSubtitleDownloadState
+}
+
+/** Sottocartella della cache app dedicata ai file sottotitolo scaricati da OpenSubtitles. */
+private const val ONLINE_SUBTITLES_CACHE_DIR = "opensubtitles"
+
 class StreamNovaViewModel(
   /**
    * Dispatcher per il lavoro di I/O della risoluzione stream (addon, TorBox,
    * sottotitoli). Iniettabile: nei test si passa un `TestDispatcher` per rendere
    * l'esecuzione asincrona deterministica e attendibile con `advanceUntilIdle()`.
    */
-  private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+  private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+  /**
+   * Verificatore della connessione OpenSubtitles: sostituibile nei test con un fake
+   * che non tocca la rete né richiede la chiave personale reale.
+   */
+  private val openSubtitlesVerifier: OpenSubtitlesConnectionVerifier = OpenSubtitlesConnectionVerifier()
 ) : ViewModel() {
 
   private val _currentSection = MutableStateFlow(SidebarSection.HOME)
   val currentSection: StateFlow<SidebarSection> = _currentSection.asStateFlow()
+
+  /**
+   * Contesto dell'applicazione per i messaggi che il ViewModel deve localizzare
+   * (sezione Ricerca). È assegnato al primo avvio della UI; se assente, i messaggi
+   * ricadono sulla stringa vuota invece di far fallire il caricamento.
+   */
+  @Volatile
+  private var appContext: Context? = null
+
+  /** Collega il contesto applicativo (idempotente, nessun leak: è il contesto app). */
+  fun attachContext(context: Context) {
+    appContext = context.applicationContext
+  }
 
   private val _homeScrollToTopEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
   val homeScrollToTopEvent: SharedFlow<Unit> = _homeScrollToTopEvent.asSharedFlow()
@@ -776,6 +900,32 @@ class StreamNovaViewModel(
 
   private val _isOnlineSubtitlesLoading = MutableStateFlow(false)
   val isOnlineSubtitlesLoading: StateFlow<Boolean> = _isOnlineSubtitlesLoading.asStateFlow()
+
+  // ── Download del sottotitolo online selezionato ("Sottotitoli Online" OpenSubtitles) ──
+  private val _onlineSubtitleDownload = MutableStateFlow<OnlineSubtitleDownloadState>(
+    OnlineSubtitleDownloadState.Idle
+  )
+  val onlineSubtitleDownload: StateFlow<OnlineSubtitleDownloadState> =
+    _onlineSubtitleDownload.asStateFlow()
+
+  /** Downloader OpenSubtitles: iniettabile nei test (api/client/dispatcher fittizi). */
+  internal var onlineSubtitleDownloader = OpenSubtitlesSubtitleDownloader(ioDispatcher = ioDispatcher)
+
+  /**
+   * Directory cache dove salvare i file sottotitolo scaricati: risolta alla richiesta con
+   * il contesto collegato dall'UI ([attachContext] o fallback reflection). In errorne
+   * (contesto assente) il download fallisce in modo controllato.
+   */
+  internal var onlineSubtitleCacheDirProvider: () -> File? = {
+    val context = appContext ?: currentApplicationContext()
+    context?.let { File(it.cacheDir, ONLINE_SUBTITLES_CACHE_DIR) }
+  }
+
+  private var onlineSubtitlesSearchJob: Job? = null
+  private var onlineSubtitleDownloadJob: Job? = null
+
+  /** Ultimo sottotitolo online richiesto: alla base dell'azione "Riprova". */
+  private var lastSelectedOnlineSubtitle: Subtitle? = null
 
   // Stato della risoluzione dello stream con gestione rigida del timeout e lifecycle
   private val _streamResolutionState = MutableStateFlow<StreamResolutionState>(StreamResolutionState.Idle)
@@ -1159,6 +1309,10 @@ class StreamNovaViewModel(
     homeCatalogsRefreshJob = viewModelScope.launch(Dispatchers.IO) {
       try {
         val resolved = StremioCatalogRepository.resolveHomeCatalogs(mediaList)
+        // Una categoria in caricamento (sezione Ricerca) ha la precedenza: Home e Ricerca
+        // condividono la cache dei cataloghi, e pubblicare qui i valori di un refresh
+        // avviato prima invaliderebbe la raccolta dei target della categoria corrente.
+        if (_isCategoryLoading.value) return@launch
         _homeCatalogs.value = resolved
       } catch (e: CancellationException) {
         throw e
@@ -1313,8 +1467,21 @@ class StreamNovaViewModel(
 
   val updateDownloadState: StateFlow<UpdateDownloadState> = UpdateRepository.downloadState
 
+  /**
+   * Aggiornamento rilevato dal controllo AUTOMATICO di avvio: non null solo quando
+   * c'è qualcosa da proporre e l'utente non ha ancora risposto in questa sessione.
+   * Il popup vive a livello di app (MainActivity), non dentro una schermata.
+   */
+  val startupUpdatePrompt: StateFlow<UpdateCheckState.UpdateAvailable?> =
+    UpdateRepository.startupPrompt
+
   fun checkForAppUpdates() {
     UpdateRepository.checkForUpdates(BuildConfig.VERSION_NAME)
+  }
+
+  /** L'utente ha scelto «Più tardi»: il popup non torna in questa sessione. */
+  fun dismissStartupUpdatePrompt() {
+    UpdateRepository.dismissStartupPrompt()
   }
 
   fun downloadUpdate(context: Context) {
@@ -1387,6 +1554,9 @@ class StreamNovaViewModel(
       // modalità precedente e non è più valido. Va invalidato subito, così la prossima
       // apertura (es. da "Continua a guardare") risolve da zero con i provider corretti.
       invalidateInMemoryStreamCaches()
+      // La separazione delle sorgenti per tipo (Home/Ricerca) è calcolata in base alla
+      // modalità: va ricalcolata, altrimenti resterebbe quella della modalità precedente.
+      refreshAddonSourceAvailability()
     }
   }
 
@@ -1423,6 +1593,27 @@ class StreamNovaViewModel(
       AppSettingsRepository.setAppLanguage(language)
       clearCacheAndRefresh()
     }
+  }
+
+  /**
+   * Switch "Usa TMDB come fallback per i generi" (sezione Ricerca), persistito in
+   * [AppSettingsRepository].
+   *
+   * Default ON: se nessun catalogo configurato copre la combinazione tipo+genere, la
+   * categoria mostra i titoli TMDB invece di restare vuota. Con lo switch OFF le
+   * categorie restano quelle degli addon (stato vuoto dichiarato) e TMDB non viene
+   * interrogato per il fallback: le altre funzionalità TMDB non cambiano.
+   */
+  val tmdbGenreFallbackEnabled: StateFlow<Boolean> = AppSettingsRepository.tmdbGenreFallbackEnabled
+
+  /**
+   * Aggiorna lo switch e ricalcola SUBITO la categoria aperta: l'utente vede l'effetto
+   * senza riavviare l'app e senza perdere la categoria che sta guardando.
+   */
+  fun setTmdbGenreFallbackEnabled(enabled: Boolean) {
+    AppSettingsRepository.setTmdbGenreFallbackEnabled(enabled)
+    val categoryId = activeSearchCategoryId ?: return
+    reloadActiveCategory(categoryId)
   }
 
   val parentalControlEnabled: StateFlow<Boolean> = AppSettingsRepository.parentalControlEnabled
@@ -1513,6 +1704,45 @@ class StreamNovaViewModel(
         )
         is TorBoxRepository.AccountCheck.Invalid -> TorBoxAccountState.Error(result.message)
         TorBoxRepository.AccountCheck.NotConfigured -> TorBoxAccountState.NotConfigured
+      }
+    }
+  }
+
+  // ── OPENSUBTITLES (configurazione) ────────────────────────────────
+
+  /** Chiave API OpenSubtitles salvata nelle Impostazioni (null = non configurata). */
+  val openSubtitlesApiKey: StateFlow<String?> = AppSettingsRepository.openSubtitlesApiKey
+
+  /** Esito dell'ultima verifica della connessione OpenSubtitles. */
+  private val _openSubtitlesConnectionState =
+    MutableStateFlow<OpenSubtitlesConnectionState>(OpenSubtitlesConnectionState.Unknown)
+  val openSubtitlesConnectionState: StateFlow<OpenSubtitlesConnectionState> =
+    _openSubtitlesConnectionState.asStateFlow()
+
+  /**
+   * Salva (o rimuove) la chiave API OpenSubtitles e invalida lo stato di verifica.
+   * Il client già usato da ricerca/download rilegge il valore a ogni richiesta
+   * (interceptor): la nuova chiave è attiva immediatamente, senza ricreare il client.
+   */
+  fun setOpenSubtitlesApiKey(key: String?) {
+    AppSettingsRepository.setOpenSubtitlesApiKey(key)
+    _openSubtitlesConnectionState.value = OpenSubtitlesConnectionState.Unknown
+  }
+
+  /** Interroga `GET /api/v1/subtitles` (endpoint ufficiale già in uso) per verificare la chiave. */
+  fun verifyOpenSubtitlesConnection() {
+    if (_openSubtitlesConnectionState.value is OpenSubtitlesConnectionState.Checking) return
+    if (AppSettingsRepository.openSubtitlesApiKey.value.isNullOrBlank()) {
+      _openSubtitlesConnectionState.value = OpenSubtitlesConnectionState.NotConfigured
+      return
+    }
+    viewModelScope.launch {
+      _openSubtitlesConnectionState.value = OpenSubtitlesConnectionState.Checking
+      val result = openSubtitlesVerifier.check(AppSettingsRepository.openSubtitlesApiKey.value)
+      _openSubtitlesConnectionState.value = when (result) {
+        is OpenSubtitlesConnectionCheck.Valid -> OpenSubtitlesConnectionState.Connected
+        is OpenSubtitlesConnectionCheck.NotConfigured -> OpenSubtitlesConnectionState.NotConfigured
+        is OpenSubtitlesConnectionCheck.Failed -> OpenSubtitlesConnectionState.Error(result.error)
       }
     }
   }
@@ -1650,8 +1880,21 @@ class StreamNovaViewModel(
 
   /** Keyword (etichette categoria + nomi canonici TMDB) della categoria attiva. */
   private var activeCategoryKeywords: List<String> = emptyList()
+  /** Etichetta della categoria attiva (prima keyword): usata nei messaggi localizzati. */
+  private var activeCategoryLabel: String = ""
   private var activeCategoryMovieGenreId: Int? = null
   private var activeCategoryTvGenreId: Int? = null
+
+  /**
+   * Esito dell'ultimo caricamento per tipo della categoria attiva. Vuoto finché il
+   * caricamento non è terminato.
+   */
+  private val _lastGenreLoads = MutableStateFlow<List<GenreLoadRecord>>(emptyList())
+  val lastGenreLoads: StateFlow<List<GenreLoadRecord>> = _lastGenreLoads.asStateFlow()
+
+  /** true se la categoria attiva ha una sorgente TMDB usata come fallback. */
+  val isCategoryTmdbFallback: Boolean
+    get() = _categoryState.value.source == SearchCategorySource.TMDB_FALLBACK
   /** Sezioni addon caricate per la categoria attiva (per la paginazione `skip`). */
   private var activeCategoryEntries: List<StremioCatalogRepository.CategoryCatalogEntry> = emptyList()
   /** Contatore generazione: scarta le risposte riferite a una categoria già chiusa. */
@@ -1686,6 +1929,7 @@ class StreamNovaViewModel(
     tvGenreId: Int?
   ) {
     activeSearchCategoryId = categoryId
+    activeCategoryLabel = keywords.firstOrNull().orEmpty()
     activeCategoryKeywords = keywords +
       listOfNotNull(movieGenreId?.let { TMDB_MOVIE_GENRE_NAMES[it] }) +
       listOfNotNull(tvGenreId?.let { TMDB_TV_GENRE_NAMES[it] })
@@ -1704,8 +1948,37 @@ class StreamNovaViewModel(
   }
 
   /**
-   * Prima pagina della categoria: prima i cataloghi addon, poi (solo se l'addon non
-   * ha prodotto contenuti) il fallback TMDB Discover dichiarato nello stato.
+   * Ricalcola la categoria attiva mantenendo id e genere già noti (es. dopo il cambio
+   * dello switch di fallback TMDB). Usa lo stesso contatore di generazione delle
+   * risposte di [initCategory]: un ricalcolo non può sovrascrivere un caricamento più
+   * recente, quindi non esistono risultati obsoleti che scavalcano quello corrente.
+   */
+  internal fun reloadActiveCategory(categoryId: String) {
+    activeSearchCategoryId = categoryId
+    activeCategoryEntries = emptyList()
+    currentCategoryPage = 1
+    categoryLoadGeneration++
+    _categoryItems.value = emptyList()
+    _categoryState.value = SearchCategoryState()
+    _isCategoryLoading.value = true
+    loadInitialCategoryPage(categoryLoadGeneration)
+  }
+
+  /**
+   * Prima pagina della categoria.
+   *
+   * Regole per OGNI tipo previsto dalla categoria (film e/o serie):
+   *  1. un catalogo dell'utente applica il filtro per genere E restituisce risultati →
+   *     fonte catalogo, TMDB non viene interrogato;
+   *  2. un catalogo compatibile è interrogato con successo ma risponde HTTP 200 vuoto,
+   *     oppure nessun catalogo dell'utente copre la combinazione tipo+genere → fallback
+   *     TMDB Discover, solo con lo switch "Usa TMDB come fallback per i generi" attivo;
+   *  3. switch disattivato → nessuna chiamata TMDB, stato vuoto dichiarato;
+   *  4. tutti i cataloghi compatibili del tipo sono falliti (rete/HTTP) → errore
+   *     dichiarato: il fallback TMDB non deve mascherare un malfunzionamento.
+   *
+   * Il fallback riguarda la SINGOLA combinazione: Serie TV → Horror con Film → Horror
+   * coperto mostra film dai cataloghi e serie da TMDB nella stessa categoria.
    */
   private fun loadInitialCategoryPage(generation: Int) {
     viewModelScope.launch {
@@ -1720,49 +1993,60 @@ class StreamNovaViewModel(
         }
         if (generation != categoryLoadGeneration) return@launch
 
-        if (addonLoad != null && addonLoad.items.isNotEmpty()) {
-          // Sorgente primaria: SOLO i contenuti restituiti dai cataloghi dell'addon.
-          activeCategoryEntries = addonLoad.entries
-          _categoryItems.value = addonLoad.items
-          _categoryState.value = SearchCategoryState(
-            source = SearchCategorySource.ADDON,
-            addonLabel = addonLoad.entries
-              .firstOrNull { it.section.items.isNotEmpty() }
-              ?.section
-              ?.title,
-            statusMessage = listOfNotNull(
-              addonLoad.errors.takeIf { it.isNotEmpty() }?.joinToString("\n"),
-              missingCatalogTypeNotice(addonLoad),
-              emptyCatalogTypeNotice(addonLoad)
-            ).joinToString("\n").takeIf { it.isNotBlank() }
-          )
-          return@launch
-        }
+        val entries = addonLoad?.entries.orEmpty()
 
-        // Nessun contenuto addon: il fallback è dichiarato in modo distinguibile,
-        // così la UI non può presentarlo come un caricamento addon riuscito.
-        _categoryState.value = SearchCategoryState(
-          source = SearchCategorySource.TMDB_FALLBACK,
-          statusMessage = listOfNotNull(
-            addonFallbackMessage(addonLoad),
-            missingCatalogTypeNotice(addonLoad)
-          ).joinToString("\n")
-        )
-        val tmdbItems = try {
-          MediaRepository.loadCategoryPage(
-            activeCategoryMovieGenreId,
-            activeCategoryTvGenreId,
-            1
+        val movieOutcome = activeCategoryMovieGenreId?.let { genreId ->
+          resolveGenreOutcome(
+            mediaType = MediaType.FILM,
+            genreId = genreId,
+            addonEntries = entries.filter { it.section.mediaType == MediaType.FILM },
+            addonItems = addonLoad?.items?.filter { it.type == MediaType.FILM }.orEmpty(),
+            addonMatched = addonLoad?.matchedMovieTargets ?: 0,
+            addonFailed = addonLoad?.failedMovieTargets ?: 0,
+            addonErrors = addonLoad?.errors.orEmpty()
           )
-        } catch (e: CancellationException) {
-          throw e
-        } catch (e: Exception) {
-          Log.w(TAG, "Fallback TMDB Discover categoria fallito: ${e.message}")
-          emptyList()
         }
         if (generation != categoryLoadGeneration) return@launch
+
+        val seriesOutcome = activeCategoryTvGenreId?.let { genreId ->
+          resolveGenreOutcome(
+            mediaType = MediaType.SERIE_TV,
+            genreId = genreId,
+            addonEntries = entries.filter { it.section.mediaType == MediaType.SERIE_TV },
+            addonItems = addonLoad?.items?.filter { it.type == MediaType.SERIE_TV }.orEmpty(),
+            addonMatched = addonLoad?.matchedSeriesTargets ?: 0,
+            addonFailed = addonLoad?.failedSeriesTargets ?: 0,
+            addonErrors = addonLoad?.errors.orEmpty()
+          )
+        }
+        if (generation != categoryLoadGeneration) return@launch
+
+        val outcomes = listOfNotNull(movieOutcome, seriesOutcome)
+        _lastGenreLoads.value = outcomes.map { it.record }
+
+        val addonItems = outcomes.flatMap { it.addonItems }
+        val tmdbItems = outcomes.flatMap { it.tmdbItems }
+        val usedTmdb = outcomes.any { it.usedTmdb }
+        // Se un tipo della categoria non ha NESSUNA fonte (catalogo assente e TMDB
+        // disattivato), la categoria non deve diventare una lista TMDB: si mostrano i
+        // contenuti reali degli altri tipi e lo stato dichiara la mancanza.
+        val coverageMissing = outcomes.any { !it.hasAnySource } && addonItems.isNotEmpty()
+        val routedToTmdb = outcomes.any { it.usedTmdb }
+
+        activeCategoryEntries = addonLoad?.entries.orEmpty()
+        _categoryState.value = buildCategoryState(
+          addonLoad = addonLoad,
+          outcomes = outcomes,
+          usedTmdb = usedTmdb,
+          routedToTmdb = routedToTmdb,
+          coverageMissing = coverageMissing
+        )
+        // Merge cross-sorgente sulle identità TMDB/IMDb già note: un titolo restituito sia
+        // dal catalogo sia da TMDB compare una sola volta.
+        _categoryItems.value = StremioCatalogRepository.deduplicateCrossSource(
+          if (usedTmdb) addonItems + tmdbItems else addonItems
+        )
         currentCategoryPage = 1
-        _categoryItems.value = tmdbItems
       } finally {
         if (generation == categoryLoadGeneration) {
           _isCategoryLoading.value = false
@@ -1771,153 +2055,306 @@ class StreamNovaViewModel(
     }
   }
 
-  /** Motivo esplicito del fallback TMDB, mostrato dalla UI come avviso. */
-  private fun addonFallbackMessage(
-    load: StremioCatalogRepository.CategoryCatalogLoad?
-  ): String {
-    val reason = when {
-      load == null -> "catalogo non interrogabile"
-      load.matchedTargets == 0 -> "nessun catalogo dichiarato nel manifest per questa categoria"
-      load.errors.isNotEmpty() -> load.errors.joinToString("\n")
-      else -> "catalogo vuoto"
-    }
-    return "Addon Xperience/Stremio non caricato: $reason — fallback TMDB Discover"
-  }
-
   /**
-   * Avviso quando la categoria prevede un tipo di contenuto (dal genere TMDB
-   * dichiarato per film/serie) ma per quel tipo NON viene richiesto alcun
-   * catalogo.
+   * Esito del caricamento per UN tipo di contenuto di una categoria.
    *
-   * I due motivi sono distinti:
-   *  - il manifest dichiara cataloghi di quel tipo ma nessuno ha un genere
-   *    corrispondente alla categoria → "categoria non supportata per le serie";
-   *  - il manifest non dichiara alcun catalogo di quel tipo → "nessun catalogo".
+   * @param record motivo del routing (per diagnostica e test).
+   * @param addonItems contenuti reali del tipo restituiti dai cataloghi configurati.
+   * @param tmdbItems contenuti TMDB del tipo (vuoto se TMDB non è stato usato).
+   * @param usedTmdb true se TMDB è stato interrogato ed è stato caricato.
+   */
+  private data class GenreOutcome(
+    val record: GenreLoadRecord,
+    val addonItems: List<MediaItem> = emptyList(),
+    val tmdbItems: List<MediaItem> = emptyList(),
+    val usedTmdb: Boolean = false
+  ) {
+    /** true se il tipo ha una fonte (un catalogo interrogato o TMDB). */
+    val hasAnySource: Boolean
+      get() = usedTmdb ||
+        record.reason == GenreLoadReason.SUPPORTED_BY_CATALOG ||
+        record.reason == GenreLoadReason.SUPPORTED_BUT_EMPTY ||
+        record.reason == GenreLoadReason.FAILED
+  }
+
+  /**
+   * Decide la fonte per UNA combinazione tipo+genere. Regole, in ordine:
    *
-   * La mancanza è dell'addon e non viene camuffata come errore dell'app né
-   * compensata con contenuti inventati. Se mancano ENTRAMBI i tipi non serve
-   * alcun avviso perché [addonFallbackMessage] dichiara già l'assenza totale.
+   *  1. almeno un catalogo configurato del tipo applica il filtro per genere e ha
+   *     restituito risultati → fonte addon, TMDB non viene interrogato ("non attivare
+   *     inutilmente TMDB");
+   *  2. tutti i cataloghi compatibili del tipo sono falliti (rete/HTTP/JSON) → errore
+   *     dichiarato, TMDB non maschera un malfunzionamento;
+   *  3. un catalogo compatibile è stato interrogato con successo ma ha risposto HTTP 200
+   *     vuoto (catalogo vuoto: non è incompatibilità e non è un errore) OPPURE nessun
+   *     catalogo configurato copre la combinazione → fallback TMDB con l'endpoint del
+   *     tipo (`discover/movie` o `discover/tv`) e il suo id di genere;
+   *  4. switch disattivato → nessuna chiamata TMDB, stato vuoto dichiarato.
+   *
+   * Il fallback è deciso sulla COMBINAZIONE tipo+genere e sull'insieme dei cataloghi
+   * realmente configurati (addon attivi + sistema): se un altro addon copre il genere E
+   * produce risultati, la ricerca resta dell'addon e TMDB non viene chiamato.
    */
-  private fun missingCatalogTypeNotice(
-    load: StremioCatalogRepository.CategoryCatalogLoad?
-  ): String? {
-    if (load == null || load.matchedTargets == 0) return null
-    val notices = buildList {
-      if (activeCategoryMovieGenreId != null && load.matchedMovieTargets == 0) {
-        add(
-          if (load.availableMovieCatalogs > 0) {
-            "Categoria non supportata per i film: il manifest non dichiara un genere corrispondente"
-          } else {
-            "Nessun catalogo film dichiarato nel manifest"
-          }
-        )
-      }
-      if (activeCategoryTvGenreId != null && load.matchedSeriesTargets == 0) {
-        add(
-          if (load.availableSeriesCatalogs > 0) {
-            "Categoria non supportata per le serie: il manifest non dichiara un genere corrispondente"
-          } else {
-            "Nessun catalogo serie dichiarato nel manifest"
-          }
-        )
-      }
+  private suspend fun resolveGenreOutcome(
+    mediaType: MediaType,
+    genreId: Int,
+    addonEntries: List<StremioCatalogRepository.CategoryCatalogEntry>,
+    addonItems: List<MediaItem>,
+    addonMatched: Int,
+    addonFailed: Int,
+    addonErrors: List<String>
+  ): GenreOutcome {
+    val catalogCovers = StremioCatalogRepository.hasUserCatalogCoveringGenre(
+      keywords = activeCategoryKeywords,
+      mediaType = mediaType
+    )
+    val anyLoaded = addonEntries.any { it.section.items.isNotEmpty() }
+    val allFailed = addonMatched > 0 && addonFailed >= addonMatched
+
+    // 1. Risultati validi dagli addon: la categoria resta dell'addon, TMDB non serve.
+    if (anyLoaded) {
+      return GenreOutcome(
+        record = GenreLoadRecord(mediaType, GenreLoadReason.SUPPORTED_BY_CATALOG),
+        addonItems = addonItems
+      )
     }
-    return notices.joinToString("\n").takeIf { it.isNotBlank() }
+
+    // 2. Errore di rete/servizio su TUTTI i cataloghi compatibili: dichiarato, non mascherato.
+    if (allFailed) {
+      Log.w(TAG, "Catalogo $mediaType fallito: nessun fallback TMDB ($addonErrors)")
+      return GenreOutcome(record = GenreLoadRecord(mediaType, GenreLoadReason.FAILED), addonItems = addonItems)
+    }
+
+    // 3. Nessun risultato utile dagli addon: catalogo compatibile vuoto (HTTP 200 senza
+    //    metas) oppure nessun catalogo compatibile per la combinazione → fallback TMDB.
+    val catalogWasEmpty = catalogCovers || addonMatched > 0
+
+    // 4. Switch disattivato: nessuna chiamata TMDB, il caso resta dichiarato.
+    if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value) {
+      val reason = if (catalogWasEmpty) GenreLoadReason.SUPPORTED_BUT_EMPTY else GenreLoadReason.TMDB_DISABLED
+      return GenreOutcome(record = GenreLoadRecord(mediaType, reason), addonItems = addonItems)
+    }
+
+    val tmdbItems = MediaRepository.discoverByGenre(mediaType, genreId, page = 1)
+    if (tmdbItems == null) {
+      return GenreOutcome(
+        record = GenreLoadRecord(
+          mediaType = mediaType,
+          reason = GenreLoadReason.TMDB_UNAVAILABLE,
+          catalogWasEmpty = catalogWasEmpty
+        ),
+        addonItems = addonItems
+      )
+    }
+    return GenreOutcome(
+      record = GenreLoadRecord(
+        mediaType = mediaType,
+        reason = GenreLoadReason.TMDB_FALLBACK,
+        tmdbPages = 1,
+        tmdbItems = tmdbItems.size,
+        catalogWasEmpty = catalogWasEmpty
+      ),
+      addonItems = addonItems,
+      tmdbItems = tmdbItems,
+      usedTmdb = true
+    )
   }
 
   /**
-   * Avviso quando il catalogo di un tipo è stato REALMENTE interrogato ma ha
-   * restituito zero contenuti mentre altre sezioni della categoria hanno
-   * risultati: distinto dall'assenza del catalogo ([missingCatalogTypeNotice]).
+   * Stato della categoria: origine REALE dei contenuti, avvisi e uso di TMDB.
+   *
+   * I messaggi sono risorse localizzate ([R.string]) risolte con [appContext]. Ogni
+   * messaggio descrive il SINGOLO tipo (film / serie TV): nessuno attribuisce a un addon
+   * specifico un limite globale, perché se un altro addon copre il genere la categoria
+   * resta dell'addon e nessun titolo TMDB viene aggiunto.
    */
-  private fun emptyCatalogTypeNotice(
-    load: StremioCatalogRepository.CategoryCatalogLoad?
-  ): String? {
-    if (load == null) return null
-    val sections = load.entries.map { it.section }
-    if (sections.isEmpty() || sections.none { it.items.isNotEmpty() }) return null
-    val emptyTypes = buildList {
-      if (activeCategoryTvGenreId != null) {
-        val series = sections.filter { it.mediaType == MediaType.SERIE_TV }
-        if (series.isNotEmpty() && series.all { it.items.isEmpty() }) add("serie TV")
-      }
-      if (activeCategoryMovieGenreId != null) {
-        val movies = sections.filter { it.mediaType == MediaType.FILM }
-        if (movies.isNotEmpty() && movies.all { it.items.isEmpty() }) add("film")
-      }
+  private fun buildCategoryState(
+    addonLoad: StremioCatalogRepository.CategoryCatalogLoad?,
+    outcomes: List<GenreOutcome>,
+    usedTmdb: Boolean,
+    routedToTmdb: Boolean,
+    coverageMissing: Boolean
+  ): SearchCategoryState {
+    val addonLabel = addonLoad?.entries?.firstOrNull { it.section.items.isNotEmpty() }?.section?.title
+    val tmdbSkipped = outcomes.any { it.record.reason == GenreLoadReason.TMDB_DISABLED }
+    val notices = outcomes.mapNotNull { noticeForOutcome(it) }
+    val onlySkipped = tmdbSkipped && outcomes.all { !it.hasAnySource }
+    return SearchCategoryState(
+      source = if (usedTmdb || onlySkipped) SearchCategorySource.TMDB_FALLBACK else SearchCategorySource.ADDON,
+      addonLabel = addonLabel,
+      statusMessage = notices.joinToString("\n").takeIf { it.isNotBlank() },
+      genresCatalogsCopied = routedToTmdb || coverageMissing,
+      genresTmdbSkipped = tmdbSkipped
+    )
+  }
+
+  /** Messaggio localizzato per l'esito di un tipo, oppure `null` se non serve. */
+  private fun noticeForOutcome(outcome: GenreOutcome): String? {
+    val type = typeLabel(outcome.record.mediaType)
+    return when (outcome.record.reason) {
+      GenreLoadReason.SUPPORTED_BY_CATALOG -> null
+      GenreLoadReason.SUPPORTED_BUT_EMPTY ->
+        localized(R.string.search_category_empty_type, type)
+      GenreLoadReason.FAILED ->
+        localized(R.string.search_category_failed_type, type)
+      GenreLoadReason.TMDB_FALLBACK ->
+        if (outcome.record.tmdbItems == 0) {
+          localized(R.string.search_category_tmdb_no_results, type)
+        } else if (outcome.record.catalogWasEmpty) {
+          localized(
+            if (outcome.record.mediaType == MediaType.SERIE_TV) {
+              R.string.search_category_tmdb_after_empty_series
+            } else {
+              R.string.search_category_tmdb_after_empty_movies
+            }
+          )
+        } else {
+          localized(R.string.search_category_tmdb_fallback_reason)
+        }
+      GenreLoadReason.TMDB_DISABLED ->
+        localized(
+          R.string.search_category_tmdb_disabled,
+          activeCategoryLabel.takeIf { it.isNotBlank() } ?: type
+        )
+      // Catalogo interrogato e vuoto e TMDB non raggiungibile: entrambi i fatti dichiarati.
+      GenreLoadReason.TMDB_UNAVAILABLE ->
+        if (outcome.record.catalogWasEmpty) {
+          listOf(
+            localized(R.string.search_category_empty_type, type),
+            localized(R.string.search_category_tmdb_unavailable)
+          ).joinToString("\n")
+        } else {
+          localized(R.string.search_category_tmdb_unavailable)
+        }
     }
-    if (emptyTypes.isEmpty()) return null
-    return "Catalogo ${emptyTypes.joinToString(" e ")} interrogato ma senza risultati"
+  }
+
+  /** Etichetta localizzata del tipo ("Film" / "Serie TV"), usata nei messaggi. */
+  private fun typeLabel(mediaType: MediaType): String = localized(
+    when (mediaType) {
+      MediaType.SERIE_TV -> R.string.search_category_type_series
+      else -> R.string.search_category_type_movies
+    }
+  )
+
+  /** Risolve una risorsa stringa (nessuna eccezione se il contesto non è disponibile). */
+  private fun localized(resId: Int, vararg args: Any): String {
+    // Contesto: quello collegato dalla UI; se manca (es. il ViewModel è usato senza
+    // schermata) si usa il contesto dell'applicazione, sempre disponibile nel processo.
+    val context = appContext ?: currentApplicationContext() ?: return ""
+    return runCatching { context.getString(resId, *args) }.getOrDefault("")
   }
 
   /**
-   * Paginazione della categoria attiva: `skip` sui cataloghi addon quando la
-   * sorgente è l'addon, TMDB Discover solo quando è dichiarato il fallback.
+   * Contesto applicativo del processo, ricavato dalla riflessione su `ActivityThread`:
+   * evita di dipendere dall'ordine in cui la UI collega il proprio contesto.
+   */
+  private fun currentApplicationContext(): Context? = runCatching {
+    val activityThread = Class.forName("android.app.ActivityThread")
+    val app = activityThread.getMethod("currentApplication").invoke(null) as? Context
+    app?.applicationContext
+  }.getOrNull()
+
+  /**
+   * Paginazione della categoria attiva.
+   *
+   * I risultati possono avere DUE sorgenti, anche insieme (film dagli addon e serie da
+   * TMDB, o viceversa):
+   *  - la pagina successiva dei cataloghi addon usa `skip`, con gli stessi extra;
+   *  - la pagina successiva TMDB esiste solo per i tipi davvero serviti da TMDB, con
+   *    l'endpoint del tipo e il genere della categoria.
+   * Con il fallback disattivato non viene mai richiesta una pagina TMDB.
    */
   fun loadNextCategoryPage() {
     if (isCategoryLoadingMore || _isCategoryLoading.value) return
-    when (_categoryState.value.source) {
-      SearchCategorySource.ADDON -> loadNextCategoryAddonPage()
-      SearchCategorySource.TMDB_FALLBACK -> loadNextCategoryTmdbPage()
-      null -> Unit
-    }
-  }
-
-  /** Pagina i cataloghi addon della categoria con l'extra `skip` (se dichiarato). */
-  private fun loadNextCategoryAddonPage() {
+    val addonEntries = activeCategoryEntries.filter { it.section.supportsSkip && it.section.items.isNotEmpty() }
+    val tmdbTypes = tmdbFallbackTypes()
+    if (addonEntries.isEmpty() && tmdbTypes.isEmpty()) return
+    isCategoryLoadingMore = true
     val generation = categoryLoadGeneration
-    val previous = activeCategoryEntries
-    if (previous.none { it.section.supportsSkip && it.section.items.isNotEmpty() }) return
-    isCategoryLoadingMore = true
     viewModelScope.launch {
       try {
-        val updated = StremioCatalogRepository.paginateCategoryCatalogs(previous)
+        if (addonEntries.isNotEmpty()) {
+          loadNextCategoryAddonPage(addonEntries, generation)
+        }
         if (generation != categoryLoadGeneration) return@launch
-        val fresh = mutableListOf<MediaItem>()
-        updated.forEachIndexed { index, entry ->
-          fresh += entry.section.items.drop(previous[index].section.items.size)
+        if (tmdbTypes.isNotEmpty()) {
+          loadNextCategoryTmdbPage(tmdbTypes, generation)
         }
-        activeCategoryEntries = updated
-        if (fresh.isNotEmpty()) {
-          _categoryItems.value =
-            StremioCatalogRepository.deduplicateCrossSource(_categoryItems.value + fresh)
-        }
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: Exception) {
-        Log.w(TAG, "Errore paginazione categoria addon: ${e.message}")
       } finally {
         isCategoryLoadingMore = false
       }
     }
   }
 
-  /** Pagina successiva del fallback TMDB Discover (visibile solo se dichiarato). */
-  private fun loadNextCategoryTmdbPage() {
-    isCategoryLoadingMore = true
-    viewModelScope.launch {
-      val nextPage = currentCategoryPage + 1
-      try {
-        val newItems = MediaRepository.loadCategoryPage(
-          activeCategoryMovieGenreId,
-          activeCategoryTvGenreId,
-          nextPage
-        )
-        if (newItems.isNotEmpty()) {
-          currentCategoryPage = nextPage
-          val current = _categoryItems.value.toMutableList()
-          newItems.forEach { item ->
-            if (current.none { it.id == item.id }) {
-              current.add(item)
-            }
-          }
-          _categoryItems.value = current
-        }
-      } catch (e: Exception) {
-        Log.w(TAG, "Errore paginazione categoria pagina $nextPage: ${e.message}")
-      } finally {
-        isCategoryLoadingMore = false
+  /** Tipi serviti da TMDB nell'ultimo caricamento della categoria (vuoto = nessuno). */
+  private fun tmdbFallbackTypes(): List<MediaType> {
+    if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value) return emptyList()
+    return _lastGenreLoads.value
+      .filter { it.reason == GenreLoadReason.TMDB_FALLBACK }
+      .map { it.mediaType }
+  }
+
+  /**
+   * Pagina i cataloghi addon della categoria con l'extra `skip` (se dichiarato).
+   * Eseguita dentro il job di [loadNextCategoryPage], che gestisce il flag di caricamento.
+   */
+  private suspend fun loadNextCategoryAddonPage(
+    previous: List<StremioCatalogRepository.CategoryCatalogEntry>,
+    generation: Int
+  ) {
+    try {
+      val updated = StremioCatalogRepository.paginateCategoryCatalogs(previous)
+      if (generation != categoryLoadGeneration) return
+      val fresh = mutableListOf<MediaItem>()
+      updated.forEachIndexed { index, entry ->
+        fresh += entry.section.items.drop(previous[index].section.items.size)
       }
+      activeCategoryEntries = updated
+      if (fresh.isNotEmpty()) {
+        _categoryItems.value =
+          StremioCatalogRepository.deduplicateCrossSource(_categoryItems.value + fresh)
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Errore paginazione categoria addon: ${e.message}")
+    }
+  }
+
+  /**
+   * Pagina successiva del fallback TMDB, SOLO per i tipi che TMDB ha davvero fornito
+   * ([tmdbTypes]). Ogni tipo usa il proprio endpoint e il proprio id di genere; i
+   * risultati vengono uniti senza duplicati (identità TMDB/IMDb). La generazione viene
+   * ricontrollata dopo la risposta: un cambio di categoria/switch non può essere
+   * sovrascritto da una pagina obsoleta.
+   */
+  private suspend fun loadNextCategoryTmdbPage(tmdbTypes: List<MediaType>, generation: Int) {
+    val nextPage = currentCategoryPage + 1
+    try {
+      val newItems = mutableListOf<MediaItem>()
+      if (tmdbTypes.contains(MediaType.FILM)) {
+        activeCategoryMovieGenreId?.let { genreId ->
+          MediaRepository.discoverByGenre(MediaType.FILM, genreId, nextPage)?.let(newItems::addAll)
+        }
+      }
+      if (tmdbTypes.contains(MediaType.SERIE_TV)) {
+        activeCategoryTvGenreId?.let { genreId ->
+          MediaRepository.discoverByGenre(MediaType.SERIE_TV, genreId, nextPage)?.let(newItems::addAll)
+        }
+      }
+      // Categoria cambiata o fallback disattivato durante la richiesta: scarta la pagina.
+      if (generation != categoryLoadGeneration) return
+      if (newItems.isNotEmpty()) {
+        currentCategoryPage = nextPage
+        _categoryItems.value = StremioCatalogRepository.deduplicateCrossSource(
+          _categoryItems.value + newItems
+        )
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Errore paginazione categoria pagina $nextPage: ${e.message}")
     }
   }
 
@@ -1977,6 +2414,24 @@ class StreamNovaViewModel(
   fun setSection(section: SidebarSection) {
     _currentSection.value = section
     _screenState.value = ScreenState.BROWSING
+  }
+
+  /**
+   * Ricalcola da zero i cataloghi guidati dagli addon (Home e Ricerca) dopo un cambio
+   * che ne modifica la disponibilità delle fonti (es. modalità HTTP <-> Debrid).
+   *
+   * La raccolta dei target dipende dalla modalità del motore di streaming: la cache dei
+   * cataloghi va invalidata PRIMA che Home/Ricerca chiedano i dati, altrimenti le
+   * sezioni resterebbero quelle della modalità precedente.
+   */
+  private fun refreshAddonSourceAvailability() {
+    _stremioProviderMedia.value = emptyMap()
+    _stremioProviderStates.value = emptyMap()
+    providerCatalogCache.clear()
+    StremioCatalogRepository.clearCache()
+    StremioCatalogRepository.resetProviderPaging()
+    _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
+    refreshHomeCatalogs(allMedia.value)
   }
 
   /**
@@ -4181,22 +4636,162 @@ fun backToBrowsing() {
     setSubtitleOffsetMs(0L)
   }
 
+  /**
+   * Carica i sottotitoli online per il contenuto in riproduzione, interrogando ENTRAMBE
+   * le integrazioni esistenti e unendo i risultati:
+   * 1. API REST OpenSubtitles v3 (`OpenSubtitlesApi`): identifica il contenuto con
+   *    IMDb/TMDB quando attendibili, altrimenti con titolo + anno; type corretto per
+   *    film/serie; lingua preferita dell'utente inclusa. I risultati SENZA URL diretto
+   *    restano in lista con `file_id` e vengono risolti solo alla selezione, così nessun
+   *    risultato valido viene scartato né consuma quota download per errore.
+   * 2. Addon Stremio OpenSubtitles v3 (fallback storico): mantiene copertura per gli
+   *    identificativi che l'addon risolve e per i casi in cui l'API REST non risponde.
+   *
+   * Ricalcolo pulito: una nuova apertura della sezione annulla la ricerca precedente
+   * (nessuna richiesta "fantasma" può sovrascrivere lo stato) e azzera il download in corso.
+   */
   fun loadOnlineSubtitles(
     mediaItem: MediaItem? = _playbackState.value.media,
     episode: Episode? = _playbackState.value.currentEpisode
   ) {
     val media = mediaItem ?: return
-    viewModelScope.launch(ioDispatcher) {
+    // Nuova ricerca: annulla quella in corso per questo pannello (evita sovrascritture
+    // tardive) e resetta lo stato del download del sottotitolo selezionato.
+    onlineSubtitlesSearchJob?.cancel()
+    onlineSubtitlesSearchJob = viewModelScope.launch(ioDispatcher) {
+      val job = coroutineContext[Job]
       _isOnlineSubtitlesLoading.value = true
+      _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Idle
       try {
-        val results = openSubtitlesProvider.fetchFromStremioOpenSubtitles(media, episode)
-        _onlineSubtitles.value = results
+        val preferredLanguage = SettingsRepository.settings.value.preferredSubtitleLanguage
+        // L'addon risponde in parallelo: la ricerca ufficiale è la via principale.
+        val addonDeferred = async(ioDispatcher) {
+          runCatching { openSubtitlesProvider.fetchFromStremioOpenSubtitles(media, episode) }
+            .getOrDefault(emptyList())
+        }
+        val official = try {
+          openSubtitlesProvider.fetchSubtitles(
+            mediaItem = media,
+            episode = episode,
+            preferredLanguage = preferredLanguage,
+            resolveLinksOnDemand = false
+          )
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          Log.w("StreamNovaVM", "Errore ricerca ufficiale OpenSubtitles: ${e.message}")
+          emptyList()
+        }
+        val addon = addonDeferred.await()
+
+        val merged = mergeOnlineSubtitles(official = official, addon = addon)
+        _onlineSubtitles.value = merged
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w("StreamNovaVM", "Errore caricamento sottotitoli online: ${e.message}")
-        _onlineSubtitles.value = emptyList()
+    _onlineSubtitles.value = emptyList()
+    onlineSubtitlesSearchJob?.cancel()
+    onlineSubtitleDownloadJob?.cancel()
+    onlineSubtitlesSearchJob = null
+    onlineSubtitleDownloadJob = null
+    lastSelectedOnlineSubtitle = null
+    _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Idle
       } finally {
-        _isOnlineSubtitlesLoading.value = false
+        // Reimposta lo spinner solo se questo job è ancora quello attivo: una nuova
+        // ricerca potrebbe essere già ripartita e avere lo stato a true per sé stessa.
+        if (onlineSubtitlesSearchJob === job) {
+          _isOnlineSubtitlesLoading.value = false
+        }
       }
+    }
+  }
+
+  /**
+   * Unisce risultati ufficiali e addon, eliminando i duplicati (stesso URL, oppure lo
+   * stesso file_id per risultati privi di URL) e ordinandoli per priorità linguistica
+   * (italiano, inglese, altre in ordine alfabetico).
+   */
+  private fun mergeOnlineSubtitles(
+    official: List<Subtitle>,
+    addon: List<Subtitle>
+  ): List<Subtitle> {
+    val seen = HashSet<String>()
+    val merged = ArrayList<Subtitle>(official.size + addon.size)
+    for (sub in official + addon) {
+      val key = when {
+        sub.url.isNotBlank() -> "url:${sub.url.lowercase()}"
+        sub.fileId != null -> "fid:${sub.fileId}:${sub.lang}"
+        else -> continue
+      }
+      if (seen.add(key)) merged.add(sub)
+    }
+    return OpenSubtitlesSubtitleProvider.sortSubtitlesByPriority(merged)
+  }
+
+  /**
+   * Selezione di un sottotitolo nella sezione "Sottotitoli Online": scarica il file sul
+   * disco (risolvendo `file_id` → URL temporaneo quando serve, gestendo ZIP/GZIP) e
+   * pubblica lo stato in [onlineSubtitleDownload]. PlayerScreen reagisce a [Ready]
+   * allegando il FILE LOCALE al player (mai gli URL temporanei remoti).
+   */
+  fun selectOnlineSubtitle(subtitle: Subtitle) {
+    if (subtitle.fileId == null && subtitle.url.isBlank()) return
+    if (_onlineSubtitleDownload.value is OnlineSubtitleDownloadState.Downloading) return
+    lastSelectedOnlineSubtitle = subtitle
+    performOnlineSubtitleDownload(subtitle)
+  }
+
+  /** Riprova il download dell'ultimo sottotitolo selezionato (feedback errore). */
+  fun retryOnlineSubtitleDownload() {
+    if (_onlineSubtitleDownload.value is OnlineSubtitleDownloadState.Downloading) return
+    lastSelectedOnlineSubtitle?.let { performOnlineSubtitleDownload(it) }
+  }
+
+  /** Azzeramento dello stato di download (usato al ritorno Ready applicato dal player). */
+  fun clearOnlineSubtitleDownloadState() {
+    if (_onlineSubtitleDownload.value is OnlineSubtitleDownloadState.Downloading) return
+    _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Idle
+  }
+
+  private fun performOnlineSubtitleDownload(subtitle: Subtitle) {
+    onlineSubtitleDownloadJob?.cancel()
+    _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Downloading
+    onlineSubtitleDownloadJob = viewModelScope.launch(ioDispatcher) {
+      val cacheDir = onlineSubtitleCacheDirProvider()
+      if (cacheDir == null) {
+        Log.w("StreamNovaVM", "Cache directory non disponibile: download sottotitolo annullato")
+        _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Error(
+          OpenSubtitlesDownloadError.INVALID_FILE
+        )
+        return@launch
+      }
+      try {
+        val file = onlineSubtitleDownloader.download(subtitle, cacheDir)
+          .getOrThrow()
+        // Il player riceve IL FILE LOCALE come traccia esterna: nessuna dipendenza da URL
+        // temporanei dopo il download. Formato "file://" compatibile con Uri.parse del
+        // PlayerSubtitleMediaItemBuilder (senza dipendere da android.net.Uri qui, così
+        // resta verificabile in unit test JVM).
+        val localSubtitle = subtitle.copy(url = "file://${file.absolutePath}")
+        injectOnlineSubtitle(localSubtitle)
+        _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Ready(localSubtitle)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        val mapped = mapOnlineSubtitleError(e)
+        Log.w("StreamNovaVM", "Download sottotitolo fallito ($mapped): ${e.message}")
+        _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Error(mapped)
+      }
+    }
+  }
+
+  private fun mapOnlineSubtitleError(cause: Throwable): OpenSubtitlesDownloadError {
+    return when (cause) {
+      is com.example.data.opensubtitles.OpenSubtitlesDownloadException -> cause.error
+      is SocketTimeoutException -> OpenSubtitlesDownloadError.TIMEOUT
+      is java.io.IOException -> OpenSubtitlesDownloadError.NETWORK
+      else -> OpenSubtitlesDownloadError.NETWORK
     }
   }
 

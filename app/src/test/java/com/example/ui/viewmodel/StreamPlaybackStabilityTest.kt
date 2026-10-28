@@ -110,7 +110,9 @@ class StreamPlaybackStabilityTest {
       override suspend fun fetchSubtitles(
         mediaItem: MediaItem,
         episode: Episode?,
-        preferredLanguage: String?
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
       ) = emptyList<com.example.domain.model.Subtitle>()
     }
     return viewModel

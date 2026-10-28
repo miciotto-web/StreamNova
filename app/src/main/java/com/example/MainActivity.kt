@@ -48,6 +48,8 @@ import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.MediaRepository
 import com.example.data.streaming.StreamResult
+import com.example.data.update.UpdateRepository
+import com.example.data.update.shouldShowStartupUpdatePrompt
 import com.example.ui.components.HeroCarouselState
 import com.example.ui.components.ModalOverlayState
 import com.example.ui.components.ProviderConstants
@@ -74,6 +76,7 @@ import com.example.ui.screens.SplashScreen
 import com.example.ui.screens.TrailerErrorOverlay
 import com.example.ui.screens.TrailerLoadingOverlay
 import com.example.ui.screens.TrailerPlayerScreen
+import com.example.ui.screens.UpdatePromptDialog
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.NovaBackground
 import com.example.ui.viewmodel.ScreenState
@@ -143,6 +146,11 @@ class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     MediaRepository.init(applicationContext)
+    // Controllo aggiornamenti all'avvio: in background (Dispatchers.IO) e una sola volta
+    // per processo, quindi non blocca né rallenta la Home. Se trova una versione più
+    // recente il popup compare a schermata libera; in ogni altro esito — app aggiornata,
+    // offline, errore — non disturba. Nessun download parte senza la scelta dell'utente.
+    UpdateRepository.checkForUpdatesOnStartup()
     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
     enableEdgeToEdge()
     setContent {
@@ -190,6 +198,8 @@ fun StreamNovaApp(
   val lastFocusedTarget by viewModel.lastFocusedTarget.collectAsState()
   val lastFocusedProviderId by viewModel.lastFocusedProviderId.collectAsState()
   val focusRestoreToken by viewModel.focusRestoreToken.collectAsState()
+  val startupUpdatePrompt by viewModel.startupUpdatePrompt.collectAsState()
+  val updateDownloadState by viewModel.updateDownloadState.collectAsState()
 
   // Feedback errore di risoluzione sorgenti (es. timeout o nessuna sorgente):
   // mostra un toast con il messaggio di errore e reimposta lo stato su Idle
@@ -738,6 +748,30 @@ targetCompanyId = lastFocusedCompanyId,
         onDismiss = {
           viewModel.dismissParentalPinDialog()
         }
+      )
+    }
+
+    // Popup dell'aggiornamento trovato dal controllo AUTOMATICO di avvio. Compare una
+    // sola volta per sessione e solo a schermata libera: durante la splash, in
+    // riproduzione o con un altro modale aperto resta in attesa, senza mai interrompere
+    // la Home. Le due scelte sono «Aggiorna» (scarica: è la scelta esplicita che serve
+    // per il download) e «Più tardi» (non riproporre in questa sessione).
+    val pendingStartupUpdate = startupUpdatePrompt
+    if (pendingStartupUpdate != null &&
+      shouldShowStartupUpdatePrompt(
+        hasPrompt = true,
+        isSplashActive = isSplashActive,
+        isPlayerActive = screenState == ScreenState.PLAYER,
+        isAnotherModalVisible = ModalOverlayState.isAnyOpen ||
+          (showSourceDialog && availableSources.isNotEmpty() && sourceDialogMedia != null) ||
+          showParentalPinDialog
+      )
+    ) {
+      UpdatePromptDialog(
+        update = pendingStartupUpdate,
+        downloadState = updateDownloadState,
+        onUpdate = { viewModel.downloadUpdate(context) },
+        onLater = { viewModel.dismissStartupUpdatePrompt() }
       )
     }
 

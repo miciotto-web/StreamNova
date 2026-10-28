@@ -12,7 +12,15 @@ data class Subtitle(
     val isStreamProvided: Boolean = false,
     val headers: Map<String, String>? = null,
     /** Etichetta mostrata all'utente quando l'addon la dichiara (es. "Forzato"). */
-    val label: String? = null
+    val label: String? = null,
+    /**
+     * Identificativo del FILE subtitle su OpenSubtitles v3 (`attributes.files[].file_id`).
+     * Valorizzato SOLO per i risultati OpenSubtitles: consente di risolvere l'URL di
+     * download temporaneo alla selezione (POST /api/v1/download) invece che durante la
+     * ricerca, senza consumare quota download per risultati mai scelti.
+     * Quando presente e [url] è vuoto, il sottotitolo è "da risolvere al download".
+     */
+    val fileId: Long? = null
 ) {
     fun getDisplayLanguage(): String = languageCodeToName(lang)
 
