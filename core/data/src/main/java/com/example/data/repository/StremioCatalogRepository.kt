@@ -28,8 +28,8 @@ import com.example.data.stremio.provider.ProviderCatalogResolvers
 import com.example.data.stremio.provider.ProviderCatalogSourcePolicy
 import com.example.data.stremio.provider.ResolvedProviderTarget
 import com.example.data.stremio.provider.asAliasProvider
-import com.example.ui.components.ProviderConstants
-import com.example.ui.components.StreamingProvider
+import com.example.data.model.ProviderAliasDescriptor
+import com.example.data.model.ProviderAliasRegistry
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -383,7 +383,7 @@ object StremioCatalogRepository {
       CatalogKey(target.addonId, target.type, target.catalogId)
     )
     val brandName = binding?.providerId?.let { providerId ->
-      ProviderConstants.ALL.firstOrNull { it.id == providerId }?.name
+      ProviderAliasRegistry.ALL.firstOrNull { it.providerId == providerId }?.providerName
     } ?: detectBrandFromTarget(target)
 
     val isTop10 = target.catalogId.contains("top10", ignoreCase = true) ||
@@ -1427,7 +1427,7 @@ object StremioCatalogRepository {
    *    [ProviderCatalogPlan.fallbackToDefault]).
    */
   fun providerCatalogPlan(
-    provider: StreamingProvider,
+    provider: ProviderAliasDescriptor,
     mediaType: MediaType? = null
   ): ProviderCatalogPlan {
     val customCatalogsActive = hasCustomCatalogAddons()
@@ -1446,7 +1446,7 @@ object StremioCatalogRepository {
     }
 
     val plan = ProviderCatalogPlanner.plan(
-      providerId = provider.id,
+      providerId = provider.providerId,
       targets = targets,
       resolver = resolver(),
       mediaType = mediaType,
@@ -1494,7 +1494,7 @@ object StremioCatalogRepository {
    * Un binding `movie` non può comparire per le serie e viceversa.
    */
   fun findConfirmedTargetsForProvider(
-    provider: StreamingProvider,
+    provider: ProviderAliasDescriptor,
     mediaType: MediaType? = null
   ): List<ResolvedProviderTarget> = providerCatalogPlan(provider, mediaType).resolved
 
@@ -1503,7 +1503,7 @@ object StremioCatalogRepository {
    * catalogo Stremio al posto di quello nativo TMDB.
    */
   fun providerHasConfirmedBindings(
-    provider: StreamingProvider,
+    provider: ProviderAliasDescriptor,
     mediaType: MediaType? = null
   ): Boolean = providerCatalogPlan(provider, mediaType).hasConfirmedBindings
 
@@ -1525,7 +1525,7 @@ object StremioCatalogRepository {
    * va comunque confermata dal fetch effettivo (vedi `StreamNovaViewModel`:
    * se il caricamento non produce item, FULL degrada a PARTIAL).
    */
-  fun providerCoverage(provider: StreamingProvider): ProviderCoverage {
+  fun providerCoverage(provider: ProviderAliasDescriptor): ProviderCoverage {
     val moviePlan = providerCatalogPlan(provider, MediaType.FILM)
     val seriesPlan = providerCatalogPlan(provider, MediaType.SERIE_TV)
     val movieTargets = moviePlan.resolved
@@ -1573,7 +1573,7 @@ object StremioCatalogRepository {
    * Deduplica per id conservando la provenienza addon+catalogo.
    */
   suspend fun loadProviderCatalogPage(
-    provider: StreamingProvider,
+    provider: ProviderAliasDescriptor,
     mediaType: MediaType? = null
   ): ProviderCatalogPage = coroutineScope {
     val plan = providerCatalogPlan(provider, mediaType)
@@ -1655,7 +1655,7 @@ object StremioCatalogRepository {
       }
     }.awaitAll().filterNotNull()
 
-    collectProviderPage(mediaType, provider.name, fetched)
+    collectProviderPage(mediaType, provider.providerName, fetched)
   }
 
   /**
@@ -1663,7 +1663,7 @@ object StremioCatalogRepository {
    * ricevere una lista piatta di [MediaItem]: Film e Serie restano separati nel piano,
    * nella provenienza e nella paginazione.
    */
-  suspend fun loadProviderCatalogForProvider(provider: StreamingProvider): ProviderCatalogPage {
+  suspend fun loadProviderCatalogForProvider(provider: ProviderAliasDescriptor): ProviderCatalogPage {
     val movies = loadProviderCatalogPage(provider, MediaType.FILM)
     val series = loadProviderCatalogPage(provider, MediaType.SERIE_TV)
     return mergeProviderPages(movies, series)
@@ -1675,7 +1675,7 @@ object StremioCatalogRepository {
    * i target. Con [mediaType] si pagina un solo tipo per volta.
    */
   suspend fun paginateProviderCatalog(
-    provider: StreamingProvider,
+    provider: ProviderAliasDescriptor,
     mediaType: MediaType? = null
   ): List<MediaItem> = coroutineScope {
     val targets = findConfirmedTargetsForProvider(provider, mediaType).filter { it.supportsSkip }
@@ -1739,7 +1739,7 @@ object StremioCatalogRepository {
       }
     }.awaitAll().filterNotNull()
 
-    collectProviderPage(mediaType, provider.name, fetched).items
+    collectProviderPage(mediaType, provider.providerName, fetched).items
   }
 
   /**
@@ -1837,7 +1837,7 @@ object StremioCatalogRepository {
     "Le euristiche per keyword non associano più i cataloghi: usa i binding dichiarativi",
     ReplaceWith("findConfirmedTargetsForProvider(provider)")
   )
-  fun getProviderKeywords(provider: StreamingProvider): List<String> = when (provider.id.lowercase().trim()) {
+  fun getProviderKeywords(provider: ProviderAliasDescriptor): List<String> = when (provider.providerId.lowercase().trim()) {
     "netflix" -> listOf("netflix")
     "hbo" -> listOf("hbo", "max")
     "disney" -> listOf("disney", "disney+")
@@ -1845,18 +1845,18 @@ object StremioCatalogRepository {
     "apple" -> listOf("apple", "apple tv", "appletv")
     "paramount" -> listOf("paramount", "paramount+")
     "crunchyroll" -> listOf("crunchyroll")
-    else -> listOf(provider.id.lowercase().trim(), provider.name.lowercase().trim())
+    else -> listOf(provider.providerId.lowercase().trim(), provider.providerName.lowercase().trim())
   }
 
   /**
-   * Individua i target di catalogo Stremio compatibili con uno specifico [StreamingProvider].
+   * Individua i target di catalogo Stremio compatibili con uno specifico [ProviderAliasDescriptor].
    * Cerca match diretti per catalogId, title, addonName o opzioni del parametro extra `genre`.
    */
   @Deprecated(
     "Match per keyword: non distingue addon, tipi né origini. Usa findConfirmedTargetsForProvider()",
     ReplaceWith("findConfirmedTargetsForProvider(provider, mediaType)")
   )
-  fun findTargetsForProvider(provider: StreamingProvider): List<Pair<StremioCatalogTarget, Map<String, String>>> {
+  fun findTargetsForProvider(provider: ProviderAliasDescriptor): List<Pair<StremioCatalogTarget, Map<String, String>>> {
     val keywords = getProviderKeywords(provider)
     val allTargets = getAvailableTargets()
     val matched = mutableListOf<Pair<StremioCatalogTarget, Map<String, String>>>()
@@ -1886,11 +1886,11 @@ object StremioCatalogRepository {
   }
 
   /**
-   * Carica i contenuti dei cataloghi Stremio **confermati** per il [StreamingProvider] richiesto,
+   * Carica i contenuti dei cataloghi Stremio **confermati** per il [ProviderAliasDescriptor] richiesto,
    * separando Film e Serie. Se non esiste alcun binding confermato restituisce una lista
    * vuota: in quel caso la UI mantiene il catalogo nativo TMDB.
    */
-  suspend fun loadProviderCatalog(provider: StreamingProvider): List<MediaItem> = coroutineScope {
+  suspend fun loadProviderCatalog(provider: ProviderAliasDescriptor): List<MediaItem> = coroutineScope {
     loadProviderCatalogForProvider(provider).items
   }
 
@@ -1902,7 +1902,7 @@ object StremioCatalogRepository {
     "L'offset skip è per catalogo, non per provider: usa paginateProviderCatalog(provider, mediaType)",
     ReplaceWith("paginateProviderCatalog(provider, mediaType)")
   )
-  suspend fun paginateProviderCatalogLegacy(provider: StreamingProvider, skip: Int): List<MediaItem> = coroutineScope {
+  suspend fun paginateProviderCatalogLegacy(provider: ProviderAliasDescriptor, skip: Int): List<MediaItem> = coroutineScope {
     val targets = findConfirmedTargetsForProvider(provider).filter { it.supportsSkip }
     if (targets.isEmpty()) return@coroutineScope emptyList()
 
@@ -1921,7 +1921,7 @@ object StremioCatalogRepository {
       }
     }.awaitAll().filterNotNull()
 
-    collectProviderPage(null, provider.name, fetched).items
+    collectProviderPage(null, provider.providerName, fetched).items
   }
 
   /**

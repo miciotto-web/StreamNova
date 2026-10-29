@@ -18,6 +18,7 @@ import com.example.data.prefs.TargetBufferOption
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 data class MobileSettingsUiState(
@@ -25,6 +26,7 @@ data class MobileSettingsUiState(
   val autoplayEnabled: Boolean = true,
   val parentalEnabled: Boolean = false,
   val parentalLevel: String = "18",
+  val hasParentalPin: Boolean = false,
   val engineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB,
   val torBoxApiKey: String = ""
 )
@@ -35,23 +37,35 @@ data class MobileSettingsUiState(
  */
 class MobileSettingsViewModel : ViewModel() {
 
+  private data class ParentalState(
+    val enabled: Boolean,
+    val level: String,
+    val hasPin: Boolean
+  )
+
   private val playbackFlow = combine(
     SettingsRepository.settings,
     AppSettingsRepository.autoplayEnabled
   ) { playback, autoplay -> playback to autoplay }
 
-  val uiState: StateFlow<MobileSettingsUiState> = combine(
-    playbackFlow,
+  private val parentalFlow = combine(
     AppSettingsRepository.parentalControlEnabled,
     AppSettingsRepository.parentalControlLevel,
+    AppSettingsRepository.parentalControlPin.map { it.isNotBlank() }
+  ) { enabled, level, hasPin -> ParentalState(enabled, level, hasPin) }
+
+  val uiState: StateFlow<MobileSettingsUiState> = combine(
+    playbackFlow,
+    parentalFlow,
     AppSettingsRepository.streamingEngineMode,
     AppSettingsRepository.torBoxApiKey
-  ) { (playback, autoplay), parentalEnabled, parentalLevel, engineMode, torBoxKey ->
+  ) { (playback, autoplay), parental, engineMode, torBoxKey ->
     MobileSettingsUiState(
       playback = playback,
       autoplayEnabled = autoplay,
-      parentalEnabled = parentalEnabled,
-      parentalLevel = parentalLevel,
+      parentalEnabled = parental.enabled,
+      parentalLevel = parental.level,
+      hasParentalPin = parental.hasPin,
       engineMode = engineMode,
       torBoxApiKey = torBoxKey.orEmpty()
     )
@@ -111,28 +125,48 @@ class MobileSettingsViewModel : ViewModel() {
     SettingsRepository.setLastWorkingStreamCacheDurationHours(duration.hours)
   }
 
-  /**
-   * Abilita/disabilita il controllo genitori. L'abilitazione richiede un PIN
-   * già impostato: senza PIN la UI mostra un errore e non attiva il filtro.
-   */
+  /** Attivazione e disattivazione richiedono il PIN; il PIN viene persistito solo come hash. */
   fun setParentalEnabled(enabled: Boolean, pin: String): Boolean {
-    if (enabled) {
-      val existingPin = AppSettingsRepository.parentalControlPin.value
-      val effectivePin = pin.trim().ifBlank { existingPin }
-      if (effectivePin.length != 4 || effectivePin.any { !it.isDigit() }) return false
-      if (pin.trim().isNotEmpty()) AppSettingsRepository.setParentalControlPin(effectivePin)
+    val clean = pin.trim()
+    val hasSavedPin = AppSettingsRepository.hasParentalControlPin()
+    val validPin = ParentalControlPolicy.isValidPin(clean)
+    val pinMatches = validPin && AppSettingsRepository.verifyParentalControlPin(clean)
+    if (!ParentalControlPolicy.canChangeParentalEnabled(enabled, hasSavedPin, validPin, pinMatches)) {
+      return false
     }
+    if (!hasSavedPin && enabled) AppSettingsRepository.setParentalControlPin(clean)
     AppSettingsRepository.setParentalControlEnabled(enabled)
     return true
   }
 
   fun setParentalLevel(level: String) = AppSettingsRepository.setParentalControlLevel(level)
 
-  /** Salva un PIN di 4 cifre. Restituisce false se il formato non è valido. */
+  /** Salva il primo PIN. Con un PIN già configurato serve [changeParentalPin]. */
   fun saveParentalPin(pin: String): Boolean {
+    if (AppSettingsRepository.hasParentalControlPin()) return false
     val clean = pin.trim()
-    if (clean.length != 4 || clean.any { !it.isDigit() }) return false
+    if (!ParentalControlPolicy.isValidPin(clean)) return false
     AppSettingsRepository.setParentalControlPin(clean)
+    return true
+  }
+
+  /** Cambia il PIN solo dopo aver verificato quello corrente. */
+  fun changeParentalPin(currentPin: String, newPin: String): Boolean {
+    val current = currentPin.trim()
+    val next = newPin.trim()
+    val hasSavedPin = AppSettingsRepository.hasParentalControlPin()
+    val currentValid = ParentalControlPolicy.isValidPin(current)
+    val currentMatches = currentValid && AppSettingsRepository.verifyParentalControlPin(current)
+    if (!ParentalControlPolicy.canChangePin(
+        hasSavedPin = hasSavedPin,
+        currentPinValid = currentValid,
+        currentPinMatches = currentMatches,
+        newPinValid = ParentalControlPolicy.isValidPin(next)
+      )
+    ) {
+      return false
+    }
+    AppSettingsRepository.setParentalControlPin(next)
     return true
   }
 }

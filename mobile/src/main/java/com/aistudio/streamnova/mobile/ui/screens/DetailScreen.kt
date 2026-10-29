@@ -61,6 +61,8 @@ import com.aistudio.streamnova.mobile.ui.components.backdropModel
 import com.example.data.model.Episode
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.repository.EpisodeResumeResolver
+import com.example.data.repository.MediaRepository
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
@@ -75,7 +77,7 @@ import java.util.Locale
 fun DetailScreen(
   mediaId: String,
   onBack: () -> Unit,
-  onPlay: (season: Int?, episode: Int?) -> Unit
+  onPlay: (media: MediaItem, season: Int?, episode: Int?) -> Unit
 ) {
   BackHandler(onBack = onBack)
   val viewModel: MobileDetailViewModel = viewModel()
@@ -97,10 +99,23 @@ fun DetailScreen(
   }
 
   val isSeries = media.type == MediaType.SERIE_TV
-  val initialEpisode = state.episodes.firstOrNull {
-    it.seasonNumber == (media.lastWatchedSeason ?: 1) &&
-      it.episodeNumber == (media.lastWatchedEpisode ?: 1)
-  } ?: state.episodes.firstOrNull()
+  // L'episodio da riprendere deriva dall'ultima visione salvata (o S1E1 se mai
+  // avviata). La lista della stagione può essere ancora vuota o appartenere a un'altra
+  // stagione: l'episodio viene ricostruito con gli stessi numeri, mai sostituito da S1E1.
+  val resumeEpisode = if (isSeries) {
+    EpisodeResumeResolver.resolve(media, extraEpisodes = state.episodes)
+  } else {
+    null
+  }
+  val initialEpisode = resumeEpisode?.let { episode ->
+    episode.copy(
+      currentProgressMs = MediaRepository.getEpisodeProgress(
+        media.id,
+        episode.seasonNumber,
+        episode.episodeNumber
+      )
+    )
+  }
 
   Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
     LazyColumn(
@@ -187,9 +202,9 @@ fun DetailScreen(
               ),
               onClick = {
                 if (isSeries && initialEpisode != null) {
-                  onPlay(initialEpisode.seasonNumber, initialEpisode.episodeNumber)
+                  onPlay(media, initialEpisode.seasonNumber, initialEpisode.episodeNumber)
                 } else {
-                  onPlay(null, null)
+                  onPlay(media, null, null)
                 }
               }
             )
@@ -292,7 +307,7 @@ fun DetailScreen(
           items(state.episodes, key = { it.id }) { episode ->
             EpisodeRow(
               episode = episode,
-              onClick = { onPlay(episode.seasonNumber, episode.episodeNumber) }
+              onClick = { onPlay(media, episode.seasonNumber, episode.episodeNumber) }
             )
           }
         }

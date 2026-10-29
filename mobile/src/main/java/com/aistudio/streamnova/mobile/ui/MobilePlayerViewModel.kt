@@ -7,6 +7,7 @@ import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.StreamingEngineMode
+import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
 import com.example.data.streaming.StreamManager
 import com.example.data.streaming.StreamSource
@@ -49,20 +50,13 @@ class MobilePlayerViewModel : ViewModel() {
       }
 
       val isTv = media.type == MediaType.SERIE_TV
+      // La posizione salvata (o l'episodio scelto nella scheda) è autorevole: se la
+      // lista locale non contiene la puntata viene ricostruita con gli stessi numeri.
       val resolvedEpisode = if (isTv) {
-        val selectedSeason = season ?: media.lastWatchedSeason ?: 1
-        val selectedEpisode = episode ?: media.lastWatchedEpisode ?: 1
-        media.episodes.firstOrNull {
-          it.seasonNumber == selectedSeason && it.episodeNumber == selectedEpisode
-        } ?: Episode(
-          id = "${media.id}_s${selectedSeason}e${selectedEpisode}",
-          seasonNumber = selectedSeason,
-          episodeNumber = selectedEpisode,
-          title = "Episodio $selectedEpisode",
-          synopsis = "",
-          durationMinutes = 50,
-          videoUrl = "",
-          seriesImdbId = media.imdbId
+        EpisodeResumeResolver.resolve(
+          media = media,
+          requestedSeason = season,
+          requestedEpisode = episode
         )
       } else null
 
@@ -155,6 +149,16 @@ class MobilePlayerViewModel : ViewModel() {
         seasonNumber = episode.seasonNumber,
         episodeNumber = episode.episodeNumber,
         progressMs = positionMs,
+        durationMs = durationMs
+      )
+      // Durata reale del player + posizione a fine episodio: verifica se la serie è
+      // davvero conclusa. La rimozione avviene solo con metadati completi (fine
+      // stagione ≠ fine serie) ed è persistente.
+      MediaRepository.maybeCompleteSeries(
+        mediaId = media.id,
+        seasonNumber = episode.seasonNumber,
+        episodeNumber = episode.episodeNumber,
+        positionMs = positionMs,
         durationMs = durationMs
       )
     } else {

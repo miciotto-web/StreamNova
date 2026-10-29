@@ -31,6 +31,15 @@ data class CachedWorkingStream(
    * [LastWorkingStreamRepository.resolveEngineMode]).
    */
   val streamMode: String? = null,
+  /**
+   * Identità della sorgente Debrid: hash del torrent (season pack), indice file
+   * dichiarato dall'addon e addon di origine. Senza questi campi il passaggio
+   * all'episodio successivo non può riusare lo stesso torrent quando la sessione
+   * riparte da questa cache e deve risolvere tutto da zero.
+   */
+  val infoHash: String? = null,
+  val fileIdx: Int? = null,
+  val addonName: String? = null,
   val cachedAtTimestamp: Long = System.currentTimeMillis()
 ) {
   /** Ricostruisce la sorgente riproducibile del flusso salvato. */
@@ -44,6 +53,11 @@ data class CachedWorkingStream(
       declaredQuality = quality,
       isProgressive = isProgressive,
       releaseTitle = streamTitle?.takeIf { it.isNotBlank() },
+      // Identità della sorgente Debrid (quando presente): base del fast-path
+      // "stesso torrent di stagione" per l'episodio successivo.
+      infoHash = infoHash?.takeIf { it.isNotBlank() },
+      fileIdx = fileIdx,
+      addonName = addonName?.takeIf { it.isNotBlank() },
       // Link già pronto alla riproduzione.
       isCached = true
     )
@@ -159,6 +173,9 @@ object LastWorkingStreamRepository {
     headers: Map<String, String>,
     isProgressive: Boolean?,
     streamMode: String? = null,
+    infoHash: String? = null,
+    fileIdx: Int? = null,
+    addonName: String? = null,
     cachedAtTimestamp: Long = System.currentTimeMillis()
   ) {
     if (mediaId.isBlank() || streamUrl.isBlank()) return
@@ -175,6 +192,9 @@ object LastWorkingStreamRepository {
           headersJson = encodeHeaders(headers),
           isProgressive = isProgressive,
           streamMode = streamMode?.takeIf { it.isNotBlank() },
+          infoHash = infoHash?.takeIf { it.isNotBlank() },
+          fileIdx = fileIdx,
+          addonName = addonName?.takeIf { it.isNotBlank() },
           cachedAtTimestamp = cachedAtTimestamp
         )
       )
@@ -286,6 +306,9 @@ object LastWorkingStreamRepository {
       headers = decodeHeaders(headersJson),
       isProgressive = isProgressive,
       streamMode = streamMode,
+      infoHash = infoHash,
+      fileIdx = fileIdx,
+      addonName = addonName,
       cachedAtTimestamp = cachedAtTimestamp
     )
 }

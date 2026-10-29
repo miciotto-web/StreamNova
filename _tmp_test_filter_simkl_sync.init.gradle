@@ -1,0 +1,12 @@
+// Fase correzione SIMKL: watchlist + Continua a guardare.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.data.repository.SimklSyncIntegrationTest"
+            includeTestsMatching "com.example.data.remote.simkl.SimklWatchlistParserTest"
+            includeTestsMatching "com.example.data.repository.SimklLocalMatcherTest"
+            includeTestsMatching "com.example.data.repository.SimklSyncManagerGuardTest"
+            includeTestsMatching "com.example.data.remote.simkl.*"
+        }
+    }
+}

@@ -1,0 +1,3 @@
+--------- beginning of main
+10-26 09:34:43.811 D/UpdateRepository(10798): Controllo automatico all'avvio concluso: UpdateAvailable (installata 1.0.0)
+10-26 09:34:43.812 I/UpdateRepository(10798): Aggiornamento disponibile: 1.0.2 (installata 1.0.0)

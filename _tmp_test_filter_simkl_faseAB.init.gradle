@@ -1,0 +1,15 @@
+// Fase A/B sincronizzazione SIMKL: upload scrobble + import playback.
+// Il filtro CLI `--tests` e' rotto con Gradle 9.3.1 + AGP 9.1.1 ("No tests found"):
+// si filtra qui.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.ui.screens.player.SimklScrobbleUploadTest"
+            includeTestsMatching "com.example.data.repository.SimklSyncIntegrationTest"
+            includeTestsMatching "com.example.data.repository.SimklLocalMatcherTest"
+            includeTestsMatching "com.example.data.repository.SimklSyncManagerGuardTest"
+            includeTestsMatching "com.example.data.remote.simkl.*"
+            includeTestsMatching "com.example.SimklRepositoryTest"
+        }
+    }
+}

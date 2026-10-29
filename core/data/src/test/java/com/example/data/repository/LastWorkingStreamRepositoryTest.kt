@@ -117,5 +117,32 @@ class LastWorkingStreamRepositoryTest {
     assertNull(source.releaseTitle)
     assertTrue(source.headers.isEmpty())
     assertNull(source.isProgressive)
+    assertNull("Nessuna identità torrent per le voci legacy", source.infoHash)
+  }
+
+  @Test
+  fun `ricostruzione sorgente conserva identita debrid del torrent`() {
+    // Fase 2 (Debrid, prossimo episodio): senza infoHash la sessione ripresa dalla
+    // cache non può riusare lo stesso torrent di stagione per l'episodio successivo.
+    val cached = CachedWorkingStream(
+      mediaId = "tt0944947",
+      seasonNumber = 1,
+      episodeNumber = 3,
+      streamUrl = "https://cdn.example.com/s1e3.mkv",
+      streamTitle = "Show.S01.1080p.mkv",
+      streamQuality = "1080p",
+      serverName = "Torrentio",
+      isProgressive = true,
+      streamMode = "DEBRID_TORBOX",
+      infoHash = "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+      fileIdx = 2,
+      addonName = "Torrentio"
+    )
+
+    val source = cached.toStreamSource()
+    assertEquals("abcdefabcdefabcdefabcdefabcdefabcdefabcd", source.infoHash)
+    assertEquals(2, source.fileIdx)
+    assertEquals("Torrentio", source.addonName)
+    assertTrue(source.isCached)
   }
 }

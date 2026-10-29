@@ -57,6 +57,14 @@ interface CachedMediaDao {
   @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, totalDurationMs = :totalDurationMs, lastWatchedSeason = :season, lastWatchedEpisode = :episode, lastWatchedAt = :lastWatchedAt WHERE id = :id")
   suspend fun updateTvProgressWithDuration(id: String, progressMs: Long, totalDurationMs: Long, season: Int, episode: Int, lastWatchedAt: Long)
 
+  /**
+   * Azzera la posizione della card senza toccare stagione/episodio visti né la durata
+   * dell'episodio: è la rimozione persistente da «Continua a guardare» di una serie
+   * conclusa. La riga resta in catalogo (preferiti, dettaglio e badge episodi intatti).
+   */
+  @Query("UPDATE cached_media_items SET currentProgressMs = 0, lastWatchedAt = :lastWatchedAt WHERE id = :id")
+  suspend fun clearContinueWatchingProgress(id: String, lastWatchedAt: Long)
+
   @Query("SELECT COUNT(*) FROM cached_media_items")
   suspend fun count(): Int
 

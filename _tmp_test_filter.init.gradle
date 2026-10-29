@@ -1,0 +1,11 @@
+// Helper di comodo per i run mirati: con Gradle 9.3.1 + AGP 9.1.1 il filtro da CLI
+// (`--tests`) risponde "No tests found" per qualunque classe, quindi il filtro va installato
+// qui e il task si lancia con `-I _tmp_test_filter.init.gradle --rerun`.
+// Sostituire il pattern con la classe (o "*") desiderata.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.ui.screens.ContinueWatchingRemovalFocusTest"
+        }
+    }
+}

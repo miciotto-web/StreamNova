@@ -23,7 +23,8 @@ class NextEpisodePromptUtilsTest {
     isTvShow: Boolean = true,
     hasNextEpisode: Boolean = true,
     dismissed: Boolean = false,
-    playbackFailed: Boolean = false
+    playbackFailed: Boolean = false,
+    switchingEpisode: Boolean = false
   ): Boolean = NextEpisodePromptUtils.shouldShow(
     positionMs = positionMs,
     durationMs = durationMs,
@@ -31,7 +32,8 @@ class NextEpisodePromptUtilsTest {
     isTvShow = isTvShow,
     hasNextEpisode = hasNextEpisode,
     dismissed = dismissed,
-    playbackFailed = playbackFailed
+    playbackFailed = playbackFailed,
+    switchingEpisode = switchingEpisode
   )
 
   @Test
@@ -81,6 +83,14 @@ class NextEpisodePromptUtilsTest {
   fun `sessione fallita non mostra overlay`() {
     assertFalse(shouldShow(positionMs = hourDurationMs - 1_000L, playbackFailed = true))
     assertFalse(shouldShow(playbackEnded = true, playbackFailed = true))
+  }
+
+  @Test
+  fun `nessun overlay mentre si risolve la sorgente del prossimo episodio`() {
+    // Posizione e durata sono ancora quelle dell'episodio precedente: il prompt non
+    // deve riattivarsi (e il countdown non deve ripartire) durante la transizione.
+    assertFalse(shouldShow(positionMs = hourDurationMs - 1_000L, switchingEpisode = true))
+    assertFalse(shouldShow(playbackEnded = true, switchingEpisode = true))
   }
 
   @Test

@@ -114,20 +114,6 @@ class MobileCatalogViewModel : ViewModel() {
   fun toggleFavorite(mediaId: String) {
     MediaRepository.toggleFavorite(mediaId)
   }
-
-  /**
-   * Il controllo genitori nasconde i titoli con classificazione pari o superiore
-   * alla soglia scelta, come la verifica TV (`rating >= threshold`). I titoli
-   * senza classificazione restano visibili: nessun dato viene inventato.
-   */
-  private fun List<MediaItem>.filterByParental(enabled: Boolean, level: String): List<MediaItem> {
-    if (!enabled) return this
-    val threshold = level.toIntOrNull() ?: 18
-    return filter { media ->
-      val rating = media.ageRating
-      rating == null || rating < threshold
-    }
-  }
 }
 
 /** Filtro locale usato anche dalle schermate Film/Serie TV/Preferiti. */

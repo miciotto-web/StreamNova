@@ -118,6 +118,38 @@ object TorBoxRepository : TorBoxGateway {
   private val linkCache = ConcurrentHashMap<String, CachedLink>()
   private val resolveFlight = AsyncSingleFlight<String?>()
 
+  /**
+   * Chiave della cache dei link sbloccati.
+   *
+   * Un infoHash **non** identifica un singolo file: un torrent di stagione contiene
+   * tutti gli episodi e ogni episodio ha il proprio `file.id`, quindi il proprio URL
+   * CDN. Memorizzare il link solo per hash faceva sì che il link di S01E01 venisse
+   * restituito anche per S01E02 (per tutto il TTL di 15 minuti): il prossimo episodio
+   * partiva con il file dell'episodio precedente. La chiave include quindi stagione ed
+   * episodio quando sono noti; per film e richieste senza episodio resta l'hash.
+   */
+  internal fun linkCacheKey(infoHash: String, season: Int?, episode: Int?): String {
+    val hash = normalizeHash(infoHash)
+    return if (season != null && season > 0 && episode != null && episode > 0) {
+      "$hash:s${season}e$episode"
+    } else {
+      hash
+    }
+  }
+
+  /**
+   * Stagione/episodio effettivi di una richiesta di sblocco.
+   *
+   * I parametri espliciti sono la fonte autoritativa: viaggiano insieme alla richiesta
+   * e sopravvivono a qualunque cambio di dispatcher. Il metadata legacy
+   * ([setRequestMetadata]) resta come fallback per i chiamanti che non li passano.
+   */
+  internal fun requestedEpisode(season: Int?, episode: Int?): Pair<Int?, Int?> {
+    if (season != null && season > 0 && episode != null && episode > 0) return season to episode
+    val legacy = currentSeasonEpisode.get() ?: return null to null
+    return legacy.first.takeIf { it > 0 } to legacy.second.takeIf { it > 0 }
+  }
+
   /** Chiave API corrente salvata nelle Impostazioni. */
   fun apiKey(): String? = AppSettingsRepository.torBoxApiKey.value?.trim()?.takeIf { it.isNotBlank() }
 
@@ -462,24 +494,42 @@ object TorBoxRepository : TorBoxGateway {
    * @param infoHash hash torrent (40 hex o base32).
    * @param fileIdx indice file dichiarato dall'addon (Stremio `fileIdx`);
    *        se assente viene scelto il file video più grande conosciuto da TorBox.
+   * @param season stagione richiesta. Insieme a [episode] vincola lo sblocco al file
+   *        dell'episodio: per un torrent di stagione è l'unico modo per non riusare
+   *        il link di un altro episodio. Null per film o richieste senza episodio.
+   * @param episode episodio richiesto (vedi [season]).
    * @return URL HTTPS del CDN oppure null (non in cache / TorBox non configurato).
    */
-  suspend fun resolveInfoHash(infoHash: String, fileIdx: Int?): String? {
+  suspend fun resolveInfoHash(
+    infoHash: String,
+    fileIdx: Int?,
+    season: Int? = null,
+    episode: Int? = null
+  ): String? {
     val hash = infoHash.trim().lowercase()
     if (hash.isEmpty() || !isConfigured()) return null
-    linkCache[hash]?.let { cached ->
+    val (reqSeason, reqEpisode) = requestedEpisode(season, episode)
+    val key = linkCacheKey(hash, reqSeason, reqEpisode)
+    linkCache[key]?.let { cached ->
       if (System.currentTimeMillis() - cached.at < LINK_TTL_MS) return cached.url
-      linkCache.remove(hash)
+      linkCache.remove(key)
     }
-    // Single-flight: richieste concorrenti dello stesso hash condividono
-    // un'unica sequenza checkcached/requestdl (stesso identico URL finale).
-    return resolveFlight.run(hash) { resolveInternal(hash, fileIdx) }
+    // Single-flight: richieste concorrenti dello stesso hash PER LO STESSO EPISODIO
+    // condividono un'unica sequenza checkcached/requestdl. La chiave include
+    // l'episodio: due episodi dello stesso torrent non devono condividere il file.
+    return resolveFlight.run(key) { resolveInternal(hash, fileIdx, reqSeason, reqEpisode) }
   }
 
-  private suspend fun resolveInternal(hash: String, fileIdx: Int?): String? {
-    linkCache[hash]?.let { cached ->
+  private suspend fun resolveInternal(
+    hash: String,
+    fileIdx: Int?,
+    season: Int?,
+    episode: Int?
+  ): String? {
+    val key = linkCacheKey(hash, season, episode)
+    linkCache[key]?.let { cached ->
       if (System.currentTimeMillis() - cached.at < LINK_TTL_MS) return cached.url
-      linkCache.remove(hash)
+      linkCache.remove(key)
     }
     if (apiKey() == null) return null
     val entry = checkCached(listOf(hash))[hash] ?: return null
@@ -487,7 +537,7 @@ object TorBoxRepository : TorBoxGateway {
       Log.d(TAG, "Hash $hash non in cache istantanea: nessuno sblocco")
       return null
     }
-    return unlockInternal(hash, fileIdx, entry)
+    return unlockInternal(hash, fileIdx, entry, season, episode)
   }
 
   /**
@@ -549,9 +599,11 @@ object TorBoxRepository : TorBoxGateway {
         else -> null
       }
     } catch (e: CancellationException) {
-      // Timeout del caller (fast-path): rientro prontissimo, mai sospesi.
+      // Timeout del caller (fast-path) o cambio episodio: la cancellazione strutturata
+      // NON va soppressa. Ingoiarla lasciava la coroutine chiamante "viva" dopo la
+      // cancellazione e poteva farla proseguire su una richiesta ormai obsoleta.
       Log.w(TAG, "Season pack: cancellato (timeout fast-path) per ${hash.take(8)}... S${season}E${episode}")
-      return null
+      throw e
     } catch (e: Exception) {
       // Errore di rete/parsing: null immediato, nessuna chiamata a vuoto aggiuntiva.
       Log.w(TAG, "Season pack: errore per ${hash.take(8)}... S${season}E${episode}: ${e.message}")
@@ -565,8 +617,9 @@ object TorBoxRepository : TorBoxGateway {
    * cached-only ([createCachedOnly]: `createtorrent` `add_only_if_cached=true` +
    * `mylist` con bypass cache per i veri `file.id`).
    *
-   * Le richieste concorrenti sullo stesso hash condividono un'unica sequenza
-   * `createtorrent`/`requestdl` (single-flight, stesso identico URL finale).
+   * Le richieste concorrenti sullo stesso hash **e sullo stesso episodio** condividono
+   * un'unica sequenza `createtorrent`/`requestdl` (single-flight, stesso identico URL
+   * finale). Episodi diversi dello stesso torrent di stagione hanno chiavi distinte.
    *
    * @param entry voce di cache già letta per questo hash.
    * @param season stagione richiesta (opzionale, per selezione file).
@@ -576,14 +629,13 @@ object TorBoxRepository : TorBoxGateway {
   override suspend fun unlockCached(infoHash: String, fileIdx: Int?, entry: TorBoxCacheEntry, season: Int?, episode: Int?): String? {
     val hash = normalizeHash(infoHash)
     if (hash.isEmpty() || !isConfigured() || !entry.cached) return null
-    linkCache[hash]?.let { cached ->
+    val (reqSeason, reqEpisode) = requestedEpisode(season, episode)
+    val key = linkCacheKey(hash, reqSeason, reqEpisode)
+    linkCache[key]?.let { cached ->
       if (System.currentTimeMillis() - cached.at < LINK_TTL_MS) return cached.url
-      linkCache.remove(hash)
+      linkCache.remove(key)
     }
-    if (season != null && episode != null) {
-      currentSeasonEpisode.set(season to episode)
-    }
-    return resolveFlight.run(hash) { unlockInternal(hash, fileIdx, entry) }
+    return resolveFlight.run(key) { unlockInternal(hash, fileIdx, entry, reqSeason, reqEpisode) }
   }
 
   /**
@@ -684,6 +736,14 @@ object TorBoxRepository : TorBoxGateway {
     override fun initialValue(): Pair<Int, Int>? = null
   }
 
+  /**
+   * Metadata legacy di stagione/episodio per le richieste di sblocco.
+   *
+   * Resta come **fallback** per i chiamanti che non passano stagione/episodio a
+   * [resolveInfoHash]/[unlockCached]. È un ThreadLocal: vale solo se letto sullo
+   * stesso thread che lo ha impostato, quindi NON è una fonte affidabile per la
+   * selezione del file (vedi [requestedEpisode]).
+   */
   fun setRequestMetadata(season: Int?, episode: Int?) {
     if (season != null && episode != null) {
       currentSeasonEpisode.set(season to episode)
@@ -701,30 +761,45 @@ object TorBoxRepository : TorBoxGateway {
    * 2. getTorrent(id, bypass_cache=true) → files con REAL file.id
    * 3. fileSelector.selectFile(files, filename, season, episode) → file
    * 4. requestDownloadLink(token, torrentId, fileId, zip=false, redirect=false) → URL CDN
+   *
+   * [season]/[episode] arrivano ESPLICITAMENTE dal chiamante: leggerli da un
+   * ThreadLocal qui non è affidabile, perché questa funzione gira nella coroutine
+   * del single-flight ([AsyncSingleFlight] usa un proprio scope su `Dispatchers.IO`)
+   * e non necessariamente sul thread che ha impostato il metadata. Con
+   * stagione/episodio null il selector sceglierebbe il file video più grande del
+   * torrent di stagione, cioè un episodio arbitrario.
    */
   private suspend fun unlockInternal(
     hash: String,
     fileIdx: Int?,
-    entry: TorBoxCacheEntry
+    entry: TorBoxCacheEntry,
+    season: Int?,
+    episode: Int?
   ): String? {
-    linkCache[hash]?.let { cached ->
+    val key = linkCacheKey(hash, season, episode)
+    linkCache[key]?.let { cached ->
       if (System.currentTimeMillis() - cached.at < LINK_TTL_MS) return cached.url
-      linkCache.remove(hash)
+      linkCache.remove(key)
     }
     if (apiKey() == null) return null
 
-    val filename = entry.files.firstOrNull()?.name
+    // Con un episodio richiesto la selezione del file DEVE essere guidata da
+    // stagione/episodio. Il nome del primo file del torrent (hint usato per i film
+    // e per i torrent a file singolo) non è l'episodio richiesto: passarlo come
+    // `filename` faceva vincere quel file prima del match SxxExx.
+    val hasEpisode = season != null && episode != null
+    val filename = if (hasEpisode) null else entry.files.firstOrNull()?.name
     val result = TorBoxResolver.resolve(
       infoHash = hash,
       filename = filename,
-      season = currentSeasonEpisode.get()?.first,
-      episode = currentSeasonEpisode.get()?.second,
+      season = season,
+      episode = episode,
       sources = null
     )
 
     return when (result) {
       is TorBoxResolver.ResolveResult.Success -> {
-        linkCache[hash] = CachedLink(System.currentTimeMillis(), result.url)
+        linkCache[key] = CachedLink(System.currentTimeMillis(), result.url)
         result.url
       }
       else -> null
@@ -746,5 +821,19 @@ object TorBoxRepository : TorBoxGateway {
   /** Svuota la cache locale dei link (test / cambio chiave). */
   fun clearCache() {
     linkCache.clear()
+  }
+
+  /**
+   * Rimuove il link memorizzato per `infoHash` + episodio.
+   *
+   * Chiamato quando un link è appena fallito in riproduzione: senza questa
+   * invalidazione la risoluzione successiva riproporrebbe lo stesso URL scaduto
+   * per tutto il TTL di 15 minuti. Le altre voci restano intatte.
+   */
+  fun invalidateResolvedLink(infoHash: String, season: Int?, episode: Int?) {
+    val hash = normalizeHash(infoHash)
+    if (hash.isEmpty()) return
+    val (reqSeason, reqEpisode) = requestedEpisode(season, episode)
+    linkCache.remove(linkCacheKey(hash, reqSeason, reqEpisode))
   }
 }

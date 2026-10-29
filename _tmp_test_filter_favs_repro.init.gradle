@@ -1,0 +1,8 @@
+// Run mirato della sezione Preferiti (ripristino focus al BACK dal Dettaglio).
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.ui.screens.FavoritesFocusRestoreTest"
+        }
+    }
+}

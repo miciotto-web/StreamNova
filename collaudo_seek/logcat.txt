@@ -1,0 +1,163 @@
+--------- beginning of main
+10-24 12:08:47.456  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:47.510  2808  2808 I SeekPreview: richiesta preview pos=254362ms prefetch=[254362, 264362, 244362]
+10-24 12:08:47.510  2808  2808 I SeekPreviewSrc: preview: decoder dedicato pronto (durata=2855041ms, video=1280x720)
+10-24 12:08:47.513  2808  2808 I SeekPreviewSrc: preview: ImageReader pronta 480x270 (video=1280x720, aspect=1.7777778)
+10-24 12:08:47.535  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:48.422  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:48.840  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=254362 ms); cattura in volo annullata
+10-24 12:08:48.860  2808  2808 I SeekPreview: richiesta annullata pos=254362ms
+10-24 12:08:48.973  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:49.585  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:49.732  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:49.812  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:49.891  2808  2808 I SeekPreview: richiesta preview pos=264522ms prefetch=[264522, 274522, 254522]
+10-24 12:08:49.922  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:50.109  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:50.783  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:51.166  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=264522 ms); cattura in volo annullata
+10-24 12:08:51.167  2808  2808 I SeekPreview: richiesta annullata pos=264522ms
+10-24 12:08:51.325  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:51.732  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:51.810  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:51.881  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:52.005  2808  2808 I SeekPreview: richiesta preview pos=274533ms prefetch=[274533, 284533, 264533]
+10-24 12:08:52.042  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:52.234  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:52.921  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:53.220  2808  2808 I SeekPreviewSrc: preview: richiesta=274533ms decodificata=264541ms playerPrima=264522ms playerDopo=274533ms primoFrame=si latenza=1214ms bitmap=1280x720 hash=7fffffffff1d0000
+10-24 12:08:53.242  2808  2808 I SeekPreview: fotogramma pronto richiesta=274533 decodificata=264541 bitmap=1280x720 hash=7fffffffff1d0000 (1218ms, pubblicato=true)
+10-24 12:08:53.315  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=264541 ms); cattura in volo annullata
+10-24 12:08:53.373  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:54.347  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:55.007  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:55.119  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:55.585  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:55.632  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:56.121  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:56.636  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:56.711  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:56.819  2808  2808 I SeekPreview: richiesta preview pos=286117ms prefetch=[286117, 296117, 276117]
+10-24 12:08:56.852  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:57.679  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:58.256  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=286117 ms); cattura in volo annullata
+10-24 12:08:58.256  2808  2808 I SeekPreview: richiesta annullata pos=286117ms
+10-24 12:08:58.345  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:59.022  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:08:59.206  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:01.646  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:01.883  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:01.993  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:02.306  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:02.439  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:02.939  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:03.437  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:03.521  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:03.558  2808  2808 I SeekPreview: richiesta preview pos=297775ms prefetch=[297775, 307775, 287775]
+10-24 12:09:03.568  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:04.669  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:04.941  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=297775 ms); cattura in volo annullata
+10-24 12:09:04.943  2808  2808 I SeekPreview: richiesta annullata pos=297775ms
+10-24 12:09:04.983  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:05.196  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:05.250  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:05.480  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:05.533  2808  2808 I SeekPreview: richiesta preview pos=308023ms prefetch=[308023, 318023, 298023]
+10-24 12:09:05.547  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:05.658  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:05.795  2808  2808 I SeekPreviewSrc: preview: richiesta=308023ms decodificata=308041ms playerPrima=297775ms playerDopo=308023ms primoFrame=si latenza=255ms bitmap=1280x720 hash=ffff60606c280000
+10-24 12:09:05.796  2808  2808 I SeekPreview: fotogramma pronto richiesta=308023 decodificata=308041 bitmap=1280x720 hash=ffff60606c280000 (261ms, pubblicato=true)
+10-24 12:09:05.818  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:06.554  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:07.049  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=308041 ms); cattura in volo annullata
+10-24 12:09:07.184  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:07.213  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:07.537  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:07.588  2808  2808 I SeekPreview: richiesta preview pos=318272ms prefetch=[318272, 328272, 308272]
+10-24 12:09:07.600  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:08.511  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:08.624  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=318272 ms); cattura in volo annullata
+10-24 12:09:08.633  2808  2808 I SeekPreview: richiesta annullata pos=318272ms
+10-24 12:09:08.768  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:09.941  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:10.039  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:10.624  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:10.718  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:11.298  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:11.771  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:12.206  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:12.243  2808  2808 I SeekPreview: richiesta preview pos=309876ms prefetch=[309876, 319876, 299876]
+10-24 12:09:12.262  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:13.196  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:13.432  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=309876 ms); cattura in volo annullata
+10-24 12:09:13.434  2808  2808 I SeekPreview: richiesta annullata pos=309876ms
+10-24 12:09:13.516  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:13.767  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:13.789  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:14.268  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:14.746  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:14.818  2808  2808 I SeekPreview: richiesta preview pos=300265ms prefetch=[300265, 310265, 290265]
+10-24 12:09:14.845  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:15.740  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:15.896  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=300265 ms); cattura in volo annullata
+10-24 12:09:15.898  2808  2808 I SeekPreview: richiesta annullata pos=300265ms
+10-24 12:09:16.015  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:16.645  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:16.779  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:18.603  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:18.683  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:18.748  2808  2808 I SeekPreview: richiesta preview pos=290407ms prefetch=[290407, 300407, 280407]
+10-24 12:09:18.767  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:19.212  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:19.652  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:19.898  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=290407 ms); cattura in volo annullata
+10-24 12:09:19.976  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:20.114  2808  2808 I SeekPreview: richiesta annullata pos=290407ms
+10-24 12:09:20.769  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:20.886  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:21.225  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:21.262  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:21.699  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:21.770  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:22.274  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:22.686  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:22.732  2808  2808 I SeekPreview: richiesta preview pos=281866ms prefetch=[281866, 291866, 271866]
+10-24 12:09:22.749  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:23.681  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:23.764  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=281866 ms); cattura in volo annullata
+10-24 12:09:23.788  2808  2808 I SeekPreview: richiesta annullata pos=281866ms
+10-24 12:09:23.803  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:24.533  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:24.585  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:24.821  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:24.859  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:25.216  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:25.372  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:25.872  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:26.371  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:26.655  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:26.719  2808  2808 I SeekPreview: richiesta preview pos=273680ms prefetch=[273680, 283680, 263680]
+10-24 12:09:26.741  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:27.664  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:27.734  2808  2808 I SeekPreview: anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=273680 ms); cattura in volo annullata
+10-24 12:09:27.967  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:28.270  2808  2808 I SeekPreview: richiesta annullata pos=273680ms
+10-24 12:09:28.794  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:28.844  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:29.067  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:29.081  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:29.442  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:29.596  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:30.111  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:30.609  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:31.104  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:31.604  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:32.104  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:32.300  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:32.343  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:32.606  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:33.109  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:33.622  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:34.123  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:34.624  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 12:09:35.124  2808  2808 I PlayerScreen: Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)

@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     EpisodeProgressEntity::class,
     LastWorkingStreamEntity::class
   ],
-  version = 8,
+  version = 9,
   exportSchema = false
 )
 abstract class StreamNovaDatabase : RoomDatabase() {
@@ -132,6 +132,20 @@ abstract class StreamNovaDatabase : RoomDatabase() {
       }
     }
 
+    /**
+     * v8 -> v9: identità della sorgente Debrid in `last_working_streams`
+     * (`infoHash`, `fileIdx`, `addonName`). Servono al passaggio all'episodio
+     * successivo: senza infoHash il torrent di stagione dell'episodio corrente non è
+     * più riutilizzabile quando la sessione riparte dalla cache "Riusa l'ultimo link".
+     */
+    private val MIGRATION_8_9 = object : Migration(8, 9) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE last_working_streams ADD COLUMN infoHash TEXT")
+        db.execSQL("ALTER TABLE last_working_streams ADD COLUMN fileIdx INTEGER")
+        db.execSQL("ALTER TABLE last_working_streams ADD COLUMN addonName TEXT")
+      }
+    }
+
     @Volatile
     private var INSTANCE: StreamNovaDatabase? = null
 
@@ -143,7 +157,7 @@ abstract class StreamNovaDatabase : RoomDatabase() {
           "streamnova_database.db"
         )
           .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
-          .addMigrations(MIGRATION_6_7, MIGRATION_7_8)
+          .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
           .fallbackToDestructiveMigration(dropAllTables = true)
           .build()
           .also { INSTANCE = it }

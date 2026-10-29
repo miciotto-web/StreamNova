@@ -3,8 +3,6 @@ package com.example.ui.screens.player
 import android.util.Log
 import android.view.KeyEvent
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.SeekParameters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -212,12 +210,17 @@ class PlayerScrubController(
     val active = session ?: return
     session = null
     if (applyPreview) {
-      (player as? ExoPlayer)?.setSeekParameters(SeekParameters.EXACT)
+      // La seek di conferma usa la politica già configurata sul player (CLOSEST_SYNC).
+      // L'eccezione "Unexpected runtime error" della ricerca rapida NON dipendeva da
+      // questa politica (né da SeekParameters.EXACT): la causa era la cancellazione del
+      // loader HTTP su DefaultHttpDataSource, risolta in PlayerHttpDataSource. Restare su
+      // CLOSEST_SYNC evita comunque un flush del decoder per un seek byte-accurate ed è
+      // la modalità con cui l'intera pipeline è stata validata.
       player.seekTo(active.positionMs)
       if (active.wasPlaying) player.play()
       Log.i(
         TAG,
-        "Scrubbing confermato: seek EXACT a ${active.positionMs}ms (da ${active.originPositionMs}ms, " +
+        "Scrubbing confermato: seek a ${active.positionMs}ms (da ${active.originPositionMs}ms, " +
           "delta=${active.deltaMs}ms), ripresa=${active.wasPlaying}"
       )
     } else {

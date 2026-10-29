@@ -1,0 +1,9 @@
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.ui.viewmodel.SearchCategoryXperienceRealManifestTest"
+            includeTestsMatching "com.example.data.repository.MediaIdentityTest"
+            includeTestsMatching "com.example.data.repository.SimklSyncIntegrationTest"
+        }
+    }
+}

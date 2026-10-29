@@ -65,6 +65,7 @@ import com.aistudio.streamnova.mobile.BuildConfig
 import com.aistudio.streamnova.mobile.R
 import com.aistudio.streamnova.mobile.ui.MobilePlayerUiState
 import com.aistudio.streamnova.mobile.ui.MobilePlayerViewModel
+import com.example.data.model.WatchProgress
 import com.example.data.prefs.DecoderFallbackMode
 import com.example.data.prefs.PlaybackSettings
 import com.example.data.prefs.SettingsRepository
@@ -197,12 +198,20 @@ private fun MobilePlayerSurface(
   val media = state.media
   val episode = state.episode
 
-  val startPositionMs = remember(state.source) {
-    if (episode != null && media != null) {
+  val startPositionMs = remember(state.source, episode, media) {
+    val saved = if (episode != null && media != null) {
       MediaRepository.getEpisodeProgress(media.id, episode.seasonNumber, episode.episodeNumber)
     } else {
       media?.currentProgressMs ?: 0L
     }
+    // Stessa regola della TV: un episodio già concluso riparte da 0:00, altrimenti
+    // il player finirebbe subito e sembrerebbe "non riprendere".
+    val duration = episode?.totalDurationMs ?: 0L
+    val alreadyFinished = duration > 0L && (
+      saved >= (duration * 0.90f) ||
+        WatchProgress.isAtEnd(saved, duration)
+      )
+    if (alreadyFinished) 0L else saved
   }
 
   val exoPlayer = remember(streamUrl, settings) {

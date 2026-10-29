@@ -21,6 +21,7 @@
     <string name="action_retry">Riprova</string>
     <string name="action_back">Indietro</string>
     <string name="action_settings">Impostazioni</string>
+    <string name="action_cancel">Annulla</string>
     <string name="action_favorite_add">Aggiungi ai preferiti</string>
     <string name="action_favorite_remove">Rimuovi dai preferiti</string>
 
@@ -63,6 +64,16 @@
     <string name="settings_parental_pin_hint">Imposta un PIN per proteggere le impostazioni</string>
     <string name="settings_parental_pin_required">Imposta un PIN di 4 cifre per attivare il controllo genitori.</string>
     <string name="settings_parental_pin_saved">PIN salvato.</string>
+    <string name="settings_parental_pin_current">PIN attuale</string>
+    <string name="settings_parental_pin_new">Nuovo PIN (4 cifre)</string>
+    <string name="settings_parental_pin_change">Cambia PIN</string>
+    <string name="settings_parental_pin_changed">PIN aggiornato.</string>
+    <string name="settings_parental_pin_incorrect">PIN errato.</string>
+    <string name="parental_pin_title">Controllo genitori</string>
+    <string name="parental_pin_message">Inserisci il PIN per sbloccare solo «%1$s».</string>
+    <string name="parental_pin_label">PIN a 4 cifre</string>
+    <string name="parental_pin_error">PIN errato. Riprova.</string>
+    <string name="parental_pin_unlock">Sblocca</string>
     <string name="settings_about">Informazioni</string>
     <string name="settings_version">Versione</string>
     <string name="settings_app_id">Application ID</string>

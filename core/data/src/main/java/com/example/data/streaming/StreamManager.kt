@@ -716,8 +716,12 @@ class StreamManager(
       }
       val candidateInfoHash = candidate.infoHash
       if (candidateInfoHash != null) {
-        TorBoxRepository.setRequestMetadata(episode?.seasonNumber, episode?.episodeNumber)
-        val directUrl = TorBoxRepository.resolveInfoHash(candidateInfoHash, candidate.fileIdx)
+        val directUrl = TorBoxRepository.resolveInfoHash(
+          infoHash = candidateInfoHash,
+          fileIdx = candidate.fileIdx,
+          season = episode?.seasonNumber,
+          episode = episode?.episodeNumber
+        )
         if (directUrl != null) {
           return candidate.copy(streamUrl = directUrl)
         }

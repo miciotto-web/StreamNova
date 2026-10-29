@@ -29,6 +29,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -262,6 +263,74 @@ class ContinueWatchingSmartSwitchTest {
     assertNull(LastWorkingStreamRepository.parseEngineMode(null))
   }
 
+  // ── Sorgente ripresa dalla cache: il torrent resta riutilizzabile ────
+
+  @Test
+  fun nextEpisodeReusesTheTorrentOfASourceRestoredFromCache() = runTest(testDispatcher) {
+    val infoHash = "1234abcd1234abcd1234abcd1234abcd1234abcd"
+    val ep1Url = "https://torbox-cdn.example/show/s1e1.mkv"
+    LastWorkingStreamRepository.saveStream(
+      mediaId = SERIES_ID,
+      seasonNumber = 1,
+      episodeNumber = 1,
+      streamUrl = ep1Url,
+      streamTitle = "Show.S01.1080p.mkv",
+      streamQuality = "1080p",
+      serverName = "Torrentio",
+      headers = emptyMap(),
+      isProgressive = true,
+      streamMode = StreamingEngineMode.DEBRID_TORBOX.name,
+      infoHash = infoHash,
+      fileIdx = 0,
+      addonName = "Torrentio"
+    )
+
+    AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.DEBRID_TORBOX)
+    AppSettingsRepository.setTorBoxApiKey("fake-debrid-key")
+    AppSettingsRepository.setAutoplayEnabled(true)
+
+    val provider = object : TorBoxStreamProvider() {
+      var invocations = 0
+      override suspend fun getStreams(
+        tmdbId: Int,
+        isTv: Boolean,
+        season: Int?,
+        episode: Int?,
+        title: String?,
+        year: Int?,
+        imdbId: String?
+      ): List<StreamSource> {
+        invocations++
+        return emptyList()
+      }
+    }
+
+    val viewModel = createViewModel(provider)
+    var pinnedHash: String? = null
+    viewModel.seasonPackEpisodeResolver = { pinned, season, episode ->
+      pinnedHash = pinned.infoHash
+      assertEquals(1, season)
+      assertEquals(2, episode)
+      pinned.copy(streamUrl = "https://torbox-cdn.example/show/s1e2.mkv")
+    }
+
+    // S1E1 ripreso da "Continua a guardare": flusso dalla cache, non dalla ricerca.
+    viewModel.openStreamForMedia(series(), episode(1))
+    advanceUntilIdle()
+    assertEquals(ep1Url, viewModel.playbackState.value.streamUrl)
+    assertTrue(viewModel.playbackState.value.isReusedStream)
+
+    viewModel.playNextEpisode(episode(2))
+    advanceUntilIdle()
+
+    // L'identità Debrid (infoHash) sopravvive alla cache: il prossimo episodio
+    // viene sbloccato DENTRO lo stesso torrent, senza interrogare i provider.
+    assertEquals(infoHash, pinnedHash)
+    assertEquals("https://torbox-cdn.example/show/s1e2.mkv", viewModel.playbackState.value.streamUrl)
+    assertEquals("Nessuna ricerca provider quando il torrent è riutilizzabile", 0, provider.invocations)
+    assertEquals(2, viewModel.playbackState.value.currentEpisode?.episodeNumber)
+  }
+
   // ── Fixture ──────────────────────────────────────────────────────────
 
   private fun movie(): MediaItem = MediaItem(
@@ -274,6 +343,28 @@ class ContinueWatchingSmartSwitchTest {
     durationMinutes = 120,
     currentProgressMs = savedMinuteMs,
     totalDurationMs = 120 * 60 * 1000L
+  )
+
+  private fun series(): MediaItem = MediaItem(
+    id = SERIES_ID,
+    imdbId = SERIES_ID,
+    title = "Show",
+    synopsis = "",
+    videoUrl = "",
+    type = MediaType.SERIE_TV,
+    tmdbId = 1399,
+    episodes = listOf(episode(1), episode(2))
+  )
+
+  private fun episode(number: Int): Episode = Episode(
+    id = "${SERIES_ID}_s1e$number",
+    seasonNumber = 1,
+    episodeNumber = number,
+    title = "Episodio $number",
+    synopsis = "",
+    durationMinutes = 50,
+    videoUrl = "",
+    seriesImdbId = SERIES_ID
   )
 
   private fun createViewModel(provider: StreamProvider): StreamNovaViewModel {
@@ -293,5 +384,6 @@ class ContinueWatchingSmartSwitchTest {
 
   private companion object {
     const val MEDIA_ID = "test_smart_switch_movie"
+    const val SERIES_ID = "tt0944947"
   }
 }

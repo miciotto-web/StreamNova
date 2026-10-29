@@ -1,0 +1,11 @@
+// Run mirato dei test della Fase 3 (SIMKL): il filtro da CLI e' rotto con Gradle 9.3.1 +
+// AGP 9.1.1, quindi si installa qui e si lancia con -I ... --rerun.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.data.remote.simkl.*"
+            includeTestsMatching "com.example.data.repository.Simkl*"
+            includeTestsMatching "com.example.ui.components.SimklLoginDialogTest"
+        }
+    }
+}

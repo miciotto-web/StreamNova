@@ -5,9 +5,14 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -114,6 +119,60 @@ class PlayerScrubSeekControllerTest {
 
     /** Ultimo stato pubblicato: null quando lo scrubbing è concluso. */
     val state: PlayerScrubUiState? get() = published.last()
+  }
+
+  /**
+   * Proxy di [ExoPlayer] che delega tutte le chiamate a un [FakePlayer] e registra le
+   * eventuali chiamate a `setSeekParameters`.
+   *
+   * Il controller parla con il player attraverso l'API [Player]; il cast a [ExoPlayer]
+   * esisteva solo per forzare la politica di seek. Questo proxy rende osservabile quel
+   * cast e blinda la politica attuale: la conferma dello scrubbing non deve imporre
+   * [SeekParameters.EXACT]. Non è la correzione del crash "Unexpected runtime error"
+   * (causato dal trasporto HTTP, vedi [PlayerHttpDataSourceTest]), ma evita di
+   * reintrodurre un seek byte-accurate non necessario sul commit.
+   */
+  private class RecordingExoPlayer(private val delegate: FakePlayer) : InvocationHandler {
+
+    val seekParametersCalls = mutableListOf<SeekParameters>()
+
+    val player: ExoPlayer = Proxy.newProxyInstance(
+      ExoPlayer::class.java.classLoader,
+      arrayOf(ExoPlayer::class.java),
+      this
+    ) as ExoPlayer
+
+    override fun invoke(proxy: Any, method: Method, args: Array<out Any?>?): Any? {
+      when (method.name) {
+        "setSeekParameters" -> {
+          seekParametersCalls += args!![0] as SeekParameters
+          return null
+        }
+        "toString" -> return "RecordingExoPlayer"
+        "hashCode" -> return System.identityHashCode(proxy)
+        "equals" -> return proxy === args?.getOrNull(0)
+      }
+      val target = runCatching {
+        delegate.javaClass.getMethod(method.name, *method.parameterTypes)
+      }.getOrNull() ?: return defaultValue(method.returnType)
+      return try {
+        target.invoke(delegate, *(args ?: emptyArray()))
+      } catch (e: java.lang.reflect.InvocationTargetException) {
+        throw e.targetException
+      }
+    }
+
+    private fun defaultValue(type: Class<*>): Any? = when (type) {
+      java.lang.Boolean.TYPE -> false
+      java.lang.Integer.TYPE -> 0
+      java.lang.Long.TYPE -> 0L
+      java.lang.Float.TYPE -> 0f
+      java.lang.Double.TYPE -> 0.0
+      java.lang.Short.TYPE -> 0.toShort()
+      java.lang.Byte.TYPE -> 0.toByte()
+      java.lang.Character.TYPE -> '\u0000'
+      else -> null
+    }
   }
 
   private fun harness(
@@ -275,6 +334,28 @@ class PlayerScrubSeekControllerTest {
     advanceBy(PlayerScrub.COMMIT_DELAY_MS * 2L)
     assertEquals("il timer è disarmato: nessuna seek duplicata", listOf(110_000L), h.player.seekTargets)
     assertFalse(h.controller.isScrubbing)
+  }
+
+  @Test
+  fun `la conferma non forza SeekParameters EXACT`() = runTest {
+    val fake = FakePlayer(
+      seekable = true,
+      durationMs = tenMinutesMs,
+      playWhenReady = true,
+      positionMs = 100_000L
+    )
+    val recording = RecordingExoPlayer(fake)
+    val controller = PlayerScrubController(this, recording.player)
+
+    controller.onArrowPressed(PlayerScrub.FORWARD)
+    controller.commit()
+
+    assertEquals("la seek di conferma arriva una volta sola", listOf(110_000L), fake.seekTargets)
+    assertTrue(
+      "il commit non deve imporre SeekParameters.EXACT: la politica del player " +
+        "(CLOSEST_SYNC) è quella con cui l'intera pipeline è stata validata",
+      recording.seekParametersCalls.none { it == SeekParameters.EXACT }
+    )
   }
 
   @Test

@@ -26,7 +26,6 @@ android {
 
 dependencies {
   api(project(":core:model"))
-  api(project(":core:designsystem"))
 
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.datastore.preferences)

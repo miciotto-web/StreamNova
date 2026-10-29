@@ -1,0 +1,200 @@
+﻿--------- beginning of system
+10-24 21:11:08.017 I/AmazonHdmiService(  693): Get Current HDCP Version
+--------- beginning of main
+10-24 21:11:08.377 I/chatty  ( 1970): uid=10240(com.android.providers.media.module) expire 5 lines
+10-24 21:11:08.377 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23078): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:12:59.012 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:13:02.265 W/app_process(19306): type=1400 audit(0.0:23289): avc: denied { read } for name="u:object_r:device_config_runtime_native_boot_prop:s0" dev="tmpfs" ino=113 scontext=u:r:shell:s0 tcontext=u:object_r:device_config_runtime_native_boot_prop:s0 tclass=file permissive=0
+10-24 21:13:02.265 W/app_process(19306): type=1400 audit(0.0:23290): avc: denied { read } for name="u:object_r:device_config_runtime_native_boot_prop:s0" dev="tmpfs" ino=113 scontext=u:r:shell:s0 tcontext=u:object_r:device_config_runtime_native_boot_prop:s0 tclass=file permissive=0
+10-24 21:13:02.265 I/chatty  (19306): uid=2000(shell) app_process identical 1 line
+10-24 21:13:02.265 W/app_process(19306): type=1400 audit(0.0:23292): avc: denied { read } for name="u:object_r:device_config_runtime_native_boot_prop:s0" dev="tmpfs" ino=113 scontext=u:r:shell:s0 tcontext=u:object_r:device_config_runtime_native_boot_prop:s0 tclass=file permissive=0
+10-24 21:13:02.269 E/libc    (19306): Access denied finding property "persist.device_config.runtime_native_boot.profilebootclasspath"
+10-24 21:13:02.269 E/libc    (19306): Access denied finding property "persist.device_config.runtime_native_boot.enable_apex_image"
+10-24 21:13:02.269 I/AndroidRuntime(19306): Using default boot image
+10-24 21:13:02.269 E/libc    (19306): Access denied finding property "persist.device_config.runtime_native_boot.disable_lock_profiling"
+10-24 21:13:02.269 I/AndroidRuntime(19306): Leaving lock profiling enabled
+10-24 21:13:02.270 E/libc    (19306): Access denied finding property "persist.device_config.runtime_native_boot.enable_generational_cc"
+10-24 21:13:02.465 I/app_process(19306): The ClassLoaderContext is a special shared library.
+10-24 21:13:02.467 I/app_process(19306): Bumping SignalCatcher priority from 5 to 10
+10-24 21:13:02.525 W/app_process(19306): JNI RegisterNativeMethods: attempt to register 0 native methods for android.media.AudioAttributes
+10-24 21:13:02.536 I/AmazonProfileService(  693): Event is not filtered because it is not in filter key list.
+10-24 21:13:02.536 I/KeyMapManagerUtil(  693): Unknown remote sku id 0. Fetch remote sku id from system property
+10-24 21:13:02.536 E/amzn_neo_service_api:..( 1743): handle_key_event_callback: Got empty key-event
+10-24 21:13:02.536 I/com_amazon_devicecont..( 1743): Received Key name: DPAD_CENTER, code: 23, action: 0
+10-24 21:13:02.536 E/amzn_neo_service_api:..( 1742): handle_key_event_callback: Got empty key-event
+10-24 21:13:02.537 I/libPowerHal(  413): [perfLockAcq] idx:2 hdl:22700 hint:0 pid:413 duration:10000 => ret_hdl:22700
+10-24 21:13:02.537 I/libPowerHal(  413): [PE] scn:2 hdl:22700 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:13:02.538 I/libPowerHal(  413): [perfLockAcq] idx:3 hdl:22701 hint:0 pid:413 duration:10000 => ret_hdl:22701
+10-24 21:13:02.538 I/libPowerHal(  413): [PE] scn:3 hdl:22701 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:13:02.541 I/AmazonProfileService(  693): Event is not filtered because it is not in filter key list.
+10-24 21:13:02.541 I/KeyMapManagerUtil(  693): Unknown remote sku id 0. Fetch remote sku id from system property
+10-24 21:13:02.541 E/amzn_neo_service_api:..( 1742): handle_key_event_callback: Got empty key-event
+10-24 21:13:02.541 E/amzn_neo_service_api:..( 1743): handle_key_event_callback: Got empty key-event
+10-24 21:13:02.541 I/com_amazon_devicecont..( 1743): Received Key name: DPAD_CENTER, code: 23, action: 1
+10-24 21:13:02.715 I/IME-FireTVIME( 1693): onStartInputView, restarting=false
+10-24 21:13:02.718 I/IME-FireTVIME( 1693): Voice input is disabled since user's locale = it_IT is not supported
+10-24 21:13:02.727 I/IME-FireTVIME( 1693): onStartInputView, restarting=false
+10-24 21:13:02.727 I/IME-FireTVIME( 1693): Voice input is disabled since user's locale = it_IT is not supported
+10-24 21:13:02.732 I/IME-SessionInfoHandler( 1693): Is QR Token Valid: true
+10-24 21:13:02.732 I/IME-QRCodeManager( 1693): Generating QR Code Success
+10-24 21:13:02.732 W/IME-FireTVIME( 1693): QR Code Generated Successfully
+10-24 21:13:02.735 I/IME-SessionInfoHandler( 1693): Is QR Token Valid: true
+10-24 21:13:02.736 I/IME-QRCodeManager( 1693): Generating QR Code Success
+10-24 21:13:02.736 W/IME-FireTVIME( 1693): QR Code Generated Successfully
+10-24 21:13:02.838 I/IME-FireTVIME( 1693): Input method window is visible to user
+10-24 21:13:02.865 I/IME-FireTVIME( 1693): Input method window is visible to user
+10-24 21:13:02.950 I/IME-FireTVIME( 1693): Setting QR Code bitmap to image view and showing QR Code layout
+10-24 21:13:02.950 I/IME-MinervaMetricEmitte( 1693): Recording QR Code Generation Complete Metric
+10-24 21:13:02.951 I/IME-FireTVIME( 1693): Setting QR Code bitmap to image view and showing QR Code layout
+10-24 21:13:02.951 I/IME-MinervaMetricEmitte( 1693): Recording QR Code Generation Complete Metric
+10-24 21:13:03.953 W/Thread-26(24624): type=1400 audit(0.0:23293): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:13:03.956 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:13:03.957 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:13:03.958 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:13:04.029 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:04.029 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:04.029 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:04.549 I/ActivityManager(  693): Start proc 19332:com.nuvio.tv/u0a282 for service {com.nuvio.tv/com.nuvio.tv.core.sync.androidtv.TvChannelRefreshJobService}
+10-24 21:13:04.581 W/main    (19332): type=1400 audit(0.0:23294): avc: denied { write } for name="tasks" dev="tmpfs" ino=690 scontext=u:r:zygote:s0 tcontext=u:object_r:device:s0 tclass=file permissive=0 app=com.nuvio.tv
+10-24 21:13:04.600 I/com.nuvio.tv(19332): Bumping SignalCatcher priority from 10 to 10
+10-24 21:13:04.602 E/com.nuvio.tv(19332): Not starting debugger since process cannot load the jdwp agent.
+10-24 21:13:05.821 I/Supabase-Core(19332): SupabaseClient created! Please report any bugs you find.
+10-24 21:13:06.006 W/System.err(19332): SLF4J(W): No SLF4J providers were found.
+10-24 21:13:06.006 W/System.err(19332): SLF4J(W): Defaulting to no-operation (NOP) logger implementation
+10-24 21:13:06.006 W/System.err(19332): SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
+10-24 21:13:06.210 I/Supabase-Auth(19332): Loading session from storage...
+10-24 21:13:06.277 I/Supabase-Auth(19332): Successfully loaded session from storage!
+10-24 21:13:06.531 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:06.583 W/ProfileDataStoreFactory(19332): Failed to write shadow copy for layout_settings: /mnt/expand/94f660c1-f44d-4692-8d2b-6f32b1c66ec1/user/0/com.nuvio.tv/files/datastore/layout_settings.preferences_pb -> /mnt/expand/94f660c1-f44d-4692-8d2b-6f32b1c66ec1/user/0/com.nuvio.tv/files/datastore/layout_settings.preferences_pb.bak: Tried to overwrite the destination, but failed to delete it.
+10-24 21:13:06.628 W/ProfileDataStoreFactory(19332): Failed to write shadow copy for addon_preferences: /mnt/expand/94f660c1-f44d-4692-8d2b-6f32b1c66ec1/user/0/com.nuvio.tv/files/datastore/addon_preferences.preferences_pb -> /mnt/expand/94f660c1-f44d-4692-8d2b-6f32b1c66ec1/user/0/com.nuvio.tv/files/datastore/addon_preferences.preferences_pb.bak: Tried to overwrite the destination, but failed to delete it.
+10-24 21:13:06.629 W/ProfileDataStoreFactory(19332): Failed to write shadow copy for addon_preferences: /mnt/expand/94f660c1-f44d-4692-8d2b-6f32b1c66ec1/user/0/com.nuvio.tv/files/datastore/addon_preferences.preferences_pb -> /mnt/expand/94f660c1-f44d-4692-8d2b-6f32b1c66ec1/user/0/com.nuvio.tv/files/datastore/addon_preferences.preferences_pb.bak: Tried to overwrite the destination, but failed to delete it.
+10-24 21:13:06.637 W/pool-2-thread-1(19332): type=1400 audit(0.0:23295): avc: denied { read } for name="version" dev="proc" ino=4026532018 scontext=u:r:untrusted_app:s0:c26,c257,c512,c768 tcontext=u:object_r:proc_version:s0 tclass=file permissive=0 app=com.nuvio.tv
+10-24 21:13:06.692 I/TrustManagerImpl(19332): TRACE Starting certificate trust
+10-24 21:13:06.697 I/TetheringManager(19332): registerTetheringEventCallback:com.nuvio.tv
+10-24 21:13:06.747 I/whad    ( 2059): ControlPlaneManager:handleCommand:caller=Libevent,cmd=testVisibility,xmit=330603749,recv=330603752,delta=3,tss=XX0196,senderId=XX065R,tssStale=false
+10-24 21:13:06.886 I/Choreographer(19332): Skipped 78 frames!  The application may be doing too much work on its main thread.
+10-24 21:13:07.045 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:07.045 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:07.045 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:07.512 I/mtkpower@impl(  413): [powerd_req] TIMER_MSG_PERF_LOCK_TIMEOUT hdl:22698
+10-24 21:13:07.512 I/libPowerHal(  413): [perfLockRel] hdl:22698, idx:0
+10-24 21:13:07.512 I/libPowerHal(  413): [PD] scn:0 hdl:22698 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:13:07.512 I/mtkpower@impl(  413): [powerd_req] TIMER_MSG_PERF_LOCK_TIMEOUT hdl:22699
+10-24 21:13:07.512 I/libPowerHal(  413): [perfLockRel] hdl:22699, idx:1
+10-24 21:13:07.512 I/libPowerHal(  413): [PD] scn:1 hdl:22699 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:13:07.693 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:07.696 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:07.697 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:07.698 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:07.701 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:07.707 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:07.735 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:07.738 W/ProfileDataStoreFactory(19332): Failed to write shadow copy for animeskip_settings: /mnt/expand/94f660c1-f44d-4692-8d2b-6f32b1c66ec1/user/0/com.nuvio.tv/files/datastore/animeskip_settings.preferences_pb -> /mnt/expand/94f660c1-f44d-4692-8d2b-6f32b1c66ec1/user/0/com.nuvio.tv/files/datastore/animeskip_settings.preferences_pb.bak: Tried to overwrite the destination, but failed to delete it.
+10-24 21:13:07.763 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:08.384 W/ContextImpl( 1335): Calling a method in the system process without a qualified user: android.app.ContextImpl.sendBroadcast:1161 android.content.ContextWrapper.sendBroadcast:473 com.amazon.tifobserver.LiveTvObserver.broadcastPreviewProgramsChange:192 com.amazon.tifobserver.LiveTvObserver.access$400:18 com.amazon.tifobserver.LiveTvObserver$4.run:141 
+10-24 21:13:08.419 I/PPChangedReceiver( 6636): Received preview program changed broadcast
+10-24 21:13:08.431 E/lowmemorykiller(  237): system_server (1000, 693) attempts to modify a process registered by another client
+10-24 21:13:08.439 W/IMGMemtrackHAL(  375): hal_get_memory: memtrack cache rebuild was required
+10-24 21:13:08.531 I/PreviewProgramsSync( 6636): Preview Content Sync triggered
+10-24 21:13:08.636 W/TifChannelRepositoryImp( 6636): Tif Channel not allowed for live events: com.nuvio.tv
+10-24 21:13:08.637 W/TifChannelRepositoryImp( 6636): Tif Channel not allowed for live events: com.stremio.morphe
+10-24 21:13:08.637 I/chatty  ( 6636): uid=10202(com.amazon.tv.livetv) pool-14-thread- identical 1 line
+10-24 21:13:08.637 W/TifChannelRepositoryImp( 6636): Tif Channel not allowed for live events: com.stremio.morphe
+10-24 21:13:08.637 I/PreviewProgramsSync( 6636): PreviewProgram Sync finished.
+10-24 21:13:08.797 E/lowmemorykiller(  237): system_server (1000, 693) attempts to modify a process registered by another client
+10-24 21:13:08.798 E/lowmemorykiller(  237): system_server (1000, 693) attempts to modify a process registered by another client
+10-24 21:13:08.827 W/ContextImpl( 1335): Calling a method in the system process without a qualified user: android.app.ContextImpl.sendBroadcast:1161 android.content.ContextWrapper.sendBroadcast:473 com.amazon.tifobserver.LiveTvObserver.broadcastWatchNextProgramsChange:202 com.amazon.tifobserver.LiveTvObserver.access$500:18 com.amazon.tifobserver.LiveTvObserver$5.run:149 
+10-24 21:13:08.855 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:13:08.855 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:13:08.855 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:13:08.855 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:13:08.855 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:13:08.965 W/Thread-26(24624): type=1400 audit(0.0:23296): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:13:08.968 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:13:08.969 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:13:09.630 E/lowmemorykiller(  237): system_server (1000, 693) attempts to modify a process registered by another client
+10-24 21:13:09.630 I/chatty  (  237): uid=1069(lmkd) /system/bin/lmkd identical 1 line
+10-24 21:13:09.631 E/lowmemorykiller(  237): system_server (1000, 693) attempts to modify a process registered by another client
+10-24 21:13:09.868 I/com.nuvio.tv(19332): Waiting for a blocking GC ProfileSaver
+10-24 21:13:10.002 I/whad    ( 2059): DeviceVisibilityManager:handleHeartbeat:seq=28729,xmit=330606925224076,recv=330607003207255,uniqueId=XX0196,highNetworkLatency=0
+10-24 21:13:10.031 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:13:10.053 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:10.053 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:10.053 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:10.130 I/TrustManagerImpl(19332): TRACE Starting certificate trust
+10-24 21:13:10.322 I/com.nuvio.tv(19332): WaitForGcToComplete blocked ProfileSaver on AddRemoveAppImageSpace for 453.975ms
+10-24 21:13:10.348 I/com.nuvio.tv(19332): WaitForGcToComplete blocked RunEmptyCheckpoint on ProfileSaver for 9.597ms
+10-24 21:13:10.905 W/AuthDiagnostics(19332): attempt=46ef9047-ecfe-4add-9a42-1a32dd8df65e flow=startup_auth upload=queued error=IllegalStateException: Auth diagnostics upload failed: HTTP 429
+10-24 21:13:12.543 I/mtkpower@impl(  413): [powerd_req] TIMER_MSG_PERF_LOCK_TIMEOUT hdl:22700
+10-24 21:13:12.543 I/libPowerHal(  413): [perfLockRel] hdl:22700, idx:2
+10-24 21:13:12.543 I/libPowerHal(  413): [PD] scn:2 hdl:22700 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:13:12.543 I/mtkpower@impl(  413): [powerd_req] TIMER_MSG_PERF_LOCK_TIMEOUT hdl:22701
+10-24 21:13:12.543 I/libPowerHal(  413): [perfLockRel] hdl:22701, idx:3
+10-24 21:13:12.543 I/libPowerHal(  413): [PD] scn:3 hdl:22701 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:13:12.544 I/libPowerHal(  413): INTERACTION: sysfs_freq set cpu freq: 600000 1696000
+10-24 21:13:13.061 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:13.061 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:13.061 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:14.001 W/Thread-26(24624): type=1400 audit(0.0:23297): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:13:14.005 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:13:16.069 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:16.069 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:16.070 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:16.865 I/whad    ( 2059): ControlPlaneManager:handleCommand:caller=Libevent,cmd=testVisibility,xmit=330613782,recv=330613870,delta=88,tss=XX0196,senderId=XX065R,tssStale=false
+10-24 21:13:18.859 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:13:18.859 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:13:18.859 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:13:18.859 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:13:18.860 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:13:19.025 W/Thread-26(24624): type=1400 audit(0.0:23298): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:13:19.032 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:13:19.078 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:19.078 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:19.079 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:22.103 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:22.103 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:22.104 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:24.065 W/Thread-26(24624): type=1400 audit(0.0:23299): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:13:24.070 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:13:24.784 I/DiebusMetrics(15720): Starting reporting metrics
+10-24 21:13:24.784 I/DiebusMetrics(15720): End reporting metrics
+10-24 21:13:25.116 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:25.116 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:25.117 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:25.911 I/DirectiveCache( 2008): Cleaning up DirectiveCache, current size: 0
+10-24 21:13:25.914 E/SPCH-MinervaSchemaStorage( 2008): No schema was found for source SIM_basic
+10-24 21:13:25.914 E/SPCH-MinervaSchemaRetriever( 2008): No schema was found for metric SIM.DirectiveCache.CacheEmptyBeforeTrim in source SIM_basic
+10-24 21:13:25.914 E/SPCH-MinervaSchemaStorage( 2008): No schema was found for source SIM_basic
+10-24 21:13:25.915 E/SPCH-MinervaSchemaRetriever( 2008): No schema was found for metric SIM.DirectiveCache.UnchangedCacheSize in source SIM_basic
+10-24 21:13:27.002 I/whad    ( 2059): ControlPlaneManager:handleCommand:caller=Libevent,cmd=testVisibility,xmit=330623902,recv=330624007,delta=105,tss=XX0196,senderId=XX065R,tssStale=false
+10-24 21:13:27.432 I/DiebusMetrics(15720): Starting reporting metrics
+10-24 21:13:27.432 I/DiebusMetrics(15720): End reporting metrics
+10-24 21:13:28.141 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:28.141 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:28.142 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:28.865 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:13:28.866 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:13:28.866 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:13:28.866 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:13:28.866 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:13:29.101 W/Thread-26(24624): type=1400 audit(0.0:23300): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:13:29.108 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:13:30.004 I/whad    ( 2059): ControlPlaneManager:handleCommand:caller=Libevent,cmd=sendMessage,xmit=330626928,recv=330627008,delta=80,tss=XX0196,senderId=XX0196,tssStale=false
+10-24 21:13:30.004 I/whad    ( 2059): AndroidOSInterface:recordMinervaMetric:Recorded 'xya3zuyg' 'nkjr/2/013304c0'
+10-24 21:13:30.004 I/whad    ( 2059): Fabric:onMessage:id=Stitch_31dda566-fae5-4af7-b413-a4c7c1bb26d4, name=Stitch, sender=XX0196
+10-24 21:13:31.161 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:13:31.161 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:13:31.161 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:13:32.309 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23301): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:13:32.315 I/MediaProvider( 1970): Begin Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/hotfix_28_relaunch_play.png flg=0x1400010 cmp=com.android.providers.media.module/com.android.providers.media.MediaService }
+10-24 21:13:32.318 W/ModernMediaScanner( 1970): Failed to visit /sdcard/hotfix_28_relaunch_play.png: java.nio.file.AccessDeniedException: /sdcard/hotfix_28_relaunch_play.png
+10-24 21:13:32.320 E/libc    (19495): Access denied finding property "vendor.product.pvr.debug_level"
+10-24 21:13:32.320 E/IMGSRV  (19495): :2753: GrallocUnregisterBuffer: Cannot free a locked buffer (ID=139182)
+10-24 21:13:32.320 E/libc    (19495): Access denied finding property "vendor.product.pvr.debug_level"
+10-24 21:13:32.320 E/IMGSRV  (19495): :74: freeBuffer: Failed to unregister native handle
+10-24 21:13:32.320 E/Gralloc4(19495): freeBuffer(0xf6a3fc00) failed with 2
+10-24 21:13:32.320 E/IMGSRV  (19495): :2683: hal_deinit: Stale maps left in cache; probably an application bug
+10-24 21:13:32.320 E/IMGSRV  (19495): :2685: hal_deinit: You may see failing kernel assertions after this message
+10-24 21:13:32.320 I/MediaProvider( 1970): Scanned internal due to REASON_DEMAND, found 0 items in 3ms, 0 inserts 0 updates 0 deletes
+10-24 21:13:32.321 I/MTK_GRALLOC(19495): Unregistered dump signal 33 for gralloc, old hdl 0x0
+10-24 21:13:32.326 I/MediaProvider( 1970): End Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/hotfix_28_relaunch_play.png flg=0x1400010 cmp=com.android.providers.media.module/com.android.providers.media.MediaService }

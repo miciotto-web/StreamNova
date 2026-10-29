@@ -1,0 +1,13 @@
+// Run mirato Fase 2 (buffering): stesse ragioni di _tmp_test_filter.init.gradle — con
+// Gradle 9.3.1 + AGP 9.1.1 il filtro CLI `--tests` risponde "No tests found".
+// Uso: ./gradlew.bat -I _tmp_test_filter_phase2.init.gradle :app:testDebugUnitTest --rerun
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.ui.screens.player.PlayerTrackAdaptationHysteresisTest"
+            includeTestsMatching "com.example.ui.screens.player.PlayerInitialBufferSettingTest"
+            includeTestsMatching "com.example.ui.screens.player.PlayerMediaSourceFactoriesTest"
+            includeTestsMatching "com.example.ui.screens.player.PlayerBufferingOverlayTest"
+        }
+    }
+}

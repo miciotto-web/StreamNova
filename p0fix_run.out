@@ -1,0 +1,19 @@
+== 0. dispositivo ==
+List of devices attached
+192.168.1.2:5555	device
+
+AFTMA08C15
+30
+mt8696
+== 1. nessun override manuale (deve decidere la piattaforma) ==
+total 12
+drwxrwx--x  3 u0_a341 u0_a341 4096 2026-10-24 22:09 .
+drwx------ 11 u0_a341 u0_a341 4096 2026-10-25 09:19 ..
+drwx------  2 u0_a341 u0_a341 4096 2026-10-24 22:16 seekproof
+== 2. pulizia stato ==
+== 3. avvio cattura logcat e screenrecord ==
+== 4. esecuzione dello script di collaudo ==
+   instrument completato (exit=0)
+== 5. raccolta ==
+   PID dopo il collaudo: 
+== done ==

@@ -1,0 +1,18 @@
+// Run mirato del bug "QR SIMKL non visibile" (configurazione di build + diagnosi + QR).
+// Il filtro da CLI e' rotto con Gradle 9.3.1 + AGP 9.1.1: si installa qui e si lancia con
+// -I ... --rerun. Vedi gradle-tests-filter-broken-agp9-workaround.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.data.repository.SimklClientIdConfigurationTest"
+            includeTestsMatching "com.example.data.repository.SimklLoginPersistenceTest"
+            includeTestsMatching "com.example.data.repository.Simkl*"
+            includeTestsMatching "com.example.data.remote.simkl.*"
+            includeTestsMatching "com.example.ui.components.SimklLoginControllerTest"
+            includeTestsMatching "com.example.ui.components.SimklLoginDialogTest"
+            includeTestsMatching "com.example.ui.components.QrCodeContentTest"
+            includeTestsMatching "com.example.ui.screens.SettingsSimklAccountRowsTest"
+            includeTestsMatching "com.example.SimklRepositoryTest"
+        }
+    }
+}

@@ -33,6 +33,11 @@ object NextEpisodePromptUtils {
    * @param hasNextEpisode true se esiste un episodio successivo (nella stagione o nella successiva).
    * @param dismissed true se l'utente ha chiuso esplicitamente l'overlay per questo episodio.
    * @param playbackFailed true se la sessione corrente è fallita (errore/stream assente).
+   * @param switchingEpisode true mentre è in corso la risoluzione della sorgente del
+   *        prossimo episodio. Posizione e durata appartengono ancora all'episodio
+   *        precedente e non provano che il nuovo episodio sia finito: senza questa
+   *        guardia il countdown poteva far avanzare di nuovo prima che il nuovo stream
+   *        fosse pronto (avanzamenti ripetuti, nessuna riproduzione avviata).
    */
   fun shouldShow(
     positionMs: Long,
@@ -41,9 +46,11 @@ object NextEpisodePromptUtils {
     isTvShow: Boolean,
     hasNextEpisode: Boolean,
     dismissed: Boolean,
-    playbackFailed: Boolean
+    playbackFailed: Boolean,
+    switchingEpisode: Boolean = false
   ): Boolean {
     if (!isTvShow || !hasNextEpisode || dismissed || playbackFailed) return false
+    if (switchingEpisode) return false
     if (playbackEnded) return true
     // Finestra valida solo se l'episodio dura più della finestra stessa (evita
     // overlay fin dall'inizio su clip brevi); il trigger è position >= duration - 35s.

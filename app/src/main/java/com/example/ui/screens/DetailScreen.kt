@@ -111,6 +111,7 @@ import com.example.data.model.WatchProgress
 import androidx.compose.ui.text.style.TextAlign
 import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.toEpisode
+import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
 import com.example.data.stremio.StremioCatalogMapper
@@ -946,26 +947,17 @@ fun DetailScreen(
             verticalAlignment = Alignment.CenterVertically
           ) {
             val resumeEpisode = if (displayMedia.type == MediaType.SERIE_TV && !isLiveChannel) {
-              val targetSeason = displayMedia.lastWatchedSeason ?: 1
-              val targetEpNum = displayMedia.lastWatchedEpisode ?: 1
-              val found = displayMedia.episodes.find {
-                it.seasonNumber == targetSeason && it.episodeNumber == targetEpNum
-              } ?: episodesForSeason.find {
-                it.seasonNumber == targetSeason && it.episodeNumber == targetEpNum
-              } ?: episodesForSeason.firstOrNull { it.seasonNumber == 1 && it.episodeNumber == 1 }
-                ?: episodesForSeason.firstOrNull()
-                ?: displayMedia.episodes.firstOrNull()
-                ?: Episode(
-                  id = "${displayMedia.id}_s${targetSeason}e${targetEpNum}",
-                  seasonNumber = targetSeason,
-                  episodeNumber = targetEpNum,
-                  title = "Episodio $targetEpNum",
-                  synopsis = "",
-                  durationMinutes = displayMedia.durationMinutes.takeIf { it > 0 } ?: 55,
-                  videoUrl = displayMedia.videoUrl
-                )
-              val savedProgress = MediaRepository.getEpisodeProgress(displayMedia.id, found.seasonNumber, found.episodeNumber)
-              found.copy(currentProgressMs = savedProgress)
+              // L'ultima visione salvata (o S1E1 per un titolo mai avviato) è autorevole:
+              // se la stagione non è ancora caricata l'episodio viene ricostruito con gli
+              // stessi numeri, mai sostituito da S1E1 (bug "riprende la prima puntata").
+              val resolved = EpisodeResumeResolver.resolve(
+                media = displayMedia,
+                extraEpisodes = episodesForSeason
+              )
+              val savedProgress = resolved?.let {
+                MediaRepository.getEpisodeProgress(displayMedia.id, it.seasonNumber, it.episodeNumber)
+              } ?: 0L
+              resolved?.copy(currentProgressMs = savedProgress)
             } else null
 
             val playButtonLabel = if (displayMedia.type == MediaType.SERIE_TV && !isLiveChannel) {

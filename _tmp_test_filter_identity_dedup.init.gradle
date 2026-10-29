@@ -1,0 +1,13 @@
+// Run mirato: deduplicazione identità + import episodi dalla libreria SIMKL.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.data.repository.MediaIdentityTest"
+            includeTestsMatching "com.example.data.repository.SimklSyncIntegrationTest"
+            includeTestsMatching "com.example.data.repository.SimklLocalMatcherTest"
+            includeTestsMatching "com.example.data.repository.SimklSyncManagerGuardTest"
+            includeTestsMatching "com.example.data.remote.simkl.*"
+            includeTestsMatching "com.example.SimklRepositoryTest"
+        }
+    }
+}

@@ -135,12 +135,30 @@ object TorBoxApiClient {
     .readTimeout(30, TimeUnit.SECONDS)
     .build()
 
-  val api: TorBoxApi by lazy {
+  private val defaultApi: TorBoxApi by lazy {
     Retrofit.Builder()
       .baseUrl(BASE_URL)
       .client(okHttpClient)
       .addConverterFactory(MoshiConverterFactory.create(moshi))
       .build()
       .create(TorBoxApi::class.java)
+  }
+
+  @Volatile
+  private var testApi: TorBoxApi? = null
+
+  /**
+   * API TorBox effettivamente usata da [TorBoxRepository] e [TorBoxResolver].
+   *
+   * Nei test viene sostituita da un fake con [setApiForTesting]: l'API reale è un
+   * singleton Retrofit e senza questo punto di iniezione il comportamento di
+   * sblocco (scelta del file dell'episodio, cache dei link) non sarebbe verificabile.
+   */
+  val api: TorBoxApi
+    get() = testApi ?: defaultApi
+
+  /** Iniezione dell'API per i test (null ripristina l'istanza di produzione). */
+  fun setApiForTesting(api: TorBoxApi?) {
+    testApi = api
   }
 }

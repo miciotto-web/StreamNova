@@ -1,0 +1,2 @@
+pkill: INT->147: Operation not permitted
+adb: error: failed to stat remote object '/sdcard/p0fix.mp4': No such file or directory

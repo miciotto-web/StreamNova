@@ -94,15 +94,27 @@ class MobileDetailViewModel : ViewModel() {
       else -> (1..(media.seasonsCount ?: 1)).toList()
     }
 
+    // Si apre la stagione dell'ultima visione: aprire sempre la S1 mostrava episodi
+    // sbagliati e faceva ripartire la serie dalla prima puntata. Se la stagione
+    // salvata non è nell'elenco locale la si aggiunge (TMDB la caricherà).
+    val initialSeason = media.lastWatchedSeason?.takeIf { it > 0 }
+      ?: seasons.firstOrNull()
+      ?: 1
+    val seasonsWithResume = if (seasons.isEmpty() || initialSeason in seasons) {
+      seasons
+    } else {
+      (seasons + initialSeason).sorted()
+    }
+
     _state.value = MobileDetailUiState(
       media = media,
       isFavorite = media.isFavorite,
-      seasons = seasons,
-      selectedSeason = seasons.firstOrNull() ?: 1
+      seasons = seasonsWithResume,
+      selectedSeason = initialSeason
     )
 
     if (media.type == MediaType.SERIE_TV) {
-      loadSeason(media, seasons.firstOrNull() ?: 1)
+      loadSeason(media, initialSeason)
     }
 
     refreshDetail(media)

@@ -125,7 +125,6 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
@@ -449,6 +448,9 @@ fun PlayerScreen(
   // Overlay "Prossimo Episodio": attivo negli ultimi 35 secondi o a STATE_ENDED.
   // Durante lo scrubbing resta fuori schermo: nessun overlay e nessun countdown di
   // auto-avanzamento mentre l'utente sta solo cercando nel contenuto.
+  // Durante la transizione al prossimo episodio (`isSwitchingEpisode`) l'overlay è
+  // sempre nascosto: posizione e durata sono ancora quelle dell'episodio precedente e
+  // non devono riattivare il countdown mentre la nuova sorgente viene risolta.
   val isNextEpisodePromptVisible = !isScrubbing && NextEpisodePromptUtils.shouldShow(
     positionMs = currentPosition,
     durationMs = totalDuration,
@@ -456,7 +458,8 @@ fun PlayerScreen(
     isTvShow = isTvShow,
     hasNextEpisode = nextEpisode != null,
     dismissed = nextEpisodeDismissed,
-    playbackFailed = playbackFailed
+    playbackFailed = playbackFailed,
+    switchingEpisode = isSwitchingEpisode
   )
 
   // Aspect ratio / ResizeMode
@@ -586,25 +589,22 @@ fun PlayerScreen(
   // Factory HTTP STABILE: le intestazioni della sorgente attiva possono cambiare
   // (cambio manuale di sorgente dal player) senza dover ricreare l'ExoPlayer.
   //
-  // `DefaultHttpDataSource.Factory` applica le "default request properties" al
-  // momento della creazione del DataSource (cioe' al prepare()): aggiornarle in
-  // place mantiene la STESSA istanza di player e evita duplicazioni/ricreazioni.
-  // Con la ricreazione il player ripartirebbe da zero (nuovo buffering, decoder
-  // da riavviare, posizione persa).
+  // Trasporto OkHttp e NON DefaultHttpDataSource: quest'ultimo usa HttpURLConnection,
+  // il cui canale interruptibile fa fallire la cancellazione del loader durante una
+  // seek (IllegalStateException "Unbalanced enter/exit" → "Unexpected runtime error").
+  // Le "default request properties" vengono applicate al momento della creazione del
+  // DataSource (cioè al prepare()): aggiornarle in place mantiene la STESSA istanza di
+  // player ed evita duplicazioni/ricreazioni. Con la ricreazione il player ripartirebbe
+  // da zero (nuovo buffering, decoder da riavviare, posizione persa).
   val httpDataSourceFactory = remember {
-    val factory = DefaultHttpDataSource.Factory()
-      .setUserAgent(DEFAULT_HTTP_USER_AGENT)
-      .setAllowCrossProtocolRedirects(true)
-      .setConnectTimeoutMs(15000)
-      .setReadTimeoutMs(20000)
-    factory
+    PlayerHttpDataSource.createFactory(DEFAULT_HTTP_USER_AGENT)
   }
   // Factory schema-aware usata dal player per TUTTE le sorgenti: http(s) viene delegato
   // alla [httpDataSourceFactory] sopra (headers e User-Agent aggiornati in place), mentre
   // `file://` viene aperto con FileDataSource. È il percorso dei sottotitoli OpenSubtitles
-  // scaricati su cache locale: DefaultHttpDataSource lancia UnsupportedSchemeException su
-  // `file://`, e il fallimento della traccia esterna veniva recuperato togliendo proprio
-  // il sottotitolo appena scaricato.
+  // scaricati su cache locale: un data source solo-HTTP lancia UnsupportedSchemeException
+  // su `file://`, e il fallimento della traccia esterna verrebbe recuperato togliendo
+  // proprio il sottotitolo appena scaricato.
   val playbackDataSourceFactory = remember {
     DefaultDataSource.Factory(context, httpDataSourceFactory)
   }
@@ -1592,6 +1592,12 @@ fun PlayerScreen(
     onlineSubtitleActivationLang = null
     nextEpisodeDismissed = false
     nextEpisodeCountdownSeconds = 0
+    // Nuovo episodio: posizione e durata dell'episodio precedente NON sono valide per
+    // questo. Se restano, la finestra degli ultimi 35 secondi risulta già soddisfatta
+    // e il countdown "Prossimo Episodio" riparte immediatamente, facendo avanzare di
+    // nuovo prima che la nuova sorgente sia pronta (su Debrid: ricerca infinita).
+    currentPosition = playbackState.currentPositionMs
+    totalDuration = playbackState.durationMs.coerceAtLeast(1L)
   }
 
   // Applica la "Risoluzione preferita" una sola volta, quando il player è pronto

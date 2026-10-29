@@ -35,6 +35,7 @@ import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.repository.MediaRepository
+import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.HomeCatalogs
 import com.example.data.repository.LastWorkingStreamRepository
 import com.example.data.repository.ProviderCoverage
@@ -190,9 +191,15 @@ internal suspend fun resolveAutoPickSource(
   for (candidate in sources) {
     val playable = if (useDebridUnlock && candidate.infoHash != null && candidate.streamUrl == null) {
       // Caso A: Debrid attiva e configurata -> sblocco del primo flusso Debrid.
-      TorBoxRepository.setRequestMetadata(season, episode)
+      // Stagione/episodio vengono passati ESPLICITAMENTE: lo sblocco deve riguardare
+      // il file di questo episodio, non un file qualsiasi dello stesso torrent.
       val candidateInfoHash = candidate.infoHash!!
-      val directUrl = TorBoxRepository.resolveInfoHash(candidateInfoHash, candidate.fileIdx)
+      val directUrl = TorBoxRepository.resolveInfoHash(
+        infoHash = candidateInfoHash,
+        fileIdx = candidate.fileIdx,
+        season = season,
+        episode = episode
+      )
       if (directUrl != null) candidate.copy(streamUrl = directUrl) else null
     } else {
       candidate
@@ -230,6 +237,13 @@ internal const val NEXT_EPISODE_FAST_PATH_TIMEOUT_MS = 3_500L
  * e si mostra il dialog di selezione manuale delle sorgenti. Mai spinner infinito.
  */
 internal const val NEXT_EPISODE_RESOLUTION_TIMEOUT_MS = 10_000L
+
+/**
+ * Timeout dello sblocco del link Debrid salvato durante il riuso da
+ * «Continua a guardare»: se TorBox non risponde entro questa finestra si usa il
+ * link già persistito, così l'avvio non resta sospeso.
+ */
+internal const val REUSED_STREAM_UNLOCK_TIMEOUT_MS = 6_000L
 
 /**
  * Finestra di assestamento (ms) dell'auto-pick.
@@ -273,7 +287,9 @@ internal suspend fun tryResolveNextEpisodeFromSameTorrent(
   } ?: return null
   if (url.isBlank()) return null
   Log.i(SAME_SOURCE_TAG, "S${season}E${episode}: sbloccato dallo stesso torrent ${hash.take(8)}...")
-  return pinned.copy(streamUrl = url)
+  // Il torrent è lo stesso ma il FILE è un altro episodio: i sottotitoli e l'indice
+  // file dell'episodio corrente non valgono per quello nuovo e non vanno trascinati.
+  return pinned.copy(streamUrl = url, subtitles = emptyList(), fileIdx = null)
 }
 
 /**
@@ -990,6 +1006,14 @@ class StreamNovaViewModel(
   private var currentSession: PlaybackSession? = null
 
   /**
+   * Durata **reale** comunicata da ExoPlayer per la sessione corrente (0 finché il
+   * player non la misura). È l'unica prova usata per dichiarare concluso un episodio:
+   * la durata stimata dell'episodio non basta a rimuovere una serie da «Continua a
+   * guardare».
+   */
+  private var lastMeasuredDurationMs: Long = 0L
+
+  /**
    * Resetta immediatamente lo stato di risoluzione dello stream a Idle
    * e cancella ogni Job di ricerca attivo.
    */
@@ -1100,8 +1124,11 @@ class StreamNovaViewModel(
   }
 
   private fun mergePlayerEpisodes(media: MediaItem): List<Episode> =
-    (media.episodes + playerSeasonEpisodes.filterKeys { it.first == media.id }.values.flatten())
-      .distinctBy { it.id }
+    (media.episodes + episodesForMediaFromPlayerCache(media.id)).distinctBy { it.id }
+
+  /** Episodi caricati in background dal player per [mediaId] (tutte le stagioni). */
+  private fun episodesForMediaFromPlayerCache(mediaId: String): List<Episode> =
+    playerSeasonEpisodes.filterKeys { it.first == mediaId }.values.flatten()
 
   // Stato del ciclo di ricerca sorgenti (estrazione provider -> player)
   private val _streamResult = MutableStateFlow<StreamResult>(StreamResult.Idle)
@@ -1292,6 +1319,26 @@ class StreamNovaViewModel(
   internal var seasonPackEpisodeResolver:
     suspend (pinned: StreamSource, season: Int, episode: Int) -> StreamSource? =
     { pinned, season, episode -> tryResolveNextEpisodeFromSameTorrent(pinned, season, episode) }
+
+  /**
+   * Sblocco del link Debrid a partire dall'identità torrent SALVATA
+   * (`infoHash` + stagione/episodio) quando si riprende da «Continua a guardare».
+   *
+   * Un link CDN può essere scaduto anche se la voce di cache è ancora nella finestra
+   * di validità: rigenerarlo prima di avviare il player evita una schermata nera e la
+   * successiva selezione manuale. Se lo sblocco fallisce si usa il link salvato
+   * (il fallback del player è comunque attivo). Iniettabile nei test.
+   */
+  internal var reusedStreamUnlocker:
+    suspend (infoHash: String, fileIdx: Int?, season: Int?, episode: Int?) -> String? =
+    { infoHash, fileIdx, season, episode ->
+      TorBoxRepository.resolveInfoHash(
+        infoHash = infoHash,
+        fileIdx = fileIdx,
+        season = season,
+        episode = episode
+      )
+    }
 
   private val _isLoading = MutableStateFlow(false)
   val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -2781,21 +2828,17 @@ class StreamNovaViewModel(
     // Un canale LIVE è tipizzato SERIE_TV (così lo mostra il catalogo `tv`), ma non
     // ha episodi: non va mai creato un episodio sintetico S1E1.
     val isTv = media.type == MediaType.SERIE_TV && !isLiveChannel(media.id)
+    // La posizione salvata è AUTOREVOLE quando non arriva un episodio esplicito: se la
+    // lista locale non contiene quella puntata — le serie di catalogo hanno episodi
+    // generati/troncati o non ancora caricati da TMDB — si costruisce l'episodio con
+    // gli stessi numeri. Il vecchio fallback al primo episodio faceva partire S1E1
+    // quando l'ultima visione era S5E2. Un episodio cliccato resta invece quello
+    // scelto, con i suoi metadati (titolo, durata).
     val effectiveEpisode = if (isTv && episode == null) {
-      val s = media.lastWatchedSeason ?: 1
-      val e = media.lastWatchedEpisode ?: 1
-      media.episodes.find { it.seasonNumber == s && it.episodeNumber == e }
-        ?: media.episodes.firstOrNull()
-        ?: Episode(
-            id = "${media.id}_s${s}e${e}",
-            seasonNumber = s,
-            episodeNumber = e,
-            title = "Episodio $e",
-            synopsis = "",
-            durationMinutes = media.durationMinutes.takeIf { it > 0 } ?: 55,
-            videoUrl = media.videoUrl,
-            seriesImdbId = media.effectiveImdbId
-          )
+      EpisodeResumeResolver.resolve(
+        media = media,
+        extraEpisodes = episodesForMediaFromPlayerCache(media.id)
+      ) ?: episode
     } else {
       episode
     }
@@ -2840,6 +2883,8 @@ class StreamNovaViewModel(
       seasonNumber = finalEpisode?.seasonNumber,
       episodeNumber = finalEpisode?.episodeNumber
     )
+    // Nuova sessione: la durata misurata dal player precedente non vale più.
+    lastMeasuredDurationMs = 0L
 
     _playbackState.value = PlayerPlaybackState(
       media = finalMedia,
@@ -2920,7 +2965,13 @@ class StreamNovaViewModel(
         serverName = state.streamServer,
         headers = state.streamHeaders,
         isProgressive = state.streamProgressive,
-        streamMode = sourceMode.name
+        streamMode = sourceMode.name,
+        // Identità della sorgente torrent/Debrid: permette al passaggio all'episodio
+        // successivo di riusare lo stesso torrent di stagione anche se la sessione
+        // riparte da questa cache ("Riusa l'ultimo link").
+        infoHash = state.currentSource?.infoHash,
+        fileIdx = state.currentSource?.fileIdx,
+        addonName = state.currentSource?.addonName
       )
     }
   }
@@ -2944,10 +2995,26 @@ class StreamNovaViewModel(
     // Disattiva subito il flag: evita un secondo fallback mentre la nuova risoluzione parte.
     _playbackState.value = state.copy(isReusedStream = false)
 
-    viewModelScope.launch(Dispatchers.IO) {
-      LastWorkingStreamRepository.invalidate(media.id, season, epNumber)
+    // Il link memorizzato ha appena fallito: va rimosso dalla cache in-memory di TorBox,
+    // altrimenti la risoluzione successiva potrebbe riproporre lo stesso URL scaduto.
+    state.currentSource?.infoHash?.takeIf { it.isNotBlank() }?.let { hash ->
+      TorBoxRepository.invalidateResolvedLink(hash, episode?.seasonNumber, episode?.episodeNumber)
     }
-    Log.i(TAG, "Reuse: flusso riutilizzato fallito per ${media.id} S$season E$epNumber, fallback alla risoluzione classica")
+
+    // Con l'identità Debrid (infoHash/fileIdx) la voce NON viene cancellata: il torrent
+    // è ancora un'informazione valida e la prossima apertura può rigenerare il link.
+    // Senza identità (o per fonti HTTP legacy) la voce è inutile e viene invalidata.
+    val hasDebridIdentity = !state.currentSource?.infoHash.isNullOrBlank()
+    if (!hasDebridIdentity) {
+      viewModelScope.launch(Dispatchers.IO) {
+        LastWorkingStreamRepository.invalidate(media.id, season, epNumber)
+      }
+    }
+    Log.i(
+      TAG,
+      "Reuse: flusso riutilizzato fallito per ${media.id} S$season E$epNumber " +
+        "(identità Debrid=${if (hasDebridIdentity) "conservata" else "assente"}): fallback alla risoluzione classica"
+    )
     openStreamForMedia(media, episode, allowReuse = false)
     return true
   }
@@ -2983,6 +3050,12 @@ class StreamNovaViewModel(
       // (tenuta a `> 0` da [updatePlaybackPosition], che ignora `C.TIME_UNSET`). Se il player
       // non ha ancora fornito una durata valida, il repository NON sovrascrive quella gia' nota.
       MediaRepository.updateEpisodeProgress(session.mediaId, s, e, finalPos, current.durationMs)
+      // Fine episodio (ultimi 15 s sulla durata MISURATA): verifica se la serie è
+      // davvero conclusa. La rimozione da «Continua a guardare» è persistente e
+      // avviene solo con metadati TMDB completi (fine stagione ≠ fine serie).
+      if (lastMeasuredDurationMs > 0L) {
+        MediaRepository.maybeCompleteSeries(session.mediaId, s, e, finalPos, lastMeasuredDurationMs)
+      }
     } else {
       MediaRepository.updateProgress(session.mediaId, finalPos, current.durationMs)
     }
@@ -2993,10 +3066,36 @@ class StreamNovaViewModel(
    * 1. Salva la posizione attuale dell'episodio corrente.
    * 2. Recupera la posizione persistita del nuovo episodio (0L se mai iniziato).
    * 3. Avvia la riproduzione del nuovo episodio dalla sua posizione specifica.
+   *
+   * Una sola transizione attiva per volta: la conferma "Guarda ora", il countdown
+   * automatico e il pulsante "Prossimo episodio" possono arrivare in raffica sullo
+   * stesso evento (o mentre la risoluzione è in corso). Senza questa guardia ogni
+   * callback cancellava la ricerca in corso e ne avviava una nuova: in modalità
+   * Debrid la ricerca non terminava mai e l'episodio non partiva.
    */
    fun playNextEpisode(nextEpisode: Episode) {
      val current = _playbackState.value
     val media = current.media ?: return
+
+    if (_isSwitchingEpisode.value) {
+      Log.i(
+        TAG,
+        "playNextEpisode ignorato: transizione a S${nextEpisode.seasonNumber}E${nextEpisode.episodeNumber} già in corso"
+      )
+      return
+    }
+    val currentEpisode = current.currentEpisode
+    if (currentEpisode != null &&
+      currentEpisode.seasonNumber == nextEpisode.seasonNumber &&
+      currentEpisode.episodeNumber == nextEpisode.episodeNumber
+    ) {
+      Log.i(
+        TAG,
+        "playNextEpisode ignorato: S${nextEpisode.seasonNumber}E${nextEpisode.episodeNumber} è già l'episodio corrente"
+      )
+      return
+    }
+
     if (current.currentPositionMs > 0L) {
       saveCurrentPlaybackProgress(current.currentPositionMs)
     }
@@ -3026,13 +3125,20 @@ class StreamNovaViewModel(
     )
 
     // === FIX: Pulisci in sicurezza il player vecchio prima di passare all'episodio successivo ===
-    // Interrompi la riproduzione corrente e svuota i media item per evitare stato residuo
+    // Interrompi la riproduzione corrente e svuota i media item per evitare stato residuo.
+    // Header/qualità/server/sottotitoli appartengono all'episodio APPENA CONCLUSO: non
+    // devono sopravvivere nel nuovo contesto (né essere allegati al prossimo flusso).
     _playbackState.value = current.copy(
       media = enrichedMedia,
       currentEpisode = enrichedNext,
       currentPositionMs = nextSavedPos,
       durationMs = enrichedNext.totalDurationMs,
-      streamUrl = null
+      streamUrl = null,
+      streamHeaders = emptyMap(),
+      streamQuality = null,
+      streamServer = null,
+      streamProgressive = null,
+      subtitles = emptyList()
     )
 
     // "Prossimo Episodio": aggiorna subito il next verso l'episodio successivo a quello
@@ -3144,7 +3250,39 @@ class StreamNovaViewModel(
     if (currentMode != StreamingEngineMode.DEBRID_TORBOX) return false
 
     Log.i(TAG, "Reuse: ultimo flusso valido per $reqId S$reqSeason E$reqEp (${cached.serverName})")
-    val source = cached.toStreamSource()
+    var source = cached.toStreamSource()
+
+    // RIPRESA DIRETTA DELLA SORGENTE DEBRID (Fase 2: infoHash/fileIdx):
+    // il link CDN salvato può essere scaduto anche dentro la finestra di cache. Se la
+    // voce conserva l'identità del torrent, si rigenera il link del FILE dell'episodio
+    // richiesto e si avvia direttamente quello. Stagione/episodio espliciti: un torrent
+    // di stagione non può restituire il file di un'altra puntata. Se lo sblocco non
+    // riesce (hash scaduto, file assente, rete) resta il link salvato e, in caso di
+    // errore del player, il fallback classico ([handleReusedStreamFailure]).
+    val cachedHash = cached.infoHash?.takeIf { it.isNotBlank() }
+    if (cachedHash != null) {
+      val seasonArg = reqSeason.takeIf { it > 0 }
+      val episodeArg = reqEp.takeIf { it > 0 }
+      // Per un film non esiste episodio: si azzera il metadata legacy (thread-local)
+      // per non ereditare una stagione/episodio da uno sblocco precedente.
+      if (seasonArg == null && episodeArg == null) {
+        TorBoxRepository.setRequestMetadata(null, null)
+      }
+      val refreshedUrl = runCatching {
+        withTimeoutOrNull(REUSED_STREAM_UNLOCK_TIMEOUT_MS) {
+          reusedStreamUnlocker(cachedHash, cached.fileIdx, seasonArg, episodeArg)
+        }
+      }.onFailure { e ->
+        Log.w(TAG, "Reuse: sblocco Debrid fallito per ${cachedHash.take(8)}...: ${e.message}")
+      }.getOrNull()
+      if (!refreshedUrl.isNullOrBlank()) {
+        Log.i(TAG, "Reuse: link Debrid rigenerato per $reqId S$reqSeason E$reqEp")
+        source = source.copy(streamUrl = refreshedUrl, isCached = true)
+      } else {
+        Log.i(TAG, "Reuse: link Debrid non rigenerabile, uso il flusso salvato per $reqId S$reqSeason E$reqEp")
+      }
+    }
+
     withContext(Dispatchers.Main) {
       if (generation != loadStreamGeneration) return@withContext
       _streamResolutionState.value = StreamResolutionState.Success(
@@ -3257,11 +3395,15 @@ class StreamNovaViewModel(
     }
 
     val isTv = baseForResolution.type == MediaType.SERIE_TV
+    // L'ultima visione salvata è autorevole: se non è nella lista locale la puntata
+    // viene ricostruita con gli stessi numeri, mai sostituita dalla prima disponibile.
+    // Un episodio esplicito (click su una puntata / scheda dettaglio) resta quello
+    // scelto, con i suoi metadati.
     val effectiveEpisode = if (isTv && episode == null) {
-      val s = baseForResolution.lastWatchedSeason ?: 1
-      val e = baseForResolution.lastWatchedEpisode ?: 1
-      baseForResolution.episodes.find { it.seasonNumber == s && it.episodeNumber == e }
-        ?: baseForResolution.episodes.firstOrNull()
+      EpisodeResumeResolver.resolve(
+        media = baseForResolution,
+        extraEpisodes = episodesForMediaFromPlayerCache(baseForResolution.id)
+      ) ?: episode
     } else {
       episode
     }
@@ -3716,9 +3858,15 @@ class StreamNovaViewModel(
           "[StreamNova-TorBox-Debug]",
           "1. DATI STREAM DALL'ADDON [Manuale] -> server='${source.serverName}', title='${source.releaseTitle}', infoHash=${source.infoHash}, quality/resolution='${source.declaredQuality ?: source.quality}', details='${source.details}'"
         )
-        TorBoxRepository.setRequestMetadata(episode?.seasonNumber, episode?.episodeNumber)
         val sourceInfoHash = source.infoHash!!
-        val directUrl = TorBoxRepository.resolveInfoHash(sourceInfoHash, source.fileIdx)
+        // Stagione/episodio espliciti: in un torrent di stagione il link sbloccato
+        // deve essere quello del file di QUESTO episodio (non del precedente).
+        val directUrl = TorBoxRepository.resolveInfoHash(
+          infoHash = sourceInfoHash,
+          fileIdx = source.fileIdx,
+          season = episode?.seasonNumber,
+          episode = episode?.episodeNumber
+        )
         if (directUrl != null) {
           Log.i(TAG, "TorBox: flusso sbloccato -> $directUrl")
           source.copy(streamUrl = directUrl)
@@ -4757,6 +4905,8 @@ fun backToBrowsing() {
   }
 
   fun updatePlaybackPosition(positionMs: Long, durationMs: Long, bufferedMs: Long) {
+    // Durata misurata da ExoPlayer: è la prova usata per la conclusione di un episodio.
+    if (durationMs > 0L) lastMeasuredDurationMs = durationMs
     _playbackState.update {
       it.copy(
         currentPositionMs = positionMs,

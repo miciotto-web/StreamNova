@@ -1,0 +1,7 @@
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.data.prefs.*"
+        }
+    }
+}

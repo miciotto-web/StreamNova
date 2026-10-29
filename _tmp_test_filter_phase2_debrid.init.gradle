@@ -1,0 +1,18 @@
+// Run mirato Fase 2 (Debrid / prossimo episodio): con Gradle 9.3.1 + AGP 9.1.1 il
+// filtro CLI `--tests` risponde "No tests found" (stessa motivazione di
+// _tmp_test_filter_phase2.init.gradle).
+// Uso: ./gradlew.bat -I _tmp_test_filter_phase2_debrid.init.gradle <task> --rerun
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.data.torbox.TorBoxRepositoryEpisodeLinkTest"
+            includeTestsMatching "com.example.data.torbox.TorBoxRepositorySeasonPackTest"
+            includeTestsMatching "com.example.data.streaming.StremioTorBoxTest"
+            includeTestsMatching "com.example.ui.screens.player.NextEpisodePromptUtilsTest"
+            includeTestsMatching "com.example.ui.viewmodel.PlayNextEpisodeResolutionTest"
+            includeTestsMatching "com.example.data.repository.LastWorkingStreamModeTest"
+            includeTestsMatching "com.example.data.repository.LastWorkingStreamRepositoryTest"
+            includeTestsMatching "com.example.ui.viewmodel.ContinueWatchingSmartSwitchTest"
+        }
+    }
+}

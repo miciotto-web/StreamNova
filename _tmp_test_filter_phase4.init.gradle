@@ -1,0 +1,11 @@
+// Run mirato dei test della Fase 4 (aggiornamento automatico in-app): il filtro da CLI e'
+// rotto con Gradle 9.3.1 + AGP 9.1.1, quindi si installa qui e si lancia con -I ... --rerun.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.data.update.*"
+            includeTestsMatching "com.example.ui.screens.UpdatePromptDialogTest"
+            includeTestsMatching "com.example.ui.screens.ConfirmKeyGuardTest"
+        }
+    }
+}

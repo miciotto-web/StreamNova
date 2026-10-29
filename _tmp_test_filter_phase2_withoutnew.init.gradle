@@ -1,0 +1,13 @@
+// Verifica di causalità: suite completa SENZA le nuove classi di test della Fase 2.
+// Serve a stabilire se i fallimenti del run completo dipendono dall'ordine con le classi
+// nuove (Fase 2) o sono preesistenti/ambientali.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            excludeTestsMatching "com.example.ui.screens.player.PlayerTrackAdaptationHysteresisTest"
+            excludeTestsMatching "com.example.ui.screens.player.PlayerInitialBufferSettingTest"
+            excludeTestsMatching "com.example.ui.screens.player.PlayerMediaSourceFactoriesTest"
+            excludeTestsMatching "com.example.ui.screens.player.PlayerBufferingOverlayTest"
+        }
+    }
+}

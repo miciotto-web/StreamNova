@@ -63,10 +63,14 @@ fun SettingsScreen(onBack: () -> Unit) {
   val viewModel: MobileSettingsViewModel = viewModel()
   val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-  var pin by rememberSaveable { mutableStateOf("") }
+  // Il PIN non passa da rememberSaveable: non deve finire in chiaro nel saved state.
+  var pin by remember { mutableStateOf("") }
+  var newPin by remember { mutableStateOf("") }
   var pinMessage by rememberSaveable { mutableStateOf<String?>(null) }
   var pinError by rememberSaveable { mutableStateOf(false) }
   var torBoxKey by rememberSaveable { mutableStateOf("") }
+  val pinSavedMessage = stringResource(R.string.settings_parental_pin_saved)
+  val pinChangedMessage = stringResource(R.string.settings_parental_pin_changed)
 
   LaunchedEffect(state.torBoxApiKey) {
     if (torBoxKey.isBlank() && state.torBoxApiKey.isNotBlank()) {
@@ -163,6 +167,8 @@ fun SettingsScreen(onBack: () -> Unit) {
         checked = state.parentalEnabled,
         onCheckedChange = { enabled ->
           if (viewModel.setParentalEnabled(enabled, pin)) {
+            pin = ""
+            newPin = ""
             pinError = false
             pinMessage = null
           } else {
@@ -183,30 +189,76 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
           },
           modifier = Modifier.fillMaxWidth(),
-          label = { Text(stringResource(R.string.settings_parental_pin)) },
+          label = {
+            Text(
+              stringResource(
+                if (state.hasParentalPin) R.string.settings_parental_pin_current
+                else R.string.settings_parental_pin
+              )
+            )
+          },
           placeholder = { Text(stringResource(R.string.settings_parental_pin_hint)) },
           singleLine = true,
           visualTransformation = PasswordVisualTransformation(),
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
           colors = settingsFieldColors()
         )
+        if (state.hasParentalPin) {
+          OutlinedTextField(
+            value = newPin,
+            onValueChange = { value ->
+              if (value.length <= 4 && value.all { it.isDigit() }) {
+                newPin = value
+                pinError = false
+              }
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(top = 8.dp),
+            label = { Text(stringResource(R.string.settings_parental_pin_new)) },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            colors = settingsFieldColors()
+          )
+        }
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.End
         ) {
           TextButton(
             onClick = {
-              val saved = viewModel.saveParentalPin(pin)
-              pinError = !saved
-              pinMessage = if (saved) "PIN salvato." else null
+              if (state.hasParentalPin) {
+                val changed = viewModel.changeParentalPin(pin, newPin)
+                pinError = !changed
+                pinMessage = if (changed) pinChangedMessage else null
+                if (changed) {
+                  pin = ""
+                  newPin = ""
+                }
+              } else {
+                val saved = viewModel.saveParentalPin(pin)
+                pinError = !saved
+                pinMessage = if (saved) pinSavedMessage else null
+                if (saved) pin = ""
+              }
             }
           ) {
-            Text(stringResource(R.string.settings_save), color = NovaCyan)
+            Text(
+              text = stringResource(
+                if (state.hasParentalPin) R.string.settings_parental_pin_change
+                else R.string.settings_save
+              ),
+              color = NovaCyan
+            )
           }
         }
         if (pinError) {
           Text(
-            text = stringResource(R.string.settings_parental_pin_required),
+            text = stringResource(
+              if (state.hasParentalPin) R.string.settings_parental_pin_incorrect
+              else R.string.settings_parental_pin_required
+            ),
             color = com.example.ui.theme.NovaRed,
             fontSize = 12.sp
           )

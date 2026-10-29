@@ -5,8 +5,8 @@ import com.example.data.stremio.CinemetaAddon
 import com.example.data.stremio.EXTRA_GENRE
 import com.example.data.stremio.StremioCatalogTarget
 import com.example.data.stremio.StremioManifest
-import com.example.ui.components.ProviderConstants
-import com.example.ui.components.StreamingProvider
+import com.example.data.model.ProviderAliasDescriptor
+import com.example.data.model.ProviderAliasRegistry
 
 /**
  * Punto d'ingresso unico per associare un catalogo Stremio a un provider StreamNova.
@@ -92,10 +92,10 @@ class DefaultProviderCatalogResolver(
   companion object {
     /** I provider dell'app, esposti come vista dati con i loro alias dichiarativi. */
     fun defaultAliasProviders(): List<ProviderAliasProvider> =
-      ProviderConstants.ALL.map { it.asAliasProvider() }
+      ProviderAliasRegistry.ALL.map { it.asAliasProvider() }
 
     /** Come [defaultAliasProviders], ma su una lista arbitraria (test, override). */
-    fun aliasProvidersOf(providers: List<StreamingProvider>): List<ProviderAliasProvider> =
+    fun aliasProvidersOf(providers: List<ProviderAliasDescriptor>): List<ProviderAliasProvider> =
       providers.map { it.asAliasProvider() }
   }
 }

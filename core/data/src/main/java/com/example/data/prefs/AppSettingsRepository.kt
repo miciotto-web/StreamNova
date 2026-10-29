@@ -11,6 +11,7 @@ import java.security.MessageDigest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -151,6 +152,14 @@ object AppSettingsRepository {
   private var dataStore: DataStore<Preferences>? = null
 
   /**
+   * Collettore attivo del DataStore. Deve essere annullato quando lo stato viene
+   * azzerato ([resetForTesting]): un collettore superstite continuerebbe a scrivere
+   * i valori letti dal disco SOPRA i default appena ripristinati, rendendo i test
+   * dipendenti dal timing.
+   */
+  private var dataStoreCollectorJob: Job? = null
+
+  /**
    * Meccanismo di cifratura per la chiave API OpenSubtitles prima della persistenza:
    * Android Keystore in produzione, finto in test. La sostituzione avviene in [init],
    * prima di qualsiasi lettura/scrittura.
@@ -183,7 +192,8 @@ object AppSettingsRepository {
     openSubtitlesCipher = cipher
     val store = context.applicationContext.appSettingsDataStore
     dataStore = store
-    scope.launch {
+    dataStoreCollectorJob?.cancel()
+    dataStoreCollectorJob = scope.launch {
       store.data.collect { prefs ->
         if (!apiKeyLocalWrite) {
           _torBoxApiKey.value = prefs[KEY_TORBOX_API_KEY]?.takeIf { it.isNotBlank() }
@@ -259,6 +269,8 @@ object AppSettingsRepository {
    * venga riletta da disco. Non usarla in produzione.
    */
   fun resetForTesting() {
+    dataStoreCollectorJob?.cancel()
+    dataStoreCollectorJob = null
     dataStore = null
     _torBoxApiKey.value = null
     _openSubtitlesApiKey.value = null

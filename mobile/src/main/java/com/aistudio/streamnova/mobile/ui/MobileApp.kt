@@ -27,10 +27,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -40,6 +44,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.aistudio.streamnova.mobile.R
+import com.aistudio.streamnova.mobile.ui.components.ParentalPinDialog
 import com.aistudio.streamnova.mobile.ui.screens.CatalogKind
 import com.aistudio.streamnova.mobile.ui.screens.CatalogScreen
 import com.aistudio.streamnova.mobile.ui.screens.DetailScreen
@@ -48,6 +53,8 @@ import com.aistudio.streamnova.mobile.ui.screens.HomeScreen
 import com.aistudio.streamnova.mobile.ui.screens.MobilePlayerScreen
 import com.aistudio.streamnova.mobile.ui.screens.SearchScreen
 import com.aistudio.streamnova.mobile.ui.screens.SettingsScreen
+import com.example.data.model.MediaItem
+import com.example.data.prefs.AppSettingsRepository
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaSurface
@@ -115,6 +122,40 @@ private fun MobileAppContent() {
   val isExpanded = LocalWindowWidthExpanded.current
   val showChrome = !isPlayer
 
+  val parentalEnabled by AppSettingsRepository.parentalControlEnabled.collectAsStateWithLifecycle()
+  val parentalLevel by AppSettingsRepository.parentalControlLevel.collectAsStateWithLifecycle()
+  val savedParentalPin by AppSettingsRepository.parentalControlPin.collectAsStateWithLifecycle()
+  val playbackController = remember { ParentalPlaybackController() }
+  var pinPromptTitle by remember { mutableStateOf<String?>(null) }
+  var pinInput by remember { mutableStateOf("") }
+  var pinError by remember { mutableStateOf(false) }
+
+  /**
+   * Unico punto d'ingresso alla riproduzione: Home, scheda dettaglio ed episodi
+   * passano tutti da qui, quindi il PIN non può essere aggirato navigando altrove.
+   */
+  fun requestPlayback(media: MediaItem, season: Int?, episode: Int?) {
+    when (
+      val result = playbackController.requestPlayback(
+        mediaId = media.id,
+        ageRating = media.ageRating,
+        enabled = parentalEnabled,
+        level = parentalLevel,
+        hasPin = savedParentalPin.isNotBlank(),
+        season = season,
+        episode = episode
+      )
+    ) {
+      is PlaybackRequestResult.Allowed ->
+        navController.navigate(MobileRoutes.player(result.mediaId, result.season, result.episode))
+      PlaybackRequestResult.PinRequired -> {
+        pinPromptTitle = media.title
+        pinInput = ""
+        pinError = false
+      }
+    }
+  }
+
   Scaffold(
     containerColor = NovaBackground,
     contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -143,7 +184,7 @@ private fun MobileAppContent() {
           composable(MobileRoutes.HOME) {
             HomeScreen(
               onMediaClick = { media -> navController.navigate(MobileRoutes.detail(media.id)) },
-              onPlayMedia = { media -> navController.navigate(MobileRoutes.player(media.id)) },
+              onPlayMedia = { media -> requestPlayback(media, null, null) },
               onSeeAllMovies = { navController.navigateTopLevel(MobileRoutes.MOVIES) },
               onSeeAllSeries = { navController.navigateTopLevel(MobileRoutes.SERIES) },
               onSettings = { navController.navigate(MobileRoutes.SETTINGS) }
@@ -185,8 +226,8 @@ private fun MobileAppContent() {
             DetailScreen(
               mediaId = mediaId,
               onBack = { navController.popBackStack() },
-              onPlay = { season, episode ->
-                navController.navigate(MobileRoutes.player(mediaId, season, episode))
+              onPlay = { media, season, episode ->
+                requestPlayback(media, season, episode)
               }
             )
           }
@@ -205,9 +246,56 @@ private fun MobileAppContent() {
               mediaId = mediaId,
               season = season,
               episode = episode,
-              onBack = { navController.popBackStack() }
+              onBack = {
+                // Come la TV: alla chiusura del player lo sblocco decade.
+                playbackController.lock()
+                navController.popBackStack()
+              }
             )
           }
+        }
+
+        if (pinPromptTitle != null) {
+          ParentalPinDialog(
+            mediaTitle = pinPromptTitle.orEmpty(),
+            pin = pinInput,
+            error = pinError,
+            onPinChange = { value ->
+              pinInput = value
+              if (pinError) pinError = false
+            },
+            onConfirm = {
+              when (
+                val outcome = playbackController.verifyPin(pinInput) { candidate ->
+                  AppSettingsRepository.verifyParentalControlPin(candidate)
+                }
+              ) {
+                is PinVerificationResult.Unlocked -> {
+                  pinPromptTitle = null
+                  pinInput = ""
+                  pinError = false
+                  navController.navigate(
+                    MobileRoutes.player(outcome.mediaId, outcome.season, outcome.episode)
+                  )
+                }
+                PinVerificationResult.WrongPin -> {
+                  pinError = true
+                  pinInput = ""
+                }
+                PinVerificationResult.NoPendingPlayback -> {
+                  pinPromptTitle = null
+                  pinInput = ""
+                  pinError = false
+                }
+              }
+            },
+            onDismiss = {
+              playbackController.cancelPin()
+              pinPromptTitle = null
+              pinInput = ""
+              pinError = false
+            }
+          )
         }
       }
     }

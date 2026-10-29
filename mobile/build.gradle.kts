@@ -126,6 +126,8 @@ configurations.all {
 }
 
 dependencies {
+  testImplementation(libs.junit)
+
   implementation(project(":core:model"))
   implementation(project(":core:designsystem"))
   implementation(project(":core:data"))

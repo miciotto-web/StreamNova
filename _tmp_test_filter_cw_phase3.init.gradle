@@ -1,0 +1,18 @@
+// Run mirato Fase 3 (Continua a guardare / ripresa Debrid / serie concluse).
+// Con Gradle 9.3.1 + AGP 9.1.1 il filtro CLI `--tests` risponde "No tests found",
+// quindi il filtro si installa qui e si lancia con -I ... --rerun.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.data.repository.EpisodeResumeResolverTest"
+            includeTestsMatching "com.example.data.repository.SeriesCompletionPolicyTest"
+            includeTestsMatching "com.example.data.repository.MediaRepositorySeriesCompletionTest"
+            includeTestsMatching "com.example.data.model.WatchProgressTest"
+            includeTestsMatching "com.example.ui.viewmodel.ContinueWatchingResumeEpisodeTest"
+            includeTestsMatching "com.example.ui.viewmodel.ContinueWatchingSmartSwitchTest"
+            includeTestsMatching "com.example.ui.viewmodel.PlayNextEpisodeResolutionTest"
+            includeTestsMatching "com.example.data.repository.SimklSyncIntegrationTest"
+            includeTestsMatching "com.example.ui.viewmodel.SourceDialogMediaAlignmentTest"
+        }
+    }
+}

@@ -1,0 +1,889 @@
+﻿--------- beginning of main
+10-24 21:09:45.292 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:09:45.293 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:09:45.293 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:09:45.911 I/cmd     (13642): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:09:45.914 I/MediaProvider( 1970): Begin Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/hf_c.png flg=0x1400010 cmp=com.android.providers.media.module/com.android.providers.media.MediaService }
+10-24 21:09:45.915 E/libc    (13637): Access denied finding property "vendor.product.pvr.debug_level"
+10-24 21:09:45.916 E/IMGSRV  (13637): :2753: GrallocUnregisterBuffer: Cannot free a locked buffer (ID=137578)
+10-24 21:09:45.916 E/libc    (13637): Access denied finding property "vendor.product.pvr.debug_level"
+10-24 21:09:45.916 E/IMGSRV  (13637): :74: freeBuffer: Failed to unregister native handle
+10-24 21:09:45.916 E/Gralloc4(13637): freeBuffer(0xe99dbc00) failed with 2
+10-24 21:09:45.916 E/IMGSRV  (13637): :2683: hal_deinit: Stale maps left in cache; probably an application bug
+10-24 21:09:45.916 E/IMGSRV  (13637): :2685: hal_deinit: You may see failing kernel assertions after this message
+10-24 21:09:45.909 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23025): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:09:45.909 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23026): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:09:45.909 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23027): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:09:45.909 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23028): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:09:45.909 I/chatty  ( 1970): uid=10240(com.android.providers.media.module) identical 1 line
+10-24 21:09:45.913 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23030): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:09:45.919 W/ModernMediaScanner( 1970): Failed to visit /sdcard/hf_c.png: java.nio.file.AccessDeniedException: /sdcard/hf_c.png
+10-24 21:09:45.921 I/MTK_GRALLOC(13637): Unregistered dump signal 33 for gralloc, old hdl 0x0
+10-24 21:09:45.922 I/MediaProvider( 1970): Scanned internal due to REASON_DEMAND, found 0 items in 6ms, 0 inserts 0 updates 0 deletes
+10-24 21:09:45.925 I/MediaProvider( 1970): End Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/hf_c.png flg=0x1400010 cmp=com.android.providers.media.module/com.android.providers.media.MediaService }
+10-24 21:09:46.021 I/whad    ( 2059): TimeSyncClient:clientThread:reason=skewOrDriftChange,server=XX0196,time=330411.481089,skewX=327020.384091,skewY=-8.494664,drift=-0.370391,reportedDrift=-0.370391,numExchanges=658316,driftSource=ESTIMATE,skewBoundSec=0.001548
+10-24 21:09:47.387 I/SPCH-Cont_HealthLogger( 2008): Current State = {"AlexaCaptionsEnabled":"false","Account":"valid","ProfileValidated":"true","ProfileType":"ADULT","AlexaCaptionsSupported":"true","memoryTotalPss":"18558","DeviceFamily":"SMP","memoryTotalSharedDirty":"6552","ActiveSpeechUI":"Bamboo","ReleaseVersion":"662.0.0","AlexaLegalTermsAccepted":"true","AppVersion":"3.0.23518.0","AlexaExperience":"FULL","SupportsFarField":"false","short_press_overlay_state":"{\"enabled\": true, \"hintsEnabled\": false, \"isChild\": false, \"override\": 0, \"hasFullAlexa\": true}","memoryAvailable":"440827904","Gateway":"avs-alexa-18-eu.amazon.com:443","RemoteSettingsStrategy":"VizArcus","memoryLow":"false","ConnectionState":"CONNECTED","OOBECompleted":"true","memoryTotalPrivateDirty":"13827","str.auto_wake_up_always":"0"}
+10-24 21:09:47.393 W/Thread-26(24624): type=1400 audit(0.0:23033): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:09:47.396 E/libc    (24624): Access denied finding property "vendor.display-size"
+--------- beginning of system
+10-24 21:09:47.397 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:09:47.398 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:09:48.301 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:09:48.302 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:09:48.306 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:09:48.357 W/main    (13656): type=1400 audit(0.0:23034): avc: denied { write } for name="tasks" dev="tmpfs" ino=690 scontext=u:r:zygote:s0 tcontext=u:object_r:device:s0 tclass=file permissive=0
+10-24 21:09:48.357 I/ActivityManager(  693): Start proc 13656:com.amazon.device.lowstoragemanager/u0a134 for service {com.amazon.device.lowstoragemanager/com.amazon.device.lowstoragemanager.threshold.CustomThresholdService}
+10-24 21:09:48.380 I/wstoragemanage(13656): Bumping SignalCatcher priority from 10 to 10
+10-24 21:09:48.382 E/wstoragemanage(13656): Not starting debugger since process cannot load the jdwp agent.
+10-24 21:09:48.493 I/wstoragemanage(13656): The ClassLoaderContext is a special shared library.
+10-24 21:09:48.505 W/wstoragemanage(13656): ClassLoaderContext shared library size mismatch. Expected=3, found=0 (PCL[]{PCL[/system/framework/android.test.base.jar*4088083201]#PCL[/system/framework/android.hidl.manager-V1.0-java.jar*3371465570]{PCL[/system/framework/android.hidl.base-V1.0-java.jar*3060351659]}#PCL[/system/framework/android.hidl.base-V1.0-java.jar*3060351659]} | PCL[])
+10-24 21:09:48.514 W/wstoragemanage(13656): ClassLoaderContext shared library size mismatch. Expected=5, found=1 (PCL[]{PCL[/system/framework/android.test.base.jar*4088083201]#PCL[/system/framework/android.hidl.manager-V1.0-java.jar*3371465570]{PCL[/system/framework/android.hidl.base-V1.0-java.jar*3060351659]}#PCL[/system/framework/android.hidl.base-V1.0-java.jar*3060351659]#PCL[/system/framework/org.apache.http.legacy.jar*2888470757]#PCL[/system/system_ext/priv-app/MetricsApi/MetricsApi.apk*3997826149]} | PCL[]{PCL[/system/system_ext/priv-app/MetricsApi/MetricsApi.apk*3997826149]})
+10-24 21:09:48.524 W/wstoragemanage(13656): ClassLoaderContext shared library size mismatch. Expected=4, found=1 (PCL[]{PCL[/system/framework/android.test.base.jar*4088083201]#PCL[/system/framework/android.hidl.manager-V1.0-java.jar*3371465570]{PCL[/system/framework/android.hidl.base-V1.0-java.jar*3060351659]}#PCL[/system/framework/android.hidl.base-V1.0-java.jar*3060351659]#PCL[/system/system_ext/priv-app/DeviceClientPlatformContractsFramework/DeviceClientPlatformContractsFramework.apk*3338463845]{PCL[/system/system_ext/priv-app/MetricsApi/MetricsApi.apk*3997826149]}} | PCL[]{PCL[/system/system_ext/priv-app/DeviceClientPlatformContractsFramework/DeviceClientPlatformContractsFramework.apk*3338463845]{PCL[/system/system_ext/priv-app/MetricsApi/MetricsApi.apk*3997826149]}})
+10-24 21:09:48.533 I/wstoragemanage(13656): The ClassLoaderContext is a special shared library.
+10-24 21:09:48.538 I/chatty  (13656): uid=10134(com.amazon.device.lowstoragemanager) identical 1 line
+10-24 21:09:48.544 I/wstoragemanage(13656): The ClassLoaderContext is a special shared library.
+10-24 21:09:48.554 W/wstoragemanage(13656): ClassLoaderContext classpath size mismatch. expected=0, found=3 (PCL[]{PCL[/system_ext/priv-app/MinervaApi/MinervaApi.apk*2929471093]#PCL[/system_ext/framework/FireTvSysappsLib.jar*3291496827]#PCL[/system_ext/priv-app/MinervaApi/MinervaApi.apk*2929471093]#PCL[/system/system_ext/priv-app/DeviceSoftwareOTAContracts/DeviceSoftwareOTAContracts.apk*73896695]{PCL[/system/system_ext/priv-app/DeviceClientPlatformContractsFramework/DeviceClientPlatformContractsFramework.apk*3338463845]{PCL[/system/system_ext/priv-app/MetricsApi/MetricsApi.apk*3997826149]}}} | PCL[/system/framework/android.test.base.jar*4088083201:/system/framework/android.hidl.manager-V1.0-java.jar*3371465570:/system/framework/android.hidl.base-V1.0-java.jar*3060351659]{PCL[/system_ext/priv-app/MinervaApi/MinervaApi.apk*2929471093]#PCL[/system/system_ext/framework/FireTvSysappsLib.jar*3291496827]#PCL[/system_ext/priv-app/MinervaApi/MinervaApi.apk*2929471093]#PCL[/system/system_ext/priv-app/DeviceSoftwareOTAContracts/DeviceSoftwareOTAContracts.apk*73896695]{PCL[/system/system_ext/priv-app/DeviceClientPlatformContractsFramework/DeviceClientPlatformContractsFramework.apk*3338463845]{PCL[/system/system_ext/priv-app/MetricsApi/MetricsApi.apk*3997826149]}}})
+10-24 21:09:48.593 I/FLSM-CustomThresholdSer(13656): Job Started
+10-24 21:09:48.612 I/FLSM-RemoteConfigFetche(13656): Using prod config
+10-24 21:09:48.663 I/FLSM-RemoteConfigFetche(13656): Arcus Config processed {"common":{"syncIntervalInSeconds":64800,"syncJitterIntervalInSeconds":21600},"customThreshold":{"jobRunIntervalInSeconds":21600},"lowStorageConfig":{}}
+10-24 21:09:48.668 I/FLSM-Utils(13656): Device usable space in byte is -- 1238073344
+10-24 21:09:48.672 I/FLSM-CustomThresholdSch(13656): Scheduling Custom Threshold Check in 21600 seconds
+10-24 21:09:48.674 I/FLSM-CustomThresholdSch(13656): Schedule job result: true
+10-24 21:09:48.678 I/FLSM-CustomThresholdSer(13656): OnStopJob called
+10-24 21:09:48.688 I/FLSM-CustomThresholdSch(13656): Scheduling Custom Threshold Check in 1200 seconds
+10-24 21:09:48.689 I/FLSM-CustomThresholdSch(13656): Schedule job result: true
+10-24 21:09:48.785 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:09:48.785 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:09:48.785 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:09:48.785 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:09:48.786 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:09:49.073 I/whad    ( 2059): DeviceVisibilityManager:proactiveVisibilityThread:seq=308
+10-24 21:09:49.073 I/whad    ( 2059): DeviceVisibilityManager:proactiveVisibilityThread:clearing the priority devices set.
+10-24 21:09:49.073 I/whad    ( 2059): DeviceVisibilityManager:proactiveVisibilityThread:maintenance test
+10-24 21:09:49.073 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:started test 1 of 5
+10-24 21:09:49.073 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX065R
+10-24 21:09:49.073 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX065R
+10-24 21:09:49.082 I/whad    ( 2059): Http1Client:sslCtxSetup:trusting certificate with serial=0x785993df, deviceId=XX065R
+10-24 21:09:49.174 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX065R,bssid=1,essid=1,wifiFrequency=0,networkTypeGuesses=2_4_GHZ
+10-24 21:09:49.177 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:09:49.180 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX065R,edgeType=BidirectionalBothCanBeInitiator,reason=SameNetwork
+10-24 21:09:49.181 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX0196
+10-24 21:09:49.181 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX0196
+10-24 21:09:49.197 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX0196,bssid=0,essid=0,wifiFrequency=0,networkTypeGuesses=5_0_GHZ
+10-24 21:09:49.197 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:09:49.198 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX0196,edgeType=BidirectionalBothCanBeInitiator,reason=DifferentSeparateNetworks
+10-24 21:09:49.198 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:skippingLocalDevice,bssid=1,essid=1,networkTypeGuesses=2_4_GHZ
+10-24 21:09:49.198 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:localDevice=XX06D1,finished sending proactive test 1 of 5
+10-24 21:09:49.262 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:09:49.267 I/StreamNova4KDiag( 6850): STREAM_HLS_REQ source=hls host=vixsrc.to initial=true status=n/a code=HttpDataSourceException
+10-24 21:09:49.368 I/TrustManagerImpl( 6850): TRACE Starting certificate trust
+10-24 21:09:50.257 I/StreamNova4KDiag( 6850): PARAMS[selectAllTracks] maxVideoSize=2147483647x2147483647 minVideoSize=0x0 maxVideoBitrate=2147483647 maxVideoFrameRate=2147483647 viewport=2147483647x2147483647 exceedRendererCapabilitiesIfNecessary=true exceedVideoConstraintsIfNecessary=true forceHighestSupportedBitrate=false forceLowestBitrate=false tunnelingEnabled=false disabledTrackTypes=[3] preferredVideoMimeTypes=[] selectionOverrides=0
+10-24 21:09:50.257 I/StreamNova4KDiag( 6850): CANDIDATE renderer[0:MediaCodecVideoRenderer] group[0] track[0] raw=212 support=FORMAT_HANDLED adaptive=SEAMLESS tunneling=NOT_SUPPORTED hw=HW decoder=PRIMARY selezionabile=true | id=0 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=854x480 decoded=-1x-1 bitrate=1200000 avgBitrate=-1 peakBitrate=1200000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:50.257 I/StreamNova4KDiag( 6850): CANDIDATE renderer[0:MediaCodecVideoRenderer] group[0] track[1] raw=212 support=FORMAT_HANDLED adaptive=SEAMLESS tunneling=NOT_SUPPORTED hw=HW decoder=PRIMARY selezionabile=true | id=1 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1280x720 decoded=-1x-1 bitrate=2150000 avgBitrate=-1 peakBitrate=2150000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:50.257 I/StreamNova4KDiag( 6850): CANDIDATE renderer[0:MediaCodecVideoRenderer] group[0] track[2] raw=212 support=FORMAT_HANDLED adaptive=SEAMLESS tunneling=NOT_SUPPORTED hw=HW decoder=PRIMARY selezionabile=true | id=2 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1920x1080 decoded=-1x-1 bitrate=4500000 avgBitrate=-1 peakBitrate=4500000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:50.262 I/StreamNova4KDiag( 6850): SELECTED renderer[0:MediaCodecVideoRenderer] type=2 groupLen=3 tracks=[0, 1, 2] | id=0 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=854x480 decoded=-1x-1 bitrate=1200000 avgBitrate=-1 peakBitrate=1200000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry] + id=1 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1280x720 decoded=-1x-1 bitrate=2150000 avgBitrate=-1 peakBitrate=2150000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry] + id=2 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1920x1080 decoded=-1x-1 bitrate=4500000 avgBitrate=-1 peakBitrate=4500000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:50.262 I/StreamNova4KDiag( 6850): SELECTED renderer[2:MediaCodecAudioRenderer] type=1 groupLen=1 tracks=[0] | id=audio:Italian label=Italian lang=it mime=audio/mp4a-latm container=application/x-mpegURL codecs=mp4a.40.2 size=-1x-1 decoded=-1x-1 bitrate=-1 avgBitrate=-1 peakBitrate=-1 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry [audio, Italian]]
+10-24 21:09:50.262 I/StreamNova4KDiag( 6850): SELECTED renderer[6:TextRenderer] type=3 groupLen=1 tracks=[0] | id=subs:Italian label=Italian lang=it mime=application/x-media3-cues container=application/x-mpegURL codecs=text/vtt size=-1x-1 decoded=-1x-1 bitrate=-1 avgBitrate=-1 peakBitrate=-1 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry [subs, Italian]]
+10-24 21:09:50.262 I/StreamNova4KDiag( 6850): SELECTED renderer[7:MetadataRenderer] type=5 groupLen=1 tracks=[0] | id=ID3 label=- lang=- mime=application/id3 container=- codecs=- size=-1x-1 decoded=-1x-1 bitrate=-1 avgBitrate=-1 peakBitrate=-1 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=-
+10-24 21:09:50.269 I/StreamNovaDiag( 6850): === TRACCE VIDEO DISPONIBILI (3) ===
+10-24 21:09:50.269 I/[StreamNova-Video-Debug]( 6850): onTracksChanged -> video track index=0 (groupIndex=0), width=854, height=480, bitrate=1200000, mimeType=video/avc, codecs=avc1.640028, frameRate=-1.0, isSelected=true
+10-24 21:09:50.269 I/StreamNovaDiag( 6850): Traccia #0: 854x480 @ 1200 kbps | Selezionata: true | Supportata: true
+10-24 21:09:50.269 I/StreamNova4KDiag( 6850): TRACKS video #0 groupIndex=0 trackIndex=0 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK selezionabile=true | id=0 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=854x480 decoded=-1x-1 bitrate=1200000 avgBitrate=-1 peakBitrate=1200000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:50.269 I/[StreamNova-Video-Debug]( 6850): onTracksChanged -> video track index=1 (groupIndex=1), width=1280, height=720, bitrate=2150000, mimeType=video/avc, codecs=avc1.640028, frameRate=-1.0, isSelected=true
+10-24 21:09:50.269 I/StreamNovaDiag( 6850): Traccia #1: 1280x720 @ 2150 kbps | Selezionata: true | Supportata: true
+10-24 21:09:50.270 I/StreamNova4KDiag( 6850): TRACKS video #1 groupIndex=1 trackIndex=1 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK selezionabile=true | id=1 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1280x720 decoded=-1x-1 bitrate=2150000 avgBitrate=-1 peakBitrate=2150000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:50.270 I/[StreamNova-Video-Debug]( 6850): onTracksChanged -> video track index=2 (groupIndex=2), width=1920, height=1080, bitrate=4500000, mimeType=video/avc, codecs=avc1.640028, frameRate=-1.0, isSelected=true
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): Traccia #2: 1920x1080 @ 4500 kbps | Selezionata: true | Supportata: true
+10-24 21:09:50.270 I/StreamNova4KDiag( 6850): TRACKS video #2 groupIndex=2 trackIndex=2 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK selezionabile=true | id=2 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1920x1080 decoded=-1x-1 bitrate=4500000 avgBitrate=-1 peakBitrate=4500000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): === TRACCE AUDIO DISPONIBILI (1) ===
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): Audio #0: trackIndex=0 isSelected=true lang=it label=Italian roleFlags=0 mimeType=audio/mp4a-latm sampleRate=N/A channels=-1 bitrate=N/A codecs=mp4a.40.2
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): === TRACCE AUDIO DISPONIBILI (1) ===
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): Audio #0: trackIndex=0 isSelected=false lang=en label=English roleFlags=0 mimeType=audio/mp4a-latm sampleRate=N/A channels=-1 bitrate=N/A codecs=mp4a.40.2
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): === TRACCE SOTTOTITOLI (1) ===
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): Sottotitolo #0: lang=en label=English | Selezionata: false
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): === TRACCE SOTTOTITOLI (1) ===
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): Sottotitolo #0: lang=de label=German | Selezionata: false
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): === TRACCE SOTTOTITOLI (1) ===
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): Sottotitolo #0: lang=el label=Greek | Selezionata: false
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): === TRACCE SOTTOTITOLI (1) ===
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): Sottotitolo #0: lang=fr label=French | Selezionata: false
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): === TRACCE SOTTOTITOLI (1) ===
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): Sottotitolo #0: lang=it label=Italian | Selezionata: false
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): === TRACCE SOTTOTITOLI (1) ===
+10-24 21:09:50.270 I/StreamNovaDiag( 6850): Sottotitolo #0: lang=uk label=Ukrainian | Selezionata: false
+10-24 21:09:50.276 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:09:50.279 I/PlayerScreen( 6850): Sottotitoli Forced ON: lingua audio italiana=true
+10-24 21:09:50.280 I/PlayerScreen( 6850): Nessuna traccia forced trovata e fullSubtitles=OFF: renderer testo disabilitato
+10-24 21:09:50.962 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:09:51.057 I/TrustManagerImpl( 6850): TRACE Starting certificate trust
+10-24 21:09:51.329 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:09:51.329 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:09:51.329 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:09:51.374 I/OMXClient( 6850): IOmx service obtained
+10-24 21:09:51.380 I/OMXMaster(  613): makeComponentInstance(OMX.MTK.VIDEO.DECODER.AVC) in android.hardwar process
+10-24 21:09:51.383 W/MtkOmxVdecExV4L2(  613): [0xed0e73c0] MtkOmxVdec::ComponentInit (OMX.MTK.VIDEO.DECODER.AVC)
+10-24 21:09:51.397 I/MediaCodec( 6850): [OMX.MTK.VIDEO.DECODER.AVC] setting surface generation to 7014403
+10-24 21:09:51.397 I/MediaCodecLogger( 6850): [ASAP] HW.omx.video.avc P2 + 330414113
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 50.00 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 30.00 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 29.97 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 25.00 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 24.00 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 23.98 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 50.00 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 29.97 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 23.98 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 24.00 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 25.00 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 30.00 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 50.00 fps
+10-24 21:09:51.399 W/SurfaceFlinger(  431): Can't find offset for 50.00 fps
+10-24 21:09:51.399 I/MediaCodecLogger( 6850): HW.omx.video.avc Adaptive Streaming max w:1920 h:1080, screen size:4K
+10-24 21:09:51.401 E/OMXNodeInstance(  613): setParameter(0xed0e73c4:MTK.DECODER.AVC, OMX.google.android.index.allocateNativeHandle(0x7f200410): Output:1 en=0) ERROR: BadParameter(0x80001005)
+10-24 21:09:51.401 I/ACodec  ( 6850): Call prepareForAdaptivePlayback. maxWidth 1920, maxHeight 1080.
+10-24 21:09:51.401 E/OMXNodeInstance(  613): getParameter(0xed0e73c4:MTK.DECODER.AVC, ??(0x6f600011)) ERROR: UnsupportedIndex(0x8000101a)
+10-24 21:09:51.402 E/MtkOmxVdecExV4L2(  613): [0xed0e73c0] MtkOmxVdec::SetConfig Unknown config index: 0x6F800002
+10-24 21:09:51.402 E/OMXNodeInstance(  613): setConfig(0xed0e73c4:MTK.DECODER.AVC, ConfigPriority(0x6f800002)) ERROR: UnsupportedIndex(0x8000101a)
+10-24 21:09:51.402 I/ACodec  ( 6850): codec does not support config priority (err -1010)
+10-24 21:09:51.404 I/MediaCodecLogger( 6850): [ASAP] HW.omx.video.avc P2 - 330414120
+10-24 21:09:51.408 I/MediaCodecLoggerService(  607): [registerClient] now these many clients!! 1 last ID = bbd74ff0 PID = 6850 video = 1
+10-24 21:09:51.408 I/MediaCodecLogger( 6850): [ASAP] HW.omx.video.avc P3 + 330414124
+10-24 21:09:51.425 W/ResourceManagerService(  608): Ignoring request to add new resource entry with value <= 0
+10-24 21:09:51.425 I/MediaCodecLogger( 6850): [ASAP] HW.omx.video.avc P3 - 330414141
+10-24 21:09:51.430 I/StreamNova4KDiag( 6850): DECODER VIDEO inizializzato: name=OMX.MTK.VIDEO.DECODER.AVC initDurationMs=63
+10-24 21:09:51.431 I/StreamNova4KDiag( 6850): DECODER VIDEO inputFormatChanged: id=2 label=- lang=- mime=video/avc container=video/mp2t codecs=avc1.640028 size=1920x1080 decoded=-1x-1 bitrate=4500000 avgBitrate=-1 peakBitrate=4500000 fps=-1.0 par=1.0 rotation=0 | COLOR colorSpace=sconosciuto(-1) colorRange=sconosciuto(-1) colorTransfer=sconosciuto(-1) lumaBitdepth=8 chromaBitdepth=8 bitdepthValid=true hdrStaticInfo=0B hdr10Plus=non-esposto-dal-ColorInfo-del-fork | HDR=SDR/non-HDR dichiarato | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry] | reuse=null
+10-24 21:09:51.445 I/VPUD    (  621): == handle_init_msg()- == ret=0 kernel vcu:18446743524137624336, mem_inst[0] 0xf605dc90
+10-24 21:09:51.445 I/VPUD    (  621): 
+10-24 21:09:51.446 I/VPUD    (  621): MaxFixedBuf Info, w*h=3840*2176, mode=3
+10-24 21:09:51.447 I/VPUD    (  621): [Vdec_initFixedMaxMode ,572] bFixedMaxBuffer:0 size(3840 2176) bMetaEnhance:1
+10-24 21:09:51.515 I/VPUD    (  621): [Vdec_Drv_H264_open] eDecodeMode: 8
+10-24 21:09:51.534 I/VPUD    (  621): [Err] eVDecDrvSetParam VDEC_DRV_SET_TYPE_SET_DECODE_LAYOUT fail!!
+10-24 21:09:51.534 I/VPUD    (  621): [Err] eVDecDrvSetParam VDEC_DRV_SET_TYPE_SET_DECODE_LAYOUT fail!!
+10-24 21:09:51.569 I/treamnova.tvap( 6850): NativeAlloc concurrent copying GC freed 346746(14MB) AllocSpace objects, 69(2992KB) LOS objects, 35% free, 44MB/68MB, paused 162us total 523.282ms
+10-24 21:09:51.716 I/MediaCodecLogger( 6850): [ASAP] HW.omx.video.avc Got First Input Frame 330414432 pts:1000164083333
+10-24 21:09:51.937 I/CCodec  ( 6850): setting up 'default' as default (vendor) store
+10-24 21:09:51.978 I/CCodec  ( 6850): Created component [c2.android.aac.decoder]
+10-24 21:09:51.992 I/CCodecConfig( 6850): query failed after returning 19 values (BAD_INDEX)
+10-24 21:09:51.994 I/MediaCodecLogger( 6850): [ASAP] SW.c2.audio.mp4a P2 + 330414710
+10-24 21:09:51.997 W/Codec2Client( 6850): query -- param skipped: index = 1107298332.
+10-24 21:09:51.998 I/CCodecConfig( 6850): query failed after returning 19 values (BAD_INDEX)
+10-24 21:09:51.998 I/MediaCodecLogger( 6850): [ASAP] SW.c2.audio.mp4a P2 - 330414714
+10-24 21:09:51.998 I/MediaCodecLoggerService(  607): [registerClient] now these many clients!! 2 last ID = bbd75890 PID = 6850 video = 0
+10-24 21:09:51.999 I/MediaCodecLogger( 6850): [ASAP] SW.c2.audio.mp4a P3 + 330414714
+10-24 21:09:52.000 W/Codec2Client( 6850): query -- param skipped: index = 1342179345.
+10-24 21:09:52.000 W/Codec2Client( 6850): query -- param skipped: index = 2415921170.
+10-24 21:09:52.000 W/Codec2Client( 6850): query -- param skipped: index = 1610614798.
+10-24 21:09:52.001 E/FMQ     ( 6850): grantorIdx must be less than 3
+10-24 21:09:52.001 E/FMQ     ( 6850): grantorIdx must be less than 3
+10-24 21:09:52.003 E/FMQ     (  622): grantorIdx must be less than 3
+10-24 21:09:52.003 E/FMQ     (  622): grantorIdx must be less than 3
+10-24 21:09:52.004 I/CCodecBufferChannel( 6850): [c2.android.aac.decoder#943] Created output block pool with allocatorID 16 => poolID 522 - OK
+10-24 21:09:52.007 I/MediaCodecLogger( 6850): [ASAP] SW.c2.audio.mp4a P3 - 330414722
+10-24 21:09:52.008 E/FMQ     ( 6850): grantorIdx must be less than 3
+10-24 21:09:52.008 E/FMQ     (  622): grantorIdx must be less than 3
+10-24 21:09:52.025 I/MediaCodecLogger( 6850): updateFormatChanged width = 1920 height = 1080, hdrType = 0, scanType = -1, bitDepth = -1, colorStandard = 1
+10-24 21:09:52.025 I/MediaCodecLogger( 6850): updatePTSTime [HW.omx.video.avc] First PTS after Flush or reset = 1000164083333
+10-24 21:09:52.026 I/MediaCodecLogger( 6850): [ASAP] HW.omx.video.avc Got First Frame Ready 330414741(309)
+10-24 21:09:52.429 W/Thread-26(24624): type=1400 audit(0.0:23035): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:09:52.436 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:09:52.437 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:09:52.438 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:09:52.592 I/MediaCodecLogger( 6850): [ASAP] SW.c2.audio.mp4a Got First Input Frame 330415308 pts:1000166400000
+10-24 21:09:52.593 I/C2SoftAacDec(  622): Reconfiguring decoder: 0->48000 Hz, 0->2 channels
+10-24 21:09:52.609 E/FMQ     (  622): grantorIdx must be less than 3
+10-24 21:09:52.610 E/FMQ     ( 6850): grantorIdx must be less than 3
+10-24 21:09:52.615 I/MediaCodecLogger( 6850): updatePTSTime [SW.c2.audio.mp4a] First PTS after Flush or reset = 1000166400000
+10-24 21:09:52.616 I/MediaCodecLogger( 6850): [ASAP] SW.c2.audio.mp4a Got First Frame Ready 330415331(23)
+10-24 21:09:52.626 I/android.media.AudioTrack( 6850): AUDIOINFO: audio_input: format: 2 sample_rate: 48000 channels: 2 AudioAttributes: AudioAttributes: usage=USAGE_MEDIA content=CONTENT_TYPE_MUSIC flags=0xA00 tags= bundle=null
+10-24 21:09:52.627 I/APM_AudioPolicyManager(  417): getOutputForAttrInt() device {type:0x400,@:}, sampling rate 48000, format 0x1, channel mask 0x3, flags 0x8 stream AUDIO_STREAM_MUSIC
+10-24 21:09:52.628 I/APM_AudioPolicyManager(  417): getOutputForAttr() returns output 13 requestedPortId 0 selectedDeviceId 1060 for port ID 1136
+10-24 21:09:52.628 W/AudioFlinger(  417): createTrack_l(): mismatch between requested flags (00000008) and output flags (00000002)
+10-24 21:09:52.631 I/AudioALSAHardware(  395): +getParameters(), key = get_audio_delay
+10-24 21:09:52.631 I/AudioALSAHardware(  395): -getParameters(), return ""
+10-24 21:09:52.632 I/audio_bluetooth_hw_fosExt(  395): Get bluetooth audio delay as 0 ms
+10-24 21:09:52.637 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:09:52.638 I/chatty  (  693): uid=1000(system) Binder:693_13 identical 1 line
+10-24 21:09:52.638 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:09:52.639 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:09:53.097 W/PesReader( 6850): Unexpected start code prefix: 2163611
+10-24 21:09:53.621 I/wstoragemanage(13656): WaitForGcToComplete blocked RunEmptyCheckpoint on ProfileSaver for 5.757ms
+10-24 21:09:53.958 I/MediaCodecLogger( 6850): Rendering first frame after starting or flushing.
+10-24 21:09:53.959 I/MediaCodecLogger( 6850): [ASAP] HW.omx.video.avc Got First Frame Render 330416674(2242), renderNum = 1
+10-24 21:09:53.959 I/MediaCodecLogger( 6850): App sets Timestamps for render in SurfaceFlinger
+10-24 21:09:53.959 I/MediaCodecLoggerService(  607): update video playback media info 1
+10-24 21:09:53.966 I/[StreamNova-Video-Debug]( 6850): onVideoSizeChanged -> width=1920, height=1080, pixelWidthHeightRatio=1.0
+10-24 21:09:53.966 I/[StreamNova-Video-Debug]( 6850): updateResolutionFromHeight: h=1080, w=1920 -> detectedResolution='1080p' (era='')
+10-24 21:09:53.967 I/StreamNova4KDiag( 6850): RENDERED first frame: renderTimeMs=330416675 output=Surface posMs=166392
+10-24 21:09:53.969 I/whad-MediaSessionClient( 2059): onVideoSessionStart: Number of active windows=1
+10-24 21:09:53.970 I/whad-MediaSessionClient( 2059): onVideoSessionStart:Window with provider: StreamNova
+10-24 21:09:53.970 I/whad    ( 2059): AndroidFabricLiaison:onForegroundProvidersChanged:Provider:StreamNova entered foreground.
+10-24 21:09:53.978 I/hwcomposer(  368): [DP] layer[913] use MDP: 0
+10-24 21:09:53.981 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:09:54.338 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:09:54.338 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:09:54.339 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:09:54.422 W/PesReader( 6850): Unexpected start code prefix: 2163633
+10-24 21:09:54.620 W/PesReader( 6850): Unexpected start code prefix: 3212187
+10-24 21:09:54.816 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:09:54.818 I/netd    (  328): trafficSwapActiveStatsMap() <0.25ms>
+10-24 21:09:54.844 I/netd    (  328): tetherGetStats() <3.03ms>
+10-24 21:09:54.869 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:09:54.873 I/netd    (  328): bandwidthSetGlobalAlert(2097152) <0.44ms>
+10-24 21:09:54.875 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:09:54.876 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:09:55.639 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:09:55.647 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:09:56.999 I/APM_AudioPolicyManager(  417): startOutput() output 13, stream 3, session 2473
+10-24 21:09:56.999 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:09:57.000 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:09:57.000 I/Threads_fosExt(  417): startOutput() output 13, stream 3, session 2473, caller pid: 6850, uid: 10341
+10-24 21:09:57.001 I/ASP/AspMain(  395): asp_command: 0x0; code=88
+10-24 21:09:57.001 I/ASP/AspManagerBase(  395): executeCommandLocked() cmdCode = 88
+10-24 21:09:57.001 I/ASP/AspManagerBase(  395): Set audio content type: 2
+10-24 21:09:57.002 I/MS12StreamOut(  395): [ms12 primary] write() 0xed731000 first write after standby
+10-24 21:09:57.003 I/[StreamNova-Video-Debug]( 6850): Player STATE_READY -> activeTrack: 854x480 @ 1200000bps mime=video/avc codecs=avc1.640028 fps=-1.0 | videoFormat: 1920x1080 @ 4500000bps mime=video/avc codecs=avc1.640028 fps=-1.0 | videoSize: 1920x1080 par=1.0
+10-24 21:09:57.003 I/StreamNova4KDiag( 6850): STATE_READY videoFormat=id=2 label=- lang=- mime=video/avc container=video/mp2t codecs=avc1.640028 size=1920x1080 decoded=-1x-1 bitrate=4500000 avgBitrate=-1 peakBitrate=4500000 fps=-1.0 par=1.0 rotation=0 | COLOR colorSpace=sconosciuto(-1) colorRange=sconosciuto(-1) colorTransfer=sconosciuto(-1) lumaBitdepth=8 chromaBitdepth=8 bitdepthValid=true hdrStaticInfo=0B hdr10Plus=non-esposto-dal-ColorInfo-del-fork | HDR=SDR/non-HDR dichiarato | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:57.003 I/StreamNova4KDiag( 6850): STATE_READY audioFormat=id=audio:Italian label=Italian lang=it mime=audio/mp4a-latm container=video/mp2t codecs=mp4a.40.2 size=-1x-1 decoded=-1x-1 bitrate=-1 avgBitrate=-1 peakBitrate=-1 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry [audio, Italian]]
+10-24 21:09:57.003 I/StreamNova4KDiag( 6850): STATE_READY params maxVideoSize=2147483647x2147483647 minVideoSize=0x0 maxVideoBitrate=2147483647 maxVideoFrameRate=2147483647 viewport=2147483647x2147483647 exceedRendererCapabilitiesIfNecessary=true exceedVideoConstraintsIfNecessary=true forceHighestSupportedBitrate=false forceLowestBitrate=false tunnelingEnabled=false disabledTrackTypes=[3] preferredVideoMimeTypes=[] selectionOverrides=0
+10-24 21:09:57.003 I/StreamNova4KDiag( 6850): STATE_READY videoTrack[0] groupLen=3 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK | id=0 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=854x480 decoded=-1x-1 bitrate=1200000 avgBitrate=-1 peakBitrate=1200000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:57.003 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:09:57.003 I/StreamNova4KDiag( 6850): STATE_READY videoTrack[1] groupLen=3 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK | id=1 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1280x720 decoded=-1x-1 bitrate=2150000 avgBitrate=-1 peakBitrate=2150000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:57.003 I/StreamNova4KDiag( 6850): STATE_READY videoTrack[2] groupLen=3 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK | id=2 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1920x1080 decoded=-1x-1 bitrate=4500000 avgBitrate=-1 peakBitrate=4500000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:09:57.003 I/StreamNova4KDiag( 6850): DECODER disponibili per mime=video/avc -> 2
+10-24 21:09:57.004 I/StreamNova4KDiag( 6850): DECODER info: name=OMX.MTK.VIDEO.DECODER.AVC codecMimeType=video/avc hw=true sw=false vendor=true adaptive=true tunneling=false secure=false isFormatSupported=true | OMX.MTK.VIDEO.DECODER.AVC
+10-24 21:09:57.004 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:09:57.004 I/StreamNova4KDiag( 6850): DECODER info: name=c2.android.avc.decoder codecMimeType=video/avc hw=false sw=true vendor=false adaptive=true tunneling=false secure=false isFormatSupported=true | c2.android.avc.decoder
+10-24 21:09:57.004 I/[StreamNova-Video-Debug]( 6850): updateResolutionFromHeight: h=1080, w=1920 -> detectedResolution='1080p' (era='1080p')
+10-24 21:09:57.010 I/LastStreamCache( 6850): Salvato ultimo flusso funzionante per tt0137523 S-1 E-1
+10-24 21:09:57.013 W/Eve     (  693): AUDIO_CRITICAL: Playback drop samples=1536 expected=8635919 interval=179914(ms) rate=48000(Hz)
+10-24 21:09:57.013 W/Eve     (  693):   top=com.aistudio.streamnova.tvapp/com.example.MainActivity launching=false
+10-24 21:09:57.013 W/Eve     (  693):   prev=com.amazon.tv.launcher/.ui.HomeActivity_vNext screen_on=true thermal=0
+10-24 21:09:57.013 W/Eve     (  693):   adb=true downloading=false
+10-24 21:09:57.013 W/Eve     (  693):   memory=9999 trim=0 available=388940KB free=140352KB
+10-24 21:09:57.019 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:09:57.144 I/MediaCodecLogger( 6850): the latest buffer is 3185 old with packageName com.aistudio.streamnova.tvapp. Possible resume detected
+10-24 21:09:57.157 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 1546
+10-24 21:09:57.180 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc Resolution change from 0x0 to 1920x1080 took = 13
+10-24 21:09:57.216 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:09:57.349 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:09:57.349 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:09:57.349 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:09:57.473 W/Thread-26(24624): type=1400 audit(0.0:23036): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:09:57.478 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:09:57.480 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:09:57.628 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 28
+10-24 21:09:57.717 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:09:58.219 I/chatty  ( 6850): uid=10341(com.aistudio.streamnova.tvapp) identical 1 line
+10-24 21:09:58.721 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:09:58.787 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:09:58.788 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:09:58.788 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:09:58.788 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:09:58.788 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:09:59.199 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:started test 2 of 5
+10-24 21:09:59.199 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX065R
+10-24 21:09:59.199 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX065R
+10-24 21:09:59.220 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:09:59.225 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX065R,bssid=1,essid=1,wifiFrequency=0,networkTypeGuesses=2_4_GHZ
+10-24 21:09:59.225 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:09:59.225 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX065R,edgeType=BidirectionalBothCanBeInitiator,reason=SameNetwork
+10-24 21:09:59.225 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX0196
+10-24 21:09:59.225 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX0196
+10-24 21:09:59.248 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX0196,bssid=0,essid=0,wifiFrequency=0,networkTypeGuesses=5_0_GHZ
+10-24 21:09:59.248 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:09:59.249 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX0196,edgeType=BidirectionalBothCanBeInitiator,reason=DifferentSeparateNetworks
+10-24 21:09:59.249 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:skippingLocalDevice,bssid=1,essid=1,networkTypeGuesses=2_4_GHZ
+10-24 21:09:59.249 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:localDevice=XX06D1,finished sending proactive test 2 of 5
+10-24 21:09:59.722 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:09:59.924 I/whad    ( 2059): ControlPlaneManager:handleCommand:caller=Libevent,cmd=sendMessage,xmit=330416925,recv=330416929,delta=4,tss=XX0196,senderId=XX0196,tssStale=false
+10-24 21:09:59.925 I/whad    ( 2059): AndroidOSInterface:recordMinervaMetric:Recorded 'xya3zuyg' 'nkjr/2/013304c0'
+10-24 21:09:59.925 I/whad    ( 2059): Fabric:onMessage:id=Stitch_58406fc8-9c02-4d22-bf75-b899e567b3a6, name=Stitch, sender=XX0196
+10-24 21:10:00.001 I/whad    ( 2059): Maintenance:sendStitches:groups=StableParticipants localStateHashes=MediaSession&bf21a9e8fbc5a3846fb05b4fa0859e0917b2202f localLastUpdated=MediaSession&328616660951
+10-24 21:10:00.218 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:00.356 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:00.357 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:00.357 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:00.568 W/PesReader( 6850): Unexpected start code prefix: 3212209
+10-24 21:10:00.739 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:01.018 I/whad    ( 2059): TimeSyncClient:clientThread:server=XX0196, serverIpAddr=xxx, serverPort=55444, serverHolePunched=0, clientPort=55446, state=FullyConverged
+10-24 21:10:01.019 I/whad    ( 2059): TimeSyncClient:clientThread:totalStats:sent=567276,recvdOnTime=567209,lateOrDuplicate=64,slots=19141,emptySlots=0,activeSec=23438,elapsedSec=287102,exchangesPerSec=24.2
+10-24 21:10:01.019 I/whad    ( 2059): TimeSyncClient:clientThread:recentStats:sent=1778,recvdOnTime=1777,lateOrDuplicate=1,slots=60,emptySlots=0,activeSec=73,elapsedSec=899,exchangesPerSec=24.3
+10-24 21:10:01.019 I/whad    ( 2059): TimeSyncClient:clientThread:recentRoundTripsMs: [0,50):1774, [50,100):2, [100,150):1, avg:4, min:1, max:121
+10-24 21:10:01.245 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:01.739 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:01.783 W/PesReader( 6850): Unexpected start code prefix: 2163655
+10-24 21:10:02.192 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 1983
+10-24 21:10:02.241 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:02.513 W/Thread-26(24624): type=1400 audit(0.0:23037): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:02.517 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:02.686 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 133
+10-24 21:10:02.741 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:03.231 W/PesReader( 6850): Unexpected start code prefix: 2163677
+10-24 21:10:03.242 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:03.365 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:03.366 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:03.367 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:03.632 I/ASP/AspMain(  395): asp_command: 0x0; code=88
+10-24 21:10:03.632 I/ASP/AspManagerBase(  395): executeCommandLocked() cmdCode = 88
+10-24 21:10:03.632 I/ASP/AspManagerBase(  395): Set audio content type: 2
+10-24 21:10:03.659 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:03.731 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:03.854 I/Threads_fosExt(  417): stopOutput() output 13, stream 3, session 2473, caller pid: 6850, uid: 10341
+10-24 21:10:03.854 I/APM_AudioPolicyManager(  417): stopOutput() output 13, stream 3, session 2473
+10-24 21:10:03.855 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:10:03.855 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:10:03.856 I/ASP/AspMain(  395): asp_command: 0x0; code=88
+10-24 21:10:03.857 I/ASP/AspManagerBase(  395): executeCommandLocked() cmdCode = 88
+10-24 21:10:03.857 I/ASP/AspManagerBase(  395): Set audio content type: 0
+10-24 21:10:03.857 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:06.374 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:06.374 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:06.375 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:06.638 I/MS12StreamOut(  395): [ms12 primary] standby() 0xed731000 +
+10-24 21:10:06.638 I/MS12StreamOut(  395): [ms12 primary] standby() 0xed731000 - mPassThrough(0), mStandby(1)!
+10-24 21:10:06.639 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:07.553 W/Thread-26(24624): type=1400 audit(0.0:23038): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:07.556 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:08.791 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:10:08.791 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:10:08.791 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:10:08.791 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:10:08.791 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:10:09.249 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:started test 3 of 5
+10-24 21:10:09.249 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX065R
+10-24 21:10:09.249 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX065R
+10-24 21:10:09.270 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX065R,bssid=1,essid=1,wifiFrequency=0,networkTypeGuesses=2_4_GHZ
+10-24 21:10:09.270 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:10:09.270 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX065R,edgeType=BidirectionalBothCanBeInitiator,reason=SameNetwork
+10-24 21:10:09.270 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX0196
+10-24 21:10:09.270 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX0196
+10-24 21:10:09.286 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX0196,bssid=0,essid=0,wifiFrequency=0,networkTypeGuesses=5_0_GHZ
+10-24 21:10:09.286 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:10:09.286 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX0196,edgeType=BidirectionalBothCanBeInitiator,reason=DifferentSeparateNetworks
+10-24 21:10:09.287 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:skippingLocalDevice,bssid=1,essid=1,networkTypeGuesses=2_4_GHZ
+10-24 21:10:09.287 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:localDevice=XX06D1,finished sending proactive test 3 of 5
+10-24 21:10:09.381 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:09.381 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:09.382 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:09.430 W/MtkOmxVdecExV4L2(  613): ## [WARNING, 110] GetCmd() line: 453 No command in 5 seconds ...
+10-24 21:10:10.288 W/PesReader( 6850): Unexpected start code prefix: 3212231
+10-24 21:10:12.190 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:12.192 I/netd    (  328): trafficSwapActiveStatsMap() <0.32ms>
+10-24 21:10:12.220 I/netd    (  328): tetherGetStats() <1.65ms>
+10-24 21:10:12.246 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:12.252 I/netd    (  328): bandwidthSetGlobalAlert(2097152) <0.27ms>
+10-24 21:10:12.255 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:12.256 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:12.393 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:12.396 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:12.397 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:12.589 W/Thread-26(24624): type=1400 audit(0.0:23039): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:12.595 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:12.596 I/chatty  (  693): uid=1000(system) Binder:693_1F identical 6 lines
+10-24 21:10:12.597 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:10:14.430 W/MtkOmxVdecExV4L2(  613): ## [WARNING, 110] GetCmd() line: 453 No command in 5 seconds ...
+10-24 21:10:15.409 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:15.410 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:15.411 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:16.690 I/APM_AudioPolicyManager(  417): startOutput() output 13, stream 3, session 2473
+10-24 21:10:16.691 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:10:16.691 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:10:16.691 I/Threads_fosExt(  417): startOutput() output 13, stream 3, session 2473, caller pid: 6850, uid: 10341
+10-24 21:10:16.693 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:16.694 I/ASP/AspMain(  395): asp_command: 0x0; code=88
+10-24 21:10:16.694 I/ASP/AspManagerBase(  395): executeCommandLocked() cmdCode = 88
+10-24 21:10:16.694 I/ASP/AspManagerBase(  395): Set audio content type: 2
+10-24 21:10:16.694 I/MS12StreamOut(  395): [ms12 primary] write() 0xed731000 first write after standby
+10-24 21:10:16.694 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:16.697 W/Eve     (  693): AUDIO_CRITICAL: Playback drop samples=1536 expected=483355 interval=10069(ms) rate=48000(Hz)
+10-24 21:10:16.697 W/Eve     (  693):   top=com.aistudio.streamnova.tvapp/com.example.MainActivity launching=false
+10-24 21:10:16.697 W/Eve     (  693):   prev=com.amazon.tv.launcher/.ui.HomeActivity_vNext screen_on=true thermal=0
+10-24 21:10:16.697 W/Eve     (  693):   adb=true downloading=false
+10-24 21:10:16.697 W/Eve     (  693):   memory=9999 trim=0 available=375168KB free=126280KB
+10-24 21:10:16.709 I/MediaCodecLogger( 6850): the latest buffer is 13086 old with packageName com.aistudio.streamnova.tvapp. Possible resume detected
+10-24 21:10:16.719 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 9
+10-24 21:10:16.721 I/[StreamNova-Video-Debug]( 6850): Player STATE_READY -> activeTrack: 854x480 @ 1200000bps mime=video/avc codecs=avc1.640028 fps=-1.0 | videoFormat: 1920x1080 @ 4500000bps mime=video/avc codecs=avc1.640028 fps=-1.0 | videoSize: 1920x1080 par=1.0
+10-24 21:10:16.721 I/StreamNova4KDiag( 6850): STATE_READY videoFormat=id=2 label=- lang=- mime=video/avc container=video/mp2t codecs=avc1.640028 size=1920x1080 decoded=-1x-1 bitrate=4500000 avgBitrate=-1 peakBitrate=4500000 fps=-1.0 par=1.0 rotation=0 | COLOR colorSpace=sconosciuto(-1) colorRange=sconosciuto(-1) colorTransfer=sconosciuto(-1) lumaBitdepth=8 chromaBitdepth=8 bitdepthValid=true hdrStaticInfo=0B hdr10Plus=non-esposto-dal-ColorInfo-del-fork | HDR=SDR/non-HDR dichiarato | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:10:16.721 I/StreamNova4KDiag( 6850): STATE_READY audioFormat=id=audio:Italian label=Italian lang=it mime=audio/mp4a-latm container=video/mp2t codecs=mp4a.40.2 size=-1x-1 decoded=-1x-1 bitrate=-1 avgBitrate=-1 peakBitrate=-1 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry [audio, Italian]]
+10-24 21:10:16.721 I/StreamNova4KDiag( 6850): STATE_READY params maxVideoSize=2147483647x2147483647 minVideoSize=0x0 maxVideoBitrate=2147483647 maxVideoFrameRate=2147483647 viewport=2147483647x2147483647 exceedRendererCapabilitiesIfNecessary=true exceedVideoConstraintsIfNecessary=true forceHighestSupportedBitrate=false forceLowestBitrate=false tunnelingEnabled=false disabledTrackTypes=[3] preferredVideoMimeTypes=[] selectionOverrides=0
+10-24 21:10:16.721 I/StreamNova4KDiag( 6850): STATE_READY videoTrack[0] groupLen=3 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK | id=0 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=854x480 decoded=-1x-1 bitrate=1200000 avgBitrate=-1 peakBitrate=1200000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:10:16.722 I/StreamNova4KDiag( 6850): STATE_READY videoTrack[1] groupLen=3 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK | id=1 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1280x720 decoded=-1x-1 bitrate=2150000 avgBitrate=-1 peakBitrate=2150000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:10:16.722 I/StreamNova4KDiag( 6850): STATE_READY videoTrack[2] groupLen=3 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK | id=2 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1920x1080 decoded=-1x-1 bitrate=4500000 avgBitrate=-1 peakBitrate=4500000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:10:16.722 I/StreamNova4KDiag( 6850): DECODER disponibili per mime=video/avc -> 2
+10-24 21:10:16.722 I/StreamNova4KDiag( 6850): DECODER info: name=OMX.MTK.VIDEO.DECODER.AVC codecMimeType=video/avc hw=true sw=false vendor=true adaptive=true tunneling=false secure=false isFormatSupported=true | OMX.MTK.VIDEO.DECODER.AVC
+10-24 21:10:16.722 I/StreamNova4KDiag( 6850): DECODER info: name=c2.android.avc.decoder codecMimeType=video/avc hw=false sw=true vendor=false adaptive=true tunneling=false secure=false isFormatSupported=true | c2.android.avc.decoder
+10-24 21:10:16.722 I/[StreamNova-Video-Debug]( 6850): updateResolutionFromHeight: h=1080, w=1920 -> detectedResolution='1080p' (era='1080p')
+10-24 21:10:16.727 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 128
+10-24 21:10:16.729 I/LastStreamCache( 6850): Salvato ultimo flusso funzionante per tt0137523 S-1 E-1
+10-24 21:10:16.736 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:17.109 I/chatty  ( 6850): uid=10341(com.aistudio.streamnova.tvapp) identical 2 lines
+10-24 21:10:17.255 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:17.633 W/Thread-26(24624): type=1400 audit(0.0:23040): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:17.644 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:17.651 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:10:17.757 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:18.261 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:18.421 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:18.422 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:18.423 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:18.754 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:18.792 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:10:18.792 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:10:18.793 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:10:18.793 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:10:18.793 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:10:19.274 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:19.287 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:started test 4 of 5
+10-24 21:10:19.287 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX065R
+10-24 21:10:19.287 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX065R
+10-24 21:10:19.305 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX065R,bssid=1,essid=1,wifiFrequency=0,networkTypeGuesses=2_4_GHZ
+10-24 21:10:19.306 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:10:19.306 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX065R,edgeType=BidirectionalBothCanBeInitiator,reason=SameNetwork
+10-24 21:10:19.306 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX0196
+10-24 21:10:19.306 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX0196
+10-24 21:10:19.321 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX0196,bssid=0,essid=0,wifiFrequency=0,networkTypeGuesses=5_0_GHZ
+10-24 21:10:19.322 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:10:19.322 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX0196,edgeType=BidirectionalBothCanBeInitiator,reason=DifferentSeparateNetworks
+10-24 21:10:19.322 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:skippingLocalDevice,bssid=1,essid=1,networkTypeGuesses=2_4_GHZ
+10-24 21:10:19.322 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:localDevice=XX06D1,finished sending proactive test 4 of 5
+10-24 21:10:19.776 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:20.773 I/chatty  ( 6850): uid=10341(com.aistudio.streamnova.tvapp) identical 2 lines
+10-24 21:10:21.274 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:21.432 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:21.432 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:21.433 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:21.534 W/PesReader( 6850): Unexpected start code prefix: 3212253
+10-24 21:10:21.781 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:21.787 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 1936
+10-24 21:10:21.791 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 130
+10-24 21:10:22.279 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:22.669 W/Thread-26(24624): type=1400 audit(0.0:23041): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:22.675 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:22.746 E/MTK_GRALLOC(  364): Format 0x23 cannot be processed
+10-24 21:10:22.775 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:22.872 W/PesReader( 6850): Unexpected start code prefix: 2163699
+10-24 21:10:23.097 W/PesReader( 6850): Unexpected start code prefix: 3212275
+10-24 21:10:23.275 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:23.775 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:24.160 W/PesReader( 6850): Unexpected start code prefix: 2163721
+10-24 21:10:24.276 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:24.309 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:24.310 I/netd    (  328): trafficSwapActiveStatsMap() <0.21ms>
+10-24 21:10:24.327 I/netd    (  328): tetherGetStats() <1.23ms>
+10-24 21:10:22.676 I/chatty  (  693): uid=1000(system) Binder:693_1A identical 2 lines
+10-24 21:10:22.677 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:10:24.359 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:24.364 I/netd    (  328): bandwidthSetGlobalAlert(2097152) <0.19ms>
+10-24 21:10:24.370 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:24.371 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:24.441 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:24.441 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:24.442 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:24.527 E/lowmemorykiller(  237): system_server (1000, 693) attempts to modify a process registered by another client
+10-24 21:10:24.528 I/cmd     (13736): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:24.533 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23042): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:10:24.533 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23043): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:10:24.537 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23044): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:10:24.537 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23045): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:10:24.537 I/chatty  ( 1970): uid=10240(com.android.providers.media.module) identical 1 line
+10-24 21:10:24.537 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23047): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:10:24.537 I/MediaProvider( 1970): Begin Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/hf_d.png flg=0x1400010 cmp=com.android.providers.media.module/com.android.providers.media.MediaService }
+10-24 21:10:24.544 E/libc    (13731): Access denied finding property "vendor.product.pvr.debug_level"
+10-24 21:10:24.544 E/IMGSRV  (13731): :2753: GrallocUnregisterBuffer: Cannot free a locked buffer (ID=137628)
+10-24 21:10:24.544 W/ModernMediaScanner( 1970): Failed to visit /sdcard/hf_d.png: java.nio.file.AccessDeniedException: /sdcard/hf_d.png
+10-24 21:10:24.544 E/libc    (13731): Access denied finding property "vendor.product.pvr.debug_level"
+10-24 21:10:24.544 E/IMGSRV  (13731): :74: freeBuffer: Failed to unregister native handle
+10-24 21:10:24.544 E/Gralloc4(13731): freeBuffer(0xf1043c00) failed with 2
+10-24 21:10:24.544 E/IMGSRV  (13731): :2683: hal_deinit: Stale maps left in cache; probably an application bug
+10-24 21:10:24.544 E/IMGSRV  (13731): :2685: hal_deinit: You may see failing kernel assertions after this message
+10-24 21:10:24.545 I/MTK_GRALLOC(13731): Unregistered dump signal 33 for gralloc, old hdl 0x0
+10-24 21:10:24.547 I/MediaProvider( 1970): Scanned internal due to REASON_DEMAND, found 0 items in 6ms, 0 inserts 0 updates 0 deletes
+10-24 21:10:24.550 I/MediaProvider( 1970): End Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/hf_d.png flg=0x1400010 cmp=com.android.providers.media.module/com.android.providers.media.MediaService }
+10-24 21:10:24.704 I/DiebusMetrics(15720): Starting reporting metrics
+10-24 21:10:24.704 I/DiebusMetrics(15720): End reporting metrics
+10-24 21:10:24.777 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:25.000 E/libc    (13740): Access denied finding property "persist.device_config.runtime_native_boot.profilebootclasspath"
+10-24 21:10:25.000 E/libc    (13740): Access denied finding property "persist.device_config.runtime_native_boot.enable_apex_image"
+10-24 21:10:25.000 I/AndroidRuntime(13740): Using default boot image
+10-24 21:10:25.000 E/libc    (13740): Access denied finding property "persist.device_config.runtime_native_boot.disable_lock_profiling"
+10-24 21:10:25.000 I/AndroidRuntime(13740): Leaving lock profiling enabled
+10-24 21:10:25.000 E/libc    (13740): Access denied finding property "persist.device_config.runtime_native_boot.enable_generational_cc"
+10-24 21:10:25.122 W/PesReader( 6850): Unexpected start code prefix: 3212297
+10-24 21:10:25.221 I/app_process(13740): The ClassLoaderContext is a special shared library.
+10-24 21:10:25.223 I/app_process(13740): Bumping SignalCatcher priority from 5 to 10
+10-24 21:10:25.279 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:25.292 W/app_process(13740): JNI RegisterNativeMethods: attempt to register 0 native methods for android.media.AudioAttributes
+10-24 21:10:25.304 I/AmazonProfileService(  693): Event is not filtered because it is not in filter key list.
+10-24 21:10:25.304 I/KeyMapManagerUtil(  693): Unknown remote sku id 0. Fetch remote sku id from system property
+10-24 21:10:25.305 E/amzn_neo_service_api:..( 1743): handle_key_event_callback: Got empty key-event
+10-24 21:10:25.305 I/com_amazon_devicecont..( 1743): Received Key name: DPAD_RIGHT, code: 22, action: 0
+10-24 21:10:25.305 E/amzn_neo_service_api:..( 1742): handle_key_event_callback: Got empty key-event
+10-24 21:10:25.306 I/libPowerHal(  413): [perfLockAcq] idx:0 hdl:22616 hint:0 pid:413 duration:10000 => ret_hdl:22616
+10-24 21:10:25.308 I/libPowerHal(  413): [PE] scn:0 hdl:22616 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:10:25.309 I/libPowerHal(  413): INTERACTION: sysfs_freq set cpu freq: 1696000 1696000
+10-24 21:10:25.309 I/libPowerHal(  413): [perfLockAcq] idx:1 hdl:22617 hint:0 pid:413 duration:10000 => ret_hdl:22617
+10-24 21:10:25.309 I/libPowerHal(  413): [PE] scn:1 hdl:22617 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:10:25.311 I/ScrubSeek( 6850): Scrubbing avviato: direction=1, da=181555ms, durata=8348333ms, anteprima=191555ms, riproduzione da ripristinare=true
+10-24 21:10:25.313 I/AmazonProfileService(  693): Event is not filtered because it is not in filter key list.
+10-24 21:10:25.313 I/KeyMapManagerUtil(  693): Unknown remote sku id 0. Fetch remote sku id from system property
+10-24 21:10:25.314 E/amzn_neo_service_api:..( 1742): handle_key_event_callback: Got empty key-event
+10-24 21:10:25.314 E/amzn_neo_service_api:..( 1743): handle_key_event_callback: Got empty key-event
+10-24 21:10:25.314 I/com_amazon_devicecont..( 1743): Received Key name: DPAD_RIGHT, code: 22, action: 1
+10-24 21:10:25.326 I/ASP/AspMain(  395): asp_command: 0x0; code=88
+10-24 21:10:25.326 I/ASP/AspManagerBase(  395): executeCommandLocked() cmdCode = 88
+10-24 21:10:25.326 I/ASP/AspManagerBase(  395): Set audio content type: 2
+10-24 21:10:25.331 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:25.337 I/libPowerHal(  413): [perfLockAcq] idx:2 hdl:22618 hint:0 pid:413 duration:10000 => ret_hdl:22618
+10-24 21:10:25.337 I/libPowerHal(  413): [PE] scn:2 hdl:22618 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:10:25.366 I/SeekPreview( 6850): richiesta preview pos=191555ms prefetch=[191555, 201555, 181555]
+10-24 21:10:25.366 W/SeekPreview( 6850): anteprima non richiedibile: sorgente=non disponibile pos=191555ms
+10-24 21:10:25.372 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:25.550 I/Threads_fosExt(  417): stopOutput() output 13, stream 3, session 2473, caller pid: 6850, uid: 10341
+10-24 21:10:25.550 I/APM_AudioPolicyManager(  417): stopOutput() output 13, stream 3, session 2473
+10-24 21:10:25.551 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:25.552 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:10:25.552 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:10:25.552 I/ASP/AspMain(  395): asp_command: 0x0; code=88
+10-24 21:10:25.552 I/ASP/AspManagerBase(  395): executeCommandLocked() cmdCode = 88
+10-24 21:10:25.552 I/ASP/AspManagerBase(  395): Set audio content type: 0
+10-24 21:10:26.215 I/MediaCodecLogger( 6850): Flushing: 6850.4K.HW.omx.video.avc.framerate = 24.000 fps
+10-24 21:10:26.215 I/ScrubSeek( 6850): Scrubbing confermato: seek a 191555ms (da 181555ms, delta=10000ms), ripresa=true
+10-24 21:10:26.216 I/VCodecDrv(  621): phHandle->fgOutputEarly 0
+10-24 21:10:26.217 I/VCodecDrv(  621): phHandle->fgOutputEarly 0
+10-24 21:10:26.219 I/CCodecConfig( 6850): query failed after returning 19 values (BAD_INDEX)
+10-24 21:10:26.222 W/Codec2Client( 6850): query -- param skipped: index = 1342179345.
+10-24 21:10:26.222 W/Codec2Client( 6850): query -- param skipped: index = 2415921170.
+10-24 21:10:26.222 W/Codec2Client( 6850): query -- param skipped: index = 1610614798.
+10-24 21:10:26.236 I/ResolverController(  328): No valid NAT64 prefix (100, <unspecified>/0)
+10-24 21:10:26.241 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:26.284 I/StreamNova4KDiag( 6850): DECODER VIDEO inputFormatChanged: id=0 label=- lang=- mime=video/avc container=video/mp2t codecs=avc1.640028 size=1280x720 decoded=-1x-1 bitrate=1200000 avgBitrate=-1 peakBitrate=1200000 fps=-1.0 par=1.0 rotation=0 | COLOR colorSpace=sconosciuto(-1) colorRange=sconosciuto(-1) colorTransfer=sconosciuto(-1) lumaBitdepth=8 chromaBitdepth=8 bitdepthValid=true hdrStaticInfo=0B hdr10Plus=non-esposto-dal-ColorInfo-del-fork | HDR=SDR/non-HDR dichiarato | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry] | reuse=decoderName=OMX.MTK.VIDEO.DECODER.AVC result=YES_WITH_RECONFIGURATION discardReasons=0
+10-24 21:10:26.285 I/SeekPreview( 6850): anteprima chiusa (fine scrubbing: conferma o BACK, ultima pos=191555 ms); cattura in volo annullata
+10-24 21:10:26.301 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:26.328 I/TrustManagerImpl( 6850): TRACE Starting certificate trust
+10-24 21:10:26.597 I/StreamNova4KDiag( 6850): DECODER VIDEO inputFormatChanged: id=0 label=- lang=- mime=video/avc container=video/mp2t codecs=avc1.640028 size=854x480 decoded=-1x-1 bitrate=1200000 avgBitrate=-1 peakBitrate=1200000 fps=-1.0 par=0.99921936 rotation=0 | COLOR colorSpace=sconosciuto(-1) colorRange=sconosciuto(-1) colorTransfer=sconosciuto(-1) lumaBitdepth=8 chromaBitdepth=8 bitdepthValid=true hdrStaticInfo=0B hdr10Plus=non-esposto-dal-ColorInfo-del-fork | HDR=SDR/non-HDR dichiarato | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry] | reuse=decoderName=OMX.MTK.VIDEO.DECODER.AVC result=YES_WITH_RECONFIGURATION discardReasons=0
+10-24 21:10:26.657 I/VPUD    (  621): H264_syncKeyInfoToCore +
+10-24 21:10:26.657 I/VPUD    (  621): H264_syncKeyInfoToCore -
+10-24 21:10:26.658 I/VPUD    (  621): ## codec_id 2 eVDecDrvDecodeEx time 56 ms
+10-24 21:10:26.658 I/VPUD    (  621): == handle_dec_start_msg()+ == res_chg dec_frame(#429)
+10-24 21:10:26.658 I/VPUD    (  621): [Err] eVDecDrvSetParam VDEC_DRV_SET_TYPE_SET_DECODE_LAYOUT fail!!
+10-24 21:10:26.658 I/VCodecDrv(  621): phHandle->fgOutputEarly 0
+10-24 21:10:26.659 I/VCodecDrv(  621): phHandle->fgOutputEarly 0
+10-24 21:10:26.710 I/MediaCodecLogger( 6850): updateFormatChanged width = 854 height = 480, hdrType = 0, scanType = -1, bitDepth = -1, colorStandard = 1
+10-24 21:10:26.710 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.framerate = 0.000 fps
+10-24 21:10:26.710 I/MediaCodecLogger( 6850): updatePTSTime [HW.omx.video.avc] First PTS after Flush or reset = 1000188083334
+10-24 21:10:26.710 I/MediaCodecLogger( 6850): updatePTSTime Possible seek found! last pts:1000181791666 cur pts:1000188083334
+10-24 21:10:26.836 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 1300
+10-24 21:10:27.214 W/PesReader( 6850): Unexpected start code prefix: 3212319
+10-24 21:10:27.226 I/MediaCodecLogger( 6850): the latest buffer is 1962 old with packageName com.aistudio.streamnova.tvapp. Possible resume detected
+10-24 21:10:27.226 I/MediaCodecLogger( 6850): Rendering first frame after starting or flushing.
+10-24 21:10:27.243 I/hwcomposer(  368): [DP] layer[913] use MDP: 0
+10-24 21:10:27.250 I/[StreamNova-Video-Debug]( 6850): onVideoSizeChanged -> width=854, height=480, pixelWidthHeightRatio=0.99921936
+10-24 21:10:27.250 I/[StreamNova-Video-Debug]( 6850): updateResolutionFromHeight: h=480, w=854 -> detectedResolution='SD' (era='1080p')
+10-24 21:10:27.250 I/StreamNova4KDiag( 6850): RENDERED first frame: renderTimeMs=330449944 output=Surface posMs=191555
+10-24 21:10:27.258 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:27.352 I/DiebusMetrics(15720): Starting reporting metrics
+10-24 21:10:27.352 I/DiebusMetrics(15720): End reporting metrics
+10-24 21:10:27.452 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:27.453 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:27.453 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:27.517 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 80
+10-24 21:10:27.520 I/MediaCodecLogger( 6850): updatePTSTime [SW.c2.audio.mp4a] First PTS after Flush or reset = 1000191573334
+10-24 21:10:27.520 I/MediaCodecLogger( 6850): updatePTSTime Possible seek found! last pts:1000182122666 cur pts:1000191573334
+10-24 21:10:27.531 I/android.media.AudioTrack( 6850): AUDIOINFO: audio_input: format: 2 sample_rate: 48000 channels: 2 AudioAttributes: AudioAttributes: usage=USAGE_MEDIA content=CONTENT_TYPE_MUSIC flags=0xA00 tags= bundle=null
+10-24 21:10:27.533 I/APM_AudioPolicyManager(  417): getOutputForAttrInt() device {type:0x400,@:}, sampling rate 48000, format 0x1, channel mask 0x3, flags 0x8 stream AUDIO_STREAM_MUSIC
+10-24 21:10:27.533 I/APM_AudioPolicyManager(  417): getOutputForAttr() returns output 13 requestedPortId 0 selectedDeviceId 1060 for port ID 1137
+10-24 21:10:27.534 W/AudioFlinger(  417): createTrack_l(): mismatch between requested flags (00000008) and output flags (00000002)
+10-24 21:10:27.537 I/AudioALSAHardware(  395): +getParameters(), key = get_audio_delay
+10-24 21:10:27.537 I/AudioALSAHardware(  395): -getParameters(), return ""
+10-24 21:10:27.537 I/audio_bluetooth_hw_fosExt(  395): Get bluetooth audio delay as 0 ms
+10-24 21:10:27.542 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:27.543 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:27.601 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:27.602 I/netd    (  328): trafficSwapActiveStatsMap() <0.17ms>
+10-24 21:10:27.618 I/netd    (  328): tetherGetStats() <1.24ms>
+10-24 21:10:27.628 W/PesReader( 6850): Unexpected start code prefix: 2163743
+10-24 21:10:27.639 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:27.643 I/netd    (  328): bandwidthSetGlobalAlert(2097152) <0.38ms>
+10-24 21:10:27.645 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:27.646 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:27.709 W/Thread-26(24624): type=1400 audit(0.0:23054): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:27.715 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:27.716 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:10:27.717 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:10:28.012 E/MTK_GRALLOC(  364): Format 0x23 cannot be processed
+10-24 21:10:28.069 I/APM_AudioPolicyManager(  417): startOutput() output 13, stream 3, session 2473
+10-24 21:10:28.070 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:10:28.070 W/APM::CustomAudioPolicyEngine(  417): getDevicesForStrategy() unknown strategy: -1
+10-24 21:10:28.070 I/Threads_fosExt(  417): startOutput() output 13, stream 3, session 2473, caller pid: 6850, uid: 10341
+10-24 21:10:28.080 I/ASP/AspMain(  395): asp_command: 0x0; code=88
+10-24 21:10:28.080 I/ASP/AspManagerBase(  395): executeCommandLocked() cmdCode = 88
+10-24 21:10:28.080 I/ASP/AspManagerBase(  395): Set audio content type: 2
+10-24 21:10:28.081 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:28.101 I/[StreamNova-Video-Debug]( 6850): Player STATE_READY -> activeTrack: 854x480 @ 1200000bps mime=video/avc codecs=avc1.640028 fps=-1.0 | videoFormat: 854x480 @ 1200000bps mime=video/avc codecs=avc1.640028 fps=-1.0 | videoSize: 854x480 par=0.99921936
+10-24 21:10:28.101 I/StreamNova4KDiag( 6850): STATE_READY videoFormat=id=0 label=- lang=- mime=video/avc container=video/mp2t codecs=avc1.640028 size=854x480 decoded=-1x-1 bitrate=1200000 avgBitrate=-1 peakBitrate=1200000 fps=-1.0 par=0.99921936 rotation=0 | COLOR colorSpace=sconosciuto(-1) colorRange=sconosciuto(-1) colorTransfer=sconosciuto(-1) lumaBitdepth=8 chromaBitdepth=8 bitdepthValid=true hdrStaticInfo=0B hdr10Plus=non-esposto-dal-ColorInfo-del-fork | HDR=SDR/non-HDR dichiarato | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:10:28.101 I/StreamNova4KDiag( 6850): STATE_READY audioFormat=id=audio:Italian label=Italian lang=it mime=audio/mp4a-latm container=video/mp2t codecs=mp4a.40.2 size=-1x-1 decoded=-1x-1 bitrate=-1 avgBitrate=-1 peakBitrate=-1 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry [audio, Italian]]
+10-24 21:10:28.101 I/StreamNova4KDiag( 6850): STATE_READY params maxVideoSize=2147483647x2147483647 minVideoSize=0x0 maxVideoBitrate=2147483647 maxVideoFrameRate=2147483647 viewport=2147483647x2147483647 exceedRendererCapabilitiesIfNecessary=true exceedVideoConstraintsIfNecessary=true forceHighestSupportedBitrate=false forceLowestBitrate=false tunnelingEnabled=false disabledTrackTypes=[3] preferredVideoMimeTypes=[] selectionOverrides=0
+10-24 21:10:28.101 I/StreamNova4KDiag( 6850): STATE_READY videoTrack[0] groupLen=3 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK | id=0 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=854x480 decoded=-1x-1 bitrate=1200000 avgBitrate=-1 peakBitrate=1200000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:10:28.102 I/StreamNova4KDiag( 6850): STATE_READY videoTrack[1] groupLen=3 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK | id=1 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1280x720 decoded=-1x-1 bitrate=2150000 avgBitrate=-1 peakBitrate=2150000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:10:28.102 I/StreamNova4KDiag( 6850): STATE_READY videoTrack[2] groupLen=3 selected=true supported=true raw=4 support=FORMAT_HANDLED adaptive=NOT_SUPPORTED tunneling=NOT_SUPPORTED hw=SW/NO decoder=FALLBACK | id=2 label=- lang=- mime=video/avc container=application/x-mpegURL codecs=avc1.640028 size=1920x1080 decoded=-1x-1 bitrate=4500000 avgBitrate=-1 peakBitrate=4500000 fps=-1.0 par=1.0 rotation=0 | COLOR colorInfo=null | HDR=nessun colorInfo (SDR presunto) | DV=no | HEVC=- | drm=nessuno | metadata=entries=[HlsTrackMetadataEntry]
+10-24 21:10:28.102 I/StreamNova4KDiag( 6850): DECODER disponibili per mime=video/avc -> 2
+10-24 21:10:28.103 I/StreamNova4KDiag( 6850): DECODER info: name=OMX.MTK.VIDEO.DECODER.AVC codecMimeType=video/avc hw=true sw=false vendor=true adaptive=true tunneling=false secure=false isFormatSupported=true | OMX.MTK.VIDEO.DECODER.AVC
+10-24 21:10:28.103 I/StreamNova4KDiag( 6850): DECODER info: name=c2.android.avc.decoder codecMimeType=video/avc hw=false sw=true vendor=false adaptive=true tunneling=false secure=false isFormatSupported=true | c2.android.avc.decoder
+10-24 21:10:28.103 I/[StreamNova-Video-Debug]( 6850): updateResolutionFromHeight: h=480, w=854 -> detectedResolution='SD' (era='SD')
+10-24 21:10:28.108 I/LastStreamCache( 6850): Salvato ultimo flusso funzionante per tt0137523 S-1 E-1
+10-24 21:10:28.114 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:28.135 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:28.273 I/MediaCodecLogger( 6850): the latest buffer is 1047 old with packageName com.aistudio.streamnova.tvapp. Possible resume detected
+10-24 21:10:28.391 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc Resolution change from 1920x1080 to 854x480 took = 5
+10-24 21:10:28.392 W/PesReader( 6850): Unexpected start code prefix: 3212341
+10-24 21:10:28.489 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:28.647 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:28.777 W/PesReader( 6850): Unexpected start code prefix: 2163765
+10-24 21:10:28.795 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:10:28.795 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:10:28.795 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:10:28.795 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:10:28.795 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:10:28.940 W/PesReader( 6850): Unexpected start code prefix: 3212363
+10-24 21:10:29.148 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:29.322 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:started test 5 of 5
+10-24 21:10:29.322 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX065R
+10-24 21:10:29.322 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX065R
+10-24 21:10:29.337 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX065R,bssid=1,essid=1,wifiFrequency=0,networkTypeGuesses=2_4_GHZ
+10-24 21:10:29.337 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:10:29.337 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX065R,edgeType=BidirectionalBothCanBeInitiator,reason=SameNetwork
+10-24 21:10:29.337 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:testingId=XX0196
+10-24 21:10:29.337 I/whad    ( 2059): Device:testVisibility:reason=sending,fetchingCapabilities=0,uniqueId=XX0196
+10-24 21:10:29.348 I/whad    ( 2059): Device:testVisibilitySuccessful:uniqueId=XX0196,bssid=0,essid=0,wifiFrequency=0,networkTypeGuesses=5_0_GHZ
+10-24 21:10:29.348 I/whad    ( 2059): TransportManager:onVisibilityTestResult:hasValue,value=0
+10-24 21:10:29.348 I/whad    ( 2059): ConnectionEdgeDetector:onVisibilityTestResult:updatedConnectionEdge,localDevice=XX06D1,remoteDevice=XX0196,edgeType=BidirectionalBothCanBeInitiator,reason=DifferentSeparateNetworks
+10-24 21:10:29.349 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:skippingLocalDevice,bssid=1,essid=1,networkTypeGuesses=2_4_GHZ
+10-24 21:10:29.349 I/whad    ( 2059): DeviceVisibilityManager:runProactiveVisibilityTest:localDevice=XX06D1,finished sending proactive test 5 of 5
+10-24 21:10:29.349 I/whad    ( 2059): DeviceVisibilityManager:proactiveVisibilityThread:sleeping for 22 seconds beyond minimum, total 922 seconds
+10-24 21:10:29.508 I/WifiDiagsUtil(  693): event=pingGatewayTest, TARGET_TYPE=GATEWAY, IP=XXX
+10-24 21:10:29.516 I/WifiDiagsUtil(  693): event=pingsComplete, TARGET_TYPE=GATEWAY, IP=XXX, PKTS_TX=3, PKTS_RX=3, PKT_LOSS=0.0%, AVG_TIME=2,33
+10-24 21:10:29.516 I/WifiDiagsUtil(  693): event=fastPingGateWaySuccess, action=runPingGateway in 160s
+10-24 21:10:29.652 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:29.737 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23055): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:10:29.737 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23056): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:10:29.737 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23057): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:10:29.743 I/MediaProvider( 1970): Begin Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/hf_e.png flg=0x1400010 cmp=com.android.providers.media.module/com.android.providers.media.MediaService }
+10-24 21:10:29.746 W/ModernMediaScanner( 1970): Failed to visit /sdcard/hf_e.png: java.nio.file.AccessDeniedException: /sdcard/hf_e.png
+10-24 21:10:29.748 I/MediaProvider( 1970): Scanned internal due to REASON_DEMAND, found 0 items in 4ms, 0 inserts 0 updates 0 deletes
+10-24 21:10:29.750 I/MediaProvider( 1970): End Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/hf_e.png flg=0x1400010 cmp=com.android.providers.media.module/com.android.providers.media.MediaService }
+10-24 21:10:29.752 E/libc    (13759): Access denied finding property "vendor.product.pvr.debug_level"
+10-24 21:10:29.752 E/IMGSRV  (13759): :2753: GrallocUnregisterBuffer: Cannot free a locked buffer (ID=137688)
+10-24 21:10:29.752 E/libc    (13759): Access denied finding property "vendor.product.pvr.debug_level"
+10-24 21:10:29.752 E/IMGSRV  (13759): :74: freeBuffer: Failed to unregister native handle
+10-24 21:10:29.752 E/Gralloc4(13759): freeBuffer(0xed666c00) failed with 2
+10-24 21:10:29.752 E/IMGSRV  (13759): :2683: hal_deinit: Stale maps left in cache; probably an application bug
+10-24 21:10:29.752 E/IMGSRV  (13759): :2685: hal_deinit: You may see failing kernel assertions after this message
+10-24 21:10:29.753 I/MTK_GRALLOC(13759): Unregistered dump signal 33 for gralloc, old hdl 0x0
+10-24 21:10:29.741 I/chatty  ( 1970): uid=10240(com.android.providers.media.module) expire 4 lines
+10-24 21:10:29.741 W/com.android.providers.media.module( 1970): type=1400 audit(0.0:23062): avc: denied { read } for comm=4173796E635461736B202331 name="primary" dev="tmpfs" ino=41 scontext=u:r:mediaprovider_app:s0:c240,c256,c512,c768 tcontext=u:object_r:mnt_pass_through_file:s0 tclass=lnk_file permissive=0 app=com.android.providers.media.module
+10-24 21:10:29.989 I/whad    ( 2059): ControlPlaneManager:handleCommand:caller=Libevent,cmd=sendMessage,xmit=330446932,recv=330446994,delta=62,tss=XX0196,senderId=XX0196,tssStale=false
+10-24 21:10:29.989 I/whad    ( 2059): AndroidOSInterface:recordMinervaMetric:Recorded 'xya3zuyg' 'nkjr/2/013304c0'
+10-24 21:10:29.989 I/whad    ( 2059): Fabric:onMessage:id=Stitch_4bc64a7e-2183-4432-9220-b274b3897b13, name=Stitch, sender=XX0196
+10-24 21:10:30.076 W/PesReader( 6850): Unexpected start code prefix: 3212385
+10-24 21:10:30.149 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:30.162 W/PesReader( 6850): Unexpected start code prefix: 2163787
+10-24 21:10:30.461 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:30.461 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:30.461 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:30.550 I/system_server(  693): oneway function results will be dropped but finished with status OK and parcel size 4
+10-24 21:10:30.563 W/PesReader( 6850): Unexpected start code prefix: 3212407
+10-24 21:10:30.649 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:31.150 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:31.389 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:31.390 I/netd    (  328): trafficSwapActiveStatsMap() <0.19ms>
+10-24 21:10:31.405 I/netd    (  328): tetherGetStats() <1.43ms>
+10-24 21:10:31.430 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:31.434 I/netd    (  328): bandwidthSetGlobalAlert(2097152) <0.22ms>
+10-24 21:10:31.435 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:31.436 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:31.441 W/PesReader( 6850): Unexpected start code prefix: 2163809
+10-24 21:10:31.650 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:31.850 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 430
+10-24 21:10:32.150 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:32.634 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 129
+10-24 21:10:32.651 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:32.749 W/Thread-26(24624): type=1400 audit(0.0:23063): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:32.755 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:32.756 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:10:32.853 W/PesReader( 6850): Unexpected start code prefix: 2163831
+10-24 21:10:33.151 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:33.469 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:33.469 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:33.469 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:33.652 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:34.092 W/PesReader( 6850): Unexpected start code prefix: 2163853
+10-24 21:10:34.153 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:34.653 I/chatty  ( 6850): uid=10341(com.aistudio.streamnova.tvapp) identical 1 line
+10-24 21:10:35.154 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:35.316 I/mtkpower@impl(  413): [powerd_req] TIMER_MSG_PERF_LOCK_TIMEOUT hdl:22616
+10-24 21:10:35.316 I/libPowerHal(  413): [perfLockRel] hdl:22616, idx:0
+10-24 21:10:35.316 I/libPowerHal(  413): [PD] scn:0 hdl:22616 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:10:35.316 I/mtkpower@impl(  413): [powerd_req] TIMER_MSG_PERF_LOCK_TIMEOUT hdl:22617
+10-24 21:10:35.316 I/libPowerHal(  413): [perfLockRel] hdl:22617, idx:1
+10-24 21:10:35.316 I/libPowerHal(  413): [PD] scn:1 hdl:22617 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:10:35.338 I/mtkpower@impl(  413): [powerd_req] TIMER_MSG_PERF_LOCK_TIMEOUT hdl:22618
+10-24 21:10:35.338 I/libPowerHal(  413): [perfLockRel] hdl:22618, idx:2
+10-24 21:10:35.338 I/libPowerHal(  413): [PD] scn:2 hdl:22618 hint:0 comm:mtkpower@1.0-se pid:413
+10-24 21:10:35.339 I/libPowerHal(  413): INTERACTION: sysfs_freq set cpu freq: 600000 1696000
+10-24 21:10:35.659 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:35.961 W/PesReader( 6850): Unexpected start code prefix: 3212429
+10-24 21:10:36.159 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:36.479 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:36.479 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:36.480 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:36.659 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:36.945 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 391
+10-24 21:10:37.159 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:37.205 W/PesReader( 6850): Unexpected start code prefix: 2163875
+10-24 21:10:37.657 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:37.665 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 134
+10-24 21:10:37.793 W/Thread-26(24624): type=1400 audit(0.0:23064): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:37.797 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:37.799 I/chatty  (  693): uid=1000(system) Binder:693_13 identical 2 lines
+10-24 21:10:37.802 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:10:37.934 I/perfmonitord:StatUtil(  590): CPUUtilization is at 28%
+10-24 21:10:37.934 I/perfmonitord:StatUtil(  590): MemoryUtilization is at 80%
+10-24 21:10:38.161 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:38.557 W/PesReader( 6850): Unexpected start code prefix: 2163897
+10-24 21:10:38.660 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:38.803 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:10:38.803 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:10:38.803 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:10:38.803 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:10:38.803 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:10:39.158 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:39.445 W/PesReader( 6850): Unexpected start code prefix: 3212451
+10-24 21:10:39.489 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:39.489 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:39.490 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:39.658 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:41.181 I/chatty  ( 6850): uid=10341(com.aistudio.streamnova.tvapp) identical 3 lines
+10-24 21:10:41.680 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:41.766 W/PesReader( 6850): Unexpected start code prefix: 3212473
+10-24 21:10:41.975 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 521
+10-24 21:10:42.187 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:42.498 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:42.499 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:42.500 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:42.603 I/hdmi_cec(  379): [HWCEC] CEC_RX_CMD, init:0, dest:4, opcode: 0x8f,size:1, param[0]=0x0, param_length:0
+10-24 21:10:42.604 D/HDMI    (  693): [R]:<Give Device Power Status> 04:8F
+10-24 21:10:42.605 I/AmzHdmiServiceCallback(  693): power status is 0
+10-24 21:10:42.607 D/HDMI    (  693): [S]:<Report Power Status> 40:90:00
+10-24 21:10:42.608 I/hdmi_cec(  379): [HWCEC] send_message af init:4, dest:0, opcode: 0x90, size:2, body[0]=0x0
+10-24 21:10:42.608 I/hdmi_cec(  379): [HWCEC] send_message drv init:4, dest:0, opcode: 0x90, size:1, pv_tag:1337067448, body[0]=0x0
+10-24 21:10:42.609 I/OZ-DCSCEC:HdmiCecAgent( 1335): Received message: Source: 0x00; Destination: 0x04; Opcode: 0x8F; Params: -
+10-24 21:10:42.685 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:42.760 I/hdmi_cec(  379): [HWCEC] send_message end, opcode: 0x90, mResult:0
+10-24 21:10:42.782 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 131
+10-24 21:10:42.833 W/Thread-26(24624): type=1400 audit(0.0:23065): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:42.840 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:42.846 I/AmazonHdmiService(  693): Get Current HDCP Version
+10-24 21:10:42.979 W/PesReader( 6850): Unexpected start code prefix: 3212495
+10-24 21:10:43.093 W/PesReader( 6850): Unexpected start code prefix: 2163919
+10-24 21:10:43.183 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:43.683 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:43.734 W/PesReader( 6850): Unexpected start code prefix: 3212517
+10-24 21:10:44.180 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:44.282 W/PesReader( 6850): Unexpected start code prefix: 2163941
+10-24 21:10:44.681 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:45.188 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:45.435 W/PesReader( 6850): Unexpected start code prefix: 3212539
+10-24 21:10:45.470 W/PesReader( 6850): Unexpected start code prefix: 2163963
+10-24 21:10:45.512 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:45.513 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:45.514 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:45.683 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:46.024 I/whad    ( 2059): TimeSyncClient:clientThread:reason=skewOrDriftChange,server=XX0196,time=330471.484245,skewX=327050.404335,skewY=-8.494674,drift=-0.370391,reportedDrift=-0.370391,numExchanges=658436,driftSource=ESTIMATE,skewBoundSec=0.001549
+10-24 21:10:46.185 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:46.527 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:46.529 I/netd    (  328): trafficSwapActiveStatsMap() <0.28ms>
+10-24 21:10:46.552 I/netd    (  328): tetherGetStats() <2.11ms>
+10-24 21:10:46.580 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:46.585 I/netd    (  328): bandwidthSetGlobalAlert(2097152) <0.26ms>
+10-24 21:10:46.588 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:46.589 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:46.676 W/PesReader( 6850): Unexpected start code prefix: 2163985
+10-24 21:10:46.683 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:46.719 W/PesReader( 6850): Unexpected start code prefix: 3212561
+10-24 21:10:47.061 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 382
+10-24 21:10:47.186 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:47.445 I/SPCH-Cont_HealthLogger( 2008): Current State = {"AlexaCaptionsEnabled":"false","Account":"valid","ProfileValidated":"true","ProfileType":"ADULT","AlexaCaptionsSupported":"true","memoryTotalPss":"18558","DeviceFamily":"SMP","memoryTotalSharedDirty":"6552","ActiveSpeechUI":"Bamboo","ReleaseVersion":"662.0.0","AlexaLegalTermsAccepted":"true","AppVersion":"3.0.23518.0","AlexaExperience":"FULL","SupportsFarField":"false","short_press_overlay_state":"{\"enabled\": true, \"hintsEnabled\": false, \"isChild\": false, \"override\": 0, \"hasFullAlexa\": true}","memoryAvailable":"440827904","Gateway":"avs-alexa-18-eu.amazon.com:443","RemoteSettingsStrategy":"VizArcus","memoryLow":"false","ConnectionState":"CONNECTED","OOBECompleted":"true","memoryTotalPrivateDirty":"13827","str.auto_wake_up_always":"0"}
+10-24 21:10:47.451 W/PesReader( 6850): Unexpected start code prefix: 3212583
+10-24 21:10:47.685 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:47.865 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 133
+10-24 21:10:47.873 W/Thread-26(24624): type=1400 audit(0.0:23066): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:47.876 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:48.083 W/PesReader( 6850): Unexpected start code prefix: 2164007
+10-24 21:10:48.188 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:48.532 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:48.532 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:48.533 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:48.580 W/PesReader( 6850): Unexpected start code prefix: 3212605
+10-24 21:10:48.688 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:48.804 E/integrity_module(  630): --- integrity_module file read error /sys/class/power_supply/battery/device/gm30_bat_cycle ---
+10-24 21:10:48.805 E/integrity_module(  630): --- integrity_module file read error  ---
+10-24 21:10:48.805 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/ADC_Charger_Voltage ---
+10-24 21:10:48.805 E/integrity_module(  630): --- integrity_module file read error /sys/devices/platform/charger/chr_type ---
+10-24 21:10:48.805 E/integrity_module(  630): --- integrity_module file read error ---
+10-24 21:10:49.192 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:49.275 W/PesReader( 6850): Unexpected start code prefix: 2164029
+10-24 21:10:49.706 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:49.810 W/PesReader( 6850): Unexpected start code prefix: 3212627
+10-24 21:10:50.206 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:50.473 W/PesReader( 6850): Unexpected start code prefix: 2164051
+10-24 21:10:50.707 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:51.207 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:51.541 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:51.541 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:51.543 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:51.656 W/PesReader( 6850): Unexpected start code prefix: 3212649
+10-24 21:10:51.672 W/PesReader( 6850): Unexpected start code prefix: 2164073
+10-24 21:10:51.703 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:52.106 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 492
+10-24 21:10:52.209 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:52.322 W/PesReader( 6850): Unexpected start code prefix: 3212671
+10-24 21:10:52.710 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:52.913 W/Thread-26(24624): type=1400 audit(0.0:23067): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:52.917 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:52.958 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 133
+10-24 21:10:53.017 W/PesReader( 6850): Unexpected start code prefix: 2164095
+10-24 21:10:53.205 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:53.706 I/chatty  ( 6850): uid=10341(com.aistudio.streamnova.tvapp) identical 1 line
+10-24 21:10:54.211 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:54.216 W/PesReader( 6850): Unexpected start code prefix: 2164117
+10-24 21:10:54.553 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:54.553 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:54.554 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:54.711 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:54.901 W/PesReader( 6850): Unexpected start code prefix: 3212693
+10-24 21:10:55.166 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:55.168 I/netd    (  328): trafficSwapActiveStatsMap() <0.35ms>
+10-24 21:10:55.191 I/netd    (  328): tetherGetStats() <2.82ms>
+10-24 21:10:55.208 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:55.221 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:55.226 I/netd    (  328): bandwidthSetGlobalAlert(2097152) <0.15ms>
+10-24 21:10:55.227 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:55.228 W/BestClock(  693): java.time.DateTimeException: Missing NTP fix
+10-24 21:10:55.711 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:56.208 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:56.232 W/PesReader( 6850): Unexpected start code prefix: 2164139
+10-24 21:10:56.519 W/PesReader( 6850): Unexpected start code prefix: 3212715
+10-24 21:10:56.709 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:57.139 I/MediaCodecLogger( 6850): 6850.4K.HW.omx.video.avc.bitrateInKbps = 350
+10-24 21:10:57.214 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:57.560 I/WifiHAL (  390): Creating message to get link statistics; iface = 15
+10-24 21:10:57.561 E/WifiHAL (  390): Incorrect number of channels = 4
+10-24 21:10:57.561 E/WifiVendorHal(  693): getWifiLinkLayerStats_1_3_Internal(l.973) failed {.code = ERROR_UNKNOWN, .description = unknown}
+10-24 21:10:57.609 W/PesReader( 6850): Unexpected start code prefix: 2164161
+10-24 21:10:57.714 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:57.925 W/Thread-26(24624): type=1400 audit(0.0:23068): avc: denied { read } for name="u:object_r:vendor_netflix_prop:s0" dev="tmpfs" ino=432 scontext=u:r:amazon_app:s0 tcontext=u:object_r:vendor_netflix_prop:s0 tclass=file permissive=0 app=com.amazon.firebat
+10-24 21:10:57.930 E/libc    (24624): Access denied finding property "vendor.display-size"
+10-24 21:10:57.987 I/MediaCodecLogger( 6850): 6850.SW.c2.audio.mp4a.bitrateInKbps = 130
+10-24 21:10:58.214 I/PlayerScreen( 6850): Dimensione sottotitoli: Media (fraction=0.0533); sfondo: Nero semi-trasparente (-2147483648); posizione: Basso (bottomFraction=0.08)
+10-24 21:10:58.312 W/PesReader( 6850): Unexpected start code prefix: 3212737
+10-24 21:10:58.591 I/treamnova.tvap( 6850): Background young concurrent copying GC freed 408789(16MB) AllocSpace objects, 111(7296KB) LOS objects, 35% free, 44MB/68MB, paused 136us total 151.589ms

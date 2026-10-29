@@ -1,0 +1,19 @@
+// Run mirato sulle classi risultate rosse nel run completo della Fase 2, per capire se il
+// fallimento dipende dall'ordine/esecuzione completa (ambiente Robolectric) o è reale.
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.SeasonEpisodePickerTest"
+            includeTestsMatching "com.example.TmdbSearchAndPaginationTest"
+            includeTestsMatching "com.example.data.local.RoomCacheIntegrationTest"
+            includeTestsMatching "com.example.data.stremio.CinemetaCategorySearchDefaultTest"
+            includeTestsMatching "com.example.ui.screens.player.PlayerScrubSeekControllerTest"
+            includeTestsMatching "com.example.ui.screens.player.SeekPreviewControllerTest"
+            includeTestsMatching "com.example.ui.screens.player.SeekPreviewPublicationGateTest"
+            includeTestsMatching "com.example.ui.viewmodel.LiveChannelDetailFlowTest"
+            includeTestsMatching "com.example.ui.viewmodel.SearchCategoryXperienceCatalogTest"
+            includeTestsMatching "com.example.ui.viewmodel.SearchCategoryXperienceRealManifestTest"
+            includeTestsMatching "com.example.ui.viewmodel.StreamNovaViewModelScrubbingTest"
+        }
+    }
+}

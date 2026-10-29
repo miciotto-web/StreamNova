@@ -1,0 +1,11 @@
+// Run mirato dei test sul rientro dal player (nessun flash della Home).
+allprojects {
+    tasks.withType(Test).configureEach {
+        filter {
+            includeTestsMatching "com.example.ui.screens.ContinueWatchingPlayerReturnNoFlashTest"
+            includeTestsMatching "com.example.ui.screens.ContinueWatchingPlayerReturnFocusTest"
+            includeTestsMatching "com.example.ui.viewmodel.PlaybackFocusOriginTest"
+            includeTestsMatching "com.example.ui.viewmodel.SourceDialogMediaAlignmentTest"
+        }
+    }
+}
