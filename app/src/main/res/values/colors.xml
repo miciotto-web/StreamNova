@@ -9,4 +9,7 @@
     <color name="white">#FFFFFFFF</color>
     <!-- Sfondo opaco di icone e banner: nessuna trasparenza per il launcher Fire TV -->
     <color name="splash_background">#FF050E1F</color>
+    <!-- Sfondo dell'intro video: campionato dal fondo del filmato ufficiale, così
+         letterbox e primi frame non mostrano stacchi di colore. -->
+    <color name="splash_video_background">#FF0A1424</color>
 </resources>

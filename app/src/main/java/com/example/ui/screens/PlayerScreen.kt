@@ -119,13 +119,13 @@ import com.example.ui.screens.player.SeekPreviewRegistry
 import com.example.ui.screens.player.SeekPreviewState
 import com.example.ui.screens.player.PlayerIntroUtils
 import com.example.ui.screens.player.PlayerIntroUtils.IntroWindow
+import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.IntroSkipRepository
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
@@ -161,6 +161,7 @@ import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import com.example.ui.util.FocusTrace
 import com.example.ui.util.streamUnavailableMessage
 import java.util.Locale
 import com.example.ui.viewmodel.StreamNovaViewModel
@@ -342,12 +343,11 @@ fun PlayerScreen(
     mediaType = media.type.name
   ) || media.episodes.isNotEmpty() || media.type.labelItalian.contains("serie", ignoreCase = true)
 
-  // Episodio attivo (se TV Show ma episode è null, cerca il primo o l'ultimo guardato)
-  val currentEp = episode ?: if (isTvShow) {
-    media.episodes.firstOrNull {
-      it.seasonNumber == (media.lastWatchedSeason ?: 1) &&
-      it.episodeNumber == (media.lastWatchedEpisode ?: 1)
-    } ?: media.episodes.firstOrNull()
+  // Episodio attivo. Senza episodio esplicito, la ripresa usa l'episodio salvato
+  // (stagione/episodio), ricostruendolo se non è nella lista locale troncata: mai S1E1.
+  // I canali LIVE sono tipizzati SERIE_TV ma non hanno episodi: nessun S1E1 sintetico.
+  val currentEp = episode ?: if (isTvShow && !viewModel.isLiveChannel(media.id)) {
+    EpisodeResumeResolver.resolve(media)
   } else null
 
   // Payload SIMKL: `currentEp` (non il solo `episode`) perché una serie riprodotta senza
@@ -586,18 +586,19 @@ fun PlayerScreen(
   // Factory HTTP STABILE: le intestazioni della sorgente attiva possono cambiare
   // (cambio manuale di sorgente dal player) senza dover ricreare l'ExoPlayer.
   //
-  // `DefaultHttpDataSource.Factory` applica le "default request properties" al
-  // momento della creazione del DataSource (cioe' al prepare()): aggiornarle in
-  // place mantiene la STESSA istanza di player e evita duplicazioni/ricreazioni.
-  // Con la ricreazione il player ripartirebbe da zero (nuovo buffering, decoder
-  // da riavviare, posizione persa).
+  // Il trasporto e' OkHttpDataSource (vedi PlayerHttpDataSourceFactory): con
+  // DefaultHttpDataSource ogni seek all'indietro fuori buffer poteva chiudere la
+  // connessione dal thread della seek (Thread.interrupt del Loader), facendo
+  // sollevare a Okio "Unbalanced enter/exit" e a Media3
+  // "ExoPlaybackException: Unexpected runtime error".
+  //
+  // La factory applica le "default request properties" al momento della
+  // creazione del DataSource (cioe' al prepare()): aggiornarle in place mantiene
+  // la STESSA istanza di player e evita duplicazioni/ricreazioni. Con la
+  // ricreazione il player ripartirebbe da zero (nuovo buffering, decoder da
+  // riavviare, posizione persa).
   val httpDataSourceFactory = remember {
-    val factory = DefaultHttpDataSource.Factory()
-      .setUserAgent(DEFAULT_HTTP_USER_AGENT)
-      .setAllowCrossProtocolRedirects(true)
-      .setConnectTimeoutMs(15000)
-      .setReadTimeoutMs(20000)
-    factory
+    PlayerHttpDataSourceFactory(initialUserAgent = DEFAULT_HTTP_USER_AGENT)
   }
   // Factory schema-aware usata dal player per TUTTE le sorgenti: http(s) viene delegato
   // alla [httpDataSourceFactory] sopra (headers e User-Agent aggiornati in place), mentre
@@ -606,7 +607,7 @@ fun PlayerScreen(
   // `file://`, e il fallimento della traccia esterna veniva recuperato togliendo proprio
   // il sottotitolo appena scaricato.
   val playbackDataSourceFactory = remember {
-    DefaultDataSource.Factory(context, httpDataSourceFactory)
+    DefaultDataSource.Factory(context, httpDataSourceFactory.asFactory())
   }
   // Le intestazioni vengono aggiornate DURANTE la composizione (non in un
   // SideEffect): quando il player viene ricreato (es. passaggio HLS <-> link
@@ -614,8 +615,7 @@ fun PlayerScreen(
   // composizione, e deve quindi trovare gia' le intestazioni aggiornate.
   // Il blocco `remember` e' dichiarato PRIMA del `remember` che crea il player.
   remember(streamHeaders) {
-    httpDataSourceFactory.setUserAgent(streamHeaders["User-Agent"] ?: DEFAULT_HTTP_USER_AGENT)
-    httpDataSourceFactory.setDefaultRequestProperties(streamHeaders)
+    httpDataSourceFactory.updateHeaders(streamHeaders, DEFAULT_HTTP_USER_AGENT)
   }
 
   // Sottotitoli esterni della sorgente attiva: vengono solo allegati al Media3
@@ -2650,6 +2650,11 @@ fun PlayerScreen(
   BackHandler(enabled = !anyModalOpen) {
     Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler")
     Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
+    FocusTrace.log(
+      "PLAYER",
+      "BackHandler: scrubbing=${isScrubbing || isSeekSettling} skipIntro=$showSkipIntro " +
+        "nextEpisode=$isNextEpisodePromptVisible -> ${if (isScrubbing || isSeekSettling || showSkipIntro || isNextEpisodePromptVisible) "dismiss" else "closePlayer"}"
+    )
     if (isScrubbing || isSeekSettling) {
       Log.i("SeekSync", "PLAYERSCREEN: BackHandler durante scrubbing/settling: annulla scrubbing")
       cancelScrub()
@@ -2673,7 +2678,10 @@ fun PlayerScreen(
   Box(
     modifier = modifier
       .fillMaxSize()
-      .onFocusChanged { state -> playerHasFocus = state.hasFocus }
+      .onFocusChanged { state ->
+        playerHasFocus = state.hasFocus
+        FocusTrace.log("PLAYER", "focus root hasFocus=${state.hasFocus}")
+      }
       .background(Color.Black)
       // Lo scrubbing è gestito in PREVIEW, prima di ogni altro gestore del tasto: il
       // clickable dello sfondo (tocco per mostrare/nascondere l'HUD) consuma OK/ENTER nel
@@ -2684,6 +2692,17 @@ fun PlayerScreen(
         val keyCode = native.keyCode
         val isKeyDown = native.action == KeyEvent.ACTION_DOWN
         val scrubDirection = PlayerScrub.directionForKeyCode(keyCode)
+
+        // BACK: solo osservazione. Il tasto NON viene consumato qui (né su DOWN né su UP),
+        // così arriva intatto al dispatcher e lo consuma un solo BackHandler sul rilascio.
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+          FocusTrace.log(
+            "PLAYER",
+            "KEY_BACK ${if (isKeyDown) "DOWN" else "UP"} repeat=${native.repeatCount} " +
+              "scrubbing=${scrub.isScrubbing} settling=$isSeekSettling hud=$hudShown"
+          )
+          return@onPreviewKeyEvent false
+        }
 
         // Rilascio dell'OK che ha confermato lo skip intro: consumato qui, altrimenti il
         // clickable dello sfondo interpreterebbe il click e aprirebbe i controlli.
@@ -2713,12 +2732,13 @@ fun PlayerScreen(
 
         if (scrub.isScrubbing || isSeekSettling) {
           // Con l'anteprima aperta o in settling il telecomando appartiene allo scrubbing: ogni pressione
-          // (comprese le ripetizioni del sistema) vale un passo, OK conferma, BACK annulla.
+          // (comprese le ripetizioni del sistema) vale un passo, OK conferma.
+          //
+          // BACK non è gestito qui: chiudere lo scrubbing su KEY_DOWN consumerebbe il DOWN ma
+          // non il relativo KEY_UP, che verrebbe recapitato all'Activity e farebbe scattare il
+          // BackHandler sottostante (uscita dal player, o peggio pop della destinazione).
+          // Il BACK resta al BackHandler del player, che sul rilascio annulla lo scrubbing.
           when {
-            keyCode == KeyEvent.KEYCODE_BACK -> {
-              if (isKeyDown && native.repeatCount == 0) cancelScrub()
-              return@onPreviewKeyEvent true
-            }
             keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER -> {
               if (isKeyDown) {
                 if (scrub.isScrubbing) {
@@ -2754,38 +2774,13 @@ fun PlayerScreen(
         val keyCode = native.keyCode
         val isKeyDown = native.action == KeyEvent.ACTION_DOWN
 
-        // Gestione BACK telecomando
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-          if (isKeyDown && native.repeatCount == 0) {
-            Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent KEYCODE_BACK down, anyModalOpen=$anyModalOpen")
-            if (isScrubbing || isSeekSettling) {
-              Log.i("SeekSync", "PLAYERSCREEN: onKeyEvent BACK su scrubbing/settling: annulla scrubbing")
-              cancelScrub()
-            } else if (anyModalOpen) {
-              showTrackQuickPanel = false
-              showSubtitleModal = false
-              showQualityModal = false
-              showSpeedModal = false
-            } else if (showSkipIntro) {
-              Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent BACK su Salta Intro: chiusura banner")
-              isIntroDismissed = true
-              try {
-                idleFocusRequester.requestFocus()
-              } catch (_: Exception) {}
-            } else if (isNextEpisodePromptVisible) {
-              // Primo BACK con overlay "Prossimo Episodio": nasconde solo l'overlay
-              // (niente auto-next, restano i titoli di coda); serve un secondo BACK per uscire.
-              Log.d("BACK_TRACE", "PLAYERSCREEN: BACK su overlay Prossimo Episodio: chiusura overlay")
-              nextEpisodeDismissed = true
-              nextEpisodeCountdownSeconds = 0
-            } else {
-              Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent chiamata a closePlayer()")
-              viewModel.resetStreamState()
-              viewModel.closePlayer()
-            }
-          }
-          return@onKeyEvent true
-        }
+        // Il BACK NON è gestito sui KeyEvent: un solo tasto fisico produce un KEY_DOWN e un
+        // KEY_UP. Chiudendo il player (o lo scrubbing, o un banner) sul KEY_DOWN, il KEY_UP
+        // successivo non trova più il gestore che l'aveva consumato e viene recapitato
+        // all'Activity: `Activity.onKeyUp` chiama `onBackPressed()`, che sul dispatcher trova
+        // il BackHandler della destinazione sottostante (Dettaglio) e la fa POPpare -> Home.
+        // Il BACK è quindi di competenza esclusiva dei BackHandler (uno solo, sul rilascio):
+        // qui non va né consumato né interpretato.
 
         if (!isKeyDown) return@onKeyEvent false
 
@@ -3619,14 +3614,10 @@ fun PlayerScreen(
                 } catch (_: Exception) {}
                 true
               }
-              KeyEvent.KEYCODE_BACK -> {
-                // BACK sul banner: dismiss del banner senza chiudere il player
-                isIntroDismissed = true
-                try {
-                  idleFocusRequester.requestFocus()
-                } catch (_: Exception) {}
-                true
-              }
+              // BACK sul banner: NON gestito qui. Il banner riceve solo il KEY_DOWN
+              // (l'UP tornerebbe all'Activity), quindi consumarlo dismetterebbe il banner
+              // e lascerebbe il rilascio al BackHandler del player. Lo dismette il
+              // BackHandler del player (ramo `showSkipIntro`) con un'unica pressione.
               KeyEvent.KEYCODE_DPAD_UP -> {
                 true
               }

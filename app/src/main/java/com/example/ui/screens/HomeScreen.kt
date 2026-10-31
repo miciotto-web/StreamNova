@@ -43,6 +43,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
@@ -69,14 +70,21 @@ import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import com.example.ui.util.FocusTrace
 import com.example.ui.viewmodel.SidebarSection
 import com.example.ui.viewmodel.StreamNovaViewModel
 
 import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusBringIntoViewSpec
 import com.example.ui.components.TvFocusRow
+import com.example.ui.components.AnchoredCardFrame
+import com.example.ui.components.AnchoredFocusRow
+import com.example.ui.components.AnchoredFrameStyle
+import com.example.ui.components.AnchoredRowKeyState
+import com.example.ui.components.LocalAnchoredRowController
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalLastFocusedTarget
+import com.example.ui.components.LocalLastFocusedCardKey
 import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.components.LocalLastFocusedProviderId
@@ -97,6 +105,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.runtime.withFrameNanos
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
@@ -114,6 +123,10 @@ fun HomeScreen(
 
   val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
   val lastFocusedTarget by viewModel.lastFocusedTarget.collectAsState()
+  val lastFocusedCardKey by viewModel.lastFocusedCardKey.collectAsState()
+  // Distingue la PROVENIENZA salvata al click da una RICHIESTA di ripristino (BACK dal
+  // Dettaglio/ritorno dal Player): vedi [StreamNovaViewModel.focusRestoreRequested].
+  val focusRestoreRequested by viewModel.focusRestoreRequested.collectAsState()
   val lastFocusedProviderId by viewModel.lastFocusedProviderId.collectAsState()
   val focusRestoreToken by viewModel.focusRestoreToken.collectAsState()
 
@@ -131,6 +144,7 @@ fun HomeScreen(
   CompositionLocalProvider(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
     LocalLastFocusedTarget provides lastFocusedTarget,
+    LocalLastFocusedCardKey provides lastFocusedCardKey,
     LocalFocusRestoreToken provides focusRestoreToken,
     LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() },
     LocalLastFocusedProviderId provides lastFocusedProviderId,
@@ -138,16 +152,33 @@ fun HomeScreen(
   ) {
     when (activeSection) {
     SidebarSection.HOME -> {
-      HomeMainBrowsingContent(
-        allMedia = allMedia,
-        homeCatalogs = homeCatalogs,
-        onMediaClick = handleMediaClick,
-        onPlayClick = { viewModel.openStreamForMedia(it) },
-        onRemoveFromContinueWatching = { viewModel.removeFromContinueWatching(it) },
-        onProviderClick = onProviderClick,
-        viewModel = viewModel,
-        modifier = modifier
-      )
+      // La Home riceve il target SOLO quando è una RICHIESTA di ripristino (BACK dal
+      // Dettaglio o ritorno dal Player). La sola provenienza salvata al click non deve
+      // attivare il protocollo mentre la Home sta uscendo di scena: durante la transizione
+      // di uscita del NavHost la Home resta composta, il protocollo chiederebbe il focus
+      // sulla card appena cliccata e la card consumerebbe il target PRIMA del BACK. Al
+      // rientro il target non esisterebbe più e il fallback della MainActivity ancorerebbe
+      // il focus all'Hero (difetto "al ritorno dal Dettaglio il focus finisce sulla Hero").
+      val homeRestoreTarget = lastFocusedTarget.takeIf { focusRestoreRequested }
+      CompositionLocalProvider(
+        LocalLastFocusedMediaId provides homeRestoreTarget?.second,
+        LocalLastFocusedTarget provides homeRestoreTarget,
+        LocalLastFocusedCardKey provides lastFocusedCardKey.takeIf { homeRestoreTarget != null }
+      ) {
+        HomeMainBrowsingContent(
+          allMedia = allMedia,
+          homeCatalogs = homeCatalogs,
+          onMediaClick = handleMediaClick,
+          onPlayClick = { viewModel.openStreamForMedia(it) },
+          // «Continua a guardare»: percorso dedicato che parte dallo stato salvato del titolo
+          // (stagione/episodio/posizione) e logga l'intera catena con un token di correlazione.
+          onContinueWatchingPlayClick = { viewModel.playFromContinueWatching(it) },
+          onRemoveFromContinueWatching = { viewModel.removeFromContinueWatching(it) },
+          onProviderClick = onProviderClick,
+          viewModel = viewModel,
+          modifier = modifier
+        )
+      }
     }
     SidebarSection.FILM -> {
       val moviesItems = remember(homeCatalogs, allMedia) {
@@ -678,6 +709,10 @@ fun Modifier.rowFocusProperties(
     }
   }
 
+  // Nelle righe ancorate il controller deve sapere quale card ha DAVVERO il focus: è la
+  // sorgente dell'indice selezionato (mai un indice "di posizione" separato dal focus).
+  val anchoredRow = LocalAnchoredRowController.current
+
   // Solo tracciamento: il movimento verticale del D-pad NON è più intercettato dalla singola
   // card. Lo step Su/Giù è della ricerca nativa del focus di Compose (riga come focusGroup con
   // focusRestorer: vedi [homeRowFocusGroup], modello Nuvio ModernHomeRows.kt) e tiene il resto
@@ -691,6 +726,7 @@ fun Modifier.rowFocusProperties(
     .onFocusChanged { state ->
       if (state.isFocused || state.hasFocus) {
         coordinator.onCellFocused(rowKey, colIndex)
+        anchoredRow?.onCardFocused(colIndex)
       }
     }
 }
@@ -849,7 +885,22 @@ fun HomeVerticalFocusSync(
   coordinator: HomeRowFocusCoordinator,
   listState: LazyListState,
   rowStateFor: (String) -> LazyListState?,
-  onRestoreFocusFailed: (rowKey: String, colIndex: Int) -> Unit = { _, _ -> }
+  /**
+   * Ripristino dal Dettaglio CONFERMATO: il focus è davvero atterrato sulla cella richiesta
+   * (`onFocusChanged` -> `coordinator.isCellFocused`). È qui che il target può essere
+   * rilasciato: da questo istante le altre card e l'Hero tornano focalizzabili. Il chiamante
+   * verifica che la cella confermata appartenga alla riga salvata (untarget della Home).
+   */
+  onRestoreFocusConfirmed: (rowKey: String, colIndex: Int) -> Unit = { _, _ -> },
+  onRestoreFocusFailed: (rowKey: String, colIndex: Int) -> Unit = { _, _ -> },
+  /**
+   * `true` mentre un overlay modale in-window (es. il menu contestuale di «Continua a
+   * guardare») è aperto SOPRA la Home. In quella finestra il protocollo NON deve muovere il
+   * focus: una richiesta pendente ancora in volo che si «riprende» la cella di partenza
+   * (vedi il reassert del punto 6) sottrarrebbe il focus al popup appena aperto — è la causa
+   * della intermittenza «popup visibile ma focus ancora sulla Home».
+   */
+  isOverlayVisible: () -> Boolean = { false }
 ) {
   // Il coordinatore decide i movimenti verticali ma non conosce il viewport: la visibilità
   // REALE della riga (montata non basta: può essere tagliata dal bordo) gliela comunica qui,
@@ -864,8 +915,22 @@ fun HomeVerticalFocusSync(
   // sulla colonna 0 o sulla riga sottostante. La richiesta resta pendente finché la card
   // salvata non conferma il focus (tentativo diretto del LaunchedEffect di ripristino compreso).
   val currentRestoreId = LocalLastFocusedMediaId.current
-  LaunchedEffect(coordinator.pendingFocusRequest, coordinator.registrationTick) {
+  // Letto in COMPOSIZIONE (oltre che nei controlli interni): quando l'overlay modale si
+  // chiude, l'effetto deve ripartire e completare la richiesta rimasta pendente mentre il
+  // popup era aperto (es. l'ancora chiesta dalla rimozione di una card). Senza questa chiave
+  // la richiesta restava appesa fino alla successiva registrazione di cella.
+  val isOverlayOpenNow = isOverlayVisible()
+  LaunchedEffect(
+    coordinator.pendingFocusRequest,
+    coordinator.registrationTick,
+    isOverlayOpenNow
+  ) {
     val (rowKey, colIndex) = coordinator.pendingFocusRequest ?: return@LaunchedEffect
+
+    // Un overlay modale (menu contestuale) è aperto: il protocollo non muove il focus.
+    // La richiesta resta pendente e verrà completata quando la Home torna la superficie
+    // attiva (la chiusura del popup registra la richiesta di ripristino sulla card).
+    if (isOverlayVisible()) return@LaunchedEffect
 
     // 1. Verticale: la riga bersaglio deve essere INTERAMENTE nel viewport, altrimenti le sue
     //    card sono tagliate dal bordo (o non esistono nemmeno in composizione) e il focus
@@ -877,7 +942,14 @@ fun HomeVerticalFocusSync(
       (rowInfo.offset + rowInfo.size) <= listState.layoutInfo.viewportEndOffset
 
     if (!isRowFullyVisible) {
-      val rowIndex = listState.rowItemIndex(rowKey, coordinator.activeRowKeys)
+      // ATTENZIONE (ripristino dal Dettaglio): al primo frame dopo il rimontaggio della Home
+      // il layout della LazyColumn può non esistere ancora. `rowItemIndex` in quel caso
+      // ripiegherebbe su 0 (Hero) e lo scroll porterebbe la lista FUORI dal bersaglio: la
+      // cella non verrebbe mai composta e il ripristino resterebbe appeso. Senza layout non
+      // si muove nulla: la richiesta riparte alla prossima cella registrata
+      // (`registrationTick`), quando l'indice è calcolabile sul layout reale.
+      val hasLayout = listState.layoutInfo.totalItemsCount > 0
+      val rowIndex = if (hasLayout) listState.rowItemIndex(rowKey, coordinator.activeRowKeys) else -1
       if (rowIndex >= 0) {
         try {
           listState.animateScrollToItem(rowIndex)
@@ -914,6 +986,11 @@ fun HomeVerticalFocusSync(
     val targetRequester = coordinator.getRequester(rowKey, colIndex)
     var focusAcquired = false
 
+    // L'overlay può essersi aperto MENTRE questa esecuzione attendeva il mount della cella:
+    // ogni richiesta di focus va preceduta da questo controllo, altrimenti il protocollo
+    // riprenderebbe il focus dal popup appena aperto.
+    if (isOverlayVisible()) return@LaunchedEffect
+
     // 4. Il focus è acquisito SOLO quando `onFocusChanged` lo conferma: `requestFocus()` non
     //    solleva eccezioni se il nodo è già smontato, quindi consumare la richiesta sulla sola
     //    assenza di eccezione perderebbe la destinazione.
@@ -941,7 +1018,7 @@ fun HomeVerticalFocusSync(
     //    `onCellFocused` provoca appena il focus atterra su una cella diversa dal bersaglio.
     //    Durante il rientro dal Dettaglio (`currentRestoreId != null`) NON esegue ALCUN
     //    fallback: il ripristino deve rimanere rigorosamente ancorato alla card salvata.
-    if (!focusAcquired && currentRestoreId == null) {
+    if (!focusAcquired && currentRestoreId == null && !isOverlayVisible()) {
       coordinator.getTargetRequester(rowKey, colIndex)
         ?.takeIf { it !== targetRequester }
         ?.let { fallbackRequester ->
@@ -970,22 +1047,39 @@ fun HomeVerticalFocusSync(
     //    resta pendente SOLO quando il bersaglio non è ancora montato (self-healing), perché
     //    mentre il gate `canFocus` è chiuso l'unica superficie focalizzabile resta la sidebar
     //    (difetto "il focus finisce nella sidebar al rientro dal Dettaglio").
+    //    Se nel frattempo si è aperto un overlay modale, il protocollo si ferma QUI: né
+    //    escalation né abbandono (la richiesta resta valida per il ritorno della Home).
     if (!focusAcquired && currentRestoreId != null) {
-      if (isTargetAttached) {
+      if (isOverlayVisible()) return@LaunchedEffect
+      // Escalation: la richiesta si ripete sulla STESSA cella per un numero LIMITATO di
+      // tentativi spaziati a FRAME (nessun ritardo fisso, nessun loop infinito). Serve perché
+      // la riga ancorata può essere ancora in riallineamento sull'ancora quando arriva la
+      // prima richiesta: il focus scartato da un frame di assestamento non deve far
+      // abbandonare il ripristino (che altrimenti ripiegherebbe sull'Hero).
+      for (attempt in 0 until RESTORE_FOCUS_ATTEMPTS) {
+        if (!coordinator.isCellAttached(rowKey, colIndex)) break
         try {
           targetRequester.requestFocus()
-          focusAcquired = awaitCondition(VERTICAL_SYNC_TIMEOUT_MS) {
-            coordinator.isCellFocused(rowKey, colIndex)
-          }
         } catch (cancellation: CancellationException) {
           throw cancellation
         } catch (_: Exception) {
+          withFrameNanos { }
+          continue
         }
+        if (awaitCondition(RESTORE_FOCUS_CONFIRM_TIMEOUT_MS) {
+            coordinator.isCellFocused(rowKey, colIndex)
+          }
+        ) {
+          focusAcquired = true
+          break
+        }
+        withFrameNanos { }
       }
       if (!focusAcquired) {
         val colAlreadyInWindow = rowStateFor(rowKey)?.layoutInfo?.visibleItemsInfo
           ?.any { it.index == colIndex } == true
-        if (isTargetAttached || colAlreadyInWindow) {
+        val isTargetAttachedNow = coordinator.isCellAttached(rowKey, colIndex)
+        if (isTargetAttachedNow || colAlreadyInWindow) {
           // Consumo GUARDATO: se nel frattempo un tasto utente ha sovrascritto la richiesta
           // pendente con una nuova destinazione, quella nuova non va distrutta.
           if (coordinator.pendingFocusRequest == (rowKey to colIndex)) {
@@ -1004,7 +1098,12 @@ fun HomeVerticalFocusSync(
     //    richiesta NON viene né deviata né consumata: resta appesa alla card salvata.
     if (focusAcquired) {
       coordinator.consumePendingFocusRequest()
-    } else if (currentRestoreId == null && coordinator.reassertCurrentCellFocus()) {
+      // Ripristino CONFERMATO: solo adesso il target viene rilasciato e la Home torna
+      // interamente navigabile (Hero e righe non bersaglio riprendono il focus).
+      if (currentRestoreId != null) onRestoreFocusConfirmed(rowKey, colIndex)
+    } else if (currentRestoreId == null && !isOverlayVisible() &&
+      coordinator.reassertCurrentCellFocus()
+    ) {
       coordinator.consumePendingFocusRequest()
     }
   }
@@ -1076,6 +1175,70 @@ private const val CW_REMOVAL_FOCUS_TIMEOUT_MS = 500L
 /** Ripetizioni della richiesta di rientro nella riga prima di lasciare la rimozione in attesa. */
 private const val CW_REMOVAL_FOCUS_RETRIES = 3
 
+/**
+ * Tentativi (spaziati a frame) dell'escalation di ripristino e finestra di conferma del
+ * singolo tentativo: la riga ancorata può essere in riallineamento sull'ancora quando arriva
+ * la prima richiesta di focus, e una richiesta scartata da un frame di assestamento non deve
+ * far abbandonare il ripristino.
+ */
+private const val RESTORE_FOCUS_ATTEMPTS = 3
+private const val RESTORE_FOCUS_CONFIRM_TIMEOUT_MS = 250L
+
+/**
+ * Tetto della conferma della COLONNA di ripristino tramite la key stabile della card: si
+ * attende un evento di layout (la riga che compone la cella), non un ritardo fisso. Oltre il
+ * tetto vince l'indice risolto per identità, che è l'ordine autorevole della lista dati.
+ */
+private const val RESTORE_KEY_CONFIRM_TIMEOUT_MS = 400L
+
+/** Item composto di una riga della Home: indice nella LazyRow e key Compose (identità della card). */
+internal data class RestoreRowItem(val index: Int, val key: Any?)
+
+/**
+ * Colonna della card da ripristinare, VERIFICATA tramite la sua KEY STABILE.
+ *
+ * [identityIndex] è la posizione risolta per IDENTITÀ del titolo nella lista dati della riga
+ * (mai un indice ricordato: un catalogo che si riordina mentre la scheda Dettaglio è aperta
+ * porta la card in una posizione nuova). [visibleItems] è lo stato REALE della LazyRow.
+ *
+ * - key non nota (target di griglie/schermate singole) o cella non ancora composta
+ *   all'indice risolto: vince l'identità;
+ * - la card composta all'indice risolto è quella salvata: la posizione è confermata;
+ * - all'indice risolto c'è un'ALTRA card: si usa la posizione REALE della key salvata, se
+ *   composta (riordino in corso), altrimenti si resta sull'indice d'identità.
+ */
+internal fun resolveRestoreColumn(
+  identityIndex: Int,
+  stableKey: Any?,
+  visibleItems: List<RestoreRowItem>
+): Int {
+  if (identityIndex < 0 || stableKey == null) return identityIndex
+  val composedAtIndex = visibleItems.firstOrNull { it.index == identityIndex }
+  if (composedAtIndex == null) return identityIndex
+  if (composedAtIndex.key == stableKey) return identityIndex
+  return visibleItems.firstOrNull { it.key == stableKey }?.index ?: identityIndex
+}
+
+/**
+ * Attende REATTIVAMENTE che la riga componga la cella risolta per identità o la key salvata,
+ * poi verifica la colonna con [resolveRestoreColumn]. Nessun ritardo arbitrario: l'attesa
+ * finisce all'evento di layout (o al tetto [RESTORE_KEY_CONFIRM_TIMEOUT_MS]).
+ */
+private suspend fun awaitRestoreColumn(
+  rowState: LazyListState,
+  identityIndex: Int,
+  stableKey: Any?
+): Int {
+  if (stableKey == null) return identityIndex
+  withTimeoutOrNull(RESTORE_KEY_CONFIRM_TIMEOUT_MS) {
+    snapshotFlow {
+      rowState.layoutInfo.visibleItemsInfo.any { it.index == identityIndex || it.key == stableKey }
+    }.first { it }
+  }
+  val visibleItems = rowState.layoutInfo.visibleItemsInfo.map { RestoreRowItem(it.index, it.key) }
+  return resolveRestoreColumn(identityIndex, stableKey, visibleItems)
+}
+
 @Composable
 private fun HomeMediaLazyRow(
   rowState: LazyListState,
@@ -1095,6 +1258,53 @@ private fun HomeMediaLazyRow(
   )
 }
 
+/**
+ * Riga della Home con il sistema "fuoco fisso": il riquadro di selezione resta ancorato a
+ * sinistra e sono i poster a scorrere sotto di esso (vedi [AnchoredFocusRow]).
+ *
+ * Il collegamento con il coordinatore è completo: la richiesta di focus usa il requester
+ * della cella (rowKey + indice) e la conferma è il focus REALE della card
+ * (`coordinator.isCellFocused`), così il poster evidenziato coincide sempre con quello
+ * selezionato.
+ */
+@Composable
+private fun AnchoredHomeMediaRow(
+  coordinator: HomeRowFocusCoordinator,
+  rowKey: String,
+  rowState: LazyListState,
+  itemCount: Int,
+  frame: AnchoredCardFrame,
+  frameStyle: AnchoredFrameStyle,
+  focusedScale: Float,
+  contentPadding: PaddingValues,
+  /**
+   * Indice della card salvata quando è QUESTA la riga di ripristino (`null` fuori dal
+   * ripristino): la riga porta quella card esattamente sull'ancora prima che il focus la
+   * raggiunga (vedi [AnchoredFocusRow]).
+   */
+  restoreIndex: Int? = null,
+  modifier: Modifier = Modifier,
+  horizontalSpacing: Dp = 16.dp,
+  content: LazyListScope.() -> Unit
+) {
+  AnchoredFocusRow(
+    rowKey = rowKey,
+    itemCount = itemCount,
+    rowState = rowState,
+    contentPadding = contentPadding,
+    horizontalSpacing = horizontalSpacing,
+    frame = frame,
+    frameStyle = frameStyle,
+    focusedScale = focusedScale,
+    restoreIndex = restoreIndex,
+    onRequestFocus = { index -> coordinator.getRequester(rowKey, index).requestFocus() },
+    onIsIndexFocused = { index -> coordinator.isCellFocused(rowKey, index) },
+    onIsIndexAttached = { index -> coordinator.isCellAttached(rowKey, index) },
+    modifier = modifier,
+    content = content
+  )
+}
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun HomeMainBrowsingContent(
@@ -1102,6 +1312,11 @@ fun HomeMainBrowsingContent(
   homeCatalogs: HomeCatalogs? = null,
   onMediaClick: (MediaItem) -> Unit,
   onPlayClick: (MediaItem) -> Unit,
+  /**
+   * Avvio della riproduzione dalla card «Continua a guardare». Se assente (harness di test,
+   * anteprime) si usa [onPlayClick]: la Home non impone un percorso di riproduzione proprio.
+   */
+  onContinueWatchingPlayClick: ((MediaItem) -> Unit)? = null,
   onRemoveFromContinueWatching: (String) -> Unit,
   onProviderClick: (StreamingProvider) -> Unit = {},
   viewModel: StreamNovaViewModel? = null,
@@ -1115,12 +1330,24 @@ fun HomeMainBrowsingContent(
     MediaIdentity.dedupeByProgress(allMedia)
       .sortedByDescending { it.lastWatchedAt ?: 0L }
   }
+
+  // Badge "Prossima puntata": arricchimento in background, mai bloccante. La chiave sono
+  // gli ID delle card: le ri-emissioni della lista (progressi, refresh TMDB, badge appena
+  // arrivato) non rilanciano nulla finché l'insieme di "Continua a guardare" non cambia.
+  val continueWatchingIds = remember(continueWatching) { continueWatching.map { it.id } }
+  LaunchedEffect(continueWatchingIds) {
+    viewModel?.ensureNextEpisodeBadges(continueWatching)
+  }
   var contextMenuMedia by remember { mutableStateOf<MediaItem?>(null) }
 
   // Rimozioni da «Continua a guardare» in attesa della conferma di focus dentro la riga:
   // l'applicazione è in DUE TEMPI (vedi il commento nell'handler del menu contestuale), così
   // la card non viene mai smontata mentre un `focusRestorer` trattiene un PIN sul suo item.
   val pendingCwRemovals = remember { mutableStateListOf<String>() }
+
+  // Letto dentro le coroutine della sincronizzazione del focus senza riavviarle: mentre il
+  // menu contestuale è aperto il protocollo della Home NON deve muovere il focus.
+  val isContextMenuOpen by rememberUpdatedState(contextMenuMedia != null)
 
   val hasCustomCatalogMovies = homeCatalogs?.hasCustomCatalogMovies == true
   val hasCustomCatalogSeries = homeCatalogs?.hasCustomCatalogSeries == true
@@ -1282,12 +1509,6 @@ fun HomeMainBrowsingContent(
     coordinator.updateRows(activeRowKeys, rowItemCounts, rowIdentities)
   }
 
-  val handleRowMediaClick: (String, Int, MediaItem) -> Unit = { rowKey, colIndex, item ->
-    coordinator.onCellFocused(rowKey, colIndex)
-    viewModel?.saveLastFocusedMedia(rowKey, item.id)
-    onMediaClick(item)
-  }
-
   /**
    * Avvio della riproduzione da una card di riga (es. «Continua a guardare»).
    *
@@ -1302,7 +1523,11 @@ fun HomeMainBrowsingContent(
    */
   val handleRowPlayClick: (String, MediaItem) -> Unit = { rowKey, item ->
     viewModel?.savePlaybackFocusOrigin(rowKey, item.id)
-    onPlayClick(item)
+    if (rowKey == "section_continue_watching" && onContinueWatchingPlayClick != null) {
+      onContinueWatchingPlayClick.invoke(item)
+    } else {
+      onPlayClick(item)
+    }
   }
 
   val listState = rememberLazyListState()
@@ -1331,6 +1556,29 @@ fun HomeMainBrowsingContent(
 
   fun getRowState(rowKey: String): LazyListState = rowStates.getOrPut(rowKey) { LazyListState() }
 
+  /**
+   * Key Compose dell'item della riga in [colIndex]: è la KEY STABILE della card (la stessa
+   * passata a `items(key = …)`), non un indice. `null` finché la cella non è composta.
+   */
+  fun cardKeyAt(rowKey: String, colIndex: Int): String? =
+    rowStates[rowKey]?.layoutInfo?.visibleItemsInfo
+      ?.firstOrNull { it.index == colIndex }?.key as? String
+
+  /**
+   * Apertura della scheda Dettaglio da una card di riga.
+   *
+   * La PROVENIENZA del focus viene salvata PRIMA della navigazione: identità della riga
+   * ([rowKey]), identità del titolo ([MediaItem.id]) e KEY STABILE della card (mai la sua
+   * posizione, che un riordino del catalogo può cambiare mentre la scheda è aperta). Il
+   * salvataggio non è una richiesta di ripristino: quella arriva al BACK con
+   * `signalFocusRestore` (vedi [StreamNovaViewModel.focusRestoreRequested]).
+   */
+  val handleRowMediaClick: (String, Int, MediaItem) -> Unit = { rowKey, colIndex, item ->
+    coordinator.onCellFocused(rowKey, colIndex)
+    viewModel?.saveLastFocusedMedia(rowKey, item.id, cardKeyAt(rowKey, colIndex))
+    onMediaClick(item)
+  }
+
   // Un tempo qui viveva la mappa dei "requester di ingresso di riga" (Nuvio
   // rowFocusRequesters): rimossa perché attaccata a LazyRow non focalizzabili causava il
   // crash `FocusRequester is not initialized` al reingresso nel contenuto. Il reingresso
@@ -1351,6 +1599,10 @@ fun HomeMainBrowsingContent(
   val restoreMediaId = LocalLastFocusedMediaId.current
   val restoreTargetPair = LocalLastFocusedTarget.current
   val savedRestoreRowKey = restoreTargetPair?.first?.takeIf { it.isNotEmpty() }
+  // KEY STABILE della card salvata (key Compose dell'item, es. `trend_m_123`): identifica la
+  // card, non la sua posizione. Al rientro la colonna è risolta per IDENTITÀ e poi verificata
+  // con questa key, così un riordino del catalogo non fa atterrare il focus su un'altra card.
+  val savedRestoreCardKey = LocalLastFocusedCardKey.current
   val focusRestoreToken = LocalFocusRestoreToken.current
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   // Target di ripristino per le CARD PROVIDER (canale dedicato): al BACK dalla scheda Provider
@@ -1494,6 +1746,17 @@ fun HomeMainBrowsingContent(
   // card sono ancora focalizzabili durante il ripristino e l'unica che consuma il target.
   val restoreRowKey = restoreMediaId?.let { restoreRowFor(it, savedRestoreRowKey) }
 
+  /**
+   * Colonna della card salvata NELLA RIGA DI ORIGINE, risolta per IDENTITÀ (mai un indice
+   * ricordato). È il bersaglio dell'allineamento all'ancora delle righe "a fuoco fisso"
+   * durante il ripristino: vedi `AnchoredFocusRow(restoreIndex = …)`.
+   */
+  fun restoreColumnOf(rowKey: String): Int? =
+    restoreMediaId
+      ?.takeIf { restoreRowKey == rowKey }
+      ?.let { mediaId -> itemsOf(rowKey).indexOfFirst { it.id == mediaId } }
+      ?.takeIf { it >= 0 }
+
   // Durante un rientro dal Dettaglio (restore attivo) l'unica superficie di focus autorizzata
   // nel contenuto è la card bersaglio: le card contempgono già il gate `canFocus`, ma l'Hero e
   // l'hub provider ne sono PRIVI. Le si chiude esplicitamente perché, al rimontaggio del
@@ -1518,47 +1781,37 @@ fun HomeMainBrowsingContent(
   LaunchedEffect(coordinator.focusedCell, restoreMediaId, restoreRowKey) {
     if (restoreMediaId == null) return@LaunchedEffect
     if (restoreRowKey == null || coordinator.isCellFocused("hero_banner", 0)) {
+      FocusTrace.log(
+        "HOME",
+        "target rilasciato media=$restoreMediaId row=$restoreRowKey " +
+          "heroFocused=${coordinator.isCellFocused("hero_banner", 0)}"
+      )
       clearLastFocusedMedia?.invoke()
     }
   }
 
   // UNICO punto di ingresso del ripristino dal Dettaglio: risolve la destinazione (riga +
-  // indice per identità) e registra LA richiesta pendente; l'acquisizione del focus appartiene
-  // SOLO a HomeVerticalFocusSync (unico percorso autorevole: nessuna corsa parallela verso
-  // requestFocus). Il token rende il ripristino ripetibile anche sullo STESSO titolo (ritorni
-  // consecutivi dalla stessa locandina) e la richiesta resta pendente finché la card non
-  // conferma il focus o non giunge a verdetto di fallimento (Protocollo 5-bis della sync).
-  LaunchedEffect(restoreMediaId, restoreRowKey, focusRestoreToken) {
+  // COLONNA per identità, verificata con la KEY STABILE della card) e registra LA richiesta
+  // pendente; l'acquisizione del focus appartiene SOLO a HomeVerticalFocusSync (unico percorso
+  // autorevole: nessuna corsa parallela verso requestFocus). Il token rende il ripristino
+  // ripetibile anche sullo STESSO titolo (ritorni consecutivi dalla stessa locandina) e la
+  // richiesta resta pendente finché la card non conferma il focus o non giunge a verdetto di
+  // fallimento (Protocollo 5-bis della sync).
+  LaunchedEffect(restoreMediaId, restoreRowKey, savedRestoreCardKey, focusRestoreToken) {
     val mediaId = restoreMediaId ?: return@LaunchedEffect
+    FocusTrace.log(
+      "HOME",
+      "richiesta ripristino media=$mediaId row=$restoreRowKey cardKey=$savedRestoreCardKey " +
+        "token=$focusRestoreToken"
+    )
     restoreWasActive = true
     val sectionKey = restoreRowKey ?: return@LaunchedEffect
     if (sectionKey == "hero_banner") {
       coordinator.requestPendingFocus("hero_banner", 0)
       return@LaunchedEffect
     }
-    val index = itemsOf(sectionKey).indexOfFirst { it.id == mediaId }
-    if (index >= 0) {
-      // 1. La LazyRow della sezione va INIZIALIZZATA prima della richiesta: se la riga è fuori
-      //    dal viewport il suo LazyListState non esiste ancora, e senza di esso lo scroll
-      //    orizzontale che monta la card bersaglio salterebbe del tutto.
-      val rowState = getRowState(sectionKey)
-      // 2. Richiesta pendente UNICA: da qui la completa HomeVerticalFocusSync (riga + colonna).
-      coordinator.requestPendingFocus(sectionKey, index)
-      // 3. Scroll orizzontale ANTICIPATO SOLO SE la colonna salvata non è già nella finestra
-      //    della riga. La LazyRow si rimonta alla posizione salvata (rememberSaveable): il
-      //    vecchio scrollToItem incondizionato rimontava la finestra con la card al bordo
-      //    SINISTRO, spingendo fuori dal viewport le card precedenti (difetto Top 10: aprire la
-      //    quarta card e tornare indietro toglieva di vista le prime tre).Quando la colonna è
-      //    già in finestra la riga non si tocca: il focus arriva senza riallineamenti.
-      val isColVisible = rowState.layoutInfo.visibleItemsInfo.any { it.index == index }
-      if (!isColVisible && !rowState.isScrollInProgress) {
-        try {
-          rowState.scrollToItem(index)
-        } catch (_: Exception) {
-          // LazyRow non ancora agganciata: la posizione resta a carico della sincronizzazione.
-        }
-      }
-    } else {
+    val identityIndex = itemsOf(sectionKey).indexOfFirst { it.id == mediaId }
+    if (identityIndex < 0) {
       // Il titolo non vive più nella riga di origine (onda TMDB mentre la scheda era aperta,
       // oppure contenuto tolto da «Continua a guardare» durante la riproduzione). Politica
       // Nuvio: NON si caccia nelle altre righe — il vecchio fallback ripristinava la card di
@@ -1568,6 +1821,45 @@ fun HomeMainBrowsingContent(
       // di origine se il coordinatore la ricorda (rientro dal player: la Home non è stata
       // smontata), altrimenti la prima riga interamente visibile.
       clearLastFocusedMedia?.invoke()
+      return@LaunchedEffect
+    }
+
+    // 1. La LazyRow della sezione va INIZIALIZZATA prima della richiesta: se la riga è fuori
+    //    dal viewport il suo LazyListState non esiste ancora, e senza di esso lo scroll
+    //    orizzontale che monta la card bersaglio salterebbe del tutto.
+    val rowState = getRowState(sectionKey)
+    // 2. Richiesta pendente UNICA, registrata SUBITO: da qui la completa
+    //    HomeVerticalFocusSync (riga + colonna) ed è il percorso che fa comporre la riga quando
+    //    è fuori dal viewport. Lo scroll orizzontale anticipato qui sotto NON deve precederla:
+    //    su una riga non ancora composta attende il layout e bloccherebbe l'effetto prima di
+    //    pubblicare la destinazione (ripristino mai avviato).
+    coordinator.requestPendingFocus(sectionKey, identityIndex)
+    // 3. Scroll orizzontale ANTICIPATO SOLO SE la colonna salvata non è già nella finestra
+    //    della riga. La LazyRow si rimonta alla posizione salvata (rememberSaveable): il
+    //    vecchio scrollToItem incondizionato rimontava la finestra con la card al bordo
+    //    SINISTRO, spingendo fuori dal viewport le card precedenti (difetto Top 10: aprire la
+    //    quarta card e tornare indietro toglieva di vista le prime tre). Quando la colonna è
+    //    già in finestra la riga non si tocca: il focus arriva senza riallineamenti.
+    if (rowState.layoutInfo.visibleItemsInfo.none { it.index == identityIndex } &&
+      !rowState.isScrollInProgress
+    ) {
+      try {
+        rowState.scrollToItem(identityIndex)
+      } catch (_: Exception) {
+        // LazyRow non ancora agganciata: la posizione resta a carico della sincronizzazione.
+      }
+    }
+    // 4. La card è identificata dalla sua KEY STABILE: si attende che la riga componga la
+    //    cella (evento di layout, nessun ritardo fisso) e si verifica che la colonna risolta
+    //    per identità sia davvero la sua. Se il catalogo si è riordinato la posizione viene
+    //    corretta sulla key, quindi la richiesta pendente punta alla CARD giusta.
+    val column = awaitRestoreColumn(
+      rowState = rowState,
+      identityIndex = identityIndex,
+      stableKey = savedRestoreCardKey
+    )
+    if (column != identityIndex) {
+      coordinator.requestPendingFocus(sectionKey, column)
     }
   }
 
@@ -1700,19 +1992,53 @@ fun HomeMainBrowsingContent(
     // Solo la riga del target può muovere la LazyColumn ed è l'unico scroll verticale della
     // Home: non esistono altri effetti che spostano la lista su un cambio di stato.
     rowStateFor = { rowKey -> rowStates[rowKey] },
+    // Verdetto di ripristino CONFERMATO (stesso ciclo di vita della richiesta): il focus è
+    // davvero sulla card salvata, quindi il target si rilascia e tutta la Home torna
+    // focalizzabile (Hero compresa) senza alcun altro effetto di riallineamento.
+    onRestoreFocusConfirmed = { confirmedRowKey, _ ->
+      // Rilascio solo quando la cella confermata appartiene alla RIGA salvata: una richiesta
+      // pendente di altro tipo (atterraggio del fast-scroll) non deve consumare il target.
+      if (restoreMediaId != null && restoreRowKey == confirmedRowKey) {
+        clearLastFocusedMedia?.invoke()
+      }
+    },
     // Verdetto di fallimento di un ripristino (emesso dalla sincronizzazione: stesso ciclo di
     // vita della richiesta, nessun timeout esterno): si rilascia lo stato del ripristino così
     // il gate `canFocus` si apre e le card tornano focalizzabili; l'ancora di recupero è
     // assegnata dall'effetto dedicato (sotto) solo se nessuna cella detiene il focus.
     onRestoreFocusFailed = { _, _ ->
       clearLastFocusedMedia?.invoke()
-    }
+    },
+    // Il menu contestuale è un modale: finché è aperto nessuna richiesta pendente della Home
+    // (fast-scroll, ripristino, movimento verticale) può riprendersi il focus.
+    isOverlayVisible = { isContextMenuOpen }
   )
   LazyColumn(
     state = listState,
     modifier = modifier
       .fillMaxSize()
       .background(NovaBackground)
+      // MODALE APERTO: la Home non reagisce ad alcun tasto. Il menu contestuale vive in una
+      // finestra Dialog separata, quindi normalmente i suoi tasti non arrivano qui; nei primi
+      // frame di apertura, però, la finestra del dialog può non avere ancora il focus.
+      // Consumare DOWN **e UP** evita che il rilascio di OK venga letto come click dalla card
+      // sottostante (riproduzione o altra azione implicita dietro il popup).
+      .onPreviewKeyEvent { keyEvent ->
+        if (!isContextMenuOpen) return@onPreviewKeyEvent false
+        when (keyEvent.nativeKeyEvent.keyCode) {
+          KeyEvent.KEYCODE_DPAD_UP,
+          KeyEvent.KEYCODE_DPAD_DOWN,
+          KeyEvent.KEYCODE_DPAD_LEFT,
+          KeyEvent.KEYCODE_DPAD_RIGHT,
+          KeyEvent.KEYCODE_DPAD_CENTER,
+          KeyEvent.KEYCODE_ENTER,
+          KeyEvent.KEYCODE_NUMPAD_ENTER,
+          // BACK destinato al popup ma ancora consegnato a questa finestra: non deve
+          // raggiungere il doppio-BACK di uscita della Home.
+          KeyEvent.KEYCODE_BACK -> true
+          else -> false
+        }
+      }
       // Il contenuto non ha (più) il focus: nessuna cella può essere considerata focalizzata.
       // Uscendo dal contenuto (overlay del player sopra la Home, focus alla sidebar) le card
       // non emettono una perdita utile e la conferma del coordinatore resterebbe quella di
@@ -1768,6 +2094,9 @@ fun HomeMainBrowsingContent(
           val rowKey = coordinator.focusedRowKey
           rowKey != null && rowKey != "hero_banner"
         },
+        // Le righe ancorate governano da sole i ripetuti LEFT/RIGHT (step di una card con
+        // protezione durante l'animazione): la throttle verticale non deve consumarli.
+        shouldHandleHorizontalRepeatsBelow = { AnchoredRowKeyState.hasFocusedRow },
         shouldHaltForward = {
           val info = listState.layoutInfo
           val lastRowKey = coordinator.activeRowKeys.lastOrNull()
@@ -1842,13 +2171,17 @@ fun HomeMainBrowsingContent(
           badge = stringResource(R.string.home_badge_in_progress, continueWatching.size)
         )
         TvFocusRow {
-          HomeMediaLazyRow(
+          AnchoredHomeMediaRow(
+            coordinator = coordinator,
+            rowKey = "section_continue_watching",
             rowState = getRowState("section_continue_watching"),
-            restoreMediaId = restoreMediaId,
-            items = continueWatching,
-            modifier = rowGroupModifier("section_continue_watching"),
+            itemCount = continueWatching.size,
+            restoreIndex = restoreColumnOf("section_continue_watching"),
+            frame = AnchoredCardFrame.WholeItem(280.dp),
+            frameStyle = AnchoredFrameStyle.GradientBorder,
+            focusedScale = 1.05f,
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = rowGroupModifier("section_continue_watching")
           ) {
             itemsIndexed(continueWatching, key = { _, it -> "cw_${it.id}" }, contentType = { _, _ -> "continue_watching" }) { index, item ->
               ContinueWatchingCard(
@@ -1859,7 +2192,15 @@ fun HomeMainBrowsingContent(
                 },
                 onLongPress = {
                   Log.d("HomeScreen", "ContinueWatchingCard onLongPress called for ${item.title}")
-                  contextMenuMedia = item
+                  // UN SOLO popup alla volta: le pressioni prolungate ripetute (o un secondo
+                  // long-press arrivato mentre il menu è già aperto) non devono sostituirlo né
+                  // riaprirlo. La richiesta pendente ancora in volo della Home viene annullata:
+                  // altrimenti il suo completamento (reassert della cella di partenza) può
+                  // sottrarre il focus al popup appena aperto.
+                  if (contextMenuMedia == null) {
+                    coordinator.consumePendingFocusRequest()
+                    contextMenuMedia = item
+                  }
                 },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_continue_watching", index),
                 focusRequester = coordinator.getRequester("section_continue_watching", index),
@@ -1988,13 +2329,17 @@ fun HomeMainBrowsingContent(
           badge = stringResource(R.string.home_badge_trending_week)
         )
         TvFocusRow {
-          HomeMediaLazyRow(
+          AnchoredHomeMediaRow(
+            coordinator = coordinator,
+            rowKey = "section_trending_film",
             rowState = getRowState("section_trending_film"),
-            restoreMediaId = restoreMediaId,
-            items = trendingMovies,
-            modifier = rowGroupModifier("section_trending_film"),
+            itemCount = trendingMovies.size,
+            restoreIndex = restoreColumnOf("section_trending_film"),
+            frame = AnchoredCardFrame.Poster(150.dp),
+            frameStyle = AnchoredFrameStyle.NeonGlow,
+            focusedScale = 1.06f,
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = rowGroupModifier("section_trending_film")
           ) {
             itemsIndexed(trendingMovies, key = { _, item -> "trend_m_${item.id}" }, contentType = { _, _ -> "poster" }) { index, item ->
               PosterMediaCard(
@@ -2020,13 +2365,17 @@ fun HomeMainBrowsingContent(
           badge = stringResource(R.string.home_badge_trending_phenomena)
         )
         TvFocusRow {
-          HomeMediaLazyRow(
+          AnchoredHomeMediaRow(
+            coordinator = coordinator,
+            rowKey = "section_trending_serie",
             rowState = getRowState("section_trending_serie"),
-            restoreMediaId = restoreMediaId,
-            items = trendingSeries,
-            modifier = rowGroupModifier("section_trending_serie"),
+            itemCount = trendingSeries.size,
+            restoreIndex = restoreColumnOf("section_trending_serie"),
+            frame = AnchoredCardFrame.Poster(150.dp),
+            frameStyle = AnchoredFrameStyle.NeonGlow,
+            focusedScale = 1.06f,
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = rowGroupModifier("section_trending_serie")
           ) {
             itemsIndexed(trendingSeries, key = { _, item -> "trend_s_${item.id}" }, contentType = { _, _ -> "poster" }) { index, item ->
               PosterMediaCard(
@@ -2052,13 +2401,17 @@ fun HomeMainBrowsingContent(
           badge = stringResource(R.string.home_badge_based_on_preferences)
         )
         TvFocusRow {
-          HomeMediaLazyRow(
+          AnchoredHomeMediaRow(
+            coordinator = coordinator,
+            rowKey = "section_for_you_film",
             rowState = getRowState("section_for_you_film"),
-            restoreMediaId = restoreMediaId,
-            items = forYouMovies,
-            modifier = rowGroupModifier("section_for_you_film"),
+            itemCount = forYouMovies.size,
+            restoreIndex = restoreColumnOf("section_for_you_film"),
+            frame = AnchoredCardFrame.WholeItem(220.dp),
+            frameStyle = AnchoredFrameStyle.NeonGlow,
+            focusedScale = 1.06f,
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = rowGroupModifier("section_for_you_film")
           ) {
             itemsIndexed(forYouMovies, key = { _, item -> "foryou_m_${item.id}" }, contentType = { _, _ -> "poster" }) { index, item ->
               StandardMediaCard(
@@ -2084,13 +2437,17 @@ fun HomeMainBrowsingContent(
           badge = stringResource(R.string.home_badge_suggested_for_you)
         )
         TvFocusRow {
-          HomeMediaLazyRow(
+          AnchoredHomeMediaRow(
+            coordinator = coordinator,
+            rowKey = "section_for_you_serie",
             rowState = getRowState("section_for_you_serie"),
-            restoreMediaId = restoreMediaId,
-            items = forYouSeries,
-            modifier = rowGroupModifier("section_for_you_serie"),
+            itemCount = forYouSeries.size,
+            restoreIndex = restoreColumnOf("section_for_you_serie"),
+            frame = AnchoredCardFrame.WholeItem(220.dp),
+            frameStyle = AnchoredFrameStyle.NeonGlow,
+            focusedScale = 1.06f,
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = rowGroupModifier("section_for_you_serie")
           ) {
             itemsIndexed(forYouSeries, key = { _, item -> "foryou_s_${item.id}" }, contentType = { _, _ -> "poster" }) { index, item ->
               StandardMediaCard(
@@ -2116,13 +2473,17 @@ fun HomeMainBrowsingContent(
           badge = stringResource(R.string.home_badge_most_watched_cinema)
         )
         TvFocusRow {
-          HomeMediaLazyRow(
+          AnchoredHomeMediaRow(
+            coordinator = coordinator,
+            rowKey = "section_popolari_film",
             rowState = getRowState("section_popolari_film"),
-            restoreMediaId = restoreMediaId,
-            items = popularMovies,
-            modifier = rowGroupModifier("section_popolari_film"),
+            itemCount = popularMovies.size,
+            restoreIndex = restoreColumnOf("section_popolari_film"),
+            frame = AnchoredCardFrame.Poster(150.dp),
+            frameStyle = AnchoredFrameStyle.NeonGlow,
+            focusedScale = 1.06f,
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = rowGroupModifier("section_popolari_film")
           ) {
             itemsIndexed(popularMovies, key = { _, item -> "pop_m_${item.id}" }, contentType = { _, _ -> "poster" }) { index, item ->
               PosterMediaCard(
@@ -2148,13 +2509,17 @@ fun HomeMainBrowsingContent(
           badge = stringResource(R.string.home_badge_most_discussed_series)
         )
         TvFocusRow {
-          HomeMediaLazyRow(
+          AnchoredHomeMediaRow(
+            coordinator = coordinator,
+            rowKey = "section_popolari_serie",
             rowState = getRowState("section_popolari_serie"),
-            restoreMediaId = restoreMediaId,
-            items = popularSeries,
-            modifier = rowGroupModifier("section_popolari_serie"),
+            itemCount = popularSeries.size,
+            restoreIndex = restoreColumnOf("section_popolari_serie"),
+            frame = AnchoredCardFrame.Poster(150.dp),
+            frameStyle = AnchoredFrameStyle.NeonGlow,
+            focusedScale = 1.06f,
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = rowGroupModifier("section_popolari_serie")
           ) {
             itemsIndexed(popularSeries, key = { _, item -> "pop_s_${item.id}" }, contentType = { _, _ -> "poster" }) { index, item ->
               PosterMediaCard(
@@ -2181,13 +2546,17 @@ fun HomeMainBrowsingContent(
             badge = extraSec.addonName
           )
           TvFocusRow {
-            HomeMediaLazyRow(
+            AnchoredHomeMediaRow(
+              coordinator = coordinator,
+              rowKey = "section_${extraSec.id}",
               rowState = getRowState("section_${extraSec.id}"),
-              restoreMediaId = restoreMediaId,
-              items = extraSec.items,
-              modifier = rowGroupModifier("section_${extraSec.id}"),
+              itemCount = extraSec.items.size,
+              restoreIndex = restoreColumnOf("section_${extraSec.id}"),
+              frame = AnchoredCardFrame.Poster(150.dp),
+              frameStyle = AnchoredFrameStyle.NeonGlow,
+              focusedScale = 1.06f,
               contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
-              horizontalArrangement = Arrangement.spacedBy(16.dp)
+              modifier = rowGroupModifier("section_${extraSec.id}")
             ) {
               itemsIndexed(extraSec.items, key = { _, item -> "extra_${extraSec.id}_${item.id}" }, contentType = { _, _ -> "poster" }) { index, item ->
                 PosterMediaCard(
@@ -2209,13 +2578,49 @@ fun HomeMainBrowsingContent(
   }
 
   // Context menu per long-press su Continue Watching (posto fuori da LazyColumn per essere in composable scope)
-  if (contextMenuMedia != null) {
-    val media = contextMenuMedia!!
+  val contextMenuMediaSnapshot = contextMenuMedia
+  if (contextMenuMediaSnapshot != null) {
+    val media = contextMenuMediaSnapshot
     val continueIndex = continueWatching.indexOfFirst { it.id == media.id }.coerceAtLeast(0)
+
+    // Chiusura SENZA azione (BACK, scrim, «Annulla»): il focus deve tornare sulla card che ha
+    // aperto il menu. L'indice è risolto per IDENTITÀ al momento della chiusura (la riga può
+    // essersi riordinata mentre il popup era aperto) e la richiesta passa dall'UNICO percorso
+    // autorevole della Home (richiesta pendente + HomeVerticalFocusSync), che la verifica con
+    // `onFocusChanged`: un `requestFocus` secco può essere scartato e lasciare il D-pad senza
+    // destinazione.
+    val restoreFocusToOriginCard: () -> Unit = {
+      val originMediaId = contextMenuMedia?.id
+      contextMenuMedia = null
+      if (originMediaId != null) {
+        val originIndex = continueWatching.indexOfFirst { it.id == originMediaId }
+        if (originIndex >= 0 && "section_continue_watching" in coordinator.activeRowKeys) {
+          coordinator.requestPendingFocus("section_continue_watching", originIndex)
+        } else {
+          // La card (o l'intera riga) non esiste più: ancora canonica sulla Home, mai
+          // "nessuna destinazione".
+          val anchorRow = HOME_CONTENT_ANCHOR_ROW.takeIf { it in coordinator.activeRowKeys }
+            ?: coordinator.activeRowKeys.firstOrNull()
+          if (anchorRow != null) {
+            coordinator.requestPendingFocus(anchorRow, 0)
+          }
+        }
+      }
+    }
+
     MediaContextMenu(
       media = media,
-      onPlay = { handleRowPlayClick("section_continue_watching", media) },
-      onDetails = { handleRowMediaClick("section_continue_watching", continueIndex, media) },
+      // Le azioni chiudono il popup PRIMA di navigare: `onDismiss` viene invocato subito dopo
+      // dal menu e, trovando `contextMenuMedia` già nullo, non richiede il focus sulla card
+      // (la destinazione è la schermata che si sta aprendo).
+      onPlay = {
+        contextMenuMedia = null
+        handleRowPlayClick("section_continue_watching", media)
+      },
+      onDetails = {
+        contextMenuMedia = null
+        handleRowMediaClick("section_continue_watching", continueIndex, media)
+      },
       onRemoveFromContinueWatching = {
         // PRIMO TEMPO della rimozione: si accoda e si riporta il focus DENTRO la riga. La card
         // NON si smonta qui.
@@ -2249,7 +2654,7 @@ fun HomeMainBrowsingContent(
           )
         }
       },
-      onDismiss = { contextMenuMedia = null }
+      onDismiss = restoreFocusToOriginCard
     )
   }
 }

@@ -45,14 +45,17 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.example.data.model.Episode
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.prefs.StreamingEngineMode
 import com.example.data.repository.MediaRepository
 import com.example.data.streaming.StreamResult
 import com.example.data.update.UpdateRepository
 import com.example.data.update.shouldShowStartupUpdatePrompt
 import com.example.ui.components.HeroCarouselState
+import com.example.ui.components.AnchoredRowKeyState
 import com.example.ui.components.ModalOverlayState
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.TvPinDialog
@@ -74,25 +77,43 @@ import com.example.ui.screens.PlayerScreen
 import com.example.ui.screens.ProviderScreen
 import com.example.ui.screens.PersonDetailScreen
 import com.example.ui.screens.CompanyDetailScreen
-import com.example.ui.screens.SplashScreen
 import com.example.ui.screens.TrailerErrorOverlay
 import com.example.ui.screens.TrailerLoadingOverlay
 import com.example.ui.screens.TrailerPlayerScreen
 import com.example.ui.screens.UpdatePromptDialog
+import com.example.ui.screens.splash.SplashVideoScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.NovaBackground
+import com.example.ui.util.FocusTrace
 import com.example.ui.viewmodel.ScreenState
 import com.example.ui.viewmodel.SidebarSection
 import com.example.ui.viewmodel.StreamNovaViewModel
 import com.example.ui.viewmodel.StreamResolutionState
 import com.example.ui.viewmodel.TrailerPlaybackState
-import kotlinx.coroutines.delay
 
 /** Finestra temporale del doppio Back sulla Home per uscire dall'app (feedback breve). */
 private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
 
-/** Durata della Splash Screen iniziale, ottenuta con coroutine/delay (mai Thread.sleep). */
-private const val SPLASH_DURATION_MS = 10_000L
+/**
+ * Tasti di navigazione/conferma che la finestra della Home non deve ricevere mentre un
+ * modale (menu contestuale di «Continua a guardare», dialog in-window) è aperto.
+ *
+ * Il menu contestuale è una finestra Dialog separata: normalmente i tasti arrivano lì. Nei
+ * primi frame di apertura, prima che la finestra del dialogo prenda il focus, potrebbero
+ * però essere consegnati alla finestra della Home. Consumare DOWN **e UP** evita che una
+ * card sottostante esegua un'azione (la `TvFocusableBox` interpreta il KeyUp come click)
+ * e che il D-pad muova il focus dietro al popup.
+ */
+private fun isModalGuardedKey(keyCode: Int): Boolean = when (keyCode) {
+  KeyEvent.KEYCODE_DPAD_UP,
+  KeyEvent.KEYCODE_DPAD_DOWN,
+  KeyEvent.KEYCODE_DPAD_LEFT,
+  KeyEvent.KEYCODE_DPAD_RIGHT,
+  KeyEvent.KEYCODE_DPAD_CENTER,
+  KeyEvent.KEYCODE_ENTER,
+  KeyEvent.KEYCODE_NUMPAD_ENTER -> true
+  else -> false
+}
 
 /**
  * Riga della Home usata come ANCORA DI CONTENUTO quando il target di ripristino non e' piu'
@@ -231,6 +252,15 @@ fun StreamNovaApp(
     }
   }
 
+  // Traccia SOLO DEBUG della destinazione attiva: permette di distinguere "il Dettaglio è
+  // ancora la destinazione" da "il Dettaglio è stato poppato verso la Home" durante il
+  // ritorno dal player.
+  LaunchedEffect(navController) {
+    navController.currentBackStackEntryFlow.collect { entry ->
+      FocusTrace.log("NAV", "route=${entry.destination.route}")
+    }
+  }
+
   // Feedback errore di risoluzione sorgenti (es. timeout o nessuna sorgente):
   // mostra un toast con il messaggio di errore e reimposta lo stato su Idle
   LaunchedEffect(streamResolutionState) {
@@ -245,16 +275,12 @@ fun StreamNovaApp(
   // Flag: ripristina il focus sul contenuto (riga/card) quando si torna dal Dettaglio
   var pendingContentFocusRestore by remember { mutableStateOf(false) }
 
-  // Splash Screen iniziale cinematografica StreamNova
-  var isSplashActive by remember { mutableStateOf(true) }
-
-  // Fine Splash: coroutine sospesa (delay) sullo scope di Compose, NON blocca il
-  // Main Thread e non congela il rendering. Al termine dei 10s la Splash viene
-  // smontata e resta esposto il normale contenuto iniziale (NavHost -> Home).
-  LaunchedEffect(Unit) {
-    delay(SPLASH_DURATION_MS)
-    isSplashActive = false
-  }
+  // Splash Screen iniziale: intro video ufficiale StreamNova (logo 3D animato).
+  // `rememberSaveable`: una ricreazione dell'Activity NON deve far ripartire il
+  // filmato da capo una volta che l'intro è terminata. La Home resta composta
+  // sotto la splash per tutta la riproduzione, quindi i dati si caricano in
+  // parallelo al video e al termine non c'è nulla da ricaricare.
+  var isSplashActive by rememberSaveable { mutableStateOf(true) }
 
   /*
    * BACK GERARCHICO DEL TELECOMANDO TV — ordine di priorità:
@@ -369,6 +395,12 @@ fun StreamNovaApp(
             } else if (pendingContentFocusRestore) {
               val savedTargetId = viewModel.lastFocusedMediaId.value
               val savedProviderId = viewModel.lastFocusedProviderId.value
+              FocusTrace.log(
+                "HOME",
+                "pendingContentFocusRestore: plan=${contentFocusRestorePlan(savedTargetId)} " +
+                  "savedTarget=$savedTargetId provider=$savedProviderId " +
+                  "focusRestoreRequested=${viewModel.focusRestoreRequested.value}"
+              )
               when (contentFocusRestorePlan(savedTargetId)) {
                 ContentFocusRestorePlan.RESTORE_SAVED_TARGET -> {
                   // Percorso INVARIATO: il target salvato esiste ancora, la Home lo
@@ -438,9 +470,20 @@ fun StreamNovaApp(
             // precedente) e questa intercettazione deve lasciarlo passare. Sul primo poster
             // resta invece false, quindi il LEFT esce regolarmente verso la Sidebar.
             .onPreviewKeyEvent { keyEvent ->
+              // Mentre un modale è aperto la Home non esegue alcuna azione: se la finestra
+              // del dialog non ha ancora il focus, i tasti arriverebbero qui e muoverebbero
+              // il focus o attiverebbero la card sottostante.
+              if (ModalOverlayState.isAnyOpen &&
+                isModalGuardedKey(keyEvent.nativeKeyEvent.keyCode)
+              ) {
+                return@onPreviewKeyEvent true
+              }
               if (!ModalOverlayState.isAnyOpen &&
                 !isSidebarExpanded &&
                 !HeroCarouselState.consumesLeftKey &&
+                // Righe ancorate della Home: con un poster selezionato oltre il primo il LEFT
+                // torna al poster precedente e deve arrivare alla riga, non aprire la sidebar.
+                !AnchoredRowKeyState.consumesLeftKey &&
                 keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
                 keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT
               ) {
@@ -577,11 +620,28 @@ fun StreamNovaApp(
         val seasonEpisodesUiState by viewModel.seasonEpisodesUiState.collectAsState()
         val lastFocusedCastMemberId by viewModel.lastFocusedCastMemberId.collectAsState()
         val lastFocusedCompanyId by viewModel.lastFocusedCompanyId.collectAsState()
+        // Chiusure del selettore sorgenti avvenute mentre QUESTA scheda era composta
+        // sotto l'overlay: il Dettaglio le usa per riprendere il focus su «Riproduci».
+        val sourceDialogDismissedToken by viewModel.sourceDialogDismissedToken.collectAsState()
+        // Chiusure del trailer interno (overlay globale sopra il NavHost) avvenute mentre
+        // QUESTA scheda era composta sotto di esso: stesso ripristino del focus su
+        // «Riproduci», con un segnale distinto da quello del selettore delle sorgenti.
+        val trailerDismissedToken by viewModel.trailerDismissedToken.collectAsState()
+        // Chiusure del player (overlay globale sopra il NavHost) avvenute mentre QUESTA
+        // scheda era composta sotto di esso: al rientro la scheda riprende il focus su
+        // «Riproduci». Il player non è una destinazione di navigazione, quindi la scheda
+        // resta quella corrente e non c'è alcun pop da eseguire.
+        val playerClosedToken by viewModel.playerClosedToken.collectAsState()
 
                 // (2) Back dal Dettaglio: popBackStack verso la schermata precedente.
         // Se lo stack contiene più dettagli, risale alla scheda precedente
         // ripristinandone stato e metadati. Solo quando lo stack è esaurito si torna a Home/Provider.
         BackHandler(enabled = screenState != ScreenState.PLAYER) {
+          FocusTrace.log(
+            "DETAIL_BACK",
+            "BackHandler Dettaglio: screenState=$screenState route=${navController.currentDestination?.route} " +
+              "playerClosedToken=${viewModel.playerClosedToken.value}"
+          )
           val hasPreviousDetail = viewModel.popDetail()
           if (!hasPreviousDetail) {
             pendingContentFocusRestore = true
@@ -638,6 +698,18 @@ fun StreamNovaApp(
             onToggleFavorite = { viewModel.toggleFavorite(it) },
             onToggleWatched = { viewModel.toggleWatched(it) },
             onPlayTrailer = { viewModel.playTrailer(it) },
+            // «Seleziona fonte» accanto a Trailer: SOLO in modalità Debrid e per
+            // contenuti che non siano canali live (per i canali il Play apre già
+            // il selettore delle sorgenti dell'addon). Apre la schermata di scelta
+            // manuale esistente senza avviare alcuna riproduzione automatica.
+            onSelectSourceClick = if (isLiveChannel || streamingEngineMode != StreamingEngineMode.DEBRID_TORBOX) {
+              null
+            } else {
+              { m: MediaItem, ep: Episode? -> viewModel.openManualSourceSelection(m, ep) }
+            },
+            sourceDialogDismissedToken = sourceDialogDismissedToken,
+            trailerDismissedToken = trailerDismissedToken,
+            playerClosedToken = playerClosedToken,
             onProviderClick = { provider ->
               viewModel.openProvider(provider)
               navController.navigate(Screen.Provider.createRoute(provider.id))
@@ -760,24 +832,40 @@ targetCompanyId = lastFocusedCompanyId,
     BackHandler(enabled = screenState == ScreenState.PLAYER) {
       Log.d("BACK_TRACE", "MAINACTIVITY: ingresso del BackHandler")
       Log.d("BACK_TRACE", "MAINACTIVITY: valore di screenState: $screenState")
+      FocusTrace.log(
+        "MAIN_BACK",
+        "BackHandler player: route=${navController.currentDestination?.route} " +
+          "playerClosedToken=${viewModel.playerClosedToken.value}"
+      )
       // Chiude il player: la riproduzione si ferma con il dispose di PlayerScreen e il
-      // progresso viene salvato in Room (closePlayer). Se il player è stato aperto dal
-      // Dettaglio (catalogo -> Detail -> Player), closePlayer() ripristina la sezione
-      // (CERCA/altro) e qui si esegue solo il popBackStack per tornare al Detail.
+      // progresso viene salvato in Room (closePlayer).
+      //
+      // Il player è un OVERLAY composto sopra il NavHost: la destinazione sottostante
+      // (Dettaglio, Provider o Home) non è mai stata sostituita, quindi il BACK chiude SOLO
+      // il player e NON deve eseguire alcun pop. Il vecchio pop condizionato a "player
+      // aperto dal Dettaglio" era codice morto (closePlayer() azzera l'origine PRIMA della
+      // lettura) e, se mai riattivato, avrebbe rimosso la scheda Dettaglio riportando alla
+      // Home dopo la chiusura del player.
       Log.d("BACK_TRACE", "MAINACTIVITY: chiamata a closePlayer()")
+      FocusTrace.log(
+        "MAIN_BACK",
+        "closePlayer: route=${navController.currentDestination?.route} " +
+          "screenState=$screenState token=${viewModel.playerClosedToken.value}"
+      )
       viewModel.resetStreamState()
       viewModel.closePlayer()
-      if (viewModel.playerOpenedFromDetail()) {
-        Log.d("BACK_TRACE", "MAINACTIVITY: eventuale popBackStack() eseguito")
-        navController.popBackStack()
-      } else {
-        Log.d("BACK_TRACE", "MAINACTIVITY: eventuale popBackStack() non eseguito")
-      }
+      FocusTrace.log(
+        "MAIN_BACK",
+        "closePlayer done: route=${navController.currentDestination?.route} " +
+          "screenState=${viewModel.screenState.value} token=${viewModel.playerClosedToken.value}"
+      )
+      Log.d("BACK_TRACE", "MAINACTIVITY: player chiuso, destinazione sottostante invariata")
     }
 
     // BackHandler per annullare la ricerca in corso se l'utente preme BACK sul telecomando
     BackHandler(enabled = streamResolutionState is StreamResolutionState.Loading) {
       Log.d("BACK_TRACE", "MAINACTIVITY: cancellazione ricerca stream al BACK")
+      FocusTrace.log("MAIN_BACK", "BackHandler risoluzione stream: resetStreamState")
       viewModel.resetStreamState()
     }
 
@@ -857,7 +945,15 @@ targetCompanyId = lastFocusedCompanyId,
     }
 
     if (isSplashActive) {
-      SplashScreen()
+      // Intro video: riproduzione integrale, poi pausa di 4 s sull'ultimo frame,
+      // poi Home. Errore reale o impossibilità di avviare il video chiudono
+      // subito la splash: nessun percorso la lascia sopra la Home.
+      SplashVideoScreen(
+        onFinished = {
+          Log.i("SplashIntro", "HOME_VISIBLE t=${SystemClock.elapsedRealtime()}")
+          isSplashActive = false
+        }
+      )
     }
   }
 }

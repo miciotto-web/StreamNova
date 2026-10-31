@@ -64,6 +64,7 @@
 
     <!-- Media Cards -->
     <string name="badge_minutes_remaining">%dm remaining</string>
+    <string name="cw_next_episode_label">Next episode</string>
     <string name="media_card_seasons_abbr">%d Seas.</string>
 
     <!-- Source Selection Dialog -->
@@ -122,6 +123,7 @@
     <string name="detail_trailer_loading">Fetching trailer from TMDB…</string>
     <string name="detail_trailer_error">Trailer not available for this title</string>
     <string name="detail_action_trailer">Play trailer</string>
+    <string name="detail_action_select_source">Select source</string>
     <string name="detail_action_mark_watched">Mark as watched</string>
     <string name="detail_action_mark_unwatched">Mark as unwatched</string>
     <string name="detail_air_date_format">Air date: %s</string>

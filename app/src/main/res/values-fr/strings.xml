@@ -64,6 +64,7 @@
 
     <!-- Media Cards -->
     <string name="badge_minutes_remaining">%dm restants</string>
+    <string name="cw_next_episode_label">Prochain épisode</string>
     <string name="media_card_seasons_abbr">%d Sais.</string>
 
     <!-- Source Selection Dialog -->
@@ -122,6 +123,7 @@
     <string name="detail_trailer_loading">Récupération de la bande-annonce depuis TMDB…</string>
     <string name="detail_trailer_error">Bande-annonce non disponible pour ce titre</string>
     <string name="detail_action_trailer">Lire la bande-annonce</string>
+    <string name="detail_action_select_source">Choisir la source</string>
     <string name="detail_action_mark_watched">Marquer comme vu</string>
     <string name="detail_action_mark_unwatched">Marquer comme non vu</string>
     <string name="detail_air_date_format">Date de diffusion : %s</string>

@@ -64,6 +64,7 @@
 
     <!-- Media Cards -->
     <string name="badge_minutes_remaining">%dm restantes</string>
+    <string name="cw_next_episode_label">Próximo episodio</string>
     <string name="media_card_seasons_abbr">%d Temp.</string>
 
     <!-- Source Selection Dialog -->
@@ -122,6 +123,7 @@
     <string name="detail_trailer_loading">Recuperando el tráiler desde TMDB…</string>
     <string name="detail_trailer_error">Tráiler no disponible para este título</string>
     <string name="detail_action_trailer">Reproducir tráiler</string>
+    <string name="detail_action_select_source">Seleccionar fuente</string>
     <string name="detail_action_mark_watched">Marcar como visto</string>
     <string name="detail_action_mark_unwatched">Marcar como no visto</string>
     <string name="detail_air_date_format">Fecha de emisión: %s</string>

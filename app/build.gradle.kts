@@ -192,6 +192,15 @@ android {
     }
   }
 
+  androidResources {
+    // L'intro (res/raw/splash_intro.mp4) è letta da ExoPlayer tramite
+    // RawResourceDataSource, che richiede la risorsa NON compressa
+    // (openRawResourceFd). L'estensione è già nella lista di default di AGP:
+    // l'elenco esplicito impedisce che una futura modifica al packaging rompa
+    // l'avvio in modo silenzioso (video non riproducibile -> Home diretta).
+    noCompress += "mp4"
+  }
+
   buildTypes {
     release {
       isCrunchPngs = true
