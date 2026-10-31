@@ -661,7 +661,10 @@ class ContinueWatchingContextMenuFocusTest {
     assertPopupItemFocused(REMOVE_LABELS, "voce rimuovi")
     pressPopupKey(Key.DirectionCenter)
 
-    rule.waitForIdle()
+    // La rimozione di 1.0.3 è in DUE TEMPI: il menu chiude subito, ma la card viene
+    // smontata solo quando il focus è confermato dentro la riga («Continua a guardare»).
+    // L'attesa è reattiva, non un ritardo fisso.
+    rule.waitUntil(timeoutMillis = 5_000) { removedIds == listOf("cw-2") }
     assertEquals("la rimozione deve avvenire UNA sola volta", listOf("cw-2"), removedIds)
     assertEquals("nessuna riproduzione", 0, playClicks)
     assertEquals("nessuna navigazione ai dettagli", 0, detailClicks)

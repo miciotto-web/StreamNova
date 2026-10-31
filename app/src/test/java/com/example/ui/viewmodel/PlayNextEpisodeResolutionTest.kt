@@ -623,7 +623,7 @@ class PlayNextEpisodeResolutionTest {
       isCached = true
     )
     val fakeProvider = object : TorBoxStreamProvider() {
-      var invoked = false
+      var invocations = 0
       override suspend fun getStreams(
         tmdbId: Int,
         isTv: Boolean,
@@ -633,7 +633,7 @@ class PlayNextEpisodeResolutionTest {
         year: Int?,
         imdbId: String?
       ): List<StreamSource> {
-        invoked = true
+        invocations++
         return listOf(
           StreamSource(
             streamUrl = "https://torbox.app/dl/s1e2-fallback.mkv",
@@ -661,9 +661,142 @@ class PlayNextEpisodeResolutionTest {
     viewModel.playNextEpisode(nextEpisodeFixture())
     advanceUntilIdle()
 
-    assertTrue("Providers must be queried when the season pack has no matching file", fakeProvider.invoked)
+    assertTrue("Providers must be queried when the season pack has no matching file", fakeProvider.invocations == 1)
     assertEquals("https://torbox.app/dl/s1e2-fallback.mkv", viewModel.playbackState.value.streamUrl)
     assertTrue(viewModel.streamResolutionState.value is StreamResolutionState.Success)
+  }
+
+  // ── Anti-loop: una sola transizione attiva per volta ───────────────
+
+  @Test
+  fun testNextEpisodeIgnoresRepeatedAdvanceWhileResolutionIsInFlight() = runTest(testDispatcher) {
+    val ep2Stream = StreamSource(
+      streamUrl = "https://torbox.app/dl/s1e2.mkv",
+      quality = "1080p",
+      serverName = "Torrentio 1080p",
+      addonName = "Torrentio",
+      releaseTitle = "Series.S01E02.1080p.mkv",
+      infoHash = "ffffffffffffffffffffffffffffffffffffffff",
+      isCached = true
+    )
+    val fakeProvider = object : TorBoxStreamProvider() {
+      var invocations = 0
+      override suspend fun getStreams(
+        tmdbId: Int,
+        isTv: Boolean,
+        season: Int?,
+        episode: Int?,
+        title: String?,
+        year: Int?,
+        imdbId: String?
+      ): List<StreamSource> {
+        invocations++
+        return listOf(ep2Stream)
+      }
+    }
+
+    AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.DEBRID_TORBOX)
+    AppSettingsRepository.setTorBoxApiKey("fake-debrid-key")
+    AppSettingsRepository.setAutoplayEnabled(true)
+
+    val viewModel = createViewModel(fakeProvider)
+    viewModel.openPlayer(seriesFixture(), currentEpisodeFixture())
+    advanceUntilIdle()
+
+    val ep3 = nextEpisodeFixture().copy(id = "ep_3", episodeNumber = 3, title = "Lord Snow")
+
+    viewModel.playNextEpisode(nextEpisodeFixture())
+    // Seconda richiesta mentre la prima è ancora in corso (countdown/click duplicato):
+    // deve essere ignorata, non deve cancellare e riavviare la ricerca.
+    assertTrue(viewModel.isSwitchingEpisode.value)
+    viewModel.playNextEpisode(ep3)
+
+    advanceUntilIdle()
+
+    assertEquals("Una sola risoluzione per la transizione attiva", 1, fakeProvider.invocations)
+    assertEquals(2, viewModel.playbackState.value.currentEpisode?.episodeNumber)
+    assertEquals("https://torbox.app/dl/s1e2.mkv", viewModel.playbackState.value.streamUrl)
+    assertFalse(viewModel.isSwitchingEpisode.value)
+  }
+
+  @Test
+  fun testNextEpisodeIgnoresRequestForTheAlreadyCurrentEpisode() = runTest(testDispatcher) {
+    val fakeProvider = object : StreamProvider {
+      var invocations = 0
+      override suspend fun getStreams(
+        tmdbId: Int,
+        isTv: Boolean,
+        season: Int?,
+        episode: Int?,
+        title: String?,
+        year: Int?
+      ): List<StreamSource> {
+        invocations++
+        return emptyList()
+      }
+    }
+
+    AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.HTTP_WEB)
+    AppSettingsRepository.setTorBoxApiKey(null)
+    AppSettingsRepository.setAutoplayEnabled(true)
+
+    val viewModel = createViewModel(fakeProvider)
+    viewModel.openPlayer(seriesFixture(), currentEpisodeFixture())
+    advanceUntilIdle()
+
+    // S1E1 è già l'episodio corrente: nessuna transizione, nessuna ricerca.
+    viewModel.playNextEpisode(currentEpisodeFixture())
+    advanceUntilIdle()
+
+    assertEquals(0, fakeProvider.invocations)
+    assertEquals(1, viewModel.playbackState.value.currentEpisode?.episodeNumber)
+    assertFalse(viewModel.isSwitchingEpisode.value)
+  }
+
+  @Test
+  fun testNextEpisodeRequestIsAcceptedAgainAfterCancellation() = runTest(testDispatcher) {
+    val ep2Stream = StreamSource(
+      streamUrl = "https://torbox.app/dl/s1e2.mkv",
+      quality = "1080p",
+      serverName = "Torrentio 1080p",
+      addonName = "Torrentio",
+      releaseTitle = "Series.S01E02.1080p.mkv",
+      infoHash = "abababababababababababababababababababab",
+      isCached = true
+    )
+    val fakeProvider = object : TorBoxStreamProvider() {
+      override suspend fun getStreams(
+        tmdbId: Int,
+        isTv: Boolean,
+        season: Int?,
+        episode: Int?,
+        title: String?,
+        year: Int?,
+        imdbId: String?
+      ): List<StreamSource> = listOf(ep2Stream)
+    }
+
+    AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.DEBRID_TORBOX)
+    AppSettingsRepository.setTorBoxApiKey("fake-debrid-key")
+    AppSettingsRepository.setAutoplayEnabled(true)
+
+    val viewModel = createViewModel(fakeProvider)
+    viewModel.openPlayer(seriesFixture(), currentEpisodeFixture())
+    advanceUntilIdle()
+
+    viewModel.playNextEpisode(nextEpisodeFixture())
+    // BACK / annullamento durante la ricerca: la transizione viene abbandonata.
+    viewModel.resetStreamState()
+    assertFalse(viewModel.isSwitchingEpisode.value)
+
+    // La guardia anti-doppia-richiesta NON deve bloccare una transizione successiva.
+    val ep3 = nextEpisodeFixture().copy(id = "ep_3", episodeNumber = 3, title = "Lord Snow")
+    viewModel.playNextEpisode(ep3)
+    advanceUntilIdle()
+
+    assertEquals(3, viewModel.playbackState.value.currentEpisode?.episodeNumber)
+    assertEquals("https://torbox.app/dl/s1e2.mkv", viewModel.playbackState.value.streamUrl)
+    assertFalse(viewModel.isSwitchingEpisode.value)
   }
 
   @Test

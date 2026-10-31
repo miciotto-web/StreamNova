@@ -336,7 +336,9 @@ class ContinueWatchingTbbtResumeTest {
       override suspend fun fetchSubtitles(
         mediaItem: MediaItem,
         episode: Episode?,
-        preferredLanguage: String?
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
       ): List<Subtitle> = emptyList()
     }
     return viewModel

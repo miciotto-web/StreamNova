@@ -28,6 +28,8 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -44,6 +46,7 @@ import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalLastFocusedTarget
+import com.example.ui.components.MEDIA_CONTEXT_MENU_TEST_TAG
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.viewmodel.StreamNovaViewModel
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -248,6 +251,12 @@ class ContinueWatchingRemovalFocusTest {
       SemanticsMatcher.keyIsDefined(SemanticsActions.RequestFocus),
       useUnmergedTree = true
     )
+    // Dopo una rimozione la riga viene ricomposta e la Home può riancorarsi: la card
+    // bersaglio può non essere ancora nell'albero nell'istante immediatamente successivo.
+    // L'attesa è sull'effetto reale (card focalizzabile presente), non su un ritardo fisso.
+    rule.waitUntil(timeoutMillis = 5_000) {
+      focusable.fetchSemanticsNodes().any { allTextsOf(it).contains(title) }
+    }
     val index = focusable.fetchSemanticsNodes().indexOfFirst { allTextsOf(it).contains(title) }
     require(index >= 0) { "card '$title' non trovata" }
     focusable[index].requestFocus()
@@ -260,10 +269,34 @@ class ContinueWatchingRemovalFocusTest {
     rule.waitForIdle()
   }
 
+  /**
+   * Tasto consegnato alla finestra del menu contestuale (Dialog separato).
+   *
+   * Mentre il menu è aperto la card della Home conserva la semantica `Focused`, quindi il
+   * matcher globale `isFocused()` trova DUE nodi. La navigazione del menu deve essere inviata
+   * all'item focalizzato dentro il Dialog.
+   */
+  @OptIn(ExperimentalTestApi::class)
+  private fun pressMenuKey(key: Key) {
+    rule.onNode(
+      isFocused() and hasAnyAncestor(hasTestTag(MEDIA_CONTEXT_MENU_TEST_TAG)),
+      useUnmergedTree = true
+    ).performKeyInput { pressKey(key) }
+    rule.waitForIdle()
+  }
+
   /** Long-press del tasto di conferma sulla card a fuoco: apre il menu contestuale. */
   @OptIn(ExperimentalTestApi::class)
   private fun longPressFocusedCard() {
-    rule.onNode(isFocused(), useUnmergedTree = true).performKeyInput {
+    // Il menu vive in una finestra Dialog separata: quando compare, la card della Home
+    // conserva la semantica `Focused` accanto all'item focalizzato nel Dialog. Il matcher
+    // globale `isFocused()` diventa quindi ambiguo. Il tasto va inviato SEMPRE allo stesso
+    // nodo che lo ha ricevuto (la card), identificato dal suo id stabile: il rilascio del
+    // long-press appartiene al dispatcher della finestra della Home.
+    val cardNode = rule.onNode(isFocused(), useUnmergedTree = true)
+    val cardId = cardNode.fetchSemanticsNode().id
+    val cardById = SemanticsMatcher("card con id $cardId") { it.id == cardId }
+    cardNode.performKeyInput {
       keyDown(Key.DirectionCenter)
     }
     // Il long-press è un `delay(400)` nel TvFocusableBox: attesa reattiva (l'orologio del test
@@ -274,7 +307,7 @@ class ContinueWatchingRemovalFocusTest {
       isMenuVisible()
     )
     // Rilascio del tasto ancora premuto: consumato dalla guardia del menu.
-    rule.onNode(isFocused(), useUnmergedTree = true).performKeyInput {
+    rule.onNode(cardById, useUnmergedTree = true).performKeyInput {
       keyUp(Key.DirectionCenter)
     }
     // `canClick` si abilita 250 ms dopo l'apertura.
@@ -291,9 +324,9 @@ class ContinueWatchingRemovalFocusTest {
    * semantica del menu, che nei test è fusa nell'albero unito.
    */
   private fun activateRemoveMenuItem() {
-    pressKey(Key.DirectionDown)
-    pressKey(Key.DirectionDown)
-    pressKey(Key.DirectionCenter)
+    pressMenuKey(Key.DirectionDown)
+    pressMenuKey(Key.DirectionDown)
+    pressMenuKey(Key.DirectionCenter)
     rule.waitForIdle()
   }
 
@@ -443,7 +476,9 @@ class ContinueWatchingRemovalFocusTest {
     activateRemoveMenuItem()
     awaitCwCount(3)
 
-    focusCard("CW 1")
+    // Card adiacente a quella rimossa: resta visibile nella riga senza dover riportare
+    // indietro lo scroll orizzontale (l'ancoraggio è sull'Hero, non sulla riga).
+    focusCard("CW 2")
     longPressFocusedCard()
     activateRemoveMenuItem()
     awaitCwCount(2)

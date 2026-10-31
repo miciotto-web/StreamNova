@@ -160,6 +160,35 @@ class WatchProgressTest {
     assertEquals("25m rimanenti", episode.remainingMinutesText)
   }
 
+  // ── Fine episodio (conclusione serie) ────────────────────────────────────
+
+  @Test
+  fun isAtEnd_trueOnlyWithinTheTolerance() {
+    val total = 50 * 60_000L
+    assertTrue(WatchProgress.isAtEnd(total, total))
+    assertTrue(WatchProgress.isAtEnd(total - 10_000L, total))
+    assertTrue(WatchProgress.isAtEnd(total - WatchProgress.END_TOLERANCE_MS, total))
+    assertFalse(WatchProgress.isAtEnd(total - WatchProgress.END_TOLERANCE_MS - 1L, total))
+    assertFalse(WatchProgress.isAtEnd(0L, total))
+  }
+
+  @Test
+  fun isAtEnd_falseWithoutAMeasuredDuration() {
+    assertFalse("durata non misurata: nessuna prova di fine episodio", WatchProgress.isAtEnd(1_000L, 0L))
+    assertFalse(WatchProgress.isAtEnd(1_000L, timeUnset))
+    assertFalse(WatchProgress.isAtEnd(1_000L, -1L))
+  }
+
+  @Test
+  fun hasReachedEnd_requiresExactEndForConservativeReconciliation() {
+    val total = 50 * 60_000L
+    assertTrue(WatchProgress.hasReachedEnd(total, total))
+    assertTrue(WatchProgress.hasReachedEnd(total + 1_000L, total))
+    assertFalse("una stima 'quasi alla fine' non è una prova", WatchProgress.hasReachedEnd(total - 5_000L, total))
+    assertFalse(WatchProgress.hasReachedEnd(0L, total))
+    assertFalse(WatchProgress.hasReachedEnd(1_000L, 0L))
+  }
+
   private fun mediaItem(
     totalDurationMs: Long,
     currentProgressMs: Long,

@@ -346,7 +346,9 @@ class PlayerReturnToDetailFocusTest {
       override suspend fun fetchSubtitles(
         mediaItem: MediaItem,
         episode: com.example.data.model.Episode?,
-        preferredLanguage: String?
+        preferredLanguage: String?,
+        year: Int?,
+        resolveLinksOnDemand: Boolean
       ) = emptyList<Subtitle>()
     }
     pendingContentFocusRestore = false
