@@ -57,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -111,6 +112,7 @@ import com.example.data.model.WatchProgress
 import androidx.compose.ui.text.style.TextAlign
 import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.toEpisode
+import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
 import com.example.data.stremio.StremioCatalogMapper
@@ -138,6 +140,7 @@ import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import com.example.ui.util.FocusTrace
 import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -227,6 +230,49 @@ fun DetailScreen(
   onRetry: (() -> Unit)? = null,
   onToggleWatched: ((MediaItem) -> Unit)? = null,
   onPlayTrailer: ((MediaItem) -> Unit)? = null,
+  /**
+   * Selezione MANUALE della sorgente (modalità Debrid): non-null solo quando il motore
+   * attivo è Debrid TorBox e il contenuto supporta la scelta della fonte. Riceve il
+   * media corrente e l'episodio attivo (null per i film). Con null il pulsante
+   * «Seleziona fonte» non è composto e la catena di focus resta quella storica.
+   */
+  onSelectSourceClick: ((MediaItem, Episode?) -> Unit)? = null,
+  /**
+   * Token che avanza a ogni chiusura del selettore delle sorgenti aperto sopra questa
+   * scheda (Back o «Annulla», i percorsi già supportati). La scheda resta composta sotto
+   * l'overlay, quindi nessun effetto di focus ri-parte alla chiusura: senza questo segnale
+   * il fallback di focus di Compose (nodo focalizzato smontato) atterra sulla sinossi,
+   * primo nodo focusabile della scheda. Al avanzamento del token il focus torna su
+   * «Riproduci»; un token già avanzato PRIMA dell'ingresso in composizione non deve
+   * strappare il focus (rientri da Consigliati/Cast/Casa di produzione) e viene quindi
+   * ignorato confrontandolo con l'ultimo valore visto da questa composizione.
+   */
+  sourceDialogDismissedToken: Int = 0,
+  /**
+   * Token che avanza a ogni chiusura del trailer interno aperto da questa scheda (BACK del
+   * telecomando o pulsante «Chiudi»). Il trailer è un overlay composto sopra la scheda,
+   * che resta quindi montata sotto di esso: nessun effetto di focus ri-parte alla chiusura
+   * e, senza questo segnale, il fallback di Compose lascerebbe il cursore sulla sinossi.
+   * Al avanzamento del token il focus torna su «Riproduci», con lo stesso protocollo del
+   * token delle sorgenti ma su un canale DISTINTO: i due ripristini non si consumano a
+   * vicenda e la chiusura del selettore fonte (Fase 4) resta invariata. Un token già
+   * avanzato PRIMA dell'ingresso in composizione viene ignorato, come per le sorgenti.
+   */
+  trailerDismissedToken: Int = 0,
+  /**
+   * Token che avanza a OGNI chiusura del player (BACK del telecomando). Il player è un
+   * OVERLAY composto sopra il NavHost: la scheda Dettaglio resta composta sotto di esso e
+   * al ritorno nessuno dei suoi effetti di focus ri-parte. Smontando il nodo focalizzato
+   * del player, il fallback di focus di Compose atterra sul PRIMO nodo focusabile della
+   * scheda (la sinossi), non sul pulsante «Riproduci».
+   *
+   * Al avanzamento di questo token la scheda riprende ESCLUSIVAMENTE il focus su
+   * «Riproduci», con lo stesso protocollo di conferma reale (`onFocusChanged`) dei token
+   * del selettore sorgenti e del trailer, su un canale DEDICATO: un token avanzato PRIMA
+   * dell'ingresso in composizione (scheda aperta dopo la chiusura del player) viene
+   * ignorato e non strappa il focus al ripristino del cast/produzione.
+   */
+  playerClosedToken: Int = 0,
   onCastMemberClick: ((CastMember) -> Unit)? = null,
   onCompanyClick: ((ProductionCompany) -> Unit)? = null,
   targetCastMemberId: Int? = null,
@@ -510,7 +556,15 @@ fun DetailScreen(
    // Main Scrollable Content
    val listState = rememberLazyListState()
 
-    // Catena D-pad della barra azioni: Riproduci -> Cuore -> Occhio -> Trailer.
+    // Traccia SOLO DEBUG della vita della scheda: distingue "il Dettaglio è ancora composto
+    // sotto il player" da "la destinazione è stata smontata/poppata".
+    DisposableEffect(displayMedia.id) {
+      FocusTrace.log("DETAIL", "compose mount media=${displayMedia.id}")
+      onDispose { FocusTrace.log("DETAIL", "compose dispose media=${displayMedia.id}") }
+    }
+
+    // Catena D-pad della barra azioni: Riproduci -> Cuore -> Occhio -> Trailer
+    // (-> Seleziona fonte quando il pulsante è presente, cioè in modalità Debrid).
     // "Riproduci" e' il PRIMO (e unico) nodo focusabile della zona superiore:
     // header, logo, titolo, badge e backdrop sono puramente visivi e non
     // ricevono mai il focus D-pad.
@@ -617,6 +671,110 @@ fun DetailScreen(
       listState.scrollToItem(0, 0)
     }
 
+    // Ritorno dal selettore delle sorgenti (chiuso con Back o «Annulla»): la scheda è
+    // rimasta composta sotto l'overlay, quindi l'effetto di focus iniziale qui sopra non
+    // ri-parte e il fallback di focus di Compose lascerebbe il cursore sulla sinossi.
+    // Al avanzamento del token il focus torna ESCLUSIVAMENTE su «Riproduci», con lo
+    // stesso protocollo del focus iniziale (ritenti per frame finché onPlayFocusChanged
+    // non conferma l'atterraggio). Solo i token che avanzano MENTRE questa composizione
+    // è viva sono consumati: un token ereditato dall'ingresso non tocca il focus.
+    var lastSeenSourceDismissedToken by remember(displayMedia.id) {
+      mutableStateOf(sourceDialogDismissedToken)
+    }
+    LaunchedEffect(sourceDialogDismissedToken) {
+      if (sourceDialogDismissedToken == lastSeenSourceDismissedToken) return@LaunchedEffect
+      lastSeenSourceDismissedToken = sourceDialogDismissedToken
+      repeat(20) {
+        withFrameNanos { } // attende composizione + smontaggio dell'overlay e layout del nodo
+        try {
+          actionFocus.play.requestFocus()
+        } catch (_: Exception) {
+          // FocusRequester non ancora inizializzato: riprova al frame successivo.
+        }
+        if (isPlayFocused) {
+          listState.scrollToItem(0, 0)
+          return@LaunchedEffect
+        }
+        delay(32)
+      }
+      listState.scrollToItem(0, 0)
+    }
+
+    // Ritorno dal TRAILER interno (Back del telecomando o pulsante «Chiudi»): stesso
+    // scenario strutturale del selettore delle sorgenti — il trailer è un overlay di
+    // MainActivity composto sopra il NavHost, questa scheda resta viva sotto di esso e
+    // nessuno dei suoi effetti di focus ri-parte. Smontando il pulsante di chiusura del
+    // trailer, il fallback di Compose lasciava il cursore sulla sinossi.
+    // Il segnale è un token DEDICATO (non quello delle sorgenti): ogni chiusura avvenuta
+    // mentre questa composizione è viva riporta il focus ESCLUSIVAMENTE su «Riproduci»,
+    // film o serie TV. Un token ereditato all'ingresso (apertura della scheda dopo una
+    // chiusura precedente) viene ignorato, come per le sorgenti.
+    var lastSeenTrailerDismissedToken by remember(displayMedia.id) {
+      mutableStateOf(trailerDismissedToken)
+    }
+    LaunchedEffect(trailerDismissedToken) {
+      if (trailerDismissedToken == lastSeenTrailerDismissedToken) return@LaunchedEffect
+      lastSeenTrailerDismissedToken = trailerDismissedToken
+      repeat(20) {
+        withFrameNanos { } // attende composizione + smontaggio dell'overlay e layout del nodo
+        try {
+          actionFocus.play.requestFocus()
+        } catch (_: Exception) {
+          // FocusRequester non ancora inizializzato: riprova al frame successivo.
+        }
+        if (isPlayFocused) {
+          listState.scrollToItem(0, 0)
+          return@LaunchedEffect
+        }
+        delay(32)
+      }
+      listState.scrollToItem(0, 0)
+    }
+
+    // Ritorno dal PLAYER: stesso scenario strutturale del trailer e del selettore sorgenti
+    // (overlay di MainActivity sopra il NavHost, scheda viva sotto di esso). Alla chiusura
+    // del player il nodo focalizzato dell'overlay viene smontato e il fallback di focus di
+    // Compose atterra sul primo nodo focusabile della scheda (la sinossi): la scheda non è
+    // mai stata smontata, quindi il suo effetto di focus iniziale non ri-parte.
+    //
+    // Al segnale il focus torna su «Riproduci» con l'attesa legata alla COMPOSIZIONE
+    // (`withFrameNanos`, nessun ritardo arbitrario) e con la conferma REALE del focus
+    // (`onPlayFocusChanged`): `requestFocus()` da solo può essere scartato mentre l'overlay
+    // viene smontato. Canale DEDICATO (non quello delle sorgenti o del trailer): un rientro
+    // dal player non consuma i loro ripristini e viceversa. Un token ereditato all'ingresso
+    // in composizione non tocca il focus (rientri da Consigliati/Cast/Produzione).
+    var lastSeenPlayerClosedToken by remember(displayMedia.id) {
+      mutableStateOf(playerClosedToken)
+    }
+    LaunchedEffect(playerClosedToken) {
+      if (playerClosedToken == lastSeenPlayerClosedToken) return@LaunchedEffect
+      lastSeenPlayerClosedToken = playerClosedToken
+      FocusTrace.log(
+        "DETAIL",
+        "playerClosedToken=$playerClosedToken: ripristino focus su Riproduci " +
+          "(media=${displayMedia.id}, playFocusedBefore=$isPlayFocused)"
+      )
+      var attempts = 0
+      while (!isPlayFocused && attempts < 20) {
+        attempts++
+        withFrameNanos { } // smontaggio dell'overlay + layout del nodo della scheda
+        try {
+          actionFocus.play.requestFocus()
+        } catch (_: Exception) {
+          // FocusRequester non ancora agganciato: si ritenta al frame successivo.
+        }
+        withFrameNanos { } // lascia applicare la richiesta e arrivare onFocusChanged
+      }
+      FocusTrace.log(
+        "DETAIL",
+        "playerClosedToken=$playerClosedToken: tentativi=$attempts " +
+          "isPlayFocused=$isPlayFocused"
+      )
+      if (isPlayFocused) {
+        // La pulsantiera torna interamente in vista (offset 0) con il focus confermato.
+        listState.scrollToItem(0, 0)
+      }
+    }
    CompositionLocalProvider(LocalBringIntoViewSpec provides guardedBringIntoViewSpec) {
    LazyColumn(
      state = listState,
@@ -946,26 +1104,20 @@ fun DetailScreen(
             verticalAlignment = Alignment.CenterVertically
           ) {
             val resumeEpisode = if (displayMedia.type == MediaType.SERIE_TV && !isLiveChannel) {
-              val targetSeason = displayMedia.lastWatchedSeason ?: 1
-              val targetEpNum = displayMedia.lastWatchedEpisode ?: 1
-              val found = displayMedia.episodes.find {
-                it.seasonNumber == targetSeason && it.episodeNumber == targetEpNum
-              } ?: episodesForSeason.find {
-                it.seasonNumber == targetSeason && it.episodeNumber == targetEpNum
-              } ?: episodesForSeason.firstOrNull { it.seasonNumber == 1 && it.episodeNumber == 1 }
-                ?: episodesForSeason.firstOrNull()
-                ?: displayMedia.episodes.firstOrNull()
-                ?: Episode(
-                  id = "${displayMedia.id}_s${targetSeason}e${targetEpNum}",
-                  seasonNumber = targetSeason,
-                  episodeNumber = targetEpNum,
-                  title = "Episodio $targetEpNum",
-                  synopsis = "",
-                  durationMinutes = displayMedia.durationMinutes.takeIf { it > 0 } ?: 55,
-                  videoUrl = displayMedia.videoUrl
-                )
-              val savedProgress = MediaRepository.getEpisodeProgress(displayMedia.id, found.seasonNumber, found.episodeNumber)
-              found.copy(currentProgressMs = savedProgress)
+              // L'ultima visione salvata (o S1E1 per un titolo mai avviato) è autorevole:
+              // se la stagione non è ancora caricata l'episodio viene ricostruito con gli
+              // stessi numeri, mai sostituito da S1E1 (bug "riprende la prima puntata").
+              val resolved = EpisodeResumeResolver.resolveWithLookup(
+                media = displayMedia,
+                extraEpisodes = episodesForSeason,
+                progressOf = { season, episode ->
+                  MediaRepository.getEpisodeProgress(displayMedia.id, season, episode)
+                },
+                durationOf = { season, episode ->
+                  MediaRepository.getEpisodeDurationMs(displayMedia.id, season, episode)
+                }
+              )
+              resolved
             } else null
 
             val playButtonLabel = if (displayMedia.type == MediaType.SERIE_TV && !isLiveChannel) {
@@ -984,7 +1136,8 @@ fun DetailScreen(
             }
 
             // Barra azioni: pillola Riproduci + Cuore (preferiti) + Occhio (visto) +
-            // Trailer YouTube interno (mai Intent verso l'app esterna).
+            // Trailer YouTube interno (mai Intent verso l'app esterna) +
+            // Seleziona fonte (solo in modalità Debrid, via onSelectSourceClick).
             // SU dalla barra: sale verso la sinossi se presente, altrimenti resta bloccato.
             MediaActionBar(
               playLabel = playButtonLabel,
@@ -994,12 +1147,21 @@ fun DetailScreen(
               isWatched = displayMedia.isWatched,
               onToggleWatched = { onToggleWatched?.invoke(displayMedia) },
               onPlayTrailer = { onPlayTrailer?.invoke(displayMedia) },
+              // Selezione manuale: il target è lo stesso episodio del pulsante
+              // Riproduci (resume), così il dialog mostra il contesto SxE corretto;
+              // per i film resumeEpisode è null.
+              onSelectSource = onSelectSourceClick?.let { callback ->
+                { callback(displayMedia, resumeEpisode) }
+              },
               focus = actionFocus,
               upTarget = if (hasFocusableSynopsis(synopsisText)) synopsisFocusRequester else FocusRequester.Cancel,
               onFocusChanged = { focused ->
                 isActionBarFocused = focused
               },
-              onPlayFocusChanged = { isPlayFocused = it }
+              onPlayFocusChanged = { focused ->
+                isPlayFocused = focused
+                FocusTrace.log("DETAIL", "Riproduci focus REALE=$focused token=$playerClosedToken")
+              }
             )
           }
         }

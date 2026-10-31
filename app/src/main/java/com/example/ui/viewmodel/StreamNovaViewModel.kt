@@ -34,6 +34,7 @@ import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
+import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.HomeCatalogs
 import com.example.data.repository.LastWorkingStreamRepository
@@ -64,6 +65,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import com.example.ui.screens.player.PlayerChapter
 import com.example.ui.screens.player.PlayerChapterUtils
+import com.example.ui.util.FocusTrace
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
@@ -96,6 +98,8 @@ import kotlinx.coroutines.flow.update
 /** Tag di log del ViewModel (ricerca sorgenti + playback). */
 private const val TAG = "StreamNovaVM"
 private const val HTTP_TRACE = "HTTP_TRACE"
+/** Tag dei log correlati al percorso «Continua a guardare → episodio → player». */
+private const val TRACE_TAG = "CW_TRACE"
 /** Messaggio diagnostico quando il trailer non e' recuperabile da TMDB. */
 private const val TRAILER_UNAVAILABLE_MESSAGE = "Trailer non disponibile per questo titolo"
 /** Timeout per l'interrogazione dei cataloghi Stremio durante la ricerca testuale. */
@@ -575,12 +579,46 @@ class StreamNovaViewModel(
   val focusRestoreToken: StateFlow<Int> = _focusRestoreToken.asStateFlow()
 
   /**
+   * KEY STABILE della card il cui focus va ripristinato (la key Compose dell'item della riga,
+   * es. `trend_m_123`): identifica la CARD, non la sua posizione.
+   *
+   * È salvata insieme al target (`rowKey` + `mediaId`) perché un catalogo può riordinarsi
+   * mentre la scheda Dettaglio è aperta: al ritorno la card viene ritrovata per identità e la
+   * key conferma che la posizione risolta è davvero la sua. `null` per i target che non
+   * provengono da una riga della Home (griglie, schermate singole, ancora di contenuto).
+   */
+  private val _lastFocusedCardKey = MutableStateFlow<String?>(null)
+  val lastFocusedCardKey: StateFlow<String?> = _lastFocusedCardKey.asStateFlow()
+
+  /**
+   * `true` quando il target salvato è una RICHIESTA DI RIPRISTINO (BACK dal Dettaglio, ritorno
+   * dal Player, ancora di contenuto della MainActivity), `false` quando è soltanto la
+   * PROVENIENZA registrata al click della card.
+   *
+   * La distinzione è necessaria: aprendo la scheda Dettaglio la Home resta composta per tutta
+   * la transizione di uscita del NavHost. Se il solo salvataggio della provenienza attivasse
+   * il protocollo di ripristino, la Home chiederebbe il focus sulla card appena cliccata
+   * mentre sta uscendo di scena, la card lo confermerebbe e il target verrebbe CONSUMATO
+   * prima del BACK. Al rientro il target non esisterebbe più e il fallback della MainActivity
+   * ancorerebbe il focus all'Hero (difetto: "al ritorno dal Dettaglio il focus finisce sulla
+   * Hero"). Solo [signalFocusRestore] — emesso al rientro — perfeziona la richiesta.
+   */
+  private val _focusRestoreRequested = MutableStateFlow(false)
+  val focusRestoreRequested: StateFlow<Boolean> = _focusRestoreRequested.asStateFlow()
+
+  /**
    * Salva il target di ripristino ROW-SCOPED: alla Back dalla scheda Dettaglio solo le
    * card della riga [rowKey] possono ripristinare il focus su [mediaId].
+   *
+   * [cardKey] è la key Compose della card (identità stabile nel tempo); il salvataggio NON è
+   * una richiesta di ripristino: la richiesta arriva con [signalFocusRestore] al rientro.
    */
-  fun saveLastFocusedMedia(rowKey: String, mediaId: String) {
+  fun saveLastFocusedMedia(rowKey: String, mediaId: String, cardKey: String? = null) {
     _lastFocusedTarget.value = rowKey to mediaId
     _lastFocusedMediaId.value = mediaId
+    _lastFocusedCardKey.value = cardKey
+    // Provenienza, non richiesta: il protocollo di ripristino della Home resta inerte.
+    _focusRestoreRequested.value = false
     // Mutua esclusione: un salvataggio media invalida un target provider rimasto appeso.
     _lastFocusedProviderId.value = null
   }
@@ -597,6 +635,8 @@ class StreamNovaViewModel(
       _lastFocusedTarget.value = FOCUS_ROW_ANY to mediaId
     }
     _lastFocusedMediaId.value = mediaId
+    _lastFocusedCardKey.value = null
+    _focusRestoreRequested.value = false
     // Mutua esclusione: un salvataggio media invalida un target provider rimasto appeso.
     _lastFocusedProviderId.value = null
   }
@@ -605,6 +645,8 @@ class StreamNovaViewModel(
   fun clearLastFocusedMedia() {
     _lastFocusedTarget.value = null
     _lastFocusedMediaId.value = null
+    _lastFocusedCardKey.value = null
+    _focusRestoreRequested.value = false
   }
 
   /**
@@ -624,6 +666,8 @@ class StreamNovaViewModel(
     // Mutua esclusione col target media: la provenienza è la card PROVIDER, non una card media.
     _lastFocusedTarget.value = null
     _lastFocusedMediaId.value = null
+    _lastFocusedCardKey.value = null
+    _focusRestoreRequested.value = false
   }
 
   fun clearLastFocusedProvider() {
@@ -631,6 +675,9 @@ class StreamNovaViewModel(
   }
 
   fun signalFocusRestore(mediaId: String) {
+    // La richiesta di ripristino è ESPLICITA (rientro dal Dettaglio/Player): da qui il target
+    // salvato torna ad essere un protocollo attivo per la Home.
+    _focusRestoreRequested.value = true
     // Incrementa il token per forzare l'attivazione nelle card
     _focusRestoreToken.value = _focusRestoreToken.value + 1
     _focusRestoreSignal.tryEmit(mediaId)
@@ -805,6 +852,38 @@ class StreamNovaViewModel(
    * variabili globali mutevoli.
    */
   private var currentSession: PlaybackSession? = null
+
+  /**
+   * Identificativo di correlazione della sessione di riproduzione aperta.
+   *
+   * Tutti gli eventi del percorso «Continua a guardare → episodio → sorgente → player»
+   * usano lo stesso token, così una singola riproduzione può essere seguita dall'inizio
+   * alla fine nel logcat. Non contiene URL, token o credenziali.
+   */
+  @Volatile
+  private var playbackTraceId: String? = null
+
+  private val playbackTraceSequence = java.util.concurrent.atomic.AtomicLong(0L)
+
+  private fun newPlaybackTraceId(): String =
+    "cw-" + System.currentTimeMillis().toString(36) + "-" +
+      playbackTraceSequence.incrementAndGet()
+
+  /** Log diagnostico correlato: mai URL completi, token o credenziali. */
+  private fun tracePlayback(
+    traceId: String,
+    event: String,
+    vararg fields: Pair<String, Any?>
+  ) {
+    val detail = fields.joinToString(" ") { (name, value) -> "$name=${value ?: "null"}" }
+    Log.d(TRACE_TAG, "$traceId $event $detail")
+  }
+
+  private fun currentTrace(): String =
+    playbackTraceId ?: newPlaybackTraceId().also { playbackTraceId = it }
+
+  private fun episodesForMediaFromPlayerCache(mediaId: String): List<Episode> =
+    playerSeasonEpisodes.filterKeys { it.first == mediaId }.values.flatten()
 
   /**
    * Resetta immediatamente lo stato di risoluzione dello stream a Idle
@@ -1021,12 +1100,59 @@ class StreamNovaViewModel(
   val sourceSelectionTarget: StateFlow<SourceDialogTarget?> = _sourceDialogMedia.asStateFlow()
 
   /**
+   * Token che avanza a OGNI chiusura del selettore delle sorgenti ([dismissSourceDialog]):
+   * il Dettaglio sottostante resta composto sotto l'overlay e nessun suo effetto di focus
+   * ri-parte alla chiusura, quindi la scheda usa questo segnale per riprendere il focus
+   * sul pulsante «Riproduci» (invece di lasciarlo al fallback di Compose, che atterra
+   * sulla sinossi, primo nodo focusabile della scheda).
+   *
+   * NON avanza alla conferma di una sorgente ([selectSource], che apre il player) né alla
+   * chiusura del player ([closePlayer]): in quei percorsi il focus è gestito dai flussi
+   * già esistenti e non va strappato verso la pulsantiera del Dettaglio.
+   */
+  private val _sourceDialogDismissedToken = MutableStateFlow(0)
+  val sourceDialogDismissedToken: StateFlow<Int> = _sourceDialogDismissedToken.asStateFlow()
+
+  /**
    * Stato del trailer interno: `Idle` quando nessun trailer e' richiesto, `Loading` durante
    * la ricerca della chiave YouTube su TMDB, `Playing` con la chiave da embeddare in-app.
    */
   private val _trailerState = MutableStateFlow<TrailerPlaybackState>(TrailerPlaybackState.Idle)
   val trailerState: StateFlow<TrailerPlaybackState> = _trailerState.asStateFlow()
   private var loadTrailerJob: Job? = null
+
+  /**
+   * Token che avanza a OGNI chiusura del trailer interno ([closeTrailer]): come per il
+   * selettore delle sorgenti, il trailer è un overlay composto SOPRA il NavHost, quindi
+   * il Dettaglio resta composto sotto di esso e nessun effetto di focus ri-parte alla
+   * chiusura. Senza questo segnale il fallback di focus di Compose atterrerebbe sulla
+   * sinossi (primo nodo focusabile della scheda); al suo avanzamento la scheda riprende
+   * il focus sul pulsante «Riproduci».
+   *
+   * Distinto da [sourceDialogDismissedToken]: i due ripristini restano indipendenti e
+   * nessuno dei due consuma il segnale dell'altro.
+   */
+  private val _trailerDismissedToken = MutableStateFlow(0)
+  val trailerDismissedToken: StateFlow<Int> = _trailerDismissedToken.asStateFlow()
+
+  /**
+   * Token che avanza a OGNI chiusura del player ([closePlayer]).
+   *
+   * Il player è un OVERLAY composto sopra il NavHost: quando è stato aperto dal Dettaglio,
+   * la destinazione sottostante resta la STESSA scheda (nessuna navigazione da annullare) e
+   * la scheda resta composta sotto di esso. Alla chiusura, però, il nodo focalizzato del
+   * player viene smontato e il fallback di focus di Compose atterra sul PRIMO nodo
+   * focusabile della scheda (la sinossi), non su «Riproduci»: nessun effetto della scheda
+   * ri-parte perché la composizione non è cambiata.
+   *
+   * Al suo avanzamento il Dettaglio riprende il focus su «Riproduci» con lo stesso protocollo
+   * di conferma reale dei token del selettore sorgenti e del trailer, ma su un canale
+   * DEDICATO: i tre ripristini sono indipendenti e nessuno consuma il segnale dell'altro.
+   * Una scheda che entra in composizione DOPO l'avanzamento eredita il valore e lo ignora
+   * (vedi `lastSeenPlayerClosedToken` in DetailScreen).
+   */
+  private val _playerClosedToken = MutableStateFlow(0)
+  val playerClosedToken: StateFlow<Int> = _playerClosedToken.asStateFlow()
 
   /**
    * Generazione del loadStream corrente: incrementata a ogni nuova chiamata e
@@ -1201,6 +1327,19 @@ class StreamNovaViewModel(
         refreshHomeCatalogs(allMedia.value)
       }
     }
+  }
+
+  /**
+   * Arricchisce in BACKGROUND le serie di "Continua a guardare" con la prossima puntata
+   * TMDB mostrata nel badge della card.
+   *
+   * Non blocca Home né la riga: le card compaiono subito e il badge arriva dopo. Il
+   * repository riusa la cache dettagli TMDB esistente (12h) e deduplica per `tmdbId`,
+   * quindi le ricomposizioni della Home non producono richieste ripetute.
+   */
+  fun ensureNextEpisodeBadges(items: List<MediaItem>) {
+    if (items.isEmpty()) return
+    viewModelScope.launch { MediaRepository.refreshNextEpisodes(items) }
   }
 
   fun refreshCatalog() {
@@ -2279,21 +2418,20 @@ class StreamNovaViewModel(
     // Un canale LIVE è tipizzato SERIE_TV (così lo mostra il catalogo `tv`), ma non
     // ha episodi: non va mai creato un episodio sintetico S1E1.
     val isTv = media.type == MediaType.SERIE_TV && !isLiveChannel(media.id)
+    val traceId = currentTrace()
+    // La posizione salvata è AUTOREVOLE quando non arriva un episodio esplicito: se la
+    // lista locale non contiene quella puntata — le serie di catalogo hanno episodi
+    // generati/troncati o non ancora caricati da TMDB — si costruisce l'episodio con
+    // gli stessi numeri. Il vecchio fallback al primo episodio faceva partire S1E1
+    // quando l'ultima visione era S5E6. Un episodio cliccato resta invece quello
+    // scelto, con i suoi metadati (titolo, durata).
     val effectiveEpisode = if (isTv && episode == null) {
-      val s = media.lastWatchedSeason ?: 1
-      val e = media.lastWatchedEpisode ?: 1
-      media.episodes.find { it.seasonNumber == s && it.episodeNumber == e }
-        ?: media.episodes.firstOrNull()
-        ?: Episode(
-            id = "${media.id}_s${s}e${e}",
-            seasonNumber = s,
-            episodeNumber = e,
-            title = "Episodio $e",
-            synopsis = "",
-            durationMinutes = media.durationMinutes.takeIf { it > 0 } ?: 55,
-            videoUrl = media.videoUrl,
-            seriesImdbId = media.effectiveImdbId
-          )
+      EpisodeResumeResolver.resolveWithLookup(
+        media = media,
+        extraEpisodes = episodesForMediaFromPlayerCache(media.id),
+        progressOf = { season, ep -> MediaRepository.getEpisodeProgress(media.id, season, ep) },
+        durationOf = { season, ep -> MediaRepository.getEpisodeDurationMs(media.id, season, ep) }
+      )
     } else {
       episode
     }
@@ -2314,19 +2452,70 @@ class StreamNovaViewModel(
       media
     }
 
+    // Progresso e durata letti SEMPRE per la coppia (media, stagione, episodio) risolta:
+    // mai il valore aggregato di un'altra puntata della stessa serie.
+    val episodeRoomKey = finalEpisode?.let { "${finalMedia.id}_s${it.seasonNumber}e${it.episodeNumber}" }
+    val savedEpisodeProgress = if (isTv && finalEpisode != null) {
+      MediaRepository.getEpisodeProgress(finalMedia.id, finalEpisode.seasonNumber, finalEpisode.episodeNumber)
+    } else 0L
+    val savedEpisodeDuration = if (isTv && finalEpisode != null) {
+      MediaRepository.getEpisodeDurationMs(finalMedia.id, finalEpisode.seasonNumber, finalEpisode.episodeNumber)
+    } else 0L
+    if (isTv && finalEpisode != null) {
+      tracePlayback(
+        traceId,
+        "RESUME_RECORD_LOADED",
+        "series" to finalMedia.title,
+        "season" to finalEpisode.seasonNumber,
+        "episode" to finalEpisode.episodeNumber,
+        "tmdbId" to finalMedia.tmdbId,
+        "episodeId" to finalEpisode.id,
+        "roomKey" to episodeRoomKey,
+        "progressMs" to savedEpisodeProgress,
+        "durationMs" to savedEpisodeDuration
+      )
+    }
+
     val savedInitialPos = if (isTv && finalEpisode != null) {
-      val saved = MediaRepository.getEpisodeProgress(finalMedia.id, finalEpisode.seasonNumber, finalEpisode.episodeNumber)
-      if (saved > 0L) saved else finalEpisode.currentProgressMs
+      if (savedEpisodeProgress > 0L) savedEpisodeProgress else finalEpisode.currentProgressMs
     } else {
       finalMedia.currentProgressMs
     }
-    val totalDur = finalEpisode?.totalDurationMs ?: finalMedia.totalDurationMs
+    // La durata dell'episodio corrente: quella reale persistita per QUESTA puntata,
+    // poi quella dell'episodio risolto, infine quella del titolo.
+    val totalDur = when {
+      savedEpisodeDuration > 0L -> savedEpisodeDuration
+      finalEpisode != null -> finalEpisode.totalDurationMs
+      else -> finalMedia.totalDurationMs
+    }
     // "Riprendi automaticamente la riproduzione": se OFF si parte da 0:00 SENZA
     // cancellare il progresso salvato (il valore resta in Room).
     // Se l'episodio è già concluso (>= 90% o <15s alla fine), si riparte da 0:00
     // per non far scattare istantaneamente il fine riproduzione e l'auto-advance.
     val isAlreadyFinished = totalDur > 0L && (savedInitialPos >= (totalDur * 0.90f) || (totalDur - savedInitialPos) <= 15_000L)
     val initialPos = if (SettingsRepository.settings.value.autoResume && !isAlreadyFinished) savedInitialPos else 0L
+
+    if (isTv && finalEpisode != null) {
+      tracePlayback(
+        traceId,
+        "EPISODE_RESOLVED",
+        "series" to finalMedia.title,
+        "season" to finalEpisode.seasonNumber,
+        "episode" to finalEpisode.episodeNumber,
+        "episodeId" to finalEpisode.id,
+        "explicit" to (episode != null),
+        "savedMs" to savedInitialPos,
+        "appliedMs" to initialPos,
+        "alreadyFinished" to isAlreadyFinished
+      )
+      tracePlayback(
+        traceId,
+        "RESUME_POSITION_APPLIED",
+        "roomKey" to episodeRoomKey,
+        "savedMs" to savedInitialPos,
+        "appliedMs" to initialPos
+      )
+    }
 
     // Pacchetto atomico e immutabile: descrive SOLO il media/episodio cliccati ora.
     // Da qui in avanti ogni salvataggio (Continua a guardare) usa questi campi.
@@ -2355,6 +2544,17 @@ class StreamNovaViewModel(
       subtitles = source?.subtitles ?: emptyList(),
       isReusedStream = isReusedStream,
       currentSource = source
+    )
+    tracePlayback(
+      traceId,
+      "PLAYER_MEDIA_ITEM_SET",
+      "series" to finalMedia.title,
+      "season" to finalEpisode?.seasonNumber,
+      "episode" to finalEpisode?.episodeNumber,
+      "positionMs" to initialPos,
+      "durationMs" to totalDur,
+      "sourcePresent" to (source != null),
+      "reused" to isReusedStream
     )
     // Stream del nuovo episodio ormai disponibile: la transizione è conclusa.
     _isSwitchingEpisode.value = false
@@ -2477,6 +2677,32 @@ class StreamNovaViewModel(
     if (session.isSeries) {
       val s = session.seasonNumber ?: current.currentEpisode?.seasonNumber ?: media.lastWatchedSeason ?: 1
       val e = session.episodeNumber ?: current.currentEpisode?.episodeNumber ?: media.lastWatchedEpisode ?: 1
+      // Blindatura identità: la posizione in stato deve appartenere all'episodio della
+      // sessione. Durante un cambio puntata lo stato e la sessione vengono aggiornati
+      // insieme ([playNextEpisode]); se per qualsiasi motivo divergono, il salvataggio
+      // viene scartato invece di trasferire il minutaggio a un altro episodio.
+      val activeEpisode = current.currentEpisode
+      if (activeEpisode != null &&
+        (activeEpisode.seasonNumber != s || activeEpisode.episodeNumber != e)
+      ) {
+        Log.w(
+          TAG,
+          "saveCurrentPlaybackProgress: scartato, stato S${activeEpisode.seasonNumber}E${activeEpisode.episodeNumber} " +
+            "!= sessione S${s}E$e"
+        )
+        return
+      }
+      tracePlayback(
+        currentTrace(),
+        "PROGRESS_SAVED",
+        "mediaId" to session.mediaId,
+        "series" to media.title,
+        "season" to s,
+        "episode" to e,
+        "roomKey" to "${session.mediaId}_s${s}e$e",
+        "positionMs" to finalPos,
+        "durationMs" to current.durationMs
+      )
       // `current.durationMs` e' la durata REALE misurata da ExoPlayer per questo episodio
       // (tenuta a `> 0` da [updatePlaybackPosition], che ignora `C.TIME_UNSET`). Se il player
       // non ha ancora fornito una durata valida, il repository NON sovrascrive quella gia' nota.
@@ -2514,12 +2740,19 @@ class StreamNovaViewModel(
       nextEpisode.seasonNumber,
       nextEpisode.episodeNumber
     )
+    val nextSavedDuration = MediaRepository.getEpisodeDurationMs(
+      enrichedMedia.id,
+      nextEpisode.seasonNumber,
+      nextEpisode.episodeNumber
+    )
+    val nextDuration = if (nextSavedDuration > 0L) nextSavedDuration else nextEpisode.totalDurationMs
     // Il nuovo episodio usa il proprio progresso (seasonNumber/episodeNumber) e,
     // se "Riprendi automaticamente" è OFF o se l'episodio era già completato, parte da 0.
-    val isNextFinished = nextEpisode.totalDurationMs > 0L && (nextSavedRaw >= (nextEpisode.totalDurationMs * 0.90f) || (nextEpisode.totalDurationMs - nextSavedRaw) <= 15_000L)
+    val isNextFinished = nextDuration > 0L && (nextSavedRaw >= (nextDuration * 0.90f) || (nextDuration - nextSavedRaw) <= 15_000L)
     val nextSavedPos = if (SettingsRepository.settings.value.autoResume && !isNextFinished) nextSavedRaw else 0L
     val enrichedNext = nextEpisode.copy(
       currentProgressMs = nextSavedPos,
+      totalDurationMs = nextDuration,
       seriesImdbId = nextEpisode.seriesImdbId ?: effectiveSeriesImdb
     )
 
@@ -2531,6 +2764,28 @@ class StreamNovaViewModel(
       currentPositionMs = nextSavedPos,
       durationMs = enrichedNext.totalDurationMs,
       streamUrl = null
+    )
+
+    // La sessione atomica avanza INSIEME allo stato: qualunque salvataggio che avvenga
+    // durante la risoluzione della nuova sorgente (incluso BACK immediato) scrive sul
+    // nuovo episodio, mai una posizione del nuovo episodio su quello precedente.
+    currentSession = PlaybackSession(
+      mediaId = enrichedMedia.id,
+      mediaTitle = enrichedMedia.title,
+      posterUrl = enrichedMedia.posterUrl,
+      isSeries = true,
+      seasonNumber = enrichedNext.seasonNumber,
+      episodeNumber = enrichedNext.episodeNumber
+    )
+    tracePlayback(
+      currentTrace(),
+      "EPISODE_SWITCHED",
+      "series" to enrichedMedia.title,
+      "fromSeason" to current.currentEpisode?.seasonNumber,
+      "fromEpisode" to current.currentEpisode?.episodeNumber,
+      "toSeason" to enrichedNext.seasonNumber,
+      "toEpisode" to enrichedNext.episodeNumber,
+      "savedMs" to nextSavedPos
     )
 
     // "Prossimo Episodio": aggiorna subito il next verso l'episodio successivo a quello
@@ -2655,10 +2910,46 @@ class StreamNovaViewModel(
         isProgressive = source.isProgressive
       )
       _streamResult.value = StreamResult.Success(listOf(source))
+      tracePlayback(
+        currentTrace(),
+        "STREAM_RESOLVED",
+        "series" to media.title,
+        "season" to episode?.seasonNumber,
+        "episode" to episode?.episodeNumber,
+        "server" to source.serverName,
+        "quality" to source.quality,
+        "sourceCount" to 1,
+        "via" to "last-working-stream-cache"
+      )
       // Apre il player marcando lo stream come "riutilizzato" per il fallback difensivo.
       executeOpenPlayer(media, episode, source, isReusedStream = true)
     }
     return true
+  }
+
+  /**
+   * Avvio della riproduzione dalla card «Continua a guardare».
+   *
+   * Non passa dal Dettaglio: l'episodio viene ricostruito esclusivamente dallo stato
+   * salvato del titolo (stagione/episodio + posizione persistita), mai da un fallback
+   * silenzioso alla prima puntata. Il token di correlazione lega questo click a tutti
+   * gli eventi successivi (episodio risolto, stream, posizione applicata).
+   */
+  fun playFromContinueWatching(media: MediaItem) {
+    val traceId = newPlaybackTraceId()
+    playbackTraceId = traceId
+    tracePlayback(
+      traceId,
+      "CONTINUE_WATCHING_SELECTED",
+      "series" to media.title,
+      "mediaId" to media.id,
+      "tmdbId" to media.tmdbId,
+      "lastWatchedSeason" to media.lastWatchedSeason,
+      "lastWatchedEpisode" to media.lastWatchedEpisode,
+      "cardProgressMs" to media.currentProgressMs,
+      "cardDurationMs" to media.totalDurationMs
+    )
+    openStreamForMedia(media, correlationId = traceId)
   }
 
   /**
@@ -2673,9 +2964,24 @@ class StreamNovaViewModel(
     mediaItem: MediaItem,
     episode: Episode? = null,
     allowReuse: Boolean = true,
-    isNextEpisode: Boolean = false
+    isNextEpisode: Boolean = false,
+    manualSelection: Boolean = false,
+    correlationId: String? = null
   ) {
+    val traceId = correlationId ?: newPlaybackTraceId()
+    playbackTraceId = traceId
     Log.d(TAG, "openStreamForMedia START mediaId=${mediaItem.id} tmdbId=${mediaItem.tmdbId}")
+    tracePlayback(
+      traceId,
+      "STREAM_REQUESTED",
+      "mediaId" to mediaItem.id,
+      "tmdbId" to mediaItem.tmdbId,
+      "explicitEpisode" to (episode != null),
+      "explicitSeason" to episode?.seasonNumber,
+      "explicitEpisodeNumber" to episode?.episodeNumber,
+      "lastWatchedSeason" to mediaItem.lastWatchedSeason,
+      "lastWatchedEpisode" to mediaItem.lastWatchedEpisode
+    )
 
     // Impostazione atomica immediata del media associato al dialog delle sorgenti:
     // prima di mostrare o raccogliere le sorgenti, elimina residui di titoli precedenti
@@ -2753,14 +3059,34 @@ class StreamNovaViewModel(
       mediaItem
     }
 
-    val isTv = baseForResolution.type == MediaType.SERIE_TV
+    val isTv = baseForResolution.type == MediaType.SERIE_TV && !isLiveChannel(baseForResolution.id)
+    // L'ultima visione salvata è autorevole: se non è nella lista locale la puntata
+    // viene ricostruita con gli stessi numeri, mai sostituita dalla prima disponibile.
+    // Un episodio esplicito (click su una puntata / scheda dettaglio) resta quello
+    // scelto, con i suoi metadati.
     val effectiveEpisode = if (isTv && episode == null) {
-      val s = baseForResolution.lastWatchedSeason ?: 1
-      val e = baseForResolution.lastWatchedEpisode ?: 1
-      baseForResolution.episodes.find { it.seasonNumber == s && it.episodeNumber == e }
-        ?: baseForResolution.episodes.firstOrNull()
+      EpisodeResumeResolver.resolveWithLookup(
+        media = baseForResolution,
+        extraEpisodes = episodesForMediaFromPlayerCache(baseForResolution.id),
+        progressOf = { season, ep -> MediaRepository.getEpisodeProgress(baseForResolution.id, season, ep) },
+        durationOf = { season, ep -> MediaRepository.getEpisodeDurationMs(baseForResolution.id, season, ep) }
+      )
     } else {
       episode
+    }
+    if (isTv) {
+      tracePlayback(
+        traceId,
+        "EPISODE_RESOLVED",
+        "series" to baseForResolution.title,
+        "tmdbId" to baseForResolution.tmdbId,
+        "requestedSeason" to (episode?.seasonNumber ?: baseForResolution.lastWatchedSeason),
+        "requestedEpisode" to (episode?.episodeNumber ?: baseForResolution.lastWatchedEpisode),
+        "season" to effectiveEpisode?.seasonNumber,
+        "episode" to effectiveEpisode?.episodeNumber,
+        "episodeId" to effectiveEpisode?.id,
+        "explicit" to (episode != null)
+      )
     }
 
     // Aggiorna atomicamente con il media arricchito e l'episodio calcolato
@@ -2824,7 +3150,9 @@ class StreamNovaViewModel(
       // Blindatura: qualunque errore del percorso di riuso (accesso DB/schema) non
       // deve far morire questa coroutine prima di interrogare i provider. In caso di
       // errore si procede con la risoluzione live.
-      val reused = allowReuse && runCatching {
+      // Eccezione: la selezione MANUALE delle sorgenti non riusa mai la cache, perché
+      // il riuso avvia direttamente la riproduzione bypassando la scelta dell'utente.
+      val reused = allowReuse && !manualSelection && runCatching {
         tryOpenReusedStream(
           media = resolvedMediaItem,
           episode = effectiveEpisode,
@@ -2842,6 +3170,16 @@ class StreamNovaViewModel(
 
       val season = if (isTv) (effectiveEpisode?.seasonNumber ?: resolvedMediaItem.lastWatchedSeason ?: 1) else null
       val epNumber = if (isTv) (effectiveEpisode?.episodeNumber ?: resolvedMediaItem.lastWatchedEpisode ?: 1) else null
+      tracePlayback(
+        traceId,
+        "STREAM_REQUESTED",
+        "series" to resolvedMediaItem.title,
+        "tmdbId" to effectiveTmdbId,
+        "season" to season,
+        "episode" to epNumber,
+        "engineMode" to mode.name,
+        "isNextEpisode" to isNextEpisode
+      )
 
       // Bingewatching - Priorita' assoluta: stessa fonte dell'episodio corrente.
       // Se l'episodio precedente veniva da un torrent di stagione (Debrid), si
@@ -2876,6 +3214,17 @@ class StreamNovaViewModel(
               isProgressive = samePackSource.isProgressive
             )
             _streamResult.value = StreamResult.Success(listOf(samePackSource))
+            tracePlayback(
+              traceId,
+              "STREAM_RESOLVED",
+              "series" to resolvedMediaItem.title,
+              "season" to season,
+              "episode" to epNumber,
+              "server" to samePackSource.serverName,
+              "quality" to samePackSource.quality,
+              "sourceCount" to 1,
+              "via" to "same-torrent-fast-path"
+            )
             openPlayer(resolvedMediaItem, effectiveEpisode, samePackSource)
           }
           return@launch
@@ -2920,6 +3269,17 @@ class StreamNovaViewModel(
             isProgressive = source.isProgressive
           )
           _streamResult.value = StreamResult.Success(listOf(source))
+          tracePlayback(
+            traceId,
+            "STREAM_RESOLVED",
+            "series" to resolvedMediaItem.title,
+            "season" to season,
+            "episode" to epNumber,
+            "server" to source.serverName,
+            "quality" to source.quality,
+            "sourceCount" to _availableSources.value.size,
+            "via" to "auto-pick"
+          )
           openPlayer(resolvedMediaItem, effectiveEpisode, source)
         }
       }
@@ -2966,7 +3326,11 @@ class StreamNovaViewModel(
           finalSources
         }
 
-        val shouldShowDialog = mode == StreamingEngineMode.DEBRID_TORBOX && !AppSettingsRepository.autoplayEnabled.value
+        // Selezione manuale esplicita (pulsante «Seleziona fonte» della scheda):
+        // il dialog di scelta è forzato a prescindere da modalità e autoplay, così
+        // NESSUNA sorgente parte in riproduzione senza la conferma dell'utente.
+        val shouldShowDialog = manualSelection ||
+          (mode == StreamingEngineMode.DEBRID_TORBOX && !AppSettingsRepository.autoplayEnabled.value)
         if (shouldShowDialog) {
           withContext(Dispatchers.Main) {
             if (currentJobGeneration != loadStreamGeneration) return@withContext
@@ -3114,6 +3478,27 @@ class StreamNovaViewModel(
 
   fun loadStream(media: MediaItem, episode: Episode? = null) {
     openStreamForMedia(media, episode)
+  }
+
+  /**
+   * Apre la selezione MANUALE delle sorgenti per il titolo richiesto, senza avviare
+   * alcuna riproduzione: le sorgenti risolte confluiscono nella schermata di scelta
+   * già esistente ([showSourceDialog], renderizzata da MainActivity) e la riproduzione
+   * parte esclusivamente con la conferma dell'utente ([selectSource]).
+   *
+   * Riusa l'intero flusso di [openStreamForMedia] (arricchimento metadati, discovery,
+   * generazione/invalidazione dei job) con due differenze:
+   *  - [openStreamForMedia.manualSelection] forza il dialog di scelta anche con autoplay
+   *    attivo: nessuna sorgente viene auto-selezionata né riprodotta;
+   *  - il "riusa l'ultimo link" è disattivato, perché il riuso avvia direttamente il
+   *    player bypassando la scelta dell'utente.
+   *
+   * @param media titolo di cui cercare le sorgenti (film o serie).
+   * @param episode episodio attivo per le serie TV (contesto SxEx del dialog); null per i film.
+   */
+  fun openManualSourceSelection(media: MediaItem, episode: Episode? = null) {
+    Log.i(TAG, "Selezione manuale sorgenti richiesta per '${media.title}' (episodio=${episode?.id ?: "nessuno"})")
+    openStreamForMedia(media, episode, manualSelection = true)
   }
 
   /**
@@ -3342,6 +3727,12 @@ class StreamNovaViewModel(
     return true
   }
 
+  /**
+   * Chiusura del selettore delle sorgenti senza riproduzione: unico funnello di tutti i
+   * percorsi di annullamento già supportati (BACK del telecomando e pulsante «Annulla»
+   * della schermata, entrambi arrivati via `onDismiss`). L'avanzamento del token avvisa
+   * il Dettaglio sottostante di riprendere il focus su «Riproduci».
+   */
   fun dismissSourceDialog() {
     currentMediaFetchJob?.cancel()
     currentMediaFetchJob = null
@@ -3350,12 +3741,23 @@ class StreamNovaViewModel(
     _availableSources.value = emptyList()
     _sourceCandidates.value = emptyList()
     _sourceDialogMedia.value = null
+    _sourceDialogDismissedToken.value = _sourceDialogDismissedToken.value + 1
   }
 
   fun closePlayer() {
     Log.d("BACK_TRACE", "STREAMNOVAVM: ingresso in closePlayer()")
     Log.i(HTTP_TRACE, "[VM] closePlayer INVOKE")
     Log.d("BACK_TRACE", "STREAMNOVAVM: valore di _screenState prima: ${_screenState.value}")
+    FocusTrace.log(
+      "VM",
+      "closePlayer BEFORE screen=${_screenState.value} token=${_playerClosedToken.value} " +
+        "origin=$screenBeforePlayer playbackOrigin=$playbackOriginTarget " +
+        "target=${_lastFocusedMediaId.value}/${_lastFocusedProviderId.value}"
+    )
+    // Il segnale di rientro verso il Dettaglio vale SOLO se il player era davvero aperto:
+    // una seconda chiusura (BACK ripetuto prima della ricomposizione) non deve emettere un
+    // secondo ripristino di focus.
+    val closedFromPlayer = _screenState.value == ScreenState.PLAYER
     // Salva il progresso PRIMA di azzerare lo stato, usando il pacchetto atomico della
     // sessione corrente (mai variabili globali mutevoli).
     val current = _playbackState.value
@@ -3404,6 +3806,20 @@ class StreamNovaViewModel(
     // Il focus torna sulla card che ha avviato la riproduzione (Home ancora composta sotto
     // l'overlay del player): nessun altro effetto lo riancorerebbe al contenuto.
     restoreFocusOnPlayerReturn()
+    // Rientro nella scheda Dettaglio (quando è lei la destinazione sottostante): il focus
+    // deve tornare su «Riproduci». Il segnale è emesso SEMPRE che il player fosse aperto:
+    // una scheda non composta in questo istante (player aperto da Home/Provider) lo ignora,
+    // e una scheda composta successivamente eredita il valore senza consumarlo (vedi
+    // DetailScreen).
+    if (closedFromPlayer) {
+      _playerClosedToken.value = _playerClosedToken.value + 1
+    }
+    FocusTrace.log(
+      "VM",
+      "closePlayer AFTER screen=${_screenState.value} token=${_playerClosedToken.value} " +
+        "closedFromPlayer=$closedFromPlayer target=${_lastFocusedMediaId.value}/${_lastFocusedProviderId.value} " +
+        "focusRestoreRequested=${_focusRestoreRequested.value}"
+    )
     Log.d("BACK_TRACE", "STREAMNOVAVM: valore di _screenState dopo: ${_screenState.value}")
     Log.i(HTTP_TRACE, "[VM] closePlayer COMPLETE")
     Log.d("BACK_TRACE", "STREAMNOVAVM: uscita da closePlayer()")
@@ -3418,7 +3834,8 @@ class StreamNovaViewModel(
    *
    * Il ripristino avviene SOLO quando il player rientra davvero nel contenuto della Home
    * (schermata BROWSING + sezione HOME): il rientro dal Dettaglio (player aperto dalla scheda)
-   * lascia il focus alla scheda, che ha il proprio percorso di ripristino.
+   * lascia il focus alla scheda, che lo riprende su «Riproduci» tramite
+   * [playerClosedToken].
    *
    * Il target viene pubblicato con le stesse primitive del percorso Dettaglio/Provider
    * ([saveLastFocusedMedia] + [signalFocusRestore]): la Home applica così il SUO protocollo
@@ -3433,9 +3850,6 @@ class StreamNovaViewModel(
     saveLastFocusedMedia(target.first, target.second)
     signalFocusRestore(target.second)
   }
-
-  /** True se il Player è stato aperto partendo dal Dettaglio (catalogo -> Detail -> Player). */
-  fun playerOpenedFromDetail(): Boolean = screenBeforePlayer == ScreenState.DETAIL
 
 fun backToBrowsing() {
     detailMediaStack.clear()
@@ -4103,11 +4517,21 @@ fun backToBrowsing() {
     }
   }
 
-  /** Chiude il trailer interno e azzera lo stato (BACK o pulsante chiudi). */
+  /**
+   * Chiude il trailer interno e azzera lo stato (BACK o pulsante chiudi).
+   *
+   * L'avanzamento di [trailerDismissedToken] avviene SOLO se un trailer era davvero
+   * aperto: una chiusura a vuoto (stato già `Idle`) non deve strappare il focus alla
+   * scheda sottostante.
+   */
   fun closeTrailer() {
     loadTrailerJob?.cancel()
     loadTrailerJob = null
+    val wasOpen = _trailerState.value != TrailerPlaybackState.Idle
     _trailerState.value = TrailerPlaybackState.Idle
+    if (wasOpen) {
+      _trailerDismissedToken.value = _trailerDismissedToken.value + 1
+    }
   }
 
   /** Applica [transform] al media del target di selezione sorgenti, se presente. */

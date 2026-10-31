@@ -3,6 +3,7 @@ package com.example.ui.components
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -59,6 +60,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -77,6 +79,7 @@ import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.model.WatchProgress
 import com.example.data.stremio.StremioCatalogMapper
+import com.example.ui.util.NextEpisodeBadgeRules
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
@@ -94,6 +97,14 @@ val LocalLastFocusedMediaId = compositionLocalOf<String?> { null }
  * Solo la card appartenente alla riga `rowKey` può consumare il target.
  */
 val LocalLastFocusedTarget = compositionLocalOf<Pair<String, String>?> { null }
+
+/**
+ * CompositionLocal della KEY STABILE della card da ripristinare (key Compose dell'item della
+ * riga, es. `trend_m_123`). Identifica la CARD, non la sua posizione: al ritorno dal Dettaglio
+ * la colonna viene risolta per identità e verificata con questa key, così un riordino del
+ * catalogo non fa atterrare il focus su un'altra card.
+ */
+val LocalLastFocusedCardKey = compositionLocalOf<String?> { null }
 
 /** CompositionLocal per il token di ripristino che cambia ad ogni tentativo. */
 val LocalFocusRestoreToken = compositionLocalOf<Int> { 0 }
@@ -292,6 +303,9 @@ fun PosterRatingBadge(
   }
 }
 
+/** Tag semantico del badge "Prossima puntata" (regressioni UI). */
+const val NEXT_EPISODE_BADGE_TEST_TAG = "cw_next_episode_badge"
+
 /**
  * Continua a guardare - Full-bleed 16:9 card con overlay testi e progresso
  * Design: immagine occupa tutta la card, testi sovrapposti in basso a sinistra
@@ -320,6 +334,8 @@ fun ContinueWatchingCard(
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
   val cardFocusRequester = focusRequester ?: internalFocusRequester
+  // Il consumo del target avviene solo su un ARRIVO reale del focus (vedi FocusArrivalTracker).
+  val focusArrival = remember { FocusArrivalTracker() }
 
   // Track whether we've successfully requested focus for the current token
   var focusRequestedToken by remember { mutableStateOf<Int?>(null) }
@@ -355,7 +371,11 @@ fun ContinueWatchingCard(
       }
       .focusRequester(cardFocusRequester)
       .onFocusChanged { focusState ->
-        if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
+        val focusArrived = focusArrival.onFocusChanged(focusState.isFocused)
+        // Nelle righe della Home il target si consuma solo quando il focus ARRIVA davvero:
+        // una conferma duplicata sullo stesso nodo non deve rilasciarlo (vedi FocusArrivalTracker).
+        val consumesTarget = if (rowKey == null) focusState.isFocused else focusArrived && isRestoreTarget
+        if (consumesTarget) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }
@@ -421,6 +441,62 @@ fun ContinueWatchingCard(
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium
           )
+        }
+      }
+
+      // Badge "Prossima puntata": SOLO da dati TMDB completi e verificabili (serie in onda
+      // con `next_episode_to_air` valido e non trascorso, nella STESSA stagione salvata in
+      // ripresa). Le regole vivono in un unico punto ([NextEpisodeBadgeRules]); nessuna
+      // data viene stimata o dedotta.
+      // Ancorato in alto a sinistra: non copre titolo, barra di progresso, minuti
+      // rimanenti (in alto a destra) né il centro della locandina.
+      // `lastWatchedSeason` è chiave del remember: al cambio stagione durante la visione
+      // il badge deve ricalcolarsi subito, senza aspettare un nuovo dato TMDB.
+      val nextEpisodeBadge = remember(media.tvStatus, media.nextEpisode, media.lastWatchedSeason) {
+        NextEpisodeBadgeRules.resolve(media)
+      }
+      if (nextEpisodeBadge != null) {
+        // Formato compatto: sfondo scuro traslucido, bordo appena percepibile e testo
+        // ridotto. La data resta l'informazione più leggibile, mentre il codice
+        // stagione/episodio la affianca sulla stessa riga con meno peso visivo.
+        val badgeShape = RoundedCornerShape(6.dp)
+        Column(
+          modifier = Modifier
+            .align(Alignment.TopStart)
+            .padding(8.dp)
+            .clip(badgeShape)
+            .background(Color.Black.copy(alpha = 0.66f))
+            .border(1.dp, NovaCyan.copy(alpha = 0.18f), badgeShape)
+            .padding(horizontal = 4.dp, vertical = 1.dp)
+            .testTag(NEXT_EPISODE_BADGE_TEST_TAG)
+        ) {
+          Text(
+            text = stringResource(R.string.cw_next_episode_label),
+            color = NovaCyanBright.copy(alpha = 0.90f),
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            softWrap = false
+          )
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+              text = nextEpisodeBadge.airDateText,
+              color = Color.White,
+              fontSize = 10.5.sp,
+              fontWeight = FontWeight.Bold,
+              maxLines = 1,
+              softWrap = false
+            )
+            Spacer(modifier = Modifier.width(2.dp))
+            Text(
+              text = nextEpisodeBadge.seasonEpisodeText,
+              color = Color.White.copy(alpha = 0.72f),
+              fontSize = 7.sp,
+              fontWeight = FontWeight.SemiBold,
+              maxLines = 1,
+              softWrap = false
+            )
+          }
         }
       }
 
@@ -524,6 +600,8 @@ fun StandardMediaCard(
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
   val cardFocusRequester = focusRequester ?: internalFocusRequester
+  // Il consumo del target avviene solo su un ARRIVO reale del focus (vedi FocusArrivalTracker).
+  val focusArrival = remember { FocusArrivalTracker() }
 
   // Track whether we've successfully requested focus for the current token
   var focusRequestedToken by remember { mutableStateOf<Int?>(null) }
@@ -550,19 +628,32 @@ fun StandardMediaCard(
     }
   }
 
+  // Durante uno step della riga ancorata (AnchoredFocusRow) il riquadro fisso è disegnato
+  // dall'overlay: la decorazione della card resta spenta finché la card non è ferma
+  // sull'ancora, così la cornice non "viaggia" con il poster.
+  val focusDecorationSuppressed = LocalAnchoredRowFocusDecorationSuppressed.current
+  val showFocusDecoration = isFocused && !focusDecorationSuppressed
+  // All'inizio dello step la decorazione della card che esce si spegne di colpo (snap):
+  // un fade della cornice mentre la card scorre sarebbe una seconda cornice in movimento.
+  val decorationSpec = if (focusDecorationSuppressed) {
+    snap<Float>()
+  } else {
+    tween(durationMillis = 180, easing = FastOutSlowInEasing)
+  }
+
   val scaleState = animateFloatAsState(
-    targetValue = if (isFocused) 1.06f else 1f,
-    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1.06f else 1f,
+    animationSpec = decorationSpec,
     label = "standardCardScale"
   )
   val glowState = animateFloatAsState(
-    targetValue = if (isFocused) 1f else 0f,
-    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1f else 0f,
+    animationSpec = decorationSpec,
     label = "standardCardGlow"
   )
   val specularState = animateFloatAsState(
-    targetValue = if (isFocused) 1f else 0f,
-    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1f else 0f,
+    animationSpec = decorationSpec,
     label = "standardCardSpecular"
   )
   val shape = RoundedCornerShape(NeonCardCorner)
@@ -583,8 +674,11 @@ fun StandardMediaCard(
       }
       .onFocusChanged { focusState ->
         isFocused = focusState.isFocused
-        // Clear the target only when focus is actually gained
-        if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
+        val focusArrived = focusArrival.onFocusChanged(focusState.isFocused)
+        // Nelle righe della Home il target si consuma solo quando il focus ARRIVA davvero:
+        // una conferma duplicata sullo stesso nodo non deve rilasciarlo (vedi FocusArrivalTracker).
+        val consumesTarget = if (rowKey == null) focusState.isFocused else focusArrived && isRestoreTarget
+        if (consumesTarget) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }
@@ -670,7 +764,7 @@ fun StandardMediaCard(
     ) {
       Text(
         text = media.title,
-        color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+        color = if (showFocusDecoration) NovaCyanBright else NovaTextPrimary,
         fontSize = 13.sp,
         fontWeight = FontWeight.Bold,
         maxLines = 1,
@@ -760,6 +854,8 @@ fun PosterMediaCard(
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
   val cardFocusRequester = focusRequester ?: internalFocusRequester
+  // Il consumo del target avviene solo su un ARRIVO reale del focus (vedi FocusArrivalTracker).
+  val focusArrival = remember { FocusArrivalTracker() }
 
   // Track whether we've requested focus for the current token
   var focusRequestedToken by remember { mutableStateOf<Int?>(null) }
@@ -825,22 +921,31 @@ fun PosterMediaCard(
     }
   }
 
+  // Vedi la nota in StandardMediaCard: durante lo step ancorato la cornice è dell'overlay.
+  val focusDecorationSuppressed = LocalAnchoredRowFocusDecorationSuppressed.current
+  val showFocusDecoration = isFocused && !focusDecorationSuppressed
+  val decorationSpec = if (focusDecorationSuppressed) {
+    snap<Float>()
+  } else {
+    tween(durationMillis = 180, easing = FastOutSlowInEasing)
+  }
+
   // Stato di scala: 1.0 -> 1.06 al focus, con easing GPU-friendly.
   val scaleState = animateFloatAsState(
-    targetValue = if (isFocused) 1.06f else 1f,
-    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1.06f else 1f,
+    animationSpec = decorationSpec,
     label = "posterCardScale"
   )
   // Intensità dell'alone Neon (0 = spento, 1 = massimo).
   val glowState = animateFloatAsState(
-    targetValue = if (isFocused) 1f else 0f,
-    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1f else 0f,
+    animationSpec = decorationSpec,
     label = "posterCardGlow"
   )
   // Entrata delicata del riflesso speculare.
   val specularState = animateFloatAsState(
-    targetValue = if (isFocused) 1f else 0f,
-    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1f else 0f,
+    animationSpec = decorationSpec,
     label = "posterCardSpecular"
   )
   val shape = RoundedCornerShape(NeonCardCorner)
@@ -863,8 +968,11 @@ fun PosterMediaCard(
       .onFocusChanged { focusState ->
         isFocused = focusState.isFocused
         if (confirmFocusRestore) restoreConfirmation.onFocusChanged(focusState.isFocused)
-        // Clear the target only when focus is actually gained
-        if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
+        val focusArrived = focusArrival.onFocusChanged(focusState.isFocused)
+        // Nelle righe della Home il target si consuma solo quando il focus ARRIVA davvero:
+        // una conferma duplicata sullo stesso nodo non deve rilasciarlo (vedi FocusArrivalTracker).
+        val consumesTarget = if (rowKey == null) focusState.isFocused else focusArrived && isRestoreTarget
+        if (consumesTarget) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }

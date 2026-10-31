@@ -65,6 +65,29 @@ fun shouldAttemptFocusRestore(
     attemptedToken != restoreToken
 
 /**
+ * Traccia la TRANSIZIONE di focus di una card (fuori -> dentro) invece del solo stato.
+ *
+ * `Modifier.onFocusChanged` può emettere un evento con `isFocused = true` anche quando la card
+ * era GIÀ focalizzata: succede quando il protocollo di ripristino richiede il focus sul nodo
+ * che lo possiede già (conferma della cella) o quando il nodo viene riagganciato. Solo la
+ * transizione vera è l'ARRIVO del focus che può consumare il target di ripristino: una
+ * conferma duplicata non deve bruciare il target mentre l'utente sta ancora navigando verso
+ * un'altra schermata (difetto: "al ritorno dal Dettaglio il focus finisce sulla Hero", il
+ * target veniva rilasciato durante la transizione di uscita).
+ */
+@Stable
+class FocusArrivalTracker {
+  private var wasFocused = false
+
+  /** @return `true` SOLO sull'evento che porta la card da non focalizzata a focalizzata. */
+  fun onFocusChanged(isFocused: Boolean): Boolean {
+    val arrived = isFocused && !wasFocused
+    wasFocused = isFocused
+    return arrived
+  }
+}
+
+/**
  * Esito reale di un tentativo di ripristino: diventa `true` solo quando la card riceve
  * davvero il focus (`onFocusChanged`), non quando la richiesta viene semplicemente inviata.
  */

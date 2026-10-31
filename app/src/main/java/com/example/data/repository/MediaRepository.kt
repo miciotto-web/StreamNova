@@ -13,6 +13,8 @@ import com.example.data.api.TmdbMultiSearchResultDto
 import com.example.data.api.TmdbMovieDetailDto
 import com.example.data.api.TmdbSeasonDetailDto
 import com.example.data.api.TmdbTvDetailDto
+import com.example.data.api.TmdbEpisodeDto
+import com.example.data.api.TmdbVideosResponseDto
 import com.example.data.local.CachedMediaItemEntity
 import com.example.data.local.CatalogProgressEntity
 import com.example.data.local.EpisodeProgressEntity
@@ -31,6 +33,7 @@ import com.example.data.model.ExtendedMediaDetails
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.model.NextEpisodeInfo
 import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
@@ -44,6 +47,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,13 +61,36 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import com.example.data.util.AgeRatingClassifier
 import com.example.data.util.AsyncSingleFlight
+import com.example.data.util.NextEpisodeEnricher
 import kotlinx.coroutines.withContext
 
 object MediaRepository {
 
   private var database: StreamNovaDatabase? = null
   private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  /**
+   * Coda FIFO per la persistenza dei progressi episodio: due salvataggi ravvicinati
+   * (uscita dal player + cambio puntata) non devono completarsi fuori ordine e
+   * riportare la riga del titolo all'episodio precedente. Le righe `episode_progress`
+   * restano comunque indipendenti per (mediaId, stagione, episodio).
+   */
+  private val progressWriteDispatcher = Dispatchers.IO.limitedParallelism(1)
   private val episodeProgressMap = ConcurrentHashMap<String, Long>()
+
+  /**
+   * Durata reale misurata dal player per ciascun episodio, con la stessa chiave di
+   * [episodeProgressMap]. Serve alla ripresa dei record persistiti: senza di essa un
+   * episodio ricostruito (non presente nella lista locale troncata) non conoscerebbe
+   * la propria durata e potrebbe scambiare una posizione avanzata per "fine episodio".
+   */
+  private val episodeDurationMap = ConcurrentHashMap<String, Long>()
+
+  /**
+   * Generazione dello stato in memoria. Avanza quando un test (o un reset) sostituisce
+   * il database: un caricamento avviato con la generazione precedente non deve
+   * applicare i propri risultati sopra lo stato nuovo.
+   */
+  private val stateGeneration = java.util.concurrent.atomic.AtomicInteger(0)
 
   /**
    * Cache (LRU, massimo 1024 serie) degli episodi generati per i titoli non
@@ -75,6 +104,13 @@ object MediaRepository {
   }
   private val detailsSingleFlight = AsyncSingleFlight<ExtendedMediaDetails>()
   private val ageRatingSingleFlight = AsyncSingleFlight<Int?>()
+
+  /**
+   * Registro in memoria della prossima puntata TMDB (badge delle card Continua a guardare).
+   * Deduplica le richieste fra ricomposizioni e riapplica il dato alle ri-emissioni del
+   * Flow Room, che ricostruisce i [MediaItem] dalle entità persistite.
+   */
+  private val nextEpisodeEnricher = NextEpisodeEnricher()
 
   /** Chiavi YouTube dei trailer gia' risolte nella sessione corrente (solo valori non nulli). */
   private val trailerKeyCache = ConcurrentHashMap<String, String>()
@@ -780,7 +816,9 @@ object MediaRepository {
       }
       itemWithSeed.copy(episodes = enrichedEpisodes)
     }
-    return mappedItems.sortedByDescending { it.rating }
+    // La prossima puntata TMDB non è persistita in Room (dipende dai dettagli TMDB, che
+    // hanno già la propria cache): il registro in memoria la riapplica a ogni emissione.
+    return nextEpisodeEnricher.applyTo(mappedItems).sortedByDescending { it.rating }
   }
 
   /** Episodi generati (deterministici) per una serie non seed, con cache LRU. */
@@ -810,17 +848,22 @@ object MediaRepository {
    * L'UI si aggiorna da sola tramite il Flow del DAO (nessun assegnazione diretta).
    */
   suspend fun loadFromCache() = withContext(Dispatchers.IO) {
+    // La generazione va letta PRIMA del database. Un caricamento avviato con un
+    // database precedente non deve applicare i propri risultati (svuotare e
+    // ripopolare la mappa dei progressi, avviare l'observer, seminare il catalogo)
+    // sopra lo stato di un database più recente.
+    val generation = stateGeneration.get()
     val db = database ?: return@withContext
     // Carica tutti i progressi degli episodi persistiti in memoria
     try {
-      val allEpisodeProgress = db.episodeProgressDao().getAllProgress()
-      allEpisodeProgress.forEach { ep ->
-        episodeProgressMap["${ep.mediaId}_s${ep.seasonNumber}e${ep.episodeNumber}"] = ep.progressMs
-      }
-      Log.i("MediaRepository", "Caricati ${allEpisodeProgress.size} progressi episodio da Room")
+      loadEpisodeProgressFromRoom(db, generation)
     } catch (e: Exception) {
       Log.w("MediaRepository", "Errore lettura progressi episodio: ${e.message}")
     }
+
+    // Reset o sostituzione del database durante il caricamento: il lavoro rimanente
+    // appartiene a uno stato che non è più quello corrente e va abbandonato.
+    if (database !== db || generation != stateGeneration.get()) return@withContext
 
     startDatabaseObserver()
     try {
@@ -866,6 +909,7 @@ object MediaRepository {
         dao.insertOrUpdate(healedList.map { it.toEntity() })
         // Evict delle vecchie risposte TMDB parsate con schema obsoleto
         db.tmdbResponseCacheDao().clearAll()
+        nextEpisodeEnricher.clear()
         return@withContext
       }
 
@@ -880,6 +924,60 @@ object MediaRepository {
     } catch (e: Exception) {
       Log.w("MediaRepository", "Errore nel caricamento cache Room: ${e.message}")
     }
+  }
+
+  /**
+   * Ricarica in memoria TUTTI i progressi episodio persistiti in Room.
+   *
+   * La tabella `episode_progress` è la fonte di verità per coppia
+   * (mediaId, stagione, episodio): ogni episodio mantiene la propria posizione anche
+   * quando un altro episodio della stessa serie viene salvato o concluso.
+   *
+   * @param generation generazione dello stato osservata dal chiamante **prima** di
+   *        leggere [db]: se nel frattempo il database è stato scollegato/sostituito,
+   *        il risultato viene scartato invece di sovrascrivere lo stato corrente.
+   */
+  private suspend fun loadEpisodeProgressFromRoom(db: StreamNovaDatabase, generation: Int) {
+    val allEpisodeProgress = db.episodeProgressDao().getAllProgress()
+    // Il load vale solo se il database è ancora quello collegato e nessun reset
+    // (cambio database) è avvenuto nel frattempo.
+    if (database !== db || generation != stateGeneration.get()) return
+    episodeProgressMap.clear()
+    episodeDurationMap.clear()
+    allEpisodeProgress.forEach { ep ->
+      val key = episodeProgressKey(ep.mediaId, ep.seasonNumber, ep.episodeNumber)
+      episodeProgressMap[key] = ep.progressMs
+      if (ep.durationMs > 0L) episodeDurationMap[key] = ep.durationMs
+    }
+    Log.i("MediaRepository", "Caricati ${allEpisodeProgress.size} progressi episodio da Room")
+  }
+
+  private fun episodeProgressKey(mediaId: String, seasonNumber: Int, episodeNumber: Int): String =
+    "${mediaId}_s${seasonNumber}e${episodeNumber}"
+
+  /**
+   * Hook di test: collega (o scollega) il database e azzera lo stato in memoria, così
+   * ogni test parte da un repository pulito. Non viene usato dal percorso di produzione.
+   */
+  fun setDatabaseForTesting(db: StreamNovaDatabase?) {
+    stateGeneration.incrementAndGet()
+    dbObserverJob?.cancel()
+    dbObserverJob = null
+    database = db
+    episodeProgressMap.clear()
+    episodeDurationMap.clear()
+    synchronized(generatedEpisodesCache) { generatedEpisodesCache.clear() }
+    _mediaList.value = emptyList()
+  }
+
+  /**
+   * Hook di test: simula il riavvio del processo per i soli progressi episodio,
+   * rileggendoli dalla tabella Room (come fa [loadFromCache] all'avvio).
+   */
+  suspend fun reloadEpisodeProgressForTesting() {
+    val generation = stateGeneration.get()
+    val db = database ?: return
+    loadEpisodeProgressFromRoom(db, generation)
   }
 
   /**
@@ -907,6 +1005,8 @@ object MediaRepository {
         val userStateById = dao.getAllCachedMedia().associateBy { it.id }
 
         db.tmdbResponseCacheDao().clearAll()
+        // Anche il badge "Prossima puntata" va riletto da TMDB.
+        nextEpisodeEnricher.clear()
         // Annulla anche la progressione di paginazione provider: il prossimo
         // refresh riparte dalla pagina 1 per ogni coppia (provider, tipo).
         db.catalogProgressDao().clearAll()
@@ -1215,7 +1315,16 @@ object MediaRepository {
   }
 
   fun getEpisodeProgress(mediaId: String, seasonNumber: Int, episodeNumber: Int): Long {
-    return episodeProgressMap["${mediaId}_s${seasonNumber}e${episodeNumber}"] ?: 0L
+    return episodeProgressMap[episodeProgressKey(mediaId, seasonNumber, episodeNumber)] ?: 0L
+  }
+
+  /**
+   * Durata reale già misurata dal player per l'episodio indicato (0 se sconosciuta).
+   * È la durata che appartiene **solo** a quella puntata: mai quella della serie o di
+   * un episodio diverso.
+   */
+  fun getEpisodeDurationMs(mediaId: String, seasonNumber: Int, episodeNumber: Int): Long {
+    return episodeDurationMap[episodeProgressKey(mediaId, seasonNumber, episodeNumber)] ?: 0L
   }
 
   /**
@@ -1294,12 +1403,14 @@ object MediaRepository {
     progressMs: Long,
     durationMs: Long
   ) {
-    val key = "${mediaId}_s${seasonNumber}e${episodeNumber}"
+    val key = episodeProgressKey(mediaId, seasonNumber, episodeNumber)
     episodeProgressMap[key] = progressMs
     val now = System.currentTimeMillis()
 
     // Durata dell'EPISODIO corrente (mai quella della serie o di un episodio precedente):
-    // millisecondi reali del player se disponibili, altrimenti la durata nota dell'episodio.
+    // millisecondi reali del player se disponibili, altrimenti la durata già persistita
+    // per QUESTA puntata, poi quella nota dell'episodio, infine il runtime del titolo.
+    val persistedEpisodeDurationMs = episodeDurationMap[key] ?: 0L
     val knownItemDurationMs = _mediaList.value.firstOrNull { it.id == mediaId }?.totalDurationMs ?: 0L
     val knownEpisodeDurationMs = _mediaList.value
       .firstOrNull { it.id == mediaId }
@@ -1311,8 +1422,12 @@ object MediaRepository {
       durationMs
     } else {
       // Ripiego sull'episodio, poi sul titolo: mai 0 se esiste una durata gia' nota.
-      knownEpisodeDurationMs.coerceAtLeast(0L).takeIf { it > 0L }
+      persistedEpisodeDurationMs.coerceAtLeast(0L).takeIf { it > 0L }
+        ?: knownEpisodeDurationMs.coerceAtLeast(0L).takeIf { it > 0L }
         ?: knownItemDurationMs.coerceAtLeast(0L)
+    }
+    if (effectiveEpisodeDurationMs > 0L) {
+      episodeDurationMap[key] = effectiveEpisodeDurationMs
     }
 
     _mediaList.update { list ->
@@ -1369,7 +1484,9 @@ object MediaRepository {
     }
 
     database?.let { db ->
-      repoScope.launch {
+      // Scritture serializzate in ordine di chiamata: la riga aggregata del titolo deve
+      // riflettere l'ULTIMO episodio salvato, non quello la cui scrittura finisce prima.
+      repoScope.launch(progressWriteDispatcher) {
         try {
           // Conserva la durata reale gia' persistita quando il player non ne fornisce una valida.
           val existingDurationMs = try {
@@ -1377,7 +1494,10 @@ object MediaRepository {
           } catch (e: Exception) {
             0L
           }
-          val persistedEpisodeDurationMs = WatchProgress.resolveDuration(existingDurationMs, durationMs)
+          val persistedEpisodeDurationMs = WatchProgress.resolveDuration(
+            existingDurationMs.takeIf { it > 0L } ?: effectiveEpisodeDurationMs,
+            durationMs
+          )
           db.episodeProgressDao().saveEpisodeProgress(
             EpisodeProgressEntity(
               mediaId = mediaId,
@@ -1530,9 +1650,25 @@ object MediaRepository {
       posterUrl = details.posterUrl ?: existingBase?.posterUrl,
       logoUrl = details.logoUrl ?: existingBase?.logoUrl,
       seasonEpisodesCount = if (details.seasonEpisodesCount.isNotEmpty()) details.seasonEpisodesCount else (existingBase?.seasonEpisodesCount ?: emptyMap()),
-      ageRating = details.ageRating ?: existingBase?.ageRating
+      ageRating = details.ageRating ?: existingBase?.ageRating,
+      // Il dettaglio TMDB appena letto è la verità: se non annuncia una prossima puntata,
+      // il valore precedente non va conservato (mostrerebbe una data non più valida).
+      tvStatus = details.status,
+      nextEpisode = details.nextEpisode
     )
     _detailUiState.value = MediaDetailUiState.Success(enrichedMedia, details)
+
+    // Prossima puntata: arriva dallo STESSO dettaglio TMDB appena caricato (nessuna
+    // chiamata aggiuntiva). Registrata in memoria e applicata alla lista così la card
+    // di Continua a guardare la mostra subito al ritorno sulla Home.
+    if (details.isTv) {
+      nextEpisodeEnricher.remember(tmdbId, details.status, details.nextEpisode)
+      _mediaList.update { list ->
+        list.map { item ->
+          if (item.id == enrichedMedia.id) nextEpisodeEnricher.applyTo(item) else item
+        }
+      }
+    }
 
     // Aggiorna lo stato in-memory e la riga Room quando un arricchimento e' nuovo:
     // rating d'eta' o clear logo arrivati da TMDB non devono essere persi alla riapertura.
@@ -1561,13 +1697,63 @@ object MediaRepository {
     }
   }
 
+  /**
+   * Recupera e applica la prossima puntata TMDB alle serie di "Continua a guardare".
+   *
+   * Non blocca Home né la riga: il chiamante la lancia in background, le card compaiono
+   * subito e il badge arriva quando il dato è disponibile. Riusa [fetchExtendedDetails]
+   * (cache Room `tmdb_response_cache` + single-flight), quindi le ricomposizioni della
+   * Home non producono richieste duplicate: [NextEpisodeEnricher.pendingTmdbIds] elenca
+   * solo le serie mai interrogate o con dato più vecchio di 12h.
+   *
+   * Il risultato è applicato alla lista SOLO se cambia qualcosa: nessuna emissione
+   * spuria del Flow verso la UI.
+   */
+  suspend fun refreshNextEpisodes(items: List<MediaItem>) = withContext(Dispatchers.IO) {
+    val pending = nextEpisodeEnricher.pendingTmdbIds(items)
+    if (pending.isEmpty()) return@withContext
+    // Marca subito: due refresh concorrenti non accodano la stessa serie.
+    pending.forEach(nextEpisodeEnricher::markRequested)
+    try {
+      coroutineScope {
+        pending.map { tmdbId ->
+          async {
+            try {
+              val details = fetchExtendedDetails(tmdbId, isTv = true)
+              nextEpisodeEnricher.remember(tmdbId, details.status, details.nextEpisode)
+            } catch (e: CancellationException) {
+              throw e
+            } catch (e: Exception) {
+              // Rete assente o TMDB non raggiungibile: la serie resta senza marca così
+              // può essere ritentata; il badge semplicemente non compare.
+              nextEpisodeEnricher.forgetRequest(tmdbId)
+              Log.w(
+                "MediaRepository",
+                "Prossima puntata non recuperata per TMDB $tmdbId: ${e.message}"
+              )
+            }
+          }
+        }.awaitAll()
+      }
+      _mediaList.update { list -> nextEpisodeEnricher.applyTo(list) }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Refresh prossime puntate fallito: ${e.message}")
+    }
+  }
+
   suspend fun fetchExtendedDetails(
     tmdbId: Int,
     isTv: Boolean,
     baseMedia: MediaItem? = null
   ): ExtendedMediaDetails = withContext(Dispatchers.IO) {
     val apiKey = getEffectiveApiKey()
-    val cacheKey = if (isTv) "tv_details_$tmdbId" else "movie_details_$tmdbId"
+    // v2: la risposta contiene ora `next_episode_to_air` (badge "Prossima puntata").
+    // La chiave versionata costringe un solo recupero per serie dopo l'aggiornamento:
+    // le voci `tv_details_*` precedenti non contengono il campo e resterebbero senza
+    // badge fino alla scadenza del TTL. Scadono comunque con la pulizia periodica.
+    val cacheKey = if (isTv) "tv_details_v2_$tmdbId" else "movie_details_$tmdbId"
 
     detailsSingleFlight.run(cacheKey) {
       val db = database
@@ -1885,62 +2071,76 @@ object MediaRepository {
   }
 
   /**
-   * Chiave YouTube del trailer interno, con priorita' ASSOLUTA all'italiano: prima
-   * `type == "Trailer"` in italiano (poi teaser italiano), poi inglese, poi qualsiasi
-   * lingua ([TmdbMediaAssets.pickTrailerKey]).
+   * Chiave YouTube del trailer interno, con priorita' all'italiano ([TmdbMediaAssets.pickTrailerKey]).
    *
-   * La prima chiede a TMDB `language=it-IT` + `include_video_language=it,en,null`
-   * (video IT ed EN insieme); se non produce nulla (titolo senza trailer italiani)
-   * viene ripetuta la chiamata in `language=en-US` come fallback.
+   * Film e serie TV usano lo stesso schema: `movie/{id}/videos` e `tv/{id}/videos`
+   * restituiscono la stessa lista di video, quindi la selezione e' identica.
    *
-   * Restituisce `null` quando TMDB non espone video utilizzabili o l'ID non e' valido: la
-   * UI mostra allora un messaggio "trailer non disponibile" senza mai aprire l'app esterna
-   * di YouTube. Le chiavi riuscite sono memorizzate in memoria per la sessione corrente.
+   * Richieste TMDB:
+   * 1. `language=it-IT` + `include_video_language=it,en,null`: una sola chiamata porta
+   *    i video italiani, quelli inglesi e quelli senza lingua dichiarata.
+   * 2. Solo se la selezione della prima risposta non e' italiana viene eseguita una
+   *    seconda chiamata `language=en-US` (sempre con `include_video_language=it,en,null`,
+   *    per non perdere i video italiani). Le due risposte vengono unite e deduplicate
+   *    per ID: nessun video della prima richiesta viene scartato e nessuna richiesta
+   *    viene duplicata quando l'italiano e' gia' disponibile.
+   *
+   * Restituisce `null` quando TMDB non espone video utilizzabili o la prima richiesta
+   * fallisce (rete assente): la UI mostra "trailer non disponibile" senza bloccare la
+   * riproduzione. Le chiavi riuscite sono memorizzate in memoria per la sessione.
    */
   suspend fun fetchTrailerKey(tmdbId: Int, isTv: Boolean): String? = withContext(Dispatchers.IO) {
     if (tmdbId <= 0) return@withContext null
     val cacheKey = if (isTv) "tv_$tmdbId" else "movie_$tmdbId"
     trailerKeyCache[cacheKey]?.let { return@withContext it }
 
-    try {
-      val apiKey = getEffectiveApiKey()
-      // Prima richiesta: video in italiano + inglese/privi di lingua in un'unica
-      // chiamata (`include_video_language=it,en,null`); la priorita' it -> en ->
-      // primo avviene dentro [TmdbMediaAssets.pickTrailerKey].
-      val videos = if (isTv) {
-        TmdbApiClient.service.getTvVideos(tmdbId, apiKey)
-      } else {
-        TmdbApiClient.service.getMovieVideos(tmdbId, apiKey)
-      }
-      var key = TmdbMediaAssets.pickTrailerKey(videos.results)
-
-      // Fallback: nessun video utilizzabile dalla richiesta italiana (titolo senza
-      // trailer in italiano) -> seconda chiamata esplicita in inglese.
-      if (key == null) {
-        val fallbackVideos = if (isTv) {
+    suspend fun loadVideos(language: String): TmdbVideosResponseDto? =
+      try {
+        val apiKey = getEffectiveApiKey()
+        if (isTv) {
           TmdbApiClient.service.getTvVideos(
             tmdbId,
             apiKey,
-            language = "en-US",
-            includeVideoLanguage = "en,null"
+            language = language,
+            includeVideoLanguage = "it,en,null"
           )
         } else {
           TmdbApiClient.service.getMovieVideos(
             tmdbId,
             apiKey,
-            language = "en-US",
-            includeVideoLanguage = "en,null"
+            language = language,
+            includeVideoLanguage = "it,en,null"
           )
         }
-        key = TmdbMediaAssets.pickTrailerKey(fallbackVideos.results)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Recupero video TMDB ($language) fallito per $cacheKey: ${e.message}")
+        null
       }
 
+    try {
+      val primary = loadVideos("it-IT")
+      if (primary == null) return@withContext null
+
+      var videos = primary.results.orEmpty()
+      if (!TmdbMediaAssets.isItalianVideo(TmdbMediaAssets.pickTrailer(videos))) {
+        // La risposta localizzata potrebbe non contenere il trailer italiano: la
+        // richiesta inglese viene unita (non sostituita) e deduplicata per ID.
+        loadVideos("en-US")?.results?.let { fallback ->
+          videos = TmdbMediaAssets.mergeVideos(videos, fallback)
+        }
+      }
+
+      val key = TmdbMediaAssets.pickTrailerKey(videos)
       if (key != null) {
         trailerKeyCache[cacheKey] = key
       } else {
         Log.w("MediaRepository", "Nessun trailer YouTube per $cacheKey")
       }
       key
+    } catch (e: CancellationException) {
+      throw e
     } catch (e: Exception) {
       Log.w("MediaRepository", "Recupero trailer TMDB fallito ($cacheKey): ${e.message}")
       null
@@ -2077,7 +2277,24 @@ object MediaRepository {
           logoUrl = TmdbApiClient.logoUrl(it.logoPath),
           originCountry = it.originCountry
         )
-      } ?: emptyList()
+      } ?: emptyList(),
+      nextEpisode = dto.nextEpisodeToAir.toNextEpisodeInfo()
+    )
+  }
+
+  /**
+   * Converte `next_episode_to_air` nel modello UI. Restituisce `null` quando TMDB non
+   * espone una puntata completa e coerente: stagione/episodio mancanti o data vuota.
+   */
+  private fun TmdbEpisodeDto?.toNextEpisodeInfo(): NextEpisodeInfo? {
+    val dto = this ?: return null
+    if (dto.seasonNumber < 0 || dto.episodeNumber <= 0) return null
+    val airDate = dto.airDate?.trim().orEmpty()
+    if (airDate.isEmpty()) return null
+    return NextEpisodeInfo(
+      seasonNumber = dto.seasonNumber,
+      episodeNumber = dto.episodeNumber,
+      airDate = airDate
     )
   }
 
@@ -2103,7 +2320,9 @@ object MediaRepository {
       director = details.director,
       cast = details.cast.map { it.name },
       seasonEpisodesCount = details.seasonEpisodesCount,
-      ageRating = details.ageRating
+      ageRating = details.ageRating,
+      tvStatus = details.status,
+      nextEpisode = details.nextEpisode
     )
   }
 
@@ -2987,6 +3206,15 @@ object MediaRepository {
     return if (result.isNotEmpty()) result else listOf(if (isMovie) "Cinema" else "Serie TV")
   }
 
+  /**
+   * Episodi **placeholder** (mai persistiti) per una serie di catalogo di cui non sono
+   * ancora noti gli episodi TMDB.
+   *
+   * Non contengono alcun progresso: una posizione inventata su S1E1 (il vecchio seed di
+   * 12 minuti) diventava la posizione di ripresa quando la puntata salvata non era in
+   * lista, facendo ripartire sempre lo stesso minutaggio. Il progresso reale arriva
+   * esclusivamente da Room (`episode_progress`), per la coppia stagione/episodio.
+   */
   fun generateEpisodesForTv(
     tvId: Int,
     tvTitle: String,
@@ -3011,7 +3239,7 @@ object MediaRepository {
             durationMinutes = dur,
             thumbnailUrl = backdropUrl ?: posterUrl,
             videoUrl = streams[(tvId + s + e) % streams.size],
-            currentProgressMs = if (s == 1 && e == 1) 12 * 60 * 1000L else 0L
+            currentProgressMs = 0L
           )
         )
       }

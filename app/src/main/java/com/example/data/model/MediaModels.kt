@@ -69,6 +69,20 @@ data class Episode(
     }
 }
 
+/**
+ * Prossima puntata annunciata da TMDB (`next_episode_to_air`), così come restituita:
+ * `airDate` resta la stringa `yyyy-MM-dd` originale perché la validazione (data non
+ * valida, già trascorsa, ecc.) avviene in un unico punto in [com.example.ui.util.NextEpisodeBadgeRules].
+ *
+ * Non viene MAI derivata dalla periodicità degli episodi né dall'ultimo episodio andato
+ * in onda: se TMDB non la espone, il badge non esiste.
+ */
+data class NextEpisodeInfo(
+  val seasonNumber: Int,
+  val episodeNumber: Int,
+  val airDate: String,
+)
+
 data class MediaItem(
   val id: String,
   val title: String,
@@ -112,7 +126,17 @@ data class MediaItem(
   val tmdbRating: Float? = rating.takeIf { it > 0f },
   val mdbListScore: Int? = null,
   val rottenTomatoesScore: Int? = null,
-  val ageRating: Int? = null
+  val ageRating: Int? = null,
+  /**
+   * Stato TMDB della serie (`Returning Series`, `Ended`, `Canceled`, …).
+   * `null` = stato sconosciuto: il badge prossima puntata NON viene mostrato.
+   */
+  val tvStatus: String? = null,
+  /**
+   * Prossima puntata annunciata da TMDB. `null` = nessuna informazione verificabile
+   * (serie conclusa, in pausa, dato non ancora recuperato): badge assente.
+   */
+  val nextEpisode: NextEpisodeInfo? = null
 ) {
   val progressFraction: Float
     get() = if (totalDurationMs > 0) (currentProgressMs.toFloat() / totalDurationMs.toFloat()).coerceIn(0f, 1f) else 0f
@@ -221,7 +245,9 @@ data class ExtendedMediaDetails(
   val isTv: Boolean = false,
   val seasonEpisodesCount: Map<Int, Int> = emptyMap(),
   val ageRating: Int? = null,
-  val productionCompanies: List<ProductionCompany> = emptyList()
+  val productionCompanies: List<ProductionCompany> = emptyList(),
+  /** Prossima puntata annunciata da TMDB (`next_episode_to_air`), `null` se assente. */
+  val nextEpisode: NextEpisodeInfo? = null
 )
 
 sealed interface MediaDetailUiState {

@@ -10,7 +10,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MovieCreation
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Icon
@@ -36,10 +38,11 @@ import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextSecondary
 
 /**
- * FocusRequester dei quattro controlli rapidi della scheda.
+ * FocusRequester dei controlli rapidi della scheda.
  *
  * Permette alla navigazione D-pad di incatenare i pulsanti nell'ordine
- * `Riproduci -> Cuore -> Occhio -> Trailer` e di uscire a destra verso la lista
+ * `Riproduci -> Cuore -> Occhio -> Trailer -> Seleziona fonte` (quest'ultimo
+ * presente solo in modalità Debrid) e di uscire a destra verso la lista
  * delle sorgenti (o verso il resto della scheda).
  */
 class MediaActionBarFocus {
@@ -47,6 +50,7 @@ class MediaActionBarFocus {
   val favorite = FocusRequester()
   val watched = FocusRequester()
   val trailer = FocusRequester()
+  val selectSource = FocusRequester()
 }
 
 /**
@@ -56,16 +60,21 @@ class MediaActionBarFocus {
  *  - pillola evidenziata **Riproduci** (avvia la riproduzione o focalizza l'elenco sorgenti);
  *  - bottone circolare **Cuore** (toggle preferiti);
  *  - bottone circolare **Occhio** (toggle visto / non visto);
- *  - bottone circolare **YouTube** (trailer interno all'app, mai Intent esterno).
+ *  - bottone circolare **Trailer** (ciak con play, solo icona senza etichetta: apre il
+ *    trailer interno all'app, mai Intent esterno);
+ *  - bottone circolare **Seleziona fonte** (SOLO quando [onSelectSource] non è null,
+ *    cioè in modalità Debrid: apre la schermata di scelta manuale della sorgente).
  *
- * Catena di focus esplicita: `Riproduci -> Cuore -> Occhio -> Trailer`. Gli argomenti
- * `leftTarget` / `rightTarget` / `downTarget` collegano la barra al resto della
- * schermata (es. a destra la prima sorgente della lista) lasciando non impostate le
- * direzioni non specificate, cosi' la ricerca naturale del focus continua a funzionare.
- * Con `upTarget = FocusRequester.Cancel` la freccia SU non esce mai dalla barra:
- * sopra la pulsantiera non esiste nessun elemento focusabile.
+ * Catena di focus esplicita: `Riproduci -> Cuore -> Occhio -> Trailer -> Seleziona fonte`.
+ * Con [onSelectSource] null (modalità HTTP o canale live) il pulsante non esiste e la
+ * catena resta quella storica a quattro controlli, con Trailer che esce a destra verso
+ * [rightTarget]. Gli argomenti `leftTarget` / `rightTarget` / `downTarget` collegano la
+ * barra al resto della schermata (es. a destra la prima sorgente della lista) lasciando
+ * non impostate le direzioni non specificate, cosi' la ricerca naturale del focus
+ * continua a funzionare. Con `upTarget = FocusRequester.Cancel` la freccia SU non esce
+ * mai dalla barra: sopra la pulsantiera non esiste nessun elemento focusabile.
  *
- * `onFocusChanged` riporta se il focus e' in uno qualunque dei quattro controlli
+ * `onFocusChanged` riporta se il focus e' in uno qualunque dei controlli
  * (serve al chiamante per congelare lo scroll mentre ci si muove in orizzontale),
  * mentre `onPlayFocusChanged` segnala specificamente quando il focus atterra sul
  * pulsante **Riproduci**, primo nodo focusabile della scheda.
@@ -81,6 +90,7 @@ fun MediaActionBar(
   onPlayTrailer: () -> Unit,
   modifier: Modifier = Modifier,
   focus: MediaActionBarFocus = remember { MediaActionBarFocus() },
+  onSelectSource: (() -> Unit)? = null,
   leftTarget: FocusRequester? = null,
   rightTarget: FocusRequester? = null,
   downTarget: FocusRequester? = null,
@@ -155,26 +165,60 @@ fun MediaActionBar(
       )
     }
 
-    // Trailer interno: cerchio rosso stile YouTube con play bianco.
+    // Trailer interno: stesso cerchio blu notte degli altri pulsanti, con ciak + play e
+    // senza etichetta (l'azione resta identificata solo dall'icona e dal contentDescription
+    // di accessibilità). A destra esce verso "Seleziona fonte" quando esiste, altrimenti
+    // verso il resto della scheda.
     CircularMediaAction(
       onClick = onPlayTrailer,
       contentDescription = stringResource(R.string.detail_action_trailer),
-      tint = Color.White,
-      background = Color(0xFFE5322D),
+      tint = NovaTextSecondary,
       modifier = Modifier.actionFocus(
         requester = focus.trailer,
         leftTarget = focus.watched,
-        rightTarget = rightTarget,
+        rightTarget = if (onSelectSource != null) focus.selectSource else rightTarget,
         downTarget = downTarget,
         upTarget = upTarget
       )
     ) { color ->
-      Icon(
-        imageVector = Icons.Default.PlayArrow,
-        contentDescription = null,
-        tint = color,
-        modifier = Modifier.size(26.dp)
-      )
+      Box(contentAlignment = Alignment.Center) {
+        Icon(
+          imageVector = Icons.Default.MovieCreation,
+          contentDescription = null,
+          tint = color,
+          modifier = Modifier.size(25.dp)
+        )
+        Icon(
+          imageVector = Icons.Default.PlayArrow,
+          contentDescription = null,
+          tint = color,
+          modifier = Modifier.size(12.dp)
+        )
+      }
+    }
+
+    // Selezione manuale della sorgente (solo modalità Debrid): cerchio standard con
+    // icona di regolazione; la scelta della fonte parte SOLO da una conferma utente.
+    if (onSelectSource != null) {
+      CircularMediaAction(
+        onClick = onSelectSource,
+        contentDescription = stringResource(R.string.detail_action_select_source),
+        tint = NovaTextSecondary,
+        modifier = Modifier.actionFocus(
+          requester = focus.selectSource,
+          leftTarget = focus.trailer,
+          rightTarget = rightTarget,
+          downTarget = downTarget,
+          upTarget = upTarget
+        )
+      ) { color ->
+        Icon(
+          imageVector = Icons.Default.Tune,
+          contentDescription = null,
+          tint = color,
+          modifier = Modifier.size(24.dp)
+        )
+      }
     }
   }
 }

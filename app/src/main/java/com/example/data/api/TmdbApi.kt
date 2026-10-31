@@ -275,6 +275,12 @@ data class TmdbTvDetailDto(
   val genres: List<TmdbGenreDto>? = emptyList(),
   val tagline: String? = null,
   val status: String? = null,
+  /**
+   * Prossima puntata annunciata da TMDB. Fa parte della risposta base di `tv/{id}`
+   * (nessun `append_to_response` aggiuntivo): `null` quando TMDB non ne annuncia una.
+   * Fonte UNICA del badge "Prossima puntata" nelle card di Continua a guardare.
+   */
+  @Json(name = "next_episode_to_air") val nextEpisodeToAir: TmdbEpisodeDto? = null,
   val credits: TmdbCreditsDto? = null,
   val similar: TmdbPaginatedResponse<TmdbTvDto>? = null,
   val seasons: List<TmdbSeasonInfoDto>? = emptyList(),
