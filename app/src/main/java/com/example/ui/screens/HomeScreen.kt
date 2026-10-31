@@ -2642,10 +2642,16 @@ fun HomeMainBrowsingContent(
         if (media.id !in pendingCwRemovals) {
           pendingCwRemovals.add(media.id)
         }
-        // Il menu ha appena preso il focus: la conferma di focus delle celle è STANTIA (sarebbe
-        // quella della card di prima del long-press). Invalidarla è ciò che obbliga il secondo
-        // tempo ad attendere una conferma NUOVA dentro la riga, cioè il vero rientro.
-        coordinator.onCellFocusInvalidated()
+        // NON si invalida la conferma di focus della cella.
+        //
+        // Il menu contestuale è una finestra Dialog separata (W6): mentre è aperto la
+        // finestra della Home non riceve eventi, ma il suo focus INTERNO resta sulla card
+        // (la semantica `Focused` non cambia). Invalidarla e poi richiedere lo stesso nodo
+        // non produce alcun evento `onFocusChanged` — il nodo è già focalizzato — e il
+        // secondo tempo attenderebbe per sempre. Se invece la finestra perde davvero il
+        // focus, la cella emette da sola il cambiamento e il protocollo attende il rientro.
+        // La rimozione resta comunque in DUE TEMPI: qui si accoda soltanto, l'applicazione
+        // avviene nell'effetto dedicato quando la riga ha il focus.
         val cwCount = coordinator.rowItemCounts[CONTINUE_WATCHING_ROW_KEY] ?: 0
         if (cwCount > 0) {
           coordinator.requestPendingFocus(

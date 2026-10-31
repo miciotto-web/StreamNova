@@ -231,6 +231,12 @@ android {
       // Permette ai test JVM di usare android.util.Log (usato dagli estrattori
       // per il tracing in Logcat) senza Robolectric.
       isReturnDefaultValues = true
+      // La suite Robolectric (TV + mobile fixes) supera il default di 512 MB del
+      // test worker: senza questo limite la JVM va in OutOfMemoryError durante i
+      // test HTTP e le classi successive falliscono a cascata.
+      all { test ->
+        test.maxHeapSize = "3g"
+      }
     }
   }
   dependenciesInfo {

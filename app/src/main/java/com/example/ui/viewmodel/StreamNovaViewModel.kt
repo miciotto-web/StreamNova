@@ -104,6 +104,14 @@ import kotlinx.coroutines.flow.update
 
 /** Tag di log del ViewModel (ricerca sorgenti + playback). */
 private const val TAG = "StreamNovaVM"
+
+/**
+ * Riga della Home la cui riproduzione, al BACK dal player, rientra nella scheda
+ * Dettaglio (G7: «Continua a guardare»). Le altre righe della Home rientrano sulla
+ * card di origine tramite il protocollo di ripristino (W5): sono percorsi diversi
+ * dello stesso evento e restano complementari.
+ */
+private const val CONTINUE_WATCHING_RETURN_ROW_KEY = "section_continue_watching"
 private const val HTTP_TRACE = "HTTP_TRACE"
 /** Tag dei log correlati al percorso «Continua a guardare → episodio → player». */
 private const val TRACE_TAG = "CW_TRACE"
@@ -194,8 +202,15 @@ internal suspend fun resolveAutoPickSource(
   for (candidate in sources) {
     val playable = if (useDebridUnlock && candidate.infoHash != null && candidate.streamUrl == null) {
       // Caso A: Debrid attiva e configurata -> sblocco del primo flusso Debrid.
-      TorBoxRepository.setRequestMetadata(season, episode)
-      val directUrl = TorBoxRepository.resolveInfoHash(candidate.infoHash, candidate.fileIdx)
+      // Stagione/episodio vengono passati ESPLICITAMENTE: lo sblocco deve riguardare
+      // il file di questo episodio, non un file qualsiasi dello stesso torrent.
+      val candidateInfoHash = candidate.infoHash!!
+      val directUrl = TorBoxRepository.resolveInfoHash(
+        infoHash = candidateInfoHash,
+        fileIdx = candidate.fileIdx,
+        season = season,
+        episode = episode
+      )
       if (directUrl != null) candidate.copy(streamUrl = directUrl) else null
     } else {
       candidate
@@ -233,6 +248,13 @@ internal const val NEXT_EPISODE_FAST_PATH_TIMEOUT_MS = 3_500L
  * e si mostra il dialog di selezione manuale delle sorgenti. Mai spinner infinito.
  */
 internal const val NEXT_EPISODE_RESOLUTION_TIMEOUT_MS = 10_000L
+
+/**
+ * Timeout dello sblocco del link Debrid salvato durante il riuso da
+ * «Continua a guardare»: se TorBox non risponde entro questa finestra si usa il
+ * link già persistito, così l'avvio non resta sospeso.
+ */
+internal const val REUSED_STREAM_UNLOCK_TIMEOUT_MS = 6_000L
 
 /**
  * Finestra di assestamento (ms) dell'auto-pick.
@@ -276,7 +298,9 @@ internal suspend fun tryResolveNextEpisodeFromSameTorrent(
   } ?: return null
   if (url.isBlank()) return null
   Log.i(SAME_SOURCE_TAG, "S${season}E${episode}: sbloccato dallo stesso torrent ${hash.take(8)}...")
-  return pinned.copy(streamUrl = url)
+  // Il torrent è lo stesso ma il FILE è un altro episodio: i sottotitoli e l'indice
+  // file dell'episodio corrente non valgono per quello nuovo e non vanno trascinati.
+  return pinned.copy(streamUrl = url, subtitles = emptyList(), fileIdx = null)
 }
 
 /**
@@ -1036,6 +1060,14 @@ class StreamNovaViewModel(
   private var currentSession: PlaybackSession? = null
 
   /**
+   * Durata **reale** comunicata da ExoPlayer per la sessione corrente (0 finché il
+   * player non la misura). È l'unica prova usata per dichiarare concluso un episodio:
+   * la durata stimata dell'episodio non basta a rimuovere una serie da «Continua a
+   * guardare».
+   */
+  private var lastMeasuredDurationMs: Long = 0L
+
+  /**
    * Identificativo di correlazione della sessione di riproduzione aperta.
    *
    * Tutti gli eventi del percorso «Continua a guardare → episodio → sorgente → player»
@@ -1178,8 +1210,7 @@ class StreamNovaViewModel(
   }
 
   private fun mergePlayerEpisodes(media: MediaItem): List<Episode> =
-    (media.episodes + playerSeasonEpisodes.filterKeys { it.first == media.id }.values.flatten())
-      .distinctBy { it.id }
+    (media.episodes + episodesForMediaFromPlayerCache(media.id)).distinctBy { it.id }
 
   // Stato del ciclo di ricerca sorgenti (estrazione provider -> player)
   private val _streamResult = MutableStateFlow<StreamResult>(StreamResult.Idle)
@@ -1417,6 +1448,26 @@ class StreamNovaViewModel(
   internal var seasonPackEpisodeResolver:
     suspend (pinned: StreamSource, season: Int, episode: Int) -> StreamSource? =
     { pinned, season, episode -> tryResolveNextEpisodeFromSameTorrent(pinned, season, episode) }
+
+  /**
+   * Sblocco del link Debrid a partire dall'identità torrent SALVATA
+   * (`infoHash` + stagione/episodio) quando si riprende da «Continua a guardare».
+   *
+   * Un link CDN può essere scaduto anche se la voce di cache è ancora nella finestra
+   * di validità: rigenerarlo prima di avviare il player evita una schermata nera e la
+   * successiva selezione manuale. Se lo sblocco fallisce si usa il link salvato
+   * (il fallback del player è comunque attivo). Iniettabile nei test.
+   */
+  internal var reusedStreamUnlocker:
+    suspend (infoHash: String, fileIdx: Int?, season: Int?, episode: Int?) -> String? =
+    { infoHash, fileIdx, season, episode ->
+      TorBoxRepository.resolveInfoHash(
+        infoHash = infoHash,
+        fileIdx = fileIdx,
+        season = season,
+        episode = episode
+      )
+    }
 
   private val _isLoading = MutableStateFlow(false)
   val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -3028,6 +3079,8 @@ class StreamNovaViewModel(
       seasonNumber = finalEpisode?.seasonNumber,
       episodeNumber = finalEpisode?.episodeNumber
     )
+    // Nuova sessione: la durata misurata dal player precedente non vale più.
+    lastMeasuredDurationMs = 0L
 
     _playbackState.value = PlayerPlaybackState(
       media = finalMedia,
@@ -3119,7 +3172,13 @@ class StreamNovaViewModel(
         serverName = state.streamServer,
         headers = state.streamHeaders,
         isProgressive = state.streamProgressive,
-        streamMode = sourceMode.name
+        streamMode = sourceMode.name,
+        // Identità della sorgente torrent/Debrid: permette al passaggio all'episodio
+        // successivo di riusare lo stesso torrent di stagione anche se la sessione
+        // riparte da questa cache ("Riusa l'ultimo link").
+        infoHash = state.currentSource?.infoHash,
+        fileIdx = state.currentSource?.fileIdx,
+        addonName = state.currentSource?.addonName
       )
     }
   }
@@ -3143,10 +3202,26 @@ class StreamNovaViewModel(
     // Disattiva subito il flag: evita un secondo fallback mentre la nuova risoluzione parte.
     _playbackState.value = state.copy(isReusedStream = false)
 
-    viewModelScope.launch(Dispatchers.IO) {
-      LastWorkingStreamRepository.invalidate(media.id, season, epNumber)
+    // Il link memorizzato ha appena fallito: va rimosso dalla cache in-memory di TorBox,
+    // altrimenti la risoluzione successiva potrebbe riproporre lo stesso URL scaduto.
+    state.currentSource?.infoHash?.takeIf { it.isNotBlank() }?.let { hash ->
+      TorBoxRepository.invalidateResolvedLink(hash, episode?.seasonNumber, episode?.episodeNumber)
     }
-    Log.i(TAG, "Reuse: flusso riutilizzato fallito per ${media.id} S$season E$epNumber, fallback alla risoluzione classica")
+
+    // Con l'identità Debrid (infoHash/fileIdx) la voce NON viene cancellata: il torrent
+    // è ancora un'informazione valida e la prossima apertura può rigenerare il link.
+    // Senza identità (o per fonti HTTP legacy) la voce è inutile e viene invalidata.
+    val hasDebridIdentity = !state.currentSource?.infoHash.isNullOrBlank()
+    if (!hasDebridIdentity) {
+      viewModelScope.launch(Dispatchers.IO) {
+        LastWorkingStreamRepository.invalidate(media.id, season, epNumber)
+      }
+    }
+    Log.i(
+      TAG,
+      "Reuse: flusso riutilizzato fallito per ${media.id} S$season E$epNumber " +
+        "(identità Debrid=${if (hasDebridIdentity) "conservata" else "assente"}): fallback alla risoluzione classica"
+    )
     openStreamForMedia(media, episode, allowReuse = false)
     return true
   }
@@ -3208,6 +3283,12 @@ class StreamNovaViewModel(
       // (tenuta a `> 0` da [updatePlaybackPosition], che ignora `C.TIME_UNSET`). Se il player
       // non ha ancora fornito una durata valida, il repository NON sovrascrive quella gia' nota.
       MediaRepository.updateEpisodeProgress(session.mediaId, s, e, finalPos, current.durationMs)
+      // Fine episodio (ultimi 15 s sulla durata MISURATA): verifica se la serie è
+      // davvero conclusa. La rimozione da «Continua a guardare» è persistente e
+      // avviene solo con metadati TMDB completi (fine stagione ≠ fine serie).
+      if (lastMeasuredDurationMs > 0L) {
+        MediaRepository.maybeCompleteSeries(session.mediaId, s, e, finalPos, lastMeasuredDurationMs)
+      }
     } else {
       MediaRepository.updateProgress(session.mediaId, finalPos, current.durationMs)
     }
@@ -3222,6 +3303,26 @@ class StreamNovaViewModel(
    fun playNextEpisode(nextEpisode: Episode) {
      val current = _playbackState.value
     val media = current.media ?: return
+
+    if (_isSwitchingEpisode.value) {
+      Log.i(
+        TAG,
+        "playNextEpisode ignorato: transizione a S${nextEpisode.seasonNumber}E${nextEpisode.episodeNumber} già in corso"
+      )
+      return
+    }
+    val currentEpisode = current.currentEpisode
+    if (currentEpisode != null &&
+      currentEpisode.seasonNumber == nextEpisode.seasonNumber &&
+      currentEpisode.episodeNumber == nextEpisode.episodeNumber
+    ) {
+      Log.i(
+        TAG,
+        "playNextEpisode ignorato: S${nextEpisode.seasonNumber}E${nextEpisode.episodeNumber} è già l'episodio corrente"
+      )
+      return
+    }
+
     if (current.currentPositionMs > 0L) {
       saveCurrentPlaybackProgress(current.currentPositionMs)
     }
@@ -3258,13 +3359,20 @@ class StreamNovaViewModel(
     )
 
     // === FIX: Pulisci in sicurezza il player vecchio prima di passare all'episodio successivo ===
-    // Interrompi la riproduzione corrente e svuota i media item per evitare stato residuo
+    // Interrompi la riproduzione corrente e svuota i media item per evitare stato residuo.
+    // Header/qualità/server/sottotitoli appartengono all'episodio APPENA CONCLUSO: non
+    // devono sopravvivere nel nuovo contesto (né essere allegati al prossimo flusso).
     _playbackState.value = current.copy(
       media = enrichedMedia,
       currentEpisode = enrichedNext,
       currentPositionMs = nextSavedPos,
       durationMs = enrichedNext.totalDurationMs,
-      streamUrl = null
+      streamUrl = null,
+      streamHeaders = emptyMap(),
+      streamQuality = null,
+      streamServer = null,
+      streamProgressive = null,
+      subtitles = emptyList()
     )
 
     // La sessione atomica avanza INSIEME allo stato: qualunque salvataggio che avvenga
@@ -3398,7 +3506,39 @@ class StreamNovaViewModel(
     if (currentMode != StreamingEngineMode.DEBRID_TORBOX) return false
 
     Log.i(TAG, "Reuse: ultimo flusso valido per $reqId S$reqSeason E$reqEp (${cached.serverName})")
-    val source = cached.toStreamSource()
+    var source = cached.toStreamSource()
+
+    // RIPRESA DIRETTA DELLA SORGENTE DEBRID (Fase 2: infoHash/fileIdx):
+    // il link CDN salvato può essere scaduto anche dentro la finestra di cache. Se la
+    // voce conserva l'identità del torrent, si rigenera il link del FILE dell'episodio
+    // richiesto e si avvia direttamente quello. Stagione/episodio espliciti: un torrent
+    // di stagione non può restituire il file di un'altra puntata. Se lo sblocco non
+    // riesce (hash scaduto, file assente, rete) resta il link salvato e, in caso di
+    // errore del player, il fallback classico ([handleReusedStreamFailure]).
+    val cachedHash = cached.infoHash?.takeIf { it.isNotBlank() }
+    if (cachedHash != null) {
+      val seasonArg = reqSeason.takeIf { it > 0 }
+      val episodeArg = reqEp.takeIf { it > 0 }
+      // Per un film non esiste episodio: si azzera il metadata legacy (thread-local)
+      // per non ereditare una stagione/episodio da uno sblocco precedente.
+      if (seasonArg == null && episodeArg == null) {
+        TorBoxRepository.setRequestMetadata(null, null)
+      }
+      val refreshedUrl = runCatching {
+        withTimeoutOrNull(REUSED_STREAM_UNLOCK_TIMEOUT_MS) {
+          reusedStreamUnlocker(cachedHash, cached.fileIdx, seasonArg, episodeArg)
+        }
+      }.onFailure { e ->
+        Log.w(TAG, "Reuse: sblocco Debrid fallito per ${cachedHash.take(8)}...: ${e.message}")
+      }.getOrNull()
+      if (!refreshedUrl.isNullOrBlank()) {
+        Log.i(TAG, "Reuse: link Debrid rigenerato per $reqId S$reqSeason E$reqEp")
+        source = source.copy(streamUrl = refreshedUrl, isCached = true)
+      } else {
+        Log.i(TAG, "Reuse: link Debrid non rigenerabile, uso il flusso salvato per $reqId S$reqSeason E$reqEp")
+      }
+    }
+
     withContext(Dispatchers.Main) {
       if (generation != loadStreamGeneration) return@withContext
       _streamResolutionState.value = StreamResolutionState.Success(
@@ -4099,8 +4239,15 @@ class StreamNovaViewModel(
           "[StreamNova-TorBox-Debug]",
           "1. DATI STREAM DALL'ADDON [Manuale] -> server='${source.serverName}', title='${source.releaseTitle}', infoHash=${source.infoHash}, quality/resolution='${source.declaredQuality ?: source.quality}', details='${source.details}'"
         )
-        TorBoxRepository.setRequestMetadata(episode?.seasonNumber, episode?.episodeNumber)
-        val directUrl = TorBoxRepository.resolveInfoHash(source.infoHash, source.fileIdx)
+        val sourceInfoHash = source.infoHash!!
+        // Stagione/episodio espliciti: in un torrent di stagione il link sbloccato
+        // deve essere quello del file di QUESTO episodio (non del precedente).
+        val directUrl = TorBoxRepository.resolveInfoHash(
+          infoHash = sourceInfoHash,
+          fileIdx = source.fileIdx,
+          season = episode?.seasonNumber,
+          episode = episode?.episodeNumber
+        )
         if (directUrl != null) {
           Log.i(TAG, "TorBox: flusso sbloccato -> $directUrl")
           source.copy(streamUrl = directUrl)
@@ -4281,7 +4428,7 @@ class StreamNovaViewModel(
       return
     }
 
-    finishPlayerClose(playedMedia, playedSession)
+    finishPlayerClose(playedMedia, playedSession, closedFromPlayer)
     Log.d("BACK_TRACE", "STREAMNOVAVM: valore di _screenState dopo: ${_screenState.value}")
     Log.i(HTTP_TRACE, "[VM] closePlayer COMPLETE")
     Log.d("BACK_TRACE", "STREAMNOVAVM: uscita da closePlayer()")
@@ -4309,7 +4456,10 @@ class StreamNovaViewModel(
     if (pendingDetailReturnClose != null) return true
     if (screenBeforePlayer != ScreenState.BROWSING) return false
     if (sectionBeforePlayer != SidebarSection.HOME) return false
-    if (playbackOriginTarget == null) return false
+    val origin = playbackOriginTarget ?: return false
+    // Solo «Continua a guardare» rientra nella scheda Dettaglio (G7); le altre righe
+    // della Home rientrano sulla card di origine (W5), senza navigazioni aggiuntive.
+    if (origin.first != CONTINUE_WATCHING_RETURN_ROW_KEY) return false
     val detailMedia = playedMedia?.let { mediaWithPlayedEpisode(it, playedSession) } ?: return false
     playbackOriginTarget = null
     val request = PlayerDetailReturn(detailMedia)
@@ -4330,8 +4480,10 @@ class StreamNovaViewModel(
   fun completePlayerClose() {
     val request = pendingDetailReturnClose ?: return
     pendingDetailReturnClose = null
-    // Contenuto e sessione sono ancora integri: la chiusura vera e propria avviene ora.
-    finishPlayerClose(_playbackState.value.media, currentSession)
+    // Contenuto e sessione sono ancora integri: la chiusura vera e propria avviene ora. La
+    // chiusura differita esiste solo perché il player era aperto: il segnale di rientro al
+    // Dettaglio va emesso anche in questo percorso.
+    finishPlayerClose(_playbackState.value.media, currentSession, closedFromPlayer = true)
     Log.d("BACK_TRACE", "STREAMNOVAVM: completePlayerClose, screenState=${_screenState.value}")
     val detailMedia = request.media
     if (isLiveChannel(detailMedia.id)) openLiveChannel(detailMedia) else openDetail(detailMedia)
@@ -4345,7 +4497,11 @@ class StreamNovaViewModel(
    * chiusura differita, dove la richiesta di rientro è già stata pubblicata e consumata
    * ([publishPlayerReturnTarget] non ripubblica nulla).
    */
-  private fun finishPlayerClose(playedMedia: MediaItem?, playedSession: PlaybackSession?) {
+  private fun finishPlayerClose(
+    playedMedia: MediaItem?,
+    playedSession: PlaybackSession?,
+    closedFromPlayer: Boolean
+  ) {
     // Pulizia totale della sessione: la prossima riproduzione parte da tabula rasa.
     currentMediaFetchJob?.cancel()
     currentMediaFetchJob = null
@@ -4430,6 +4586,13 @@ class StreamNovaViewModel(
    * questo istante lo ignora (o lo eredita quando viene composta), quindi i due percorsi
    * restano complementari.
    */
+  /**
+   * true se il player è stato aperto dalla scheda Dettaglio: il rientro è la scheda stessa
+   * e non va aperta/navigata nessun'altra destinazione, nemmeno se una provenienza è
+   * rimasta registrata.
+   */
+  fun playerOpenedFromDetail(): Boolean = screenBeforePlayer == ScreenState.DETAIL
+
   private fun publishPlayerReturnTarget(playedMedia: MediaItem?, playedSession: PlaybackSession?) {
     val origin = playbackOriginTarget
     playbackOriginTarget = null
@@ -4437,11 +4600,17 @@ class StreamNovaViewModel(
     // conta: gli altri rientri (Dettaglio/Provider/sezioni) restano quelli di sempre.
     if (_screenState.value != ScreenState.BROWSING || _currentSection.value != SidebarSection.HOME) return
     if (origin == null) return
-    val detailMedia = playedMedia?.let { mediaWithPlayedEpisode(it, playedSession) }
+    // «Continua a guardare» (G7) rientra nella scheda Dettaglio con l'episodio appena
+    // visto; ogni altra riga della Home torna sulla card di origine con il protocollo
+    // di ripristino della Home (W5). Se per «Continua a guardare» non esiste una
+    // sessione da riaprire, si conserva anche lì il rientro sulla card.
+    val detailMedia =
+      if (origin.first == CONTINUE_WATCHING_RETURN_ROW_KEY) {
+        playedMedia?.let { mediaWithPlayedEpisode(it, playedSession) }
+      } else {
+        null
+      }
     if (detailMedia == null) {
-      // Nessuna sessione da riaprire (player chiuso prima che il contenuto fosse associato):
-      // si conserva il rientro sulla card di origine invece di lasciare la Home senza
-      // destinazione di focus.
       saveLastFocusedMedia(origin.first, origin.second)
       signalFocusRestore(origin.second)
       return
@@ -5187,6 +5356,8 @@ fun backToBrowsing() {
   }
 
   fun updatePlaybackPosition(positionMs: Long, durationMs: Long, bufferedMs: Long) {
+    // Durata misurata da ExoPlayer: è la prova usata per la conclusione di un episodio.
+    if (durationMs > 0L) lastMeasuredDurationMs = durationMs
     _playbackState.update {
       it.copy(
         currentPositionMs = positionMs,

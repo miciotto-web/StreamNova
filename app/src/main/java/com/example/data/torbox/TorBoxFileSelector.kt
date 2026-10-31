@@ -43,16 +43,30 @@ object TorBoxFileSelector {
             .filter { it.isNotBlank() }
             .distinct()
 
-        for (name in names) {
-            val matches = playable.matchingFiles(name, path)
-            if (matches.isNotEmpty()) return matches.singleOrNull()
-        }
-
+        // L'episodio richiesto è il vincolo AUTOREVOLE: quando è noto si cerca
+        // PRIMA il file SxxExx/NxN. Il match per nome va usato solo per i torrent
+        // senza episodio (film) o quando il pattern non trova nulla: in un torrent
+        // di stagione il primo file (o il nome suggerito) può essere un episodio
+        // diverso da quello richiesto, e restituirlo avviava la puntata sbagliata.
         val episodePattern = buildEpisodePattern(season, episode)
         if (episodePattern != null) {
             val matches = playable.filter {
                 episodePattern.containsMatchIn(path(it).normalizedPath().substringAfterLast('/'))
             }
+            if (matches.isNotEmpty()) return matches.singleOrNull()
+            // Torrent con un solo file video: è il contenuto richiesto anche quando il
+            // nome non riporta stagione/episodio (release rinominata). Se però il nome
+            // dichiara un ALTRO episodio, non va usato: meglio nessun file che quello
+            // sbagliato.
+            val only = playable.singleOrNull()
+            val onlyName = only?.let { path(it).normalizedPath().substringAfterLast('/') }
+            if (only != null && onlyName != null && !ANY_EPISODE_MARKER.containsMatchIn(onlyName)) {
+                return only
+            }
+        }
+
+        for (name in names) {
+            val matches = playable.matchingFiles(name, path)
             if (matches.isNotEmpty()) return matches.singleOrNull()
         }
 
@@ -89,6 +103,15 @@ object TorBoxFileSelector {
             RegexOption.IGNORE_CASE,
         )
     }
+
+    /**
+     * Qualunque marker di episodio (`S01E02`, `1x02`) in un nome file: serve a non
+     * usare un file che dichiara esplicitamente un episodio diverso da quello richiesto.
+     */
+    private val ANY_EPISODE_MARKER = Regex(
+        "(?<![a-z0-9])(?:s\\d{1,2}e\\d{1,3}|\\d{1,2}x\\d{1,3})(?![0-9])",
+        RegexOption.IGNORE_CASE,
+    )
 
     internal fun String.hasDebridVideoExtension(): Boolean = videoExtensions.any { endsWith(it, ignoreCase = true) }
 

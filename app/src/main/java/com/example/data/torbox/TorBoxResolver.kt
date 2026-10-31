@@ -125,6 +125,10 @@ object TorBoxResolver {
                 filename = file.displayName().takeIf { it.isNotBlank() },
                 videoSize = file.size
             )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Richiesta annullata (cambio episodio, timeout del fast-path): la
+            // cancellazione strutturata non va mai convertita in un errore di rete.
+            throw e
         } catch (error: Exception) {
             Log.w(TAG, "resolve: failed with ${error::class.simpleName}: ${error.message}")
             ResolveResult.Error

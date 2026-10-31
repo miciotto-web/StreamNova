@@ -67,8 +67,22 @@ import kotlinx.coroutines.withContext
 
 object MediaRepository {
 
+  /** Tag diagnostico della rimozione delle serie concluse da «Continua a guardare». */
+  private const val TAG_CW = "ContinueWatching"
+
   private var database: StreamNovaDatabase? = null
   private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+  /**
+   * Provider iniettabile dei metadati che provano la conclusione di una serie
+   * (stato e conteggio episodi per stagione da TMDB). I test lo sostituiscono per
+   * non dipendere dalla rete; in produzione legge la cache Room e solo se serve TMDB.
+   */
+  internal var seriesCompletionFactsProvider: suspend (MediaItem) -> SeriesCompletionFacts? =
+    { item -> fetchSeriesCompletionFacts(item) }
+
+  /** Evita di avviare più di una riconciliazione delle serie concluse per processo. */
+  private var completionReconciliationStarted = false
   /**
    * Coda FIFO per la persistenza dei progressi episodio: due salvataggi ravvicinati
    * (uscita dal player + cambio puntata) non devono completarsi fuori ordine e
@@ -133,7 +147,13 @@ object MediaRepository {
   private var dbObserverJob: Job? = null
 
   fun init(context: Context, db: StreamNovaDatabase? = null) {
-    database = db ?: StreamNovaDatabase.getInstance(context)
+    val newDatabase = db ?: StreamNovaDatabase.getInstance(context)
+    // Il percorso di avvio inizializza il repository una sola volta; l'azzeramento
+    // serve solo ai test che reinizializzano con un database diverso nello stesso JVM.
+    if (database !== newDatabase) {
+      completionReconciliationStarted = false
+    }
+    database = newDatabase
     startDatabaseObserver()
     cleanBlockedContentFromCache()
   }
@@ -880,6 +900,10 @@ object MediaRepository {
     try {
       val dao = db.cachedMediaDao()
       val cachedEntities = dao.getAllCachedMedia()
+      // Serie conclusive rimaste in cache (verifica non completata prima della chiusura):
+      // la card viene rimossa in modo persistente partendo dalle righe Room, senza
+      // attendere l'emissione dell'osservatore.
+      scheduleCompletionReconciliation(cachedEntities)
       val initialList = getInitialMedia()
 
       // 1) Primissimo avvio: seed del catalogo direttamente dentro Room
@@ -1555,6 +1579,228 @@ object MediaRepository {
         }
       }
     }
+  }
+
+  // ── Rimozione delle serie concluse da «Continua a guardare» ─────────────
+
+  /**
+   * Verifica la conclusione di una serie dopo che un episodio è stato visto fino
+   * alla fine ([positionMs] entro [WatchProgress.END_TOLERANCE_MS] da [durationMs]).
+   *
+   * La verifica è asincrona perché richiede i metadati TMDB (stato e conteggio
+   * episodi dell'ultima stagione). Rimuove la serie SOLO se
+   * [SeriesCompletionPolicy] la dichiara conclusa con dati completi; in ogni altro
+   * caso (serie in corso, stagione successiva, episodi futuri, dati mancanti) la
+   * serie resta in «Continua a guardare».
+   *
+   * [durationMs] deve essere la durata **misurata dal player**: una stima non è una
+   * prova di fine episodio.
+   */
+  fun maybeCompleteSeries(
+    mediaId: String,
+    seasonNumber: Int,
+    episodeNumber: Int,
+    positionMs: Long,
+    durationMs: Long
+  ) {
+    if (!WatchProgress.isAtEnd(positionMs, durationMs)) return
+    repoScope.launch {
+      completeSeriesIfFinished(mediaId, seasonNumber, episodeNumber)
+    }
+  }
+
+  /**
+   * Corpo verificabile di [maybeCompleteSeries]: controlla lo stato corrente,
+   * interroga i metadati e applica la rimozione persistente.
+   *
+   * @return true se la serie è stata rimossa da «Continua a guardare».
+   */
+  internal suspend fun completeSeriesIfFinished(
+    mediaId: String,
+    seasonNumber: Int,
+    episodeNumber: Int
+  ): Boolean {
+    val item = _mediaList.value.firstOrNull { it.id == mediaId } ?: return false
+    return completeSeriesIfFinished(item, seasonNumber, episodeNumber)
+  }
+
+  private suspend fun completeSeriesIfFinished(
+    item: MediaItem,
+    seasonNumber: Int,
+    episodeNumber: Int
+  ): Boolean {
+    if (item.type != MediaType.SERIE_TV) return false
+    // Lo stato salvato deve riguardare ancora proprio questo episodio: nel frattempo
+    // l'utente può aver iniziato (o ripreso) un'altra puntata. Lo stato in memoria è
+    // aggiornato in modo sincrono da [updateEpisodeProgress]; la riga Room è il
+    // fallback per la finestra in cui l'osservatore non ha ancora riemesso il valore.
+    val persisted = runCatching { database?.cachedMediaDao()?.getMediaById(item.id) }.getOrNull()
+    val stateSeason = item.lastWatchedSeason ?: persisted?.lastWatchedSeason
+    val stateEpisode = item.lastWatchedEpisode ?: persisted?.lastWatchedEpisode
+    if (stateSeason != seasonNumber || stateEpisode != episodeNumber) return false
+    val persistedProgress = persisted
+      ?.takeIf {
+        it.lastWatchedSeason == stateSeason && it.lastWatchedEpisode == stateEpisode
+      }
+      ?.currentProgressMs
+      ?: 0L
+    if (maxOf(item.currentProgressMs, persistedProgress) <= 0L) return false
+
+    val facts = runCatching { seriesCompletionFactsProvider(item) }
+      .onFailure { Log.w(TAG_CW, "Metadati conclusione non leggibili per ${item.id}: ${it.message}") }
+      .getOrNull()
+    val decision = SeriesCompletionPolicy.decide(seasonNumber, episodeNumber, facts)
+    if (decision !is SeriesCompletionDecision.Completed) {
+      Log.i(TAG_CW, "Serie ${item.id} mantenuta: ${(decision as SeriesCompletionDecision.Incomplete).reason}")
+      return false
+    }
+
+    // Ricontrollo dopo la lettura dei metadati (sospensione): se nel frattempo è
+    // arrivata una nuova visione, la rimozione non è più valida. Vale lo stesso
+    // fallback in memoria → Room usato sopra.
+    val latest = _mediaList.value.firstOrNull { it.id == item.id }
+    val latestPersisted = runCatching { database?.cachedMediaDao()?.getMediaById(item.id) }.getOrNull()
+    val latestSeason = latest?.lastWatchedSeason ?: latestPersisted?.lastWatchedSeason
+    val latestEpisode = latest?.lastWatchedEpisode ?: latestPersisted?.lastWatchedEpisode
+    if (latestSeason != seasonNumber || latestEpisode != episodeNumber) {
+      return false
+    }
+    clearContinueWatchingForCompletedTitle(item.id, seasonNumber, episodeNumber)
+    Log.i(
+      TAG_CW,
+      "Serie ${item.id} conclusa (S$seasonNumber E$episodeNumber): rimossa da Continua a guardare"
+    )
+    return true
+  }
+
+  /**
+   * Rimozione persistente della card «Continua a guardare» per la serie.
+   *
+   * L'unità è il TITOLO: tutte le schede dello stesso contenuto (id TMDB e id
+   * IMDb/Stremio) vengono azzerate, altrimenti la gemella con il progresso rimasto
+   * farebbe riapparire la card al riavvio. La posizione viene azzerata anche nella
+   * riga Room, così la rimozione sopravvive al riavvio; stagione/episodio visti e
+   * durata dell'episodio restano (badge e scheda dettaglio invariati).
+   */
+  private suspend fun clearContinueWatchingForCompletedTitle(
+    mediaId: String,
+    seasonNumber: Int,
+    episodeNumber: Int
+  ) {
+    val seed = _mediaList.value.firstOrNull { it.id == mediaId }
+    // All'avvio la lista in memoria può non contenere ancora la riga Room: in quel caso
+    // l'unità di rimozione è l'id persistito (la ricomparsa è comunque impedita).
+    val ids = if (seed != null) {
+      MediaIdentity.groupById(_mediaList.value, mediaId).ifEmpty { listOf(seed) }.map { it.id }.toSet()
+    } else {
+      setOf(mediaId)
+    }
+    val now = System.currentTimeMillis()
+
+    _mediaList.update { list ->
+      list.map { item ->
+        if (item.id in ids) item.copy(currentProgressMs = 0L) else item
+      }
+    }
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id in ids) {
+      _detailUiState.value = detail.copy(media = detail.media.copy(currentProgressMs = 0L))
+    }
+
+    val db = database ?: return
+    try {
+      ids.forEach { id -> db.cachedMediaDao().clearContinueWatchingProgress(id, now) }
+      // La scrittura del progresso appena salvato può essere ancora in volo: si
+      // verifica il valore finale e, solo se riguarda ancora questo episodio, si
+      // azzera di nuovo. Mai una card "risorta" dopo il riavvio.
+      ids.forEach { id ->
+        val row = db.cachedMediaDao().getMediaById(id) ?: return@forEach
+        if (row.currentProgressMs > 0L &&
+          row.lastWatchedSeason == seasonNumber &&
+          row.lastWatchedEpisode == episodeNumber
+        ) {
+          db.cachedMediaDao().clearContinueWatchingProgress(id, now)
+        }
+      }
+    } catch (e: Exception) {
+      Log.w(TAG_CW, "Rimozione persistente da Continua a guardare fallita per $mediaId: ${e.message}")
+    }
+  }
+
+  /**
+   * Riconciliazione all'avvio: rimuove le serie già concluse rimaste in cache per
+   * un'applicazione chiusa prima della verifica (o per una verifica offline).
+   *
+   * È volutamente conservativa: considera solo posizioni salvate che hanno
+   * **raggiunto esattamente** la durata nota ([WatchProgress.hasReachedEnd]). Una
+   * posizione "quasi alla fine" basata su una durata stimata non è una prova e non
+   * deve eliminare nulla.
+   */
+  internal suspend fun reconcileCompletedSeries(items: List<MediaItem> = _mediaList.value) {
+    val candidates = items.filter { item ->
+      item.type == MediaType.SERIE_TV &&
+        item.currentProgressMs > 0L &&
+        item.lastWatchedSeason != null &&
+        item.lastWatchedEpisode != null &&
+        WatchProgress.hasReachedEnd(item.currentProgressMs, item.totalDurationMs)
+    }
+    candidates.forEach { item ->
+      val season = item.lastWatchedSeason ?: return@forEach
+      val episode = item.lastWatchedEpisode ?: return@forEach
+      completeSeriesIfFinished(item, season, episode)
+    }
+  }
+
+  /**
+   * Avvia una sola volta per processo la riconciliazione delle serie concluse,
+   * partendo dalle righe persistite (non dalla lista seed, che è sempre non vuota e
+   * non riflette il database).
+   */
+  private fun scheduleCompletionReconciliation(persisted: List<CachedMediaItemEntity>) {
+    if (completionReconciliationStarted) return
+    completionReconciliationStarted = true
+    // Filtro sulle righe (economico) prima di costruire i MediaItem: la mappatura di
+    // una serie genera gli episodi e non va eseguita per l'intero catalogo all'avvio.
+    val candidates = persisted
+      .filter { entity ->
+        entity.type == MediaType.SERIE_TV.name &&
+          entity.currentProgressMs > 0L &&
+          entity.lastWatchedSeason != null &&
+          entity.lastWatchedEpisode != null &&
+          WatchProgress.hasReachedEnd(entity.currentProgressMs, entity.totalDurationMs)
+      }
+      .map { it.toMediaItem() }
+    if (candidates.isEmpty()) return
+    repoScope.launch {
+      reconcileCompletedSeries(candidates)
+    }
+  }
+
+  /** Azzera il guard della riconciliazione (solo test: più init nello stesso JVM). */
+  internal fun resetCompletionReconciliationForTesting() {
+    completionReconciliationStarted = false
+  }
+
+  /**
+   * Metadati TMDB per la verifica di conclusione: lettura cache-first tramite
+   * [fetchExtendedDetails]. Se la rete e la cache non forniscono nulla si conservano
+   * solo i dati già in memoria (senza `status` la serie non è mai dichiarata conclusa).
+   */
+  private suspend fun fetchSeriesCompletionFacts(item: MediaItem): SeriesCompletionFacts? {
+    val tmdbId = item.tmdbId?.takeIf { it > 0 }
+    val details = tmdbId?.let { id ->
+      runCatching { fetchExtendedDetails(id, isTv = true, baseMedia = item) }.getOrNull()
+    }
+    val counts = details?.seasonEpisodesCount?.takeIf { it.isNotEmpty() }
+      ?: item.seasonEpisodesCount
+    val seasons = details?.seasonsCount ?: item.seasonsCount
+    val status = details?.status
+    if (counts.isEmpty() && seasons == null && status == null) return null
+    return SeriesCompletionFacts(
+      seasonsCount = seasons,
+      seasonEpisodeCounts = counts,
+      status = status
+    )
   }
 
   /**

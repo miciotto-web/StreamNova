@@ -370,6 +370,29 @@ object WatchProgress {
   fun remainingMinutes(totalDurationMs: Long, resumePositionMs: Long, runtimeMinutes: Int = 0): Int? =
     remainingMs(totalDurationMs, resumePositionMs, runtimeMinutes)
       ?.let { ms -> ceil(ms / 60_000.0).toInt() }
+
+  /** Tolleranza usata dal player per considerare concluso un episodio (ultimi 15 s). */
+  const val END_TOLERANCE_MS = 15_000L
+
+  /**
+   * true se la posizione ha raggiunto la fine del contenuto entro [END_TOLERANCE_MS].
+   *
+   * Usata per verificare la conclusione di un episodio con la durata **reale** misurata
+   * dal player: una durata non valida (`<= 0`) non prova nulla e restituisce `false`.
+   */
+  fun isAtEnd(positionMs: Long, durationMs: Long, toleranceMs: Long = END_TOLERANCE_MS): Boolean =
+    isValidDuration(durationMs) &&
+      positionMs > 0L &&
+      positionMs >= durationMs - toleranceMs.coerceAtLeast(0L)
+
+  /**
+   * true solo quando la posizione salvata coincide con la durata nota (nessuna
+   * tolleranza). È il criterio conservativo usato per la riconciliazione all'avvio:
+   * una posizione "quasi alla fine" basata su una durata stimata non deve mai
+   * rimuovere una serie.
+   */
+  fun hasReachedEnd(positionMs: Long, durationMs: Long): Boolean =
+    isValidDuration(durationMs) && positionMs >= durationMs
 }
 
 

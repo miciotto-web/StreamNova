@@ -21,6 +21,11 @@ import androidx.room.Entity
  *        ([com.example.data.prefs.StreamingEngineMode.name]): `"HTTP_WEB"` oppure
  *        `"DEBRID_TORBOX"`. Permette a "Continua a guardare" di NON riusare una fonte
  *        appartenente a una modalità diversa da quella attiva. Null per le voci legacy.
+ * @param infoHash hash del torrent della sorgente Debrid. Conservarlo permette al
+ *        passaggio all'episodio successivo di riusare lo stesso torrent di stagione
+ *        anche quando la sessione corrente è stata ripresa da questa cache.
+ * @param fileIdx indice file dichiarato dalla sorgente (Stremio `fileIdx`).
+ * @param addonName addon/provider di origine della sorgente (affinità del prossimo episodio).
  * @param cachedAtTimestamp istante di salvataggio (System.currentTimeMillis()).
  */
 @Entity(
@@ -38,6 +43,9 @@ data class LastWorkingStreamEntity(
   val headersJson: String? = null,
   val isProgressive: Boolean? = null,
   val streamMode: String? = null,
+  val infoHash: String? = null,
+  val fileIdx: Int? = null,
+  val addonName: String? = null,
   val cachedAtTimestamp: Long = System.currentTimeMillis()
 ) {
   companion object {
