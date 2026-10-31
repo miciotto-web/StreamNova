@@ -310,7 +310,9 @@ internal class SeekPreviewCache(
  *   OTTENUTO se e solo se avvicina l'intento corrente rispetto a quello già a video (vedi
  *   [shouldDisplay]: la misura è la distanza dalla posizione che l'utente vuole adesso, non il
  *   verso dei PTS) e poi prende dalla mailbox la posizione più recente, saltando le intermedie
- *   obsolete;
+ *   obsolete. Anche il frame di una richiesta già superata va a video se è la migliore immagine
+ *   disponibile: con decodifiche più lente del passo D-pad è l'unico modo di non lasciare
+ *   l'overlay sul placeholder per tutta la durata dello scrubbing;
  * - ogni cattura e ogni prefetch terminano con [settleLatestIntent], così il fotogramma della
  *   posizione corrente arriva a video anche se prodotto da un'altra richiesta: senza questo
  *   passaggio l'overlay restava su `Loading` con l'immagine vecchia quando l'utente si fermava;
@@ -327,7 +329,9 @@ internal class SeekPreviewCache(
  * - [setSource] azzera stato e cache: niente fotogrammi di un episodio precedente;
  * - nessuna pubblicazione dopo la chiusura (il worker cancellato non pubblica);
  * - nessun risultato obsoleto sovrascrive un fotogramma più vicino all'intento corrente, in
- *   nessuno dei due versi.
+ *   nessuno dei due versi;
+ * - un frame superato resta in cache anche quando il gate lo scarta: la pressione successiva
+ *   o il ritorno sulla posizione non pagano una seconda decodifica.
  *
  * Threading: il worker gira sul [dispatcher] passato (di default lo **stesso thread del
  * player**, cioè il main thread). Le sorgenti basate sul player DEBSONO accedere
@@ -774,6 +778,11 @@ internal class SeekPreviewController(
         // In cache SEMPRE, anche se il gate lo scarta: è materiale utile per le pressioni
         // successive e per il ritorno su una posizione già visitata.
         cache.put(loaded.positionMs, loaded)
+        // Il gate di [publishFrame] confronta con l'intento corrente: un frame superato
+        // viene mostrato solo se è più vicino alla posizione voluta adesso di quello già
+        // a video. Sopprimerlo a priori quando la mailbox non è vuota lasciava l'overlay
+        // sul placeholder scuro per tutta la durata dello scrubbing, perché con seek da
+        // 1-3 s ogni cattura termina quando una pressione successiva è già in coda.
         publishFrame(request, loaded, elapsedMs = elapsed, fromCache = false)
       } else if (mailbox.value == null && request.seq == latestRequest?.seq) {
         // Nessun fotogramma e nessuna posizione più recente in coda: il placeholder

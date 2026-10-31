@@ -93,6 +93,31 @@ class SeekPreviewCaptureSupportTest {
   }
 
   @Test
+  fun `l'emulatore AOSP TV usa il percorso GL invece della ImageReader`() {
+    // Firma reale dell'emulatore AOSP TV x86 (API 36): le Image YUV prodotte dopo seek
+    // ravvicinati hanno chroma non scritta (rumore verde/magenta). Il percorso GL sullo
+    // stesso decoder restituisce frame corretti.
+    assertFalse(
+      SeekPreviewCaptureSupport.isCaptureSupportedByPlatform(
+        manufacturer = "Google",
+        board = "goldfish_x86",
+        hardware = "ranchu"
+      )
+    )
+  }
+
+  @Test
+  fun `basta la firma ranchu per evitare la ImageReader`() {
+    assertFalse(
+      SeekPreviewCaptureSupport.isCaptureSupportedByPlatform(
+        manufacturer = "Google",
+        board = "unknown",
+        hardware = "ranchu64"
+      )
+    )
+  }
+
+  @Test
   fun `la firma non dipende da maiuscole o spazi`() {
     assertFalse(
       SeekPreviewCaptureSupport.isCaptureSupportedByPlatform(

@@ -5,6 +5,8 @@ import android.util.Log
 import com.example.BuildConfig
 import com.example.R
 import com.example.data.api.TmdbApiClient
+import com.example.data.api.TmdbCatalogMapper
+import com.example.data.api.TmdbGenreMapper
 import com.example.data.api.TmdbMediaAssets
 import com.example.data.api.TmdbMovieDto
 import com.example.data.api.TmdbPaginatedResponse
@@ -130,14 +132,13 @@ object MediaRepository {
   /** Chiavi YouTube dei trailer gia' risolte nella sessione corrente (solo valori non nulli). */
   private val trailerKeyCache = ConcurrentHashMap<String, String>()
 
-  private val BLOCKED_TMDB_IDS = setOf(318508) // The Pitt Podcast - not the real TV show
-
-  private fun isBlockedTv(tvId: Int, tvName: String?): Boolean {
-    return tvId in BLOCKED_TMDB_IDS || tvName?.contains("Podcast", ignoreCase = true) == true ||
-           tvName?.contains("Talk Show", ignoreCase = true) == true ||
-           tvName?.contains("After Show", ignoreCase = true) == true ||
-           tvName?.contains("Review", ignoreCase = true) == true
-  }
+  /**
+   * Filtro unico dei contenuti TV non editoriali: la regola vive in
+   * [TmdbCatalogMapper] così i cataloghi nativi della Home e i cataloghi TMDB
+   * storici escludono esattamente gli stessi titoli.
+   */
+  private fun isBlockedTv(tvId: Int, tvName: String?): Boolean =
+    TmdbCatalogMapper.isBlockedTv(tvId, tvName)
 
   /**
    * Collettore del Flow Room: è l'unica sorgente della lista esposta all'UI.
@@ -3854,26 +3855,8 @@ object MediaRepository {
     }
   }.flowOn(Dispatchers.IO)
 
-  private fun mapGenreIds(genreIds: List<Int>?, isMovie: Boolean): List<String> {
-    if (genreIds.isNullOrEmpty()) return listOf(if (isMovie) "Cinema" else "Serie TV")
-    val movieGenres = mapOf(
-      28 to "Azione", 12 to "Avventura", 16 to "Animazione", 35 to "Commedia",
-      80 to "Crime", 99 to "Documentario", 18 to "Dramma", 10751 to "Famiglia",
-      14 to "Fantasy", 36 to "Storia", 27 to "Horror", 10402 to "Musica",
-      9648 to "Mistero", 10749 to "Romance", 878 to "Fantascienza", 10770 to "Film TV",
-      53 to "Thriller", 10752 to "Guerra", 37 to "Western"
-    )
-    val tvGenres = mapOf(
-      10759 to "Azione & Avventura", 16 to "Animazione", 35 to "Commedia",
-      80 to "Crime", 99 to "Documentario", 18 to "Dramma", 10762 to "Kids",
-      9648 to "Mistero", 10763 to "News", 10764 to "Reality",
-      10765 to "Sci-Fi & Fantasy", 10766 to "Soap", 10767 to "Talk",
-      10768 to "Guerra & Politica", 37 to "Western"
-    )
-    val dict = if (isMovie) movieGenres else tvGenres
-    val result = genreIds.mapNotNull { dict[it] }
-    return if (result.isNotEmpty()) result else listOf(if (isMovie) "Cinema" else "Serie TV")
-  }
+  private fun mapGenreIds(genreIds: List<Int>?, isMovie: Boolean): List<String> =
+    TmdbGenreMapper.mapGenreIds(genreIds, isMovie)
 
   /**
    * Episodi **placeholder** (mai persistiti) per una serie di catalogo di cui non sono

@@ -328,14 +328,15 @@ object StremioAddonRepository {
   fun getActiveAddons(): List<InstalledAddon> = _addons.value.filter { it.isEnabled }
 
   /**
-   * Addon di SISTEMA sempre attivi: il catalogo di default primario (Cinemeta),
-   * registrato dal manifest statico [CinemetaAddon] e non dipendente dalla
-   * persistenza utente. È la sorgente predefinita della Home quando non ci sono
-   * cataloghi personalizzati.
+   * Definizione dell'addon di SISTEMA storico (Cinemeta).
+   *
+   * LEGACY: non viene più registrato come catalogo predefinito e non alimenta la
+   * Home né le categorie. Le sorgenti native sono TMDB. L'API resta per
+   * compatibilità e per riconoscere/ignorare l'addon.
    */
   fun getSystemAddons(): List<InstalledAddon> = CinemetaAddon.systemAddons
 
-  /** true se [id] identifica un addon di sistema (Cinemeta). */
+  /** true se [id] identifica un addon di sistema legacy (Cinemeta). */
   fun isSystemAddon(id: String?): Boolean = CinemetaAddon.isSystemAddon(id)
 
   /** true se l'addon identificato corrisponde a Xperience. */

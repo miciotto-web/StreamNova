@@ -30,18 +30,20 @@ import org.robolectric.annotation.Config
  * Verifica la SELEZIONE della sorgente dei cataloghi Home, per tipo.
  *
  * Regole coperte:
- *  - senza addon utilizzabili Cinemeta resta la sorgente;
+ *  - senza addon utilizzabili resta la sorgente NATIVA (in produzione TMDB);
  *  - un addon solo-film non sopprime le righe Serie TV (e viceversa);
  *  - cataloghi solo-search, con extra obbligatori o di tipi non supportati non
  *    contano come utilizzabili;
- *  - un addon con contenuti validi sostituisce le righe Cinemeta dello stesso tipo,
+ *  - un addon con contenuti validi sostituisce le righe native dello stesso tipo,
  *    senza coesistenza;
- *  - risposta vuota o errore producono il fallback Cinemeta deterministico;
+ *  - risposta vuota o errore producono la sorgente nativa deterministica;
  *  - una risoluzione iniziata prima non sovrascrive una più recente.
  *
  * Il server locale ricrea il manifest di un addon Stremio: nessun id reale è
- * codificato nel codice di produzione. Il caricamento Cinemeta è sostituito da un
- * loader iniettato, così il test non dipende dalla rete.
+ * codificato nel codice di produzione. Il loader della sorgente nativa è INIETTATO:
+ * qui usa sezioni sintetiche con gli id Cinemeta storici (compatibilità), mentre in
+ * produzione è [com.example.data.repository.TmdbHomeCatalogProvider]. Nessun test
+ * dipende dalla rete.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36])

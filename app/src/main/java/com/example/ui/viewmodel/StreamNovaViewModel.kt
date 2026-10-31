@@ -40,6 +40,7 @@ import com.example.data.repository.HomeCatalogs
 import com.example.data.repository.LastWorkingStreamRepository
 import com.example.data.repository.ProviderCoverage
 import com.example.data.repository.StremioCatalogRepository
+import com.example.data.repository.TmdbHomeCatalogProvider
 import com.example.data.stremio.InstalledAddon
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.StremioLiveChannelClassifier
@@ -1502,9 +1503,9 @@ class StreamNovaViewModel(
     /** Copertura del catalogo provider: NONE = TMDB, PARTIAL = merge, FULL = solo Stremio. */
     val coverage: ProviderCoverage = ProviderCoverage.NONE,
     /**
-     * true se i cataloghi Stremio provengono dal FALLBACK Cinemeta (solo senza
-     * addon di catalogo personalizzati): in merge il catalogo specifico del
-     * provider va PRIMA del fallback.
+     * LEGACY: true se i cataloghi Stremio provenivano dal vecchio fallback Cinemeta.
+     * Il percorso nativo attuale è TMDB Discover; il flag resta per compatibilità
+     * con lo stato UI esistente.
      */
     val fallbackToDefault: Boolean = false
   )
@@ -1522,7 +1523,7 @@ class StreamNovaViewModel(
   /**
    * Ultimo refresh dei cataloghi Home. Le emissioni di [allMedia] durante la
    * sincronizzazione TMDB sono multiple: senza cancellare il tentativo
-   * precedente si accumulavano risoluzioni Cinemeta/addon concorrenti (rete e
+   * precedente si accumulavano risoluzioni native (TMDB)/addon concorrenti (rete e
    * CPU) mentre la UI era già in fase di composizione.
    */
   private var homeCatalogsRefreshJob: Job? = null
@@ -2366,7 +2367,11 @@ class StreamNovaViewModel(
     val catalogWasEmpty = catalogCovers || addonMatched > 0
 
     // 4. Switch disattivato: nessuna chiamata TMDB, il caso resta dichiarato.
-    if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value) {
+    //    L'eccezione è la configurazione NATIVA (nessun addon con cataloghi propri):
+    //    dopo la migrazione da Cinemeta, TMDB è la sorgente di default delle categorie
+    //    e lo switch riguarda solo il completamento quando sono attivi addon utente.
+    val hasCustomCatalogAddons = StremioCatalogRepository.hasCustomCatalogAddons()
+    if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value && hasCustomCatalogAddons) {
       val reason = if (catalogWasEmpty) GenreLoadReason.SUPPORTED_BUT_EMPTY else GenreLoadReason.TMDB_DISABLED
       return GenreOutcome(record = GenreLoadRecord(mediaType, reason), addonItems = addonItems)
     }
@@ -2525,7 +2530,13 @@ class StreamNovaViewModel(
 
   /** Tipi serviti da TMDB nell'ultimo caricamento della categoria (vuoto = nessuno). */
   private fun tmdbFallbackTypes(): List<MediaType> {
-    if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value) return emptyList()
+    // Con addon utente attivi lo switch mantiene il suo significato: senza switch,
+    // nessuna pagina TMDB. Senza addon la categoria è nativa TMDB e si pagina sempre.
+    if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value &&
+      StremioCatalogRepository.hasCustomCatalogAddons()
+    ) {
+      return emptyList()
+    }
     return _lastGenreLoads.value
       .filter { it.reason == GenreLoadReason.TMDB_FALLBACK }
       .map { it.mediaType }
@@ -2604,16 +2615,33 @@ class StreamNovaViewModel(
     isLoadingMoreMovies = true
     viewModelScope.launch {
       try {
-        if (_homeCatalogs.value.isMoviesFromStremio) {
-          val currentList = _homeCatalogs.value.allMovies
-          val more = StremioCatalogRepository.paginateMovies(currentList.size)
-          if (more.isNotEmpty()) {
-            val combined = StremioCatalogRepository.deduplicateCrossSource(currentList + more)
-            _homeCatalogs.update { it.copy(allMovies = combined) }
+        val catalogs = _homeCatalogs.value
+        when {
+          // Sorgente nativa TMDB: la pagina successiva del catalogo "Popolari Film"
+          // viene accodata alla lista della schermata Film senza passare da Stremio.
+          catalogs.moviesFromTmdbDefault -> {
+            currentMoviePage++
+            val more = TmdbHomeCatalogProvider.paginateMovies(currentMoviePage)
+            if (more.isNotEmpty()) {
+              _homeCatalogs.update { current ->
+                current.copy(
+                  allMovies = StremioCatalogRepository.deduplicateCrossSource(current.allMovies + more)
+                )
+              }
+            }
           }
-        } else {
-          currentMoviePage++
-          MediaRepository.loadMoreMovies(currentMoviePage)
+          catalogs.isMoviesFromStremio -> {
+            val currentList = _homeCatalogs.value.allMovies
+            val more = StremioCatalogRepository.paginateMovies(currentList.size)
+            if (more.isNotEmpty()) {
+              val combined = StremioCatalogRepository.deduplicateCrossSource(currentList + more)
+              _homeCatalogs.update { it.copy(allMovies = combined) }
+            }
+          }
+          else -> {
+            currentMoviePage++
+            MediaRepository.loadMoreMovies(currentMoviePage)
+          }
         }
       } catch (e: Exception) {
         Log.w(TAG, "Errore paginazione film: ${e.message}")
@@ -2628,16 +2656,32 @@ class StreamNovaViewModel(
     isLoadingMoreTv = true
     viewModelScope.launch {
       try {
-        if (_homeCatalogs.value.isSeriesFromStremio) {
-          val currentList = _homeCatalogs.value.allSeries
-          val more = StremioCatalogRepository.paginateSeries(currentList.size)
-          if (more.isNotEmpty()) {
-            val combined = StremioCatalogRepository.deduplicateCrossSource(currentList + more)
-            _homeCatalogs.update { it.copy(allSeries = combined) }
+        val catalogs = _homeCatalogs.value
+        when {
+          // Sorgente nativa TMDB: pagina successiva di "Popolari Serie".
+          catalogs.seriesFromTmdbDefault -> {
+            currentTvPage++
+            val more = TmdbHomeCatalogProvider.paginateSeries(currentTvPage)
+            if (more.isNotEmpty()) {
+              _homeCatalogs.update { current ->
+                current.copy(
+                  allSeries = StremioCatalogRepository.deduplicateCrossSource(current.allSeries + more)
+                )
+              }
+            }
           }
-        } else {
-          currentTvPage++
-          MediaRepository.loadMoreTv(currentTvPage)
+          catalogs.isSeriesFromStremio -> {
+            val currentList = _homeCatalogs.value.allSeries
+            val more = StremioCatalogRepository.paginateSeries(currentList.size)
+            if (more.isNotEmpty()) {
+              val combined = StremioCatalogRepository.deduplicateCrossSource(currentList + more)
+              _homeCatalogs.update { it.copy(allSeries = combined) }
+            }
+          }
+          else -> {
+            currentTvPage++
+            MediaRepository.loadMoreTv(currentTvPage)
+          }
         }
       } catch (e: Exception) {
         Log.w(TAG, "Errore paginazione serie TV: ${e.message}")
@@ -5048,9 +5092,9 @@ fun backToBrowsing() {
 
    /**
     * Carica i contenuti di una sottocategoria provider per Film o Serie TV.
-    * Se l'addon attivo non possiede il catalogo (es. Cinemeta), esegue il fallback
+    * Se l'addon attivo non possiede il catalogo del provider, esegue il fallback
     * automatico su TMDB Discover (con logica HBO-specifica: network ID per serie,
-    * watch_region=US per film).
+    * watch_region=US per film). Cinemeta non è più una sorgente dei provider.
     */
    fun loadCategoryProvider(providerId: String, tmdbProviderId: Int, isTv: Boolean) {
      val key: Pair<String, Boolean> = Pair(providerId, isTv)
@@ -5115,7 +5159,7 @@ fun backToBrowsing() {
              categoryProviderHasMore[key] = tmdbHasMore || stremioPage.items.isNotEmpty()
            }
          } else if (tmdbProviderId > 0) {
-           // Fallback TMDB Discover (Cinemeta o addon senza cataloghi provider)
+           // Fallback TMDB Discover (provider senza cataloghi negli addon)
            categoryProviderPages[key] = 1
            val hboFallback = if (MediaRepository.isHboProvider(providerId)) {
              if (isTv) {

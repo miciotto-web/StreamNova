@@ -4,16 +4,20 @@ import com.example.data.model.MediaType
 import java.util.Calendar
 
 /**
- * Definizione dell'addon di SISTEMA **Cinemeta**: la sorgente di cataloghi
- * predefinita della Home di StreamNova.
+ * Definizione dell'addon di SISTEMA **Cinemeta**.
+ *
+ * STATO ATTUALE (migrazione TMDB): Cinemeta NON è più la sorgente dei cataloghi
+ * nativi. La Home, le categorie, la ricerca e i provider sono alimentati da TMDB
+ * ([com.example.data.repository.TmdbHomeCatalogProvider] e
+ * [com.example.data.repository.MediaRepository]); questo oggetto resta come
+ * definizione statica del manifest storico e per riconoscere/ignorare l'addon
+ * (`isSystemAddon`) dove serve compatibilità.
  *
  * Differenza rispetto a un addon utente:
- *  - NON viene scaricato/installato da rete: il manifest è noto staticamente,
- *    quindi può essere registrato e attivato offline a ogni avvio;
- *  - è SEMPRE presente come catalogo di default quando non ci sono cataloghi
- *    personalizzati (addon utente) attivi;
- *  - espone i cataloghi standard del protocollo Stremio che alimentano le righe
- *    principali della Home (Film: Popolari, Più votati, Nuovi — Serie TV: idem).
+ *  - NON viene scaricato/installato da rete: il manifest è noto staticamente;
+ *  - non viene registrato come catalogo predefinito di nessuna schermata;
+ *  - gli helper `homeCatalogPlans` / `genreCatalogs` / `searchCatalogs` descrivono
+ *    il manifest storico e sono usati solo da test di compatibilità.
  *
  * L'URL ufficiale è `https://v3-cinemeta.strem.io/manifest.json`; gli
  * identificativi dei cataloghi sono quelli realmente dichiarati dal manifest
@@ -128,14 +132,19 @@ object CinemetaAddon {
     )
   )
 
-  /** Addon di sistema pronto all'uso (sempre abilitato). */
+  /** Addon di sistema storico (definizione statica, non registrato come sorgente). */
   val addon: InstalledAddon = InstalledAddon(
     baseUrl = BASE_URL,
     manifest = manifest,
     isEnabled = true
   )
 
-  /** Addon di sistema che l'app registra come catalogo predefinito. */
+  /**
+   * Definizione dell'addon di sistema storico.
+   *
+   * LEGACY: l'app non lo registra più come catalogo predefinito; le schermate
+   * native usano TMDB. Nessun chiamante di produzione deve usarlo come sorgente.
+   */
   val systemAddons: List<InstalledAddon> get() = listOf(addon)
 
   /** true se [addonId] identifica l'addon di sistema Cinemeta. */
@@ -145,12 +154,14 @@ object CinemetaAddon {
       clean.equals(BASE_URL, ignoreCase = true)
   }
 
-  /** true se [addonId] è un addon di sistema (provider nativo autorizzato). */
+  /** true se [addonId] identifica l'addon di sistema legacy (Cinemeta). */
   fun isSystemAddon(addonId: String?): Boolean = isCinemeta(addonId)
 
   /**
-   * Piano di caricamento di una riga della Home:
-   * quale catalogo Cinemeta interrogare e con quali extra.
+   * Piano di caricamento storico di una riga Cinemeta.
+   *
+   * LEGACY: non è più usato dalla Home (sorgente TMDB). Resta per i test di
+   * compatibilità del manifest.
    */
   data class HomeCatalogPlan(
     val catalog: StremioCatalogDefinition,
@@ -164,11 +175,9 @@ object CinemetaAddon {
   }
 
   /**
-   * Cataloghi Cinemeta che alimentano le righe principali della Home per il
-   * [mediaType] indicato, nell'ordine: Popolari → Più votati → Nuovi.
+   * Cataloghi Cinemeta storici (Popolari → Più votati → Nuovi) per [mediaType].
    *
-   * Il catalogo "Nuovi" (`year`) richiede il parametro obbligatorio `genre`:
-   * viene passato l'anno più recente disponibile.
+   * LEGACY: la Home usa [com.example.data.repository.TmdbHomeCatalogProvider].
    */
   fun homeCatalogPlans(mediaType: MediaType): List<HomeCatalogPlan> = listOfNotNull(
     findCatalog(mediaType, CATALOG_POPULAR)?.let { HomeCatalogPlan(it) },
@@ -181,12 +190,10 @@ object CinemetaAddon {
   private val allMediaTypes = listOf(MediaType.FILM, MediaType.SERIE_TV)
 
   /**
-   * Cataloghi Cinemeta usati come fonte di DEFAULT per le CATEGORIE della sezione
-   * Ricerca ("Esplora per Genere"): il catalogo Popolari (`top`), che dichiara le
-   * opzioni `genre`, per Film e Serie TV. Il filtro avviene inviando
-   * `genre={NomeGenere}` (vedi la risoluzione delle richieste nel repository).
+   * Cataloghi Cinemeta storici per le CATEGORIE della sezione Ricerca.
    *
-   * Se [mediaType] è null vengono restituiti entrambi i tipi.
+   * LEGACY: le categorie native usano TMDB Discover (`MediaRepository.discoverByGenre`).
+   * Resta solo per i test di compatibilità del manifest storico.
    */
   fun genreCatalogs(mediaType: MediaType? = null): List<StremioCatalogDefinition> {
     val types = mediaType?.let { listOf(it) } ?: allMediaTypes
@@ -196,9 +203,10 @@ object CinemetaAddon {
   }
 
   /**
-   * Cataloghi Cinemeta usati come provider di DEFAULT per la RICERCA testuale
-   * globale (extra `search`) quando nessun addon utente copre la query.
-   * Se [mediaType] è null vengono restituiti entrambi i tipi.
+   * Cataloghi Cinemeta storici per la RICERCA testuale (extra `search`).
+   *
+   * LEGACY: la ricerca nativa usa TMDB (`MediaRepository.searchTmdb`). Resta solo
+   * per i test di compatibilità del manifest storico.
    */
   fun searchCatalogs(mediaType: MediaType? = null): List<StremioCatalogDefinition> {
     val types = mediaType?.let { listOf(it) } ?: allMediaTypes

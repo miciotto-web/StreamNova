@@ -11,12 +11,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Verifica che la sorgente predefinita della Home sia **Cinemeta** e non più i
- * feed nativi TMDB:
- *  - l'addon di sistema usa l'URL/manifest ufficiali e dichiara i cataloghi
+ * Compatibilità del manifest **Cinemeta storico** dopo la migrazione a TMDB:
+ *  - l'addon di sistema usa ancora URL/manifest ufficiali e dichiara i cataloghi
  *    standard (Popolari / Più votati / Nuovi) per Film e Serie TV;
- *  - [StremioCatalogRepository.buildHomeCatalogs] mappa quei cataloghi sulle
- *    righe della Home, senza reintrodurre feed TMDB.
+ *  - [StremioCatalogRepository.buildHomeCatalogs] continua a riconoscere le sezioni
+ *    Cinemeta costruite SENZA `homeSlot` (fallback sul `catalogId`), così i test e
+ *    gli eventuali dati legacy non si rompono;
+ *  - la Home di produzione NON usa questo addon: la sorgente nativa è TMDB
+ *    ([com.example.data.repository.TmdbHomeCatalogProvider]).
  */
 class CinemetaDefaultCatalogTest {
 
@@ -92,7 +94,7 @@ class CinemetaDefaultCatalogTest {
   }
 
   @Test
-  fun leRigheHomeArrivanoDaiCataloghiCinemeta() {
+  fun leSezioniCinemetaLegacyRestanoMappateSulleRigheHome() {
     val m1 = movie("tt1000001", "Popolare")
     val m2 = movie("tt1000002", "Votato")
     val m3 = movie("tt1000003", "Nuovo")

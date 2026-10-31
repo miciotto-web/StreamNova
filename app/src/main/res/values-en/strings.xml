@@ -26,9 +26,9 @@
     <string name="home_section_continue_watching">Continue Watching</string>
     <string name="home_badge_in_progress">%d titles in progress</string>
     <string name="home_section_top_10_movies">Featured: Movies</string>
-    <string name="home_badge_tmdb_ranking_italy">Featured on Cinemeta</string>
+    <string name="home_badge_tmdb_ranking_italy">Featured on TMDB</string>
     <string name="home_section_top_10_series">Featured: TV Shows</string>
-    <string name="home_badge_most_watched_tmdb">Featured on Cinemeta</string>
+    <string name="home_badge_most_watched_tmdb">Featured on TMDB</string>
     <string name="home_section_trending_movies">New Movies</string>
     <string name="home_badge_trending_week">New this year</string>
     <string name="home_section_trending_series">New TV Shows</string>
@@ -38,9 +38,9 @@
     <string name="home_section_for_you_series">For You: Must-Watch TV Shows</string>
     <string name="home_badge_suggested_for_you">Suggested for you</string>
     <string name="home_section_popular_movies">Popular Movies</string>
-    <string name="home_badge_most_watched_cinema">Popular on Cinemeta</string>
+    <string name="home_badge_most_watched_cinema">Popular on TMDB</string>
     <string name="home_section_popular_series">Popular TV Shows</string>
-    <string name="home_badge_most_discussed_series">Popular on Cinemeta</string>
+    <string name="home_badge_most_discussed_series">Popular on TMDB</string>
 
     <!-- Provider Catalog Filters & States -->
     <string name="filter_all">All</string>

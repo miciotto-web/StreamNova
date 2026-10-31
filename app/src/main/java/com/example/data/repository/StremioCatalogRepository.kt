@@ -6,7 +6,6 @@ import com.example.data.model.MediaType
 import com.example.data.stremio.CinemetaAddon
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.StremioCatalogEngine
-import com.example.data.stremio.StremioCatalogDefinition
 import com.example.data.stremio.StremioCatalogMapper
 import com.example.data.stremio.StremioCatalogResult
 import com.example.data.stremio.StremioCatalogTarget
@@ -15,7 +14,6 @@ import com.example.data.stremio.TYPE_MOVIE
 import com.example.data.stremio.TYPE_SERIES
 import com.example.data.stremio.EXTRA_GENRE
 import com.example.data.stremio.StremioLiveChannelClassifier
-import com.example.data.stremio.EXTRA_SEARCH
 import com.example.data.stremio.provider.CatalogEntryResult
 import com.example.data.stremio.provider.CatalogKey
 import com.example.data.stremio.provider.CatalogProvenance
@@ -49,8 +47,7 @@ enum class CatalogSourceOrigin {
 /**
  * Copertura del catalogo Provider da parte di Stremio.
  *
- * - [NONE]     nessun binding confermato: si usa il catalogo nativo di default
- *              (Cinemeta).
+ * - [NONE]     nessun binding confermato: si usa il catalogo nativo TMDB Discover.
  * - [PARTIAL]  binding presenti ma limitati (es. soli cataloghi Top10):
  *              Stremio resta la fonte primaria e il default completa la lista.
  * - [FULL]     target confermati per movie E series con almeno un catalogo
@@ -63,13 +60,27 @@ enum class ProviderCoverage {
 }
 
 /**
+ * Ruolo di una sezione nelle righe "stock" della Home:
+ * Popolari, In evidenza (Top 10) e Novità.
+ *
+ * `null` indica una sezione AGGIUNTIVA (riga extra). Il ruolo è dichiarato dal
+ * provider nativo TMDB e, per compatibilità con i cataloghi Cinemeta storici,
+ * può essere dedotto dal `catalogId` (vedi [CatalogSection.resolvedHomeSlot]).
+ */
+enum class HomeCatalogSlot {
+  POPULAR,
+  TOP_RATED,
+  NEW
+}
+
+/**
  * Sezione di catalogo restituita dal data layer, pronta per la futura integrazione UI.
  *
  * @param id identificatore univoco della sezione.
  * @param title titolo descrittivo della sezione (es. "Top Movies • Cinemeta").
  * @param addonId ID dell'addon Stremio sorgente (null se nativo TMDB).
  * @param addonName nome visualizzato dell'addon sorgente (null se nativo TMDB).
- * @param catalogId ID del catalogo Stremio (es. "top").
+ * @param catalogId ID del catalogo Stremio (es. "top") o del catalogo TMDB nativo.
  * @param mediaType tipo di contenuto (FILM o SERIE_TV).
  * @param origin sorgente di provenienza (TMDB_NATIVE o STREMIO_ADDON).
  * @param items contenuti convertiti nel modello universale [MediaItem].
@@ -78,6 +89,7 @@ enum class ProviderCoverage {
  * @param supportsGenre indica se la sezione supporta filtro per genere.
  * @param genreOptions opzioni di genere supportate.
  * @param supportsSkip indica se la sezione supporta la paginazione con skip.
+ * @param homeSlot ruolo nelle righe stock della Home; `null` = riga extra.
  */
 data class CatalogSection(
   val id: String,
@@ -92,28 +104,54 @@ data class CatalogSection(
   val supportsSearch: Boolean = false,
   val supportsGenre: Boolean = false,
   val genreOptions: List<String> = emptyList(),
-  val supportsSkip: Boolean = false
+  val supportsSkip: Boolean = false,
+  val homeSlot: HomeCatalogSlot? = null
 ) {
   val isEmpty: Boolean
     get() = items.isEmpty()
+
+  /**
+   * Nome dell'addon mostrabile come ATTRIBUZIONE della sezione.
+   *
+   * Solo una sezione che proviene DAVVERO da un addon Stremio può attribuirne i
+   * contenuti: per le sezioni native TMDB il risultato è sempre `null`, anche se un
+   * costruttore legacy ha popolato [addonName]. È il punto unico che impedisce a un
+   * badge (es. una stringa "Cinemeta" residua) di comparire sopra contenuti TMDB.
+   */
+  val attributionAddonName: String?
+    get() = addonName?.trim()
+      ?.takeIf { it.isNotEmpty() && origin == CatalogSourceOrigin.STREMIO_ADDON }
+
+  /**
+   * Ruolo effettivo della sezione: quello dichiarato ([homeSlot]) oppure, per le
+   * sezioni Cinemeta storiche costruite senza slot, quello dedotto dal catalogId
+   * del manifest (`top` / `imdbRating` / `year`).
+   */
+  fun resolvedHomeSlot(): HomeCatalogSlot? = homeSlot ?: when (catalogId) {
+    CinemetaAddon.CATALOG_POPULAR -> HomeCatalogSlot.POPULAR
+    CinemetaAddon.CATALOG_TOP_RATED -> HomeCatalogSlot.TOP_RATED
+    CinemetaAddon.CATALOG_NEW -> HomeCatalogSlot.NEW
+    else -> null
+  }
 }
 
 /**
  * Raggruppamento dei cataloghi per la schermata Home di StreamNova.
  *
- * SORGENTE PREDEFINITA: **Cinemeta**. Le righe principali
- * (`popularX`, `top10X`, `trendingX`) arrivano dai cataloghi di default dell'addon
- * di sistema Cinemeta (Popolari / Più votati / Nuovi); i feed nativi TMDB non
- * vengono più usati come base della Home.
+ * SORGENTE PREDEFINITA: **TMDB nativo** ([TmdbHomeCatalogProvider]). Le righe
+ * principali (`popularX`, `top10X`, `trendingX`) arrivano dai cataloghi TMDB
+ * (Popolari / Più votati / Novità) e le righe aggiuntive (Serie in onda, Novità
+ * digitali, Novità HBO e le 10 "Novità provider": Netflix, Disney+, Prime Video,
+ * Apple TV+, Paramount+ per Film e Serie) viaggiano in [extraSections] con
+ * `origin = TMDB_NATIVE`. Cinemeta non è più interrogato dalla Home.
  *
  * Gli addon utente (Xperience, Easy Catalog, ...) compaiono come [extraSections] e
- * sostituiscono le righe stock Cinemeta SOLO per il tipo che riescono realmente a
- * popolare ([hasCustomCatalogMovies]/[hasCustomCatalogSeries]): un addon solo-film
- * non sopprime le righe Serie TV e viceversa.
+ * sostituiscono le righe TMDB SOLO per il tipo che riescono realmente a popolare
+ * ([hasCustomCatalogMovies]/[hasCustomCatalogSeries]): un addon solo-film non
+ * sopprime le righe Serie TV e viceversa.
  *
- * `allMovies`/`allSeries` alimentano le schermate categoria: contenuti Cinemeta
- * quando disponibili ([moviesFromDefaultCatalog]/[seriesFromDefaultCatalog]), altrimenti
- * la cache locale come fallback offline.
+ * `allMovies`/`allSeries` alimentano le schermate categoria: contenuti TMDB nativi
+ * quando disponibili, altrimenti la cache locale come fallback offline.
  */
 data class HomeCatalogs(
   val heroItems: List<MediaItem> = emptyList(),
@@ -126,14 +164,25 @@ data class HomeCatalogs(
   val popularMovies: List<MediaItem> = emptyList(),
   val popularSeries: List<MediaItem> = emptyList(),
   val extraSections: List<CatalogSection> = emptyList(),
-  /** Cataloghi addon personalizzati attivi con contenuti FILM: righe Cinemeta film escluse. */
+  /**
+   * Origine delle righe STOCK mostrate (Popolari / In evidenza / Novità), quando è
+   * omogenea. La UI deriva da qui il badge sorgente: `TMDB_NATIVE` → badge TMDB,
+   * `STREMIO_ADDON` → eventuale nome dell'addon, `null` → nessuna attribuzione.
+   * Impedisce di attribuire a un addon (es. Cinemeta) righe alimentate da TMDB.
+   */
+  val stockSourceOrigin: CatalogSourceOrigin? = null,
+  /** Cataloghi addon personalizzati attivi con contenuti FILM: righe native film escluse. */
   val hasCustomCatalogMovies: Boolean = false,
-  /** Cataloghi addon personalizzati attivi con contenuti SERIE TV: righe Cinemeta serie escluse. */
+  /** Cataloghi addon personalizzati attivi con contenuti SERIE TV: righe native serie escluse. */
   val hasCustomCatalogSeries: Boolean = false,
-  /** `allMovies` proviene dal catalogo di default (Cinemeta): paginazione via Stremio. */
+  /** `allMovies` proviene dal catalogo di default Stremio (Cinemeta legacy): paginazione via Stremio. */
   val moviesFromDefaultCatalog: Boolean = false,
-  /** `allSeries` proviene dal catalogo di default (Cinemeta): paginazione via Stremio. */
+  /** `allSeries` proviene dal catalogo di default Stremio (Cinemeta legacy): paginazione via Stremio. */
   val seriesFromDefaultCatalog: Boolean = false,
+  /** `allMovies` proviene dai cataloghi nativi TMDB: paginazione via TMDB. */
+  val moviesFromTmdbDefault: Boolean = false,
+  /** `allSeries` proviene dai cataloghi nativi TMDB: paginazione via TMDB. */
+  val seriesFromTmdbDefault: Boolean = false,
   val allMovies: List<MediaItem> = emptyList(),
   val allSeries: List<MediaItem> = emptyList()
 ) {
@@ -142,8 +191,9 @@ data class HomeCatalogs(
 
   /**
    * I film della schermata categoria arrivano da cataloghi Stremio: o di un addon
-   * personalizzato (Xperience, Easy Catalog, ...) o dal catalogo di default Cinemeta. In entrambi i casi la
-   * paginazione deve usare il percorso Stremio, non i feed TMDB.
+   * personalizzato (Xperience, Easy Catalog, ...) o dal catalogo di default legacy
+   * (Cinemeta). Con la Home nativa TMDB questo flag resta `false` e la paginazione
+   * usa [moviesFromTmdbDefault].
    */
   val isMoviesFromStremio: Boolean get() = hasCustomCatalogMovies || moviesFromDefaultCatalog
 
@@ -310,29 +360,6 @@ object StremioCatalogRepository {
   internal fun clearChannelItemIndex() {
     channelCatalogIndex.clear()
   }
-
-  /**
-   * Target dei cataloghi di DEFAULT Cinemeta per [mediaType], senza rete.
-   *
-   * Sono tenuti separati da [getAvailableTargets] (che legge solo gli addon utente)
-   * per non contaminare i percorsi generici con la sorgente di default: alimentano
-   * la Home e la sua paginazione. Categorie e ricerca usano i rispettivi helper
-   * dedicati ([defaultCinemetaGenreTargets] / [defaultCinemetaSearchTargets]).
-   * Sono esclusi i cataloghi con extra obbligatori (es. "Nuovi" richiede `genre`)
-   * perché la paginazione passa solo `skip`.
-   */
-  internal fun defaultCinemetaTargets(mediaType: MediaType): List<StremioCatalogTarget> =
-    CinemetaAddon.homeCatalogPlans(mediaType)
-      .map { it.catalog }
-      .filter { it.canLoadWithoutArgs() }
-      .map { catalog ->
-        StremioCatalogTarget(
-          addonId = CinemetaAddon.MANIFEST_ID,
-          addonName = CinemetaAddon.DISPLAY_NAME,
-          baseUrl = CinemetaAddon.BASE_URL,
-          catalog = catalog
-        )
-      }
 
   /**
    * Carica una singola sezione di catalogo Stremio a partire da un [StremioCatalogTarget].
@@ -543,8 +570,9 @@ object StremioCatalogRepository {
    *     inviata come extra: mai un genere non dichiarato;
    *  4. i cataloghi con extra obbligatori non soddisfatti (es. i cataloghi di sola
    *     ricerca `search`) vengono esclusi;
-   *  5. se nessun catalogo corrisponde → lista vuota: la categoria dichiara il
-   *     fallback invece di fingere un caricamento addon riuscito.
+   *  5. se nessun catalogo corrisponde → lista vuota. La categoria non dipende più
+   *     da Cinemeta: quando nessun addon dell'utente copre il genere, la sorgente
+   *     nativa è TMDB Discover (decisa dal ViewModel, che conosce gli id genere).
    *
    * Il filtro per genere viene inviato anche quando il catalogo è COMPATIBILE ma
    * non elenca opzioni statiche per `genre`: vedi [resolveGenreExtra].
@@ -556,19 +584,21 @@ object StremioCatalogRepository {
     if (terms.isEmpty()) return emptyList()
 
     // 1. Priorità agli addon utente: se almeno un catalogo dichiarato copre la
-    //    categoria, la fonte resta l'addon (nessuna sovrapposizione con Cinemeta).
-    val userRequests = matchCategoryRequests(terms, getAvailableTargets())
+    //    categoria, la fonte resta l'addon (nessuna sovrapposizione con TMDB).
+    val userTargets = getAvailableTargets()
+    val userRequests = matchCategoryRequests(terms, userTargets)
     if (userRequests.isNotEmpty()) return userRequests
 
     // 2. Gli addon utente DICHIARANO cataloghi ma nessuno copre il genere: la categoria
-    //    NON deve rimandare a TMDB fingendo che l'addon la copra. I cataloghi esistenti
-    //    sono la risposta dell'addon (lo stato della categoria lo dichiara).
-    val userTargets = getAvailableTargets().filter { it.isMovie || it.isSeries }
-    if (userTargets.isNotEmpty()) return emptyList()
+    //    NON deve fingere che l'addon la copra. I cataloghi esistenti sono la risposta
+    //    dell'addon (lo stato della categoria lo dichiara) e il ViewModel decide se e
+    //    quale tipo completare con TMDB Discover.
+    if (userTargets.any { it.isMovie || it.isSeries }) return emptyList()
 
-    // 3. Nessun addon utente installato: Cinemeta, addon di sistema, è la fonte di
-    //    default e copre il genere sui cataloghi movie/series tramite `genre={NomeGenere}`.
-    return matchCategoryRequests(terms, defaultCinemetaGenreTargets())
+    // 3. Nessun addon utente installato: nessun target Stremio. La categoria è
+    //    alimentata nativamente da TMDB Discover nel ViewModel: Cinemeta non è più
+    //    una sorgente di default.
+    return emptyList()
   }
 
   /**
@@ -593,12 +623,11 @@ object StremioCatalogRepository {
   }
 
   /**
-   * true se [targets] (i cataloghi realmente configurati: addon installati e attivi,
-   * più i cataloghi di sistema) contengono almeno un catalogo del tipo [mediaType] che
-   * copre il genere [keywords].
+   * true se [targets] (i cataloghi realmente configurati: addon installati e attivi)
+   * contengono almeno un catalogo del tipo [mediaType] che copre il genere [keywords].
    *
    * Un `false` significa "nessun catalogo configurato per questo tipo applica il
-   * filtro per genere": è la sola condizione che autorizza il fallback TMDB.
+   * filtro per genere": è la condizione che autorizza la sorgente TMDB Discover.
    */
   internal fun hasConfiguredCatalogCoveringGenre(
     keywords: List<String>,
@@ -615,12 +644,11 @@ object StremioCatalogRepository {
 
   /**
    * Come [hasConfiguredCatalogCoveringGenre], ma sui SOLI cataloghi degli addon
-   * dell'utente (installati e attivi), senza i cataloghi di sistema come Cinemeta.
+   * dell'utente (installati e attivi), senza eventuali addon di sistema legacy.
    *
-   * Serve a decidere il fallback TMDB: se nessun addon dell'utente copre la
-   * combinazione tipo+genere, la fonte principale della categoria (Cinemeta, che
-   * dichiara `genre` per entrambi i tipi) non produce contenuti coerenti con il
-   * genere richiesto e la categoria deve procedere con TMDB.
+   * Serve a decidere la sorgente della categoria: se nessun addon dell'utente copre
+   * la combinazione tipo+genere, il tipo viene servito nativamente da TMDB Discover
+   * (con l'id genere della categoria).
    */
   internal fun hasUserCatalogCoveringGenre(
     keywords: List<String>,
@@ -703,34 +731,6 @@ object StremioCatalogRepository {
       part.replaceFirstChar { it.uppercaseChar() }
     })
   }
-
-  /** Costruisce un target Stremio per un catalogo dell'addon di sistema Cinemeta. */
-  private fun cinemetaTarget(catalog: StremioCatalogDefinition): StremioCatalogTarget =
-    StremioCatalogTarget(
-      addonId = CinemetaAddon.MANIFEST_ID,
-      addonName = CinemetaAddon.DISPLAY_NAME,
-      baseUrl = CinemetaAddon.BASE_URL,
-      catalog = catalog
-    )
-
-  /**
-   * Target Cinemeta di DEFAULT per le CATEGORIE della sezione Ricerca: il catalogo
-   * Popolari (`top`), che dichiara il filtro `genre`, per Film e Serie TV.
-   * Nessuna rete: deriva dal manifest statico [CinemetaAddon].
-   */
-  internal fun defaultCinemetaGenreTargets(
-    mediaType: MediaType? = null
-  ): List<StremioCatalogTarget> =
-    CinemetaAddon.genreCatalogs(mediaType).map { cinemetaTarget(it) }
-
-  /**
-   * Target Cinemeta di DEFAULT per la RICERCA testuale globale (extra `search`)
-   * quando nessun addon utente copre la query. Nessuna rete.
-   */
-  internal fun defaultCinemetaSearchTargets(
-    mediaType: MediaType? = null
-  ): List<StremioCatalogTarget> =
-    CinemetaAddon.searchCatalogs(mediaType).map { cinemetaTarget(it) }
 
   /** Split di un testo nei segmenti alfanumerici minuscoli ("Sci-Fi" → ["sci", "fi"]). */
   private fun termSegments(value: String): List<String> =
@@ -832,9 +832,9 @@ object StremioCatalogRepository {
     if (entries.none { it.section.supportsSkip && it.section.items.isNotEmpty() }) {
       return@coroutineScope entries
     }
-    // Include anche i cataloghi di sistema Cinemeta: le sezioni servite da Cinemeta
-    // quando nessun addon utente copre la categoria devono poter essere paginate.
-    val targets = getAvailableTargets() + defaultCinemetaGenreTargets()
+    // Solo i cataloghi degli addon dell'utente: le categorie native sono paginate da
+    // TMDB Discover nel ViewModel, non da Cinemeta.
+    val targets = getAvailableTargets()
 
     entries.map { entry ->
       async {
@@ -898,57 +898,24 @@ object StremioCatalogRepository {
   }
 
   /**
-   * Esegue una ricerca testuale su tutti i cataloghi Stremio attivi che supportano il parametro `search`.
-   * Restituisce gli elementi convertiti in [MediaItem], deduplicati per id.
+   * Ricerca testuale sui cataloghi degli ADDON Stremio attivi (extra `search`).
+   *
+   * La ricerca nativa NON passa più da Cinemeta: la sorgente predefinita è TMDB
+   * (`MediaRepository.searchTmdb`, interrogata in parallelo dal ViewModel). Questo
+   * percorso restituisce solo i risultati degli addon installati dall'utente, che
+   * mantengono la precedenza quando sono disponibili; senza addon (o senza risultati)
+   * la lista TMDB resta l'unica fonte. Un errore di un addon non produce risultati
+   * parziali inventati.
    */
   suspend fun searchAddonCatalogs(
     query: String,
     mediaType: MediaType? = null
   ): List<MediaItem> = withContext(Dispatchers.IO) {
     val stremioType = toStremioType(mediaType)
-    // 1. Addon utente (Xperience/Stremio): mantengono la precedenza quando producono risultati.
     val userResults = StremioCatalogEngine.searchCatalogs(query, stremioType)
-    val userItems = userResults.flatMap { result ->
+    userResults.flatMap { result ->
       StremioCatalogMapper.toMediaItemList(result.items, result.addonName)
     }.distinctBy { it.id }
-    if (userItems.isNotEmpty()) return@withContext userItems
-
-    // 2. Nessun addon utente copre la query: Cinemeta è il provider di ricerca di
-    //    default (cataloghi `movie`/`series` con extra `search`).
-    searchDefaultCinemeta(query, mediaType)
-  }
-
-  /**
-   * Ricerca testuale sull'addon di sistema Cinemeta: provider di default quando
-   * nessun addon utente copre la richiesta. Isola gli errori per catalogo.
-   */
-  private suspend fun searchDefaultCinemeta(
-    query: String,
-    mediaType: MediaType?
-  ): List<MediaItem> = coroutineScope {
-    val cleanQuery = query.trim()
-    if (cleanQuery.isBlank()) return@coroutineScope emptyList()
-    val targets = defaultCinemetaSearchTargets(mediaType)
-    if (targets.isEmpty()) return@coroutineScope emptyList()
-
-    val extra = mapOf(EXTRA_SEARCH to cleanQuery)
-    targets.map { target ->
-      async {
-        try {
-          val result = StremioCatalogEngine.fetchCatalog(target, extra)
-          if (result.isSuccess) {
-            StremioCatalogMapper.toMediaItemList(result.items, target.addonName, toMediaType(target.type))
-          } else {
-            emptyList()
-          }
-        } catch (e: CancellationException) {
-          throw e
-        } catch (e: Exception) {
-          Log.w(TAG, "Ricerca Cinemeta fallita per \"$cleanQuery\": ${e.message}")
-          emptyList()
-        }
-      }
-    }.awaitAll().flatten().distinctBy { it.id }
   }
 
   /**
@@ -995,11 +962,10 @@ object StremioCatalogRepository {
   /**
    * Costruisce lo stato iniziale (sincrono) dei cataloghi Home.
    *
-   * NON espone più alcun feed nativo TMDB: le righe Popolari / Più votati / Nuovi
-   * arrivano esclusivamente dai cataloghi di default (Cinemeta) risolti in modo
-   * asincrono da [resolveHomeCatalogs]. Qui restano solo le liste cache
-   * `allMovies` / `allSeries`, usate dalle schermate categoria come fallback offline
-   * quando la rete (Cinemeta) non è disponibile.
+   * Le righe Popolari / In evidenza / Novità e le righe extra arrivano in modo
+   * asincrono dai cataloghi nativi TMDB ([resolveHomeCatalogs]). Qui restano solo le
+   * liste cache `allMovies` / `allSeries`, usate dalle schermate categoria come
+   * fallback offline finché la rete non risponde.
    */
   fun buildDefaultHomeCatalogs(allMedia: List<MediaItem>): HomeCatalogs {
     // Nessun contenuto addon è ancora stato caricato: la sorgente per tipo viene
@@ -1154,27 +1120,6 @@ object StremioCatalogRepository {
     }
   }
 
-  /**
-   * Risolve i cataloghi per la schermata Home.
-   *
-   * SORGENTE PREDEFINITA: **Cinemeta** ([CinemetaAddon]), registrato come addon
-   * di sistema. I feed nativi TMDB sono stati rimossi dalla Home:
-   * 1. Le righe principali per tipo arrivano dai cataloghi di default Cinemeta:
-   *    - Popolari (`top`) → `popularMovies` / `popularSeries`;
-   *    - Più votati (`imdbRating`) → `top10Movies` / `top10Series`;
-   *    - Nuovi (`year`, con `genre` = anno corrente) → `trendingMovies` / `trendingSeries`.
-   * 2. La sorgente è decisa PER TIPO: i cataloghi addon (Xperience, Easy Catalog, ...)
-   *    sostituiscono le righe stock Cinemeta solo per il tipo che riescono davvero a
-   *    popolare e compaiono come [HomeCatalogs.extraSections]. Se un addon non fornisce
-   *    alcun catalogo caricabile per un tipo (manifest senza cataloghi utili, extra
-   *    obbligatori, risposta vuota o errore), Cinemeta resta la sorgente di quel tipo.
-   *    Un addon solo-film non sopprime quindi le righe Serie TV e viceversa.
-   * 3. `allMovies` / `allSeries` alimentano le schermate categoria: contenuti Cinemeta
-   *    quando disponibili, altrimenti la cache locale (`tmdbMedia`) come fallback offline.
-   * 4. Se Cinemeta non è raggiungibile le righe restano vuote: nessun feed TMDB viene
-   *    sostituito silenziosamente.
-   * 5. Gli elementi sono deduplicati stabilmente.
-   */
   /** true se l'addon Xperience è installato ed abilitato. */
   fun isXperienceEnabled(): Boolean = StremioAddonRepository.isXperienceEnabled()
 
@@ -1186,12 +1131,36 @@ object StremioCatalogRepository {
    */
   fun hasCustomCatalogAddons(): Boolean = StremioAddonRepository.hasCustomCatalogAddons()
 
+  /**
+   * Risolve i cataloghi per la schermata Home.
+   *
+   * SORGENTE PREDEFINITA: **TMDB nativo** ([TmdbHomeCatalogProvider]). Cinemeta non
+   * viene più interrogato dalla Home.
+   * 1. Le righe principali per tipo arrivano dai cataloghi TMDB:
+   *    - Popolari → `popularMovies` / `popularSeries`;
+   *    - In evidenza / Top 10 → `top10Movies` / `top10Series`;
+   *    - Novità (cinema IT / nuovo anno TV) → `trendingMovies` / `trendingSeries`.
+   *    Le righe aggiuntive (Serie TV in onda, Novità in digitale, Novità HBO)
+   *    arrivano nello stesso caricamento e compaiono in [HomeCatalogs.extraSections].
+   * 2. La sorgente è decisa PER TIPO: i cataloghi addon (Xperience, Easy Catalog, ...)
+   *    sostituiscono le righe native solo per il tipo che riescono davvero a popolare
+   *    e compaiono come [HomeCatalogs.extraSections]. Se un addon non fornisce alcun
+   *    catalogo caricabile per un tipo (manifest senza cataloghi utili, extra
+   *    obbligatori, risposta vuota o errore), TMDB resta la sorgente di quel tipo.
+   *    Un addon solo-film non sopprime quindi le righe Serie TV e viceversa.
+   * 3. `allMovies` / `allSeries` alimentano le schermate categoria: contenuti TMDB
+   *    quando disponibili, altrimenti la cache locale come fallback offline.
+   * 4. Se TMDB non è raggiungibile le righe native restano vuote: nessun'altra
+   *    sorgente viene sostituita silenziosamente. La cache Room (TTL 12h) copre i
+   *    refresh entro la finestra.
+   * 5. Gli elementi sono deduplicati stabilmente.
+   */
   suspend fun resolveHomeCatalogs(tmdbMedia: List<MediaItem>): HomeCatalogs =
-    resolveHomeCatalogs(tmdbMedia) { mediaTypes -> loadDefaultCinemetaSectionsSafely(mediaTypes) }
+    resolveHomeCatalogs(tmdbMedia) { mediaTypes -> TmdbHomeCatalogProvider.loadHomeSectionsSafely(mediaTypes) }
 
   /**
-   * Implementazione con loader Cinemeta iniettabile: i test possono verificare la
-   * decisione di sorgente per tipo senza dipendere dalla rete.
+   * Implementazione con loader dei cataloghi nativi iniettabile: i test possono
+   * verificare la decisione di sorgente per tipo senza dipendere dalla rete.
    */
   internal suspend fun resolveHomeCatalogs(
     tmdbMedia: List<MediaItem>,
@@ -1204,8 +1173,9 @@ object StremioCatalogRepository {
     val userSections = loadHomeSectionsSafely(MediaType.FILM) +
       loadHomeSectionsSafely(MediaType.SERIE_TV)
 
-    // Cinemeta resta attivo solo per i tipi che nessun addon riesce a popolare.
-    val defaultMediaTypes = defaultCinemetaMediaTypes(userSections)
+    // La sorgente nativa (TMDB) resta attiva solo per i tipi che nessun addon
+    // riesce a popolare.
+    val defaultMediaTypes = defaultHomeMediaTypes(userSections)
     val defaultSections = if (defaultMediaTypes.isEmpty()) {
       emptyList()
     } else {
@@ -1222,29 +1192,32 @@ object StremioCatalogRepository {
   }
 
   /**
-   * Tipi per cui la Home deve ancora usare Cinemeta: quelli che nessuna sezione
-   * addon popolata copre. La decisione è per tipo, non globale.
+   * Tipi per cui la Home deve ancora usare i cataloghi NATIVI (TMDB): quelli che
+   * nessuna sezione addon popolata copre. La decisione è per tipo, non globale.
    */
-  internal fun defaultCinemetaMediaTypes(userSections: List<CatalogSection>): List<MediaType> =
+  internal fun defaultHomeMediaTypes(userSections: List<CatalogSection>): List<MediaType> =
     listOf(MediaType.FILM, MediaType.SERIE_TV).filter { mediaType ->
       userSections.none { it.mediaType == mediaType && it.items.isNotEmpty() }
     }
 
   /**
-   * Costruisce i [HomeCatalogs] a partire dalle sezioni Cinemeta di default, dalle
-   * sezioni degli addon utente e dalla cache locale. Funzione PURA (nessuna rete):
-   * la logica di mapping è così verificabile nei test unitari.
+   * Costruisce i [HomeCatalogs] a partire dalle sezioni NATIVE di default (TMDB in
+   * produzione, loader iniettato nei test), dalle sezioni degli addon utente e dalla
+   * cache locale. Funzione PURA (nessuna rete): la logica di mapping è così
+   * verificabile nei test unitari.
    *
    * Per ogni tipo vale UNA sola sorgente: se le sezioni addon del tipo hanno
-   * contenuti, le righe stock Cinemeta dello stesso tipo restano vuote; altrimenti
-   * valgono le righe Cinemeta (con la cache locale come fallback delle categorie).
+   * contenuti, le righe stock native dello stesso tipo restano vuote; altrimenti
+   * valgono le righe native (con la cache locale come fallback delle categorie).
+   * Le sezioni native senza slot ([HomeCatalogSlot]) sono righe EXTRA e restano
+   * soggette alla stessa regola di soppressione per tipo.
    */
   internal fun buildHomeCatalogs(
     defaultSections: List<CatalogSection>,
     userSections: List<CatalogSection>,
     allMedia: List<MediaItem>
   ): HomeCatalogs {
-    val extraSections = userSections
+    val userExtraSections = userSections
       .filter { it.items.isNotEmpty() }
       .distinctBy { it.id }
 
@@ -1258,22 +1231,52 @@ object StremioCatalogRepository {
     val moviesFromAddon = userMovies.isNotEmpty()
     val seriesFromAddon = userSeries.isNotEmpty()
 
-    fun defaultItems(catalogId: String, mediaType: MediaType): List<MediaItem> =
-      defaultSections.firstOrNull { it.catalogId == catalogId && it.mediaType == mediaType }?.items
-        ?: emptyList()
+    fun defaultItems(slot: HomeCatalogSlot, mediaType: MediaType): List<MediaItem> =
+      defaultSections.firstOrNull {
+        it.mediaType == mediaType && it.resolvedHomeSlot() == slot
+      }?.items ?: emptyList()
 
-    val popularMovies = defaultItems(CinemetaAddon.CATALOG_POPULAR, MediaType.FILM)
-    val popularSeries = defaultItems(CinemetaAddon.CATALOG_POPULAR, MediaType.SERIE_TV)
-    val topRatedMovies = defaultItems(CinemetaAddon.CATALOG_TOP_RATED, MediaType.FILM)
-    val topRatedSeries = defaultItems(CinemetaAddon.CATALOG_TOP_RATED, MediaType.SERIE_TV)
-    val newMovies = defaultItems(CinemetaAddon.CATALOG_NEW, MediaType.FILM)
-    val newSeries = defaultItems(CinemetaAddon.CATALOG_NEW, MediaType.SERIE_TV)
+    val popularMovies = defaultItems(HomeCatalogSlot.POPULAR, MediaType.FILM)
+    val popularSeries = defaultItems(HomeCatalogSlot.POPULAR, MediaType.SERIE_TV)
+    val topRatedMovies = defaultItems(HomeCatalogSlot.TOP_RATED, MediaType.FILM)
+    val topRatedSeries = defaultItems(HomeCatalogSlot.TOP_RATED, MediaType.SERIE_TV)
+    val newMovies = defaultItems(HomeCatalogSlot.NEW, MediaType.FILM)
+    val newSeries = defaultItems(HomeCatalogSlot.NEW, MediaType.SERIE_TV)
 
     val allDefaultMovies = deduplicateItems(popularMovies + topRatedMovies + newMovies)
     val allDefaultSeries = deduplicateItems(popularSeries + topRatedSeries + newSeries)
 
+    // Righe EXTRA native (Serie in onda, Novità digitali, Novità HBO): convivono con
+    // le eventuali righe degli addon, ma vengono soppresse per il tipo che un addon
+    // popola davvero, esattamente come le righe stock.
+    val nativeExtraSections = defaultSections
+      .filter { section ->
+        section.origin == CatalogSourceOrigin.TMDB_NATIVE &&
+          section.resolvedHomeSlot() == null &&
+          section.items.isNotEmpty()
+      }
+      .filterNot { section ->
+        (section.mediaType == MediaType.FILM && moviesFromAddon) ||
+          (section.mediaType == MediaType.SERIE_TV && seriesFromAddon)
+      }
+
+    val extraSections = (userExtraSections + nativeExtraSections).distinctBy { it.id }
+
+    // La sorgente nativa è TMDB: la paginazione delle schermate categoria deve
+    // usare TMDB, non gli endpoint Stremio/Cinemeta.
+    val defaultIsTmdb = defaultSections.any { it.origin == CatalogSourceOrigin.TMDB_NATIVE }
+
     val homeMovies = if (moviesFromAddon) userMovies else allDefaultMovies
     val homeSeries = if (seriesFromAddon) userSeries else allDefaultSeries
+
+    // Attribuzione delle righe stock: derivata dalla provenienza EFFETTIVA delle
+    // sezioni usate, non da stringhe UI hardcoded. Con TMDB nativo il badge è TMDB;
+    // con un loader legacy (Cinemeta) resta l'addon e la UI non dichiara più TMDB.
+    val stockSourceOrigin = defaultSections
+      .filter { it.resolvedHomeSlot() != null && it.items.isNotEmpty() }
+      .map { it.origin }
+      .distinct()
+      .singleOrNull()
 
     val hero = buildHeroItems(homeMovies, homeSeries, fallback = allMedia)
 
@@ -1289,10 +1292,13 @@ object StremioCatalogRepository {
       popularMovies = if (moviesFromAddon) emptyList() else popularMovies,
       popularSeries = if (seriesFromAddon) emptyList() else popularSeries,
       extraSections = extraSections,
+      stockSourceOrigin = stockSourceOrigin,
       hasCustomCatalogMovies = moviesFromAddon,
       hasCustomCatalogSeries = seriesFromAddon,
-      moviesFromDefaultCatalog = !moviesFromAddon && allDefaultMovies.isNotEmpty(),
-      seriesFromDefaultCatalog = !seriesFromAddon && allDefaultSeries.isNotEmpty(),
+      moviesFromDefaultCatalog = !moviesFromAddon && !defaultIsTmdb && allDefaultMovies.isNotEmpty(),
+      seriesFromDefaultCatalog = !seriesFromAddon && !defaultIsTmdb && allDefaultSeries.isNotEmpty(),
+      moviesFromTmdbDefault = !moviesFromAddon && defaultIsTmdb && allDefaultMovies.isNotEmpty(),
+      seriesFromTmdbDefault = !seriesFromAddon && defaultIsTmdb && allDefaultSeries.isNotEmpty(),
       allMovies = homeMovies.ifEmpty { allMedia.filter { it.type == MediaType.FILM } },
       allSeries = homeSeries.ifEmpty { allMedia.filter { it.type == MediaType.SERIE_TV } }
     )
@@ -1330,55 +1336,13 @@ object StremioCatalogRepository {
     return if (localizedHero == base.heroItems) base else base.copy(heroItems = localizedHero)
   }
 
-  /**
-   * Carica le sezioni Cinemeta che alimentano le righe principali della Home.
-   * Isola gli errori: un singolo catalogo che fallisce non azzera le altre righe.
-   */
-  private suspend fun loadDefaultCinemetaSectionsSafely(
-    mediaTypes: List<MediaType>
-  ): List<CatalogSection> = try {
-    loadDefaultCinemetaSections(mediaTypes)
-  } catch (e: Exception) {
-    Log.w(TAG, "Cinemeta non raggiungibile, righe Home vuote: ${e.message}")
-    emptyList()
-  }
-
-  /**
-   * Interroga i cataloghi di default Cinemeta per i [mediaTypes] richiesti usando lo
-   * stesso motore dei cataloghi addon ([StremioCatalogEngine.fetchCatalog]).
-   */
-  suspend fun loadDefaultCinemetaSections(
-    mediaTypes: List<MediaType> = listOf(MediaType.FILM, MediaType.SERIE_TV)
-  ): List<CatalogSection> = coroutineScope {
-    val plans = mediaTypes.flatMap { CinemetaAddon.homeCatalogPlans(it) }
-    if (plans.isEmpty()) return@coroutineScope emptyList()
-
-    plans.map { plan ->
-      async {
-        val target = StremioCatalogTarget(
-          addonId = CinemetaAddon.MANIFEST_ID,
-          addonName = CinemetaAddon.DISPLAY_NAME,
-          baseUrl = CinemetaAddon.BASE_URL,
-          catalog = plan.catalog
-        )
-        try {
-          val result = StremioCatalogEngine.fetchCatalog(target, plan.extra)
-          if (result.isSuccess) buildCatalogSection(target, result) else null
-        } catch (e: Exception) {
-          Log.w(TAG, "Catalogo Cinemeta ${plan.catalog.effectiveId} fallito: ${e.message}")
-          null
-        }
-      }
-    }.awaitAll().filterNotNull().filter { it.items.isNotEmpty() }
-  }
-
-  /** true se [addonId] identifica un addon di sistema (Cinemeta). */
+  /** true se [addonId] identifica un addon di sistema (Cinemeta legacy). */
   fun isSystemAddon(addonId: String?): Boolean = CinemetaAddon.isSystemAddon(addonId)
 
   /**
    * Carica le sezioni Stremio di un tipo per la Home isolando gli errori: un addon
    * che fallisce (o un manifest che esplode) non blocca l'altro tipo né le righe
-   * di default Cinemeta.
+   * native TMDB.
    */
   private suspend fun loadHomeSectionsSafely(mediaType: MediaType): List<CatalogSection> =
     try {
@@ -1400,8 +1364,9 @@ object StremioCatalogRepository {
    * @param hasConfirmedBindings true se esiste almeno un binding USER/REGISTRY: in tal
    *        caso il catalogo Stremio SOSTITUISCE il catalogo nativo TMDB.
    * @param targets cataloghi confermati effettivamente interrogati.
-   * @param fallbackToDefault true se i target provengono tutti dal FALLBACK
-   *        Cinemeta (solo senza addon di catalogo personalizzati attivi).
+   * @param fallbackToDefault LEGACY: true se i target provenivano dal vecchio
+   *        fallback Cinemeta. Il percorso nativo ora è TMDB Discover e il piano
+   *        Cinemeta non viene più costruito.
    */
   data class ProviderCatalogPage(
     val mediaType: MediaType? = null,
@@ -1419,12 +1384,13 @@ object StremioCatalogRepository {
    *
    * SORGENTE DEI CATALOGHI (vedi [ProviderCatalogSourcePolicy]):
    *  - con addon di catalogo personalizzati attivi (Xperience / Easy Catalog / ...)
-   *    i target Cinemeta vengono ESCLUSI e i cataloghi degli addon sono associati
-   *    al provider tramite match su `catalog.id` / `catalog.name` / nome addon /
-   *    extra `genre`-`provider`-`platform` dichiarati nel manifest;
-   *  - senza addon personalizzati vale la precedenza dichiarata (USER → REGISTRY) e,
-   *    se il provider non ha alcun binding, il FALLBACK Cinemeta (marcato
-   *    [ProviderCatalogPlan.fallbackToDefault]).
+   *    i cataloghi degli addon sono associati al provider tramite match su
+   *    `catalog.id` / `catalog.name` / nome addon / extra `genre`-`provider`-
+   *    `platform` dichiarati nel manifest;
+   *  - senza addon personalizzati vale la precedenza dichiarata (USER → REGISTRY);
+   *    se il provider non ha alcun binding il piano resta VUOTO e la schermata usa
+   *    il catalogo nativo TMDB Discover (`with_watch_providers`). Cinemeta non è
+   *    più una sorgente di default.
    */
   fun providerCatalogPlan(
     provider: StreamingProvider,
@@ -1433,7 +1399,8 @@ object StremioCatalogRepository {
     val customCatalogsActive = hasCustomCatalogAddons()
     val aliasProvider = provider.asAliasProvider()
 
-    // 1. Esclusione radicale di Cinemeta quando gli addon personalizzati sono attivi.
+    // 1. Esclusione difensiva di eventuali target Cinemeta quando gli addon
+    //    personalizzati sono attivi.
     val targets = ProviderCatalogSourcePolicy.selectTargets(
       targets = StremioCatalogEngine.getAvailableCatalogs(toStremioType(mediaType)),
       hasCustomCatalogAddons = customCatalogsActive
@@ -1479,17 +1446,6 @@ object StremioCatalogRepository {
     StremioAddonRepository.hasProviderCatalog(providerId, toStremioType(mediaType))
 
   /**
-   * Target Cinemeta di DEFAULT per il fallback dei provider: cataloghi di sistema
-   * (`top` / `imdbRating` / `year`) per il tipo richiesto (entrambi i tipi se
-   * [mediaType] è `null`). Nessuna rete.
-   */
-  private fun systemFallbackTargets(mediaType: MediaType?): List<StremioCatalogTarget> =
-    when (mediaType) {
-      null -> defaultCinemetaTargets(MediaType.FILM) + defaultCinemetaTargets(MediaType.SERIE_TV)
-      else -> defaultCinemetaTargets(mediaType)
-    }
-
-  /**
    * Cataloghi Stremio **confermati** per un provider, con binding già risolto.
    * Un binding `movie` non può comparire per le serie e viceversa.
    */
@@ -1517,9 +1473,8 @@ object StremioCatalogRepository {
    *    almeno un catalogo non-Top10 per ciascun tipo.
    * 3. [ProviderCoverage.PARTIAL] in ogni altro caso con binding presenti
    *    (es. Netflix: solo cataloghi Top10 confermati).
-   * 4. Il piano di FALLBACK Cinemeta (solo senza addon di catalogo personalizzati)
-   *    è sempre [ProviderCoverage.PARTIAL]: è una fonte di completamento, non il
-   *    catalogo specifico della piattaforma.
+   * 4. [ProviderCoverage.NONE] senza addon/binding: la schermata usa il catalogo
+   *    nativo TMDB Discover. Il vecchio fallback Cinemeta non viene più costruito.
    *
    * NOTA: è una classificazione basata sul manifest. La validità di [FULL]
    * va comunque confermata dal fetch effettivo (vedi `StreamNovaViewModel`:
@@ -1533,9 +1488,8 @@ object StremioCatalogRepository {
 
     if (movieTargets.isEmpty() && seriesTargets.isEmpty()) return ProviderCoverage.NONE
 
-    // Il FALLBACK Cinemeta non è il catalogo del provider: non può mai valere
-    // "solo Stremio" (FULL). Resta PARTIAL, così il catalogo specifico del
-    // provider (TMDB) continua a completare la schermata.
+    // Compatibilità: un piano marcato come fallback legacy non può comunque valere
+    // "solo Stremio" (FULL); il catalogo specifico del provider è TMDB Discover.
     if (moviePlan.fallbackToDefault || seriesPlan.fallbackToDefault) {
       return ProviderCoverage.PARTIAL
     }
@@ -1928,12 +1882,10 @@ object StremioCatalogRepository {
    * Pagina i cataloghi Stremio di tipo Film tramite offset `skip`.
    */
   suspend fun paginateMovies(skip: Int): List<MediaItem> = coroutineScope {
-    // Con addon personalizzati attivi la schermata Film pagina SOLO i cataloghi degli
-    // addon: le sorgenti Cinemeta di default vengono escluse per evitare duplicati e
-    // dipendenza esclusiva da Cinemeta.
-    val defaultTargets = if (hasCustomCatalogAddons()) emptyList() else defaultCinemetaTargets(MediaType.FILM)
-    val targets = (getAvailableTargets(MediaType.FILM) + defaultTargets)
-      .filter { it.supportsSkip }
+    // La schermata Film pagina SOLO i cataloghi degli addon utente. La sorgente
+    // nativa è TMDB ([TmdbHomeCatalogProvider.paginateMovies]) e non passa più da
+    // Cinemeta né da un catalogo di sistema.
+    val targets = getAvailableTargets(MediaType.FILM).filter { it.supportsSkip }
     if (targets.isEmpty()) return@coroutineScope emptyList()
 
     val results = targets.map { target ->
@@ -1958,10 +1910,9 @@ object StremioCatalogRepository {
    * Pagina i cataloghi Stremio di tipo Serie TV tramite offset `skip`.
    */
   suspend fun paginateSeries(skip: Int): List<MediaItem> = coroutineScope {
-    // Come [paginateMovies]: con addon personalizzati attivi si paginano solo i loro cataloghi.
-    val defaultTargets = if (hasCustomCatalogAddons()) emptyList() else defaultCinemetaTargets(MediaType.SERIE_TV)
-    val targets = (getAvailableTargets(MediaType.SERIE_TV) + defaultTargets)
-      .filter { it.supportsSkip }
+    // Come [paginateMovies]: solo cataloghi degli addon utente; la sorgente nativa è
+    // TMDB ([TmdbHomeCatalogProvider.paginateSeries]).
+    val targets = getAvailableTargets(MediaType.SERIE_TV).filter { it.supportsSkip }
     if (targets.isEmpty()) return@coroutineScope emptyList()
 
     val results = targets.map { target ->

@@ -183,8 +183,26 @@ class SearchCategoryTmdbFallbackTest {
       server.stop(0)
     }
 
+    /**
+     * Richieste `discover` della CATEGORIA attiva.
+     *
+     * Esclude i cataloghi nativi della Home, che il ViewModel carica in background
+     * con gli stessi endpoint discover ma con parametri propri: le righe "Novità in
+     * digitale" (`with_release_type`), "Novità HBO" (`with_networks`), "Novità
+     * Serie" (`first_air_date_year`) e le 10 righe "Novità provider"
+     * (`with_watch_providers`). Questi test riguardano solo la decisione
+     * addon/TMDB della categoria e non devono dipendere dal caricamento della Home.
+     */
     val discoverRequests: List<String>
-      get() = synchronized(requested) { requested.filter { it.contains("/discover/") } }
+      get() = synchronized(requested) {
+        requested.filter { it.contains("/discover/") && !isHomeCatalogRequest(it) }
+      }
+
+    private fun isHomeCatalogRequest(url: String): Boolean =
+      url.contains("with_release_type=") ||
+        url.contains("with_networks=") ||
+        url.contains("first_air_date_year=") ||
+        url.contains("with_watch_providers=")
 
     private fun handle(exchange: HttpExchange) {
       val path = exchange.requestURI.rawPath
@@ -859,27 +877,80 @@ class SearchCategoryTmdbFallbackTest {
   }
 
   @Test
-  fun senzaAddonDellUtenteCinemetaNonBloccaIlFallback() = runTest(testDispatcher) {
+  fun senzaAddonDellUtenteLaCategoriaNonUsaCinemeta() = runTest(testDispatcher) {
     StremioAddonRepository.clearCaches()
     StremioCatalogRepository.clearCache()
     val horror = category("horror").keywords
 
-    // Cinemeta (catalogo di sistema) dichiara `genre` per entrambi i tipi: è la fonte di
-    // default delle categorie, ma non è un catalogo dell'utente e non deve impedire il
-    // fallback TMDB quando nessun addon dell'utente copre la combinazione.
+    // Dopo la migrazione Cinemeta non è più la fonte di default delle categorie:
+    // senza addon utente non esiste alcun target Stremio e la sorgente nativa è
+    // TMDB Discover, decisa dal ViewModel con gli id genere della categoria.
     assertFalse(
       "Nessun addon utente installato",
       StremioCatalogRepository.hasUserCatalogCoveringGenre(horror, MediaType.SERIE_TV)
     )
     assertTrue(
-      "Cinemeta resta un catalogo configurato e interrogabile",
+      "Nessun catalogo Stremio copre la categoria: nessun target Cinemeta",
+      StremioCatalogRepository.findCategoryRequests(horror).isEmpty()
+    )
+    assertFalse(
+      "Senza cataloghi configurati non esiste copertura Stremio",
       StremioCatalogRepository.hasConfiguredCatalogCoveringGenre(
         horror,
         MediaType.SERIE_TV,
-        StremioCatalogRepository.defaultCinemetaGenreTargets(MediaType.SERIE_TV)
+        emptyList()
       )
     )
   }
+
+  @Test
+  fun senzaAddonLaCategoriaUsaTmdbComeSorgenteNativaAncheConSwitchDisattivato() =
+    runTest(testDispatcher) {
+      StremioAddonRepository.clearCaches()
+      StremioCatalogRepository.clearCache()
+      AppSettingsRepository.setTmdbGenreFallbackEnabled(false)
+      val tmdb = TmdbFixture()
+      tmdb.start()
+      try {
+        val viewModel = createViewModel()
+
+        viewModel.openCategory("horror")
+        assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
+
+        // Dopo la migrazione TMDB è la sorgente nativa delle categorie quando non ci
+        // sono addon: lo switch "fallback" non può svuotare una categoria nativa.
+        assertEquals(
+          GenreLoadReason.TMDB_FALLBACK,
+          loadRecord(viewModel, MediaType.SERIE_TV)?.reason
+        )
+        assertEquals(
+          GenreLoadReason.TMDB_FALLBACK,
+          loadRecord(viewModel, MediaType.FILM)?.reason
+        )
+        assertTrue(viewModel.categoryItems.value.isNotEmpty())
+        assertTrue(viewModel.isCategoryTmdbFallback)
+
+        val requests = tmdb.discoverRequests
+        assertTrue(
+          "Serie Horror dal keyword TMDB canonico: $requests",
+          requests.any { it.contains("/discover/tv") && it.contains("with_keywords=315058") }
+        )
+        assertTrue(
+          "Film Horror dal genere TMDB: $requests",
+          requests.any { it.contains("/discover/movie") && it.contains("with_genres=27") }
+        )
+
+        // Paginazione nativa: la pagina successiva arriva da TMDB Discover.
+        viewModel.loadNextCategoryPage()
+        assertTrue(
+          "La categoria nativa deve poter caricare la pagina 2: ${tmdb.discoverRequests}",
+          awaitCondition { tmdb.discoverRequests.any { it.contains("page=2") } }
+        )
+      } finally {
+        tmdb.stop()
+        AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
+      }
+    }
 
   private fun createViewModel(): StreamNovaViewModel =
     StreamNovaViewModel().also {

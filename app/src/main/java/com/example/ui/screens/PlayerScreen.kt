@@ -2494,7 +2494,10 @@ fun PlayerScreen(
         isSeekSettling = true
         seekPreview.finishAndDismiss(
           targetPositionMs = activePreviewPositionMs,
-          fallbackTimeoutMs = 1500L,
+          // La cattura di una posizione richiesta impiega 1.5-2.3 s (seek + frame dal
+          // decoder dedicato): con 1.5 s il frame finale veniva annullato prima di arrivare
+          // e l'anteprima si chiudeva sull'ultimo frame disponibile o sul placeholder.
+          fallbackTimeoutMs = 3000L,
           holdDurationMs = 650L,
           onDismissed = {
             isSeekSettling = false

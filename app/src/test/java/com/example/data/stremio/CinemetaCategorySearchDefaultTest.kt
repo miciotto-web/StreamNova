@@ -1,7 +1,6 @@
 package com.example.data.stremio
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.example.data.model.MediaType
 import com.example.data.repository.StremioCatalogRepository
 import com.example.ui.screens.GLOBAL_SEARCH_CATEGORIES
 import com.sun.net.httpserver.HttpExchange
@@ -11,9 +10,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestDispatcher
+import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
-import kotlinx.coroutines.test.resetMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -25,18 +24,18 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * Le categorie ("Esplora per Genere") e la ricerca testuale devono ricadere
- * sull'addon di SISTEMA **Cinemeta** quando nessun addon utente copre la richiesta:
+ * Dopo la migrazione a TMDB, le categorie ("Esplora per Genere") e la ricerca
+ * testuale NON devono più ricadere sull'addon di sistema **Cinemeta**:
  *
  *  - [StremioCatalogRepository.findCategoryRequests] senza addon installati deve
- *    risolvere il catalogo Popolari (`top`) di Cinemeta per Film e Serie TV,
- *    inviando `genre={NomeGenere}` (es. Action);
- *  - la ricerca testuale di default usa lo stesso catalogo con l'extra `search`;
- *  - la precedenza degli addon utente resta invariata: se un addon dichiara un
- *    catalogo per la categoria, Cinemeta NON viene aggiunto.
+ *    restituire una lista VUOTA: la categoria è alimentata nativamente da TMDB
+ *    Discover nel ViewModel (che possiede gli id genere);
+ *  - [StremioCatalogRepository.searchAddonCatalogs] senza addon restituisce una
+ *    lista vuota: la ricerca nativa è TMDB (`MediaRepository.searchTmdb`);
+ *  - la precedenza degli addon utente resta invariata quando un addon dichiara un
+ *    catalogo per la categoria o per la ricerca.
  *
- * I test verificano la RISOLUZIONE dei target (nessuna rete): la sorgente Cinemeta
- * è deterministica perché deriva dal manifest statico [CinemetaAddon].
+ * Non c'è rete: i manifest sono fixture locali e Cinemeta non viene interrogato.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -68,73 +67,50 @@ class CinemetaCategorySearchDefaultTest {
 
   private val actionCategory = GLOBAL_SEARCH_CATEGORIES.first { it.id == "azione" }
 
-  // ── 1. Categorie senza addon utente → Cinemeta ──────────────────────────────
+  // ── 1. Categorie senza addon utente → nessun target Stremio ─────────────────
 
   @Test
-  fun senzaAddonUtenteLaCategoriaActionRisolveCinemetaPerFilmESerie(): Unit =
+  fun senzaAddonUtenteLaCategoriaNonRisolveTargetCinemeta(): Unit =
     runTest(testDispatcher) {
+      assertTrue(
+        "Nessun addon utente installato",
+        StremioCatalogRepository.getAvailableTargets().isEmpty()
+      )
+
       val requests = StremioCatalogRepository.findCategoryRequests(actionCategory.keywords)
 
-      assertEquals("Action deve risolvere film + serie su Cinemeta", 2, requests.size)
       assertTrue(
-        "Tutti i target devono provenire dall'addon di sistema Cinemeta",
-        requests.all { it.target.addonId == CinemetaAddon.MANIFEST_ID }
-      )
-      assertTrue(
-        "Deve usare il catalogo Popolari (top) di Cinemeta",
-        requests.all { it.target.catalogId == CinemetaAddon.CATALOG_POPULAR }
-      )
-      assertTrue(
-        "Tutti i target devono filtrare per genre=Action",
-        requests.all { it.extra[EXTRA_GENRE] == "Action" }
-      )
-      assertTrue("Un target film", requests.any { it.target.isMovie })
-      assertTrue("Un target serie", requests.any { it.target.isSeries })
-      assertFalse(
-        "I cataloghi di sola ricerca non possono essere fonte primaria di una categoria",
-        requests.any { it.target.requiresSearch }
+        "La categoria non deve dipendere da Cinemeta: la sorgente nativa è TMDB",
+        requests.isEmpty()
       )
     }
 
   @Test
-  fun iCataloghiDiGenereCinemetaCopronoFilmESerieConIlFiltroGenre(): Unit =
+  fun unAddonSenzaCoperturaDelGenereNonFaComparireCinemeta(): Unit =
     runTest(testDispatcher) {
-      val movie = CinemetaAddon.findCatalog(MediaType.FILM, CinemetaAddon.CATALOG_POPULAR)
-      val series = CinemetaAddon.findCatalog(MediaType.SERIE_TV, CinemetaAddon.CATALOG_POPULAR)
+      val server = AddonFixture(GENERIC_MOVIE_MANIFEST)
+      fixture = server
+      StremioAddonRepository.installAddon(server.start())
 
-      assertTrue("Il catalogo film dichiara il genere", movie?.supportsGenre() == true)
-      assertTrue("Il catalogo serie dichiara il genere", series?.supportsGenre() == true)
+      val requests = StremioCatalogRepository.findCategoryRequests(actionCategory.keywords)
+
       assertTrue(
-        "Action è un'opzione di genere dichiarata",
-        movie!!.genreOptions().contains("Action") && series!!.genreOptions().contains("Action")
+        "Nessun catalogo dell'addon copre Azione e Cinemeta non è un fallback: ${requests.map { it.target.catalogId }}",
+        requests.isEmpty()
       )
-
-      val targets = StremioCatalogRepository.defaultCinemetaGenreTargets()
-      assertEquals(2, targets.size)
-      assertTrue(targets.any { it.isMovie } && targets.any { it.isSeries })
     }
 
-  // ── 2. Ricerca senza addon utente → Cinemeta ────────────────────────────────
+  // ── 2. Ricerca senza addon utente → nessun risultato Stremio ────────────────
 
   @Test
-  fun laRicercaDiDefaultUsaIlCatalogoCinemetaConExtraSearch(): Unit =
+  fun laRicercaSenzaAddonNonInterrogaCinemeta(): Unit =
     runTest(testDispatcher) {
-      val catalogs = CinemetaAddon.searchCatalogs()
+      val items = StremioCatalogRepository.searchAddonCatalogs("matrix", null)
 
-      assertEquals("Film + Serie dal catalogo di ricerca Cinemeta", 2, catalogs.size)
-      assertTrue(catalogs.all { it.effectiveId == CinemetaAddon.CATALOG_POPULAR })
-      assertTrue("Il catalogo deve dichiarare l'extra search", catalogs.all { it.supportsSearch() })
-
-      val movie = CinemetaAddon.searchCatalogs(MediaType.FILM).single()
-      assertEquals(TYPE_MOVIE, movie.effectiveType)
-
-      // L'extra `search` viene effettivamente mantenuto verso l'endpoint.
-      val sanitized = StremioCatalogEngine.sanitizeExtra(movie, mapOf(EXTRA_SEARCH to "matrix"))
-      assertEquals("matrix", sanitized[EXTRA_SEARCH])
-
-      val targets = StremioCatalogRepository.defaultCinemetaSearchTargets()
-      assertEquals(2, targets.size)
-      assertTrue(targets.all { it.addonId == CinemetaAddon.MANIFEST_ID && it.supportsSearch })
+      assertTrue(
+        "La ricerca nativa è TMDB: nessun risultato deve arrivare da Cinemeta",
+        items.isEmpty()
+      )
     }
 
   // ── 3. Precedenza addon utente invariata ────────────────────────────────────
@@ -200,6 +176,22 @@ class CinemetaCategorySearchDefaultTest {
         "idPrefixes": ["tt"],
         "catalogs": [
           {"type":"movie","id":"action_movies","name":"Azione","extra":[{"name":"skip"}]}
+        ]
+      }
+    """.trimIndent()
+
+    /** Addon con un catalogo generico che NON dichiara né il genere né Azione. */
+    private val GENERIC_MOVIE_MANIFEST = """
+      {
+        "id": "app.test.genericaddon",
+        "name": "Generic Addon",
+        "version": "1.0.0",
+        "description": "Fixture locale senza copertura di genere",
+        "resources": ["catalog"],
+        "types": ["movie"],
+        "idPrefixes": ["tt"],
+        "catalogs": [
+          {"type":"movie","id":"home_movies","name":"Home Movies","extra":[{"name":"skip"}]}
         ]
       }
     """.trimIndent()

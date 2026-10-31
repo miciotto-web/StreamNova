@@ -441,6 +441,76 @@ interface TmdbApiService {
     @Query("page") page: Int = 1
   ): TmdbPaginatedResponse<TmdbTvDto>
 
+  /**
+   * Film attualmente al cinema nella regione [region] (Home: "Novità Film").
+   * `region` è un parametro documentato di `movie/now_playing`: con `IT` la lista è
+   * quella delle uscite italiane, non quella globale statunitense.
+   */
+  @GET("movie/now_playing")
+  suspend fun getNowPlayingMovies(
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT",
+    @Query("region") region: String = "IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbMovieDto>
+
+  /** Serie TV in onda (ultima puntata entro 7 giorni): riga Home "Serie TV in onda". */
+  @GET("tv/on_the_air")
+  suspend fun getOnTheAirTv(
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
+  /**
+   * Serie TV con prima messa in onda nell'anno [year] (Home: "Novità Serie TV").
+   * `first_air_date_year` non è combinabile con `first_air_date.gte/lte`.
+   */
+  @GET("discover/tv")
+  suspend fun discoverTvByFirstAirDateYear(
+    @Query("api_key") apiKey: String,
+    @Query("first_air_date_year") year: Int,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
+  /**
+   * Uscite DIGITALI (VOD) in una finestra di date:
+   * - `with_release_type=4` è il tipo TMDB "Digital" (5 sarebbe "Physical");
+   * - `region=IT` filtra le date di uscita per l'Italia;
+   * - `release_date.gte/lte` limita la finestra.
+   *
+   * È la combinazione documentata da TMDB per distinguere le uscite digitali da
+   * quelle cinematografiche (tipo 2/3).
+   */
+  @GET("discover/movie")
+  suspend fun discoverMoviesByDigitalRelease(
+    @Query("api_key") apiKey: String,
+    @Query("region") region: String = "IT",
+    @Query("with_release_type") releaseType: String = "4",
+    @Query("release_date.gte") releasedAfter: String,
+    @Query("release_date.lte") releasedBefore: String,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbMovieDto>
+
+  /**
+   * Serie TV nuove di un insieme di network in una finestra di prima messa in onda.
+   * Usato per "Novità HBO" con i soli ID verificati: 49 = HBO, 3186 = HBO Max.
+   */
+  @GET("discover/tv")
+  suspend fun discoverTvByNetworks(
+    @Query("api_key") apiKey: String,
+    @Query("with_networks") networkIds: String,
+    @Query("first_air_date.gte") firstAirDateGte: String,
+    @Query("first_air_date.lte") firstAirDateLte: String,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
   @GET("discover/movie")
   suspend fun discoverMoviesByProvider(
     @Query("api_key") apiKey: String,
@@ -451,12 +521,52 @@ interface TmdbApiService {
     @Query("page") page: Int = 1
   ): TmdbPaginatedResponse<TmdbMovieDto>
 
+  /**
+   * NOVITÀ FILM di un provider in una finestra di uscita:
+   * - `with_watch_providers` + `watch_region=IT` limitano ai titoli disponibili in Italia;
+   * - `with_watch_monetization_types=flatrate` esclude noleggio/acquisto;
+   * - `primary_release_date.gte/lte` definiscono "novità" sulla data di uscita;
+   * - l'ordinamento è per data di uscita DECRESCENTE, non per popolarità: un titolo
+   *   vecchio ma popolare non può entrare nella riga solo perché ha molti voti.
+   */
+  @GET("discover/movie")
+  suspend fun discoverNewMoviesByProvider(
+    @Query("api_key") apiKey: String,
+    @Query("with_watch_providers") providerId: String,
+    @Query("watch_region") region: String = "IT",
+    @Query("with_watch_monetization_types") monetizationTypes: String = "flatrate",
+    @Query("primary_release_date.gte") releasedAfter: String,
+    @Query("primary_release_date.lte") releasedBefore: String,
+    @Query("sort_by") sortBy: String = "primary_release_date.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbMovieDto>
+
   @GET("discover/tv")
   suspend fun discoverTvByProvider(
     @Query("api_key") apiKey: String,
     @Query("with_watch_providers") providerId: String,
     @Query("watch_region") region: String = "IT",
     @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
+  /**
+   * NOVITÀ SERIE TV di un provider in una finestra di prima messa in onda:
+   * stesso filtro provider/regione/monetizzazione di [discoverNewMoviesByProvider],
+   * con `first_air_date.gte/lte` e ordinamento per data di prima messa in onda
+   * DECRESCENTE.
+   */
+  @GET("discover/tv")
+  suspend fun discoverNewTvByProvider(
+    @Query("api_key") apiKey: String,
+    @Query("with_watch_providers") providerId: String,
+    @Query("watch_region") region: String = "IT",
+    @Query("with_watch_monetization_types") monetizationTypes: String = "flatrate",
+    @Query("first_air_date.gte") firstAirDateGte: String,
+    @Query("first_air_date.lte") firstAirDateLte: String,
+    @Query("sort_by") sortBy: String = "first_air_date.desc",
     @Query("language") language: String = "it-IT",
     @Query("page") page: Int = 1
   ): TmdbPaginatedResponse<TmdbTvDto>

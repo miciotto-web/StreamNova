@@ -51,6 +51,7 @@ import com.example.R
 import com.example.HOME_CONTENT_ANCHOR_ROW
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.repository.CatalogSourceOrigin
 import com.example.data.repository.HomeCatalogs
 import com.example.data.repository.MediaIdentity
 import com.example.data.repository.StremioCatalogRepository
@@ -1352,6 +1353,11 @@ fun HomeMainBrowsingContent(
   val hasCustomCatalogMovies = homeCatalogs?.hasCustomCatalogMovies == true
   val hasCustomCatalogSeries = homeCatalogs?.hasCustomCatalogSeries == true
 
+  // Badge sorgente delle righe stock: dichiarato SOLO quando i contenuti arrivano
+  // davvero dal provider nativo TMDB. Con una sorgente legacy il badge tace, invece
+  // di attribuire a TMDB (o a un addon) contenuti che non provengono da lì.
+  val stockBadgesAreTmdb = homeCatalogs?.stockSourceOrigin == CatalogSourceOrigin.TMDB_NATIVE
+
   val top10Movies = remember(homeCatalogs) {
     if (hasCustomCatalogMovies) emptyList()
     else homeCatalogs?.top10Movies?.take(StremioCatalogRepository.HOME_TOP_10_SIZE) ?: emptyList()
@@ -2260,7 +2266,7 @@ fun HomeMainBrowsingContent(
       item(key = "section_top_10_film") {
         CarouselHeader(
           title = stringResource(R.string.home_section_top_10_movies),
-          badge = stringResource(R.string.home_badge_tmdb_ranking_italy)
+          badge = if (stockBadgesAreTmdb) stringResource(R.string.home_badge_tmdb_ranking_italy) else null
         )
         TvFocusRow {
           HomeMediaLazyRow(
@@ -2293,7 +2299,7 @@ fun HomeMainBrowsingContent(
       item(key = "section_top_10_serie") {
         CarouselHeader(
           title = stringResource(R.string.home_section_top_10_series),
-          badge = stringResource(R.string.home_badge_most_watched_tmdb)
+          badge = if (stockBadgesAreTmdb) stringResource(R.string.home_badge_most_watched_tmdb) else null
         )
         TvFocusRow {
           HomeMediaLazyRow(
@@ -2470,7 +2476,7 @@ fun HomeMainBrowsingContent(
       item(key = "section_popolari_film") {
         CarouselHeader(
           title = stringResource(R.string.home_section_popular_movies),
-          badge = stringResource(R.string.home_badge_most_watched_cinema)
+          badge = if (stockBadgesAreTmdb) stringResource(R.string.home_badge_most_watched_cinema) else null
         )
         TvFocusRow {
           AnchoredHomeMediaRow(
@@ -2506,7 +2512,7 @@ fun HomeMainBrowsingContent(
       item(key = "section_popolari_serie") {
         CarouselHeader(
           title = stringResource(R.string.home_section_popular_series),
-          badge = stringResource(R.string.home_badge_most_discussed_series)
+          badge = if (stockBadgesAreTmdb) stringResource(R.string.home_badge_most_discussed_series) else null
         )
         TvFocusRow {
           AnchoredHomeMediaRow(
@@ -2543,7 +2549,9 @@ fun HomeMainBrowsingContent(
         item(key = "section_${extraSec.id}") {
           CarouselHeader(
             title = extraSec.title,
-            badge = extraSec.addonName
+            // Attribuzione SOLO per sezioni che provengono davvero da un addon:
+            // le righe native TMDB non possono mostrare il nome di un addon.
+            badge = extraSec.attributionAddonName
           )
           TvFocusRow {
             AnchoredHomeMediaRow(

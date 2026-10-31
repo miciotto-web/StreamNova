@@ -26,9 +26,9 @@
     <string name="home_section_continue_watching">Continua a guardare</string>
     <string name="home_badge_in_progress">%d titoli in corso</string>
     <string name="home_section_top_10_movies">In evidenza: Film</string>
-    <string name="home_badge_tmdb_ranking_italy">In evidenza su Cinemeta</string>
+    <string name="home_badge_tmdb_ranking_italy">In evidenza su TMDB</string>
     <string name="home_section_top_10_series">In evidenza: Serie TV</string>
-    <string name="home_badge_most_watched_tmdb">In evidenza su Cinemeta</string>
+    <string name="home_badge_most_watched_tmdb">In evidenza su TMDB</string>
     <string name="home_section_trending_movies">Novità Film</string>
     <string name="home_badge_trending_week">Novità dell\'anno</string>
     <string name="home_section_trending_series">Novità Serie TV</string>
@@ -38,9 +38,9 @@
     <string name="home_section_for_you_series">For You: Serie TV da non perdere</string>
     <string name="home_badge_suggested_for_you">Suggerite per te</string>
     <string name="home_section_popular_movies">Popolari Film</string>
-    <string name="home_badge_most_watched_cinema">Popolari su Cinemeta</string>
+    <string name="home_badge_most_watched_cinema">Popolari su TMDB</string>
     <string name="home_section_popular_series">Popolari Serie</string>
-    <string name="home_badge_most_discussed_series">Popolari su Cinemeta</string>
+    <string name="home_badge_most_discussed_series">Popolari su TMDB</string>
 
     <!-- Provider Catalog Filters & States -->
     <string name="filter_all">Tutti</string>
