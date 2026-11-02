@@ -14,6 +14,7 @@ import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.model.PersonDetails
 import com.example.data.model.ProductionCompany
+import com.example.data.model.SearchCategoryFilter
 import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonEpisodesUiState
 import com.example.data.model.SeasonItem
@@ -34,6 +35,7 @@ import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
+import com.example.data.image.ImageCache
 import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.HomeCatalogs
@@ -43,6 +45,7 @@ import com.example.data.repository.StremioCatalogRepository
 import com.example.data.repository.TmdbHomeCatalogProvider
 import com.example.data.stremio.InstalledAddon
 import com.example.data.stremio.StremioAddonRepository
+import com.example.data.stremio.StremioCatalogEngine
 import com.example.data.stremio.StremioLiveChannelClassifier
 import com.example.data.torbox.TorBoxRepository
 import com.example.data.update.UpdateCheckState
@@ -76,7 +79,6 @@ import com.example.ui.screens.player.PlayerChapterUtils
 import com.example.ui.util.FocusTrace
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -169,6 +171,7 @@ internal val TMDB_TV_GENRE_NAMES: Map<Int, String> = mapOf(
   10762 to "Kids",
   10763 to "News",
   10764 to "Reality",
+  10767 to "Talk",
   10768 to "War & Politics",
   9648 to "Mystery"
 )
@@ -378,7 +381,14 @@ enum class SearchCategorySource {
    * (assente nel manifest, errore o risposta vuota). La UI deve mostrarlo come
    * fallback, mai come caricamento addon riuscito.
    */
-  TMDB_FALLBACK
+  TMDB_FALLBACK,
+
+  /**
+   * Sorgente NATIVA TMDB (categoria "Talk"): il genere TV ufficiale è servito
+   * direttamente da `discover/tv` e nessun catalogo Stremio è coinvolto, quindi
+   * TMDB è la fonte primaria e non un fallback.
+   */
+  TMDB
 }
 
 /**
@@ -447,7 +457,13 @@ enum class GenreLoadReason {
   TMDB_DISABLED,
 
   /** Nessun catalogo compatibile e TMDB non configurato/non raggiungibile. */
-  TMDB_UNAVAILABLE
+  TMDB_UNAVAILABLE,
+
+  /**
+   * Categoria servita NATIVAMENTE da TMDB ("Talk"): non è un fallback, perché la
+   * fonte dichiarata dalla categoria è il genere TV TMDB e non un catalogo addon.
+   */
+  TMDB_NATIVE
 }
 
 enum class SidebarSection(val title: String) {
@@ -1439,8 +1455,28 @@ class StreamNovaViewModel(
   // Interrogazione parallela dei provider di streaming HTTP diretto:
   // 1) VixSrc/VixCloud (istantaneo via TMDB ID), 2) CB01 e 3) Eurostreaming
   // (cataloghi italiani, ricerca per titolo/anno) con timeout per ciascuno.
-  internal var streamManager = StreamManager(diagnostics = StreamDiagnosticSinkFactory.DEFAULT)
-  internal var openSubtitlesProvider = OpenSubtitlesSubtitleProvider(ioDispatcher = ioDispatcher)
+  //
+  // Costruiti `by lazy`: StreamManager istanzia nove provider, ognuno con il proprio
+  // OkHttp client, e OpenSubtitlesSubtitleProvider fa lo stesso con Moshi/Retrofit.
+  // Farlo nel costruttore del ViewModel spostava ~400 ms sul primo frame (misurato
+  // con StartupTrace), mentre questi collaboratori servono solo dopo un'azione
+  // dell'utente (avvio di una riproduzione). I test continuano a sostituirli con i
+  // setter, che hanno precedenza sul default.
+  private val defaultStreamManager by lazy {
+    StreamManager(diagnostics = StreamDiagnosticSinkFactory.DEFAULT)
+  }
+  private var streamManagerOverride: StreamManager? = null
+  internal var streamManager: StreamManager
+    get() = streamManagerOverride ?: defaultStreamManager
+    set(value) { streamManagerOverride = value }
+
+  private val defaultOpenSubtitlesProvider by lazy {
+    OpenSubtitlesSubtitleProvider(ioDispatcher = ioDispatcher)
+  }
+  private var openSubtitlesProviderOverride: OpenSubtitlesSubtitleProvider? = null
+  internal var openSubtitlesProvider: OpenSubtitlesSubtitleProvider
+    get() = openSubtitlesProviderOverride ?: defaultOpenSubtitlesProvider
+    set(value) { openSubtitlesProviderOverride = value }
 
   /**
    * Fast-path bingewatching "stesso torrent di stagione" per il prossimo episodio.
@@ -1528,8 +1564,69 @@ class StreamNovaViewModel(
    */
   private var homeCatalogsRefreshJob: Job? = null
 
-  fun refreshHomeCatalogs(mediaList: List<MediaItem> = allMedia.value) {
-    homeCatalogsRefreshJob?.cancel()
+  /**
+   * Sorgenti (addon attivi + cataloghi dichiarati) per cui la Home è stata risolta.
+   *
+   * Le emissioni di [allMedia] arrivano da progressi, preferiti, badge e refresh
+   * TMDB: NON cambiano i cataloghi degli addon. Rilanciare l'intera risoluzione (una
+   * quarantina di richieste con Xperience) a ogni emissione era la causa principale
+   * di righe che sparivano e ricomparivano, perché una risposta parziale sostituiva
+   * la Home già visibile. La firma rende il refresh dipendente dalle SORGENTI, non
+   * dai dati locali.
+   */
+  @Volatile
+  private var resolvedHomeSourceSignature: String? = null
+
+  /**
+   * Sorgenti della risoluzione ATTUALMENTE in corso (`null` se nessuna). Con le
+   * stesse sorgenti una risoluzione in volo non viene interrotta: riavviarla a metà
+   * lascerebbe la Home senza le righe non ancora caricate. Un valore rimasto da una
+   * risoluzione conclusa non blocca nulla: il controllo richiede anche che il job
+   * sia ancora attivo.
+   */
+  @Volatile
+  private var inFlightHomeSourceSignature: String? = null
+
+  /**
+   * Firma delle sorgenti dei cataloghi Home (nessuna rete: legge i manifest già
+   * installati). Cambia quando un addon viene installato/rimosso/abilitato o quando
+   * il suo manifest dichiara cataloghi diversi.
+   *
+   * Un manifest malformato non deve interrompere il collettore di [allMedia]: in caso
+   * di errore la firma è vuota e la risoluzione (che isola già l'errore) resta la
+   * sola a decidere lo stato della Home.
+   */
+  private fun homeCatalogSourceSignature(): String = runCatching {
+    StremioCatalogEngine.getAvailableCatalogs()
+      .map { "${it.addonId}|${it.type}|${it.catalogId}" }
+      .distinct()
+      .sorted()
+      .joinToString(";")
+  }.getOrDefault("")
+
+  /**
+   * Risolve i cataloghi della Home.
+   *
+   * @param force true per un refresh ESPLICITO delle fonti (addon o modalità del
+   *        motore cambiati): ignora la firma già applicata.
+   */
+  fun refreshHomeCatalogs(mediaList: List<MediaItem> = allMedia.value, force: Boolean = false) {
+    val signature = homeCatalogSourceSignature()
+    if (!force && signature == resolvedHomeSourceSignature) {
+      // Stesse sorgenti: le righe degli addon non si toccano. Si aggiornano solo le
+      // liste di fallback derivate dalla cache locale, senza una nuova risoluzione.
+      publishHomeFallbackMedia(mediaList)
+      return
+    }
+    val running = homeCatalogsRefreshJob
+    if (!force && running?.isActive == true && signature == inFlightHomeSourceSignature) {
+      // La risoluzione delle STESSE sorgenti è già in corso: non la si riavvia da
+      // zero (perderebbe le righe già caricate e rilancierebbe le altre richieste).
+      publishHomeFallbackMedia(mediaList)
+      return
+    }
+    running?.cancel()
+    inFlightHomeSourceSignature = signature
     homeCatalogsRefreshJob = viewModelScope.launch(Dispatchers.IO) {
       try {
         val resolved = StremioCatalogRepository.resolveHomeCatalogs(mediaList)
@@ -1538,10 +1635,36 @@ class StreamNovaViewModel(
         // avviato prima invaliderebbe la raccolta dei target della categoria corrente.
         if (_isCategoryLoading.value) return@launch
         _homeCatalogs.value = resolved
+        resolvedHomeSourceSignature = signature
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
         Log.w(TAG, "Risoluzione cataloghi Home fallita: ${e.message}")
+      }
+    }
+  }
+
+  /**
+   * Aggiorna in place le SOLE liste `allMovies`/`allSeries` quando provengono dalla
+   * cache locale TMDB (nessun catalogo addon di quel tipo): un cambiamento della
+   * libreria non deve rilanciare la risoluzione dei cataloghi.
+   */
+  private fun publishHomeFallbackMedia(mediaList: List<MediaItem>) {
+    val movies = mediaList.filter { it.type == MediaType.FILM }
+    val series = mediaList.filter { it.type == MediaType.SERIE_TV }
+    _homeCatalogs.update { current ->
+      val moviesUseCache = !current.hasCustomCatalogMovies &&
+        !current.moviesFromDefaultCatalog &&
+        !current.moviesFromTmdbDefault
+      val seriesUseCache = !current.hasCustomCatalogSeries &&
+        !current.seriesFromDefaultCatalog &&
+        !current.seriesFromTmdbDefault
+      val nextMovies = if (moviesUseCache) movies else current.allMovies
+      val nextSeries = if (seriesUseCache) series else current.allSeries
+      if (nextMovies == current.allMovies && nextSeries == current.allSeries) {
+        current
+      } else {
+        current.copy(allMovies = nextMovies, allSeries = nextSeries)
       }
     }
   }
@@ -1575,8 +1698,10 @@ class StreamNovaViewModel(
         providerCatalogCache.clear()
         StremioCatalogRepository.clearCache()
         StremioCatalogRepository.resetProviderPaging()
-        _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
-        refreshHomeCatalogs(allMedia.value)
+        // Nessun reset a stato vuoto: le righe già a schermo devono restare finché la
+        // nuova risoluzione non le sostituisce (il merge conservativo del repository
+        // rimuove solo i cataloghi non più dichiarati dai manifest).
+        refreshHomeCatalogs(allMedia.value, force = true)
       }
     }
   }
@@ -1615,6 +1740,9 @@ class StreamNovaViewModel(
         _isRefreshing.value = false
       }
     }
+    // La lingua cambia le sinossi dell'Hero: la risoluzione va rifatta subito, non
+    // solo quando (e se) la cache locale TMDB emette una lista diversa.
+    refreshHomeCatalogs(force = true)
   }
 
   private val _searchQuery = MutableStateFlow("")
@@ -1744,8 +1872,21 @@ class StreamNovaViewModel(
         db?.cachedMediaDao()?.clearNonFavorites()
         db?.lastWorkingStreamDao()?.clearAll()
 
-        // 3. Svuota la directory cache applicativa
-        context.cacheDir?.deleteRecursively()
+        // 3. Svuota la directory cache applicativa (tranne la disk cache immagini, punto 1).
+        //
+        // La directory della disk cache di Coil NON viene cancellata: le sue voci sono già
+        // state rimosse al punto 1 tramite l'API di Coil (`diskCache.clear()` -> `evictAll`),
+        // che lascia intatti directory e journal. Cancellare la cartella sotto i piedi
+        // dell'ImageLoader (che tiene aperto il journal) faceva fallire in silenzio ogni
+        // scrittura successiva in cache fino al riavvio del processo: le immagini continuavano
+        // a essere riscaricate dalla rete.
+        val appCacheDir = context.cacheDir
+        if (appCacheDir != null) {
+          val coilImageCacheDir = ImageCache.directory(context)
+          appCacheDir.listFiles()?.forEach { file ->
+            if (file.absolutePath != coilImageCacheDir.absolutePath) file.deleteRecursively()
+          }
+        }
         context.externalCacheDir?.deleteRecursively()
 
         withContext(Dispatchers.Main) {
@@ -2008,8 +2149,7 @@ class StreamNovaViewModel(
       try {
         val addon = StremioAddonRepository.installAddon(rawUrl)
         StremioCatalogRepository.clearCache()
-        _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
-        refreshHomeCatalogs()
+        refreshHomeCatalogs(force = true)
         _addonMessage.value = "Addon installato: ${addon.manifest.displayTitle}"
       } catch (e: Exception) {
         _addonMessage.value = "Installazione fallita: ${e.message ?: "errore sconosciuto"}"
@@ -2022,16 +2162,14 @@ class StreamNovaViewModel(
   fun removeAddon(id: String) {
     StremioAddonRepository.removeAddon(id)
     StremioCatalogRepository.clearCache()
-    _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
-    refreshHomeCatalogs()
+    refreshHomeCatalogs(force = true)
     _addonMessage.value = "Addon rimosso"
   }
 
   fun setAddonEnabled(id: String, enabled: Boolean) {
     StremioAddonRepository.setAddonEnabled(id, enabled)
     StremioCatalogRepository.clearCache()
-    _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
-    refreshHomeCatalogs()
+    refreshHomeCatalogs(force = true)
   }
 
   fun clearAddonMessage() {
@@ -2061,16 +2199,16 @@ class StreamNovaViewModel(
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
   /**
-   * Ricerca testuale sui cataloghi Stremio/Xperience attivi tramite l'extra `search`.
+   * Ricerca testuale sui cataloghi Stremio/Xperience attivi tramite l'extra `search`,
+   * con fallback ai cataloghi ufficiali Cinemeta quando nessun addon produce risultati.
    *
-   * Usa esclusivamente il percorso già adottato dalla Home:
-   * `StremioCatalogRepository.searchAddonCatalogs(query, type)` →
-   * `StremioCatalogEngine.searchCatalogs` (solo addon attivi, solo cataloghi che
-   * dichiarano `search` nel manifest, con rispetto di type e catalogId).
+   * Usa il percorso [StremioCatalogRepository.searchAddonCatalogs]:
+   * addon attivi (solo cataloghi che dichiarano `search`, con rispetto di type e
+   * catalogId) → Cinemeta `movie/top` e `series/top` con extra `search`.
    *
    * Emette subito una lista vuota così i risultati TMDB non vengono ritardati;
-   * se l'interrogazione Stremio fallisce o supera il timeout, la ricerca TMDB
-   * prosegue invariata.
+   * se l'interrogazione Stremio/Cinemeta fallisce o supera il timeout, la ricerca
+   * TMDB prosegue invariata e resta il completamento della Ricerca globale.
    */
   private fun stremioSearchFlow(query: String, filter: SearchTypeFilter): Flow<List<MediaItem>> = flow {
     val cleanQuery = query.trim()
@@ -2121,6 +2259,8 @@ class StreamNovaViewModel(
   private var activeCategoryLabel: String = ""
   private var activeCategoryMovieGenreId: Int? = null
   private var activeCategoryTvGenreId: Int? = null
+  /** Filtro della categoria attiva: genere (addon + fallback TMDB) o nativa TMDB. */
+  private var activeCategoryFilter: SearchCategoryFilter = SearchCategoryFilter.GENRE
 
   /**
    * Esito dell'ultimo caricamento per tipo della categoria attiva. Vuoto finché il
@@ -2142,30 +2282,38 @@ class StreamNovaViewModel(
   /**
    * Apre una categoria della sezione Ricerca.
    *
-   * I cataloghi degli addon (Xperience/Stremio) NON vengono indicizzati per id
-   * codificato in app: [keywords] (etichette della categoria più nomi canonici
-   * TMDB del genere) vengono confrontate con id, titoli ed extra `genre`
-   * REALMENTE dichiarati dai manifest installati, tramite
+   * Con [SearchCategoryFilter.GENRE] i cataloghi degli addon (Xperience/Stremio) NON
+   * vengono indicizzati per id codificato in app: [keywords] (etichette della
+   * categoria più nomi canonici TMDB del genere) vengono confrontate con id, titoli
+   * ed extra `genre` REALMENTE dichiarati dai manifest installati, tramite
    * [StremioCatalogRepository.findCategoryRequests] →
    * [StremioCatalogRepository.loadCategoryCatalogs] (stesso percorso della Home).
    *
+   * Con [SearchCategoryFilter.TMDB_TV_GENRE] i cataloghi non vengono interrogati:
+   * la categoria ("Talk") è servita nativamente da TMDB con il genere TV ufficiale
+   * [tvGenreId] (`discover/tv?with_genres=10767`), ordinato per popolarità e
+   * paginato. Non richiede modalità Debrid né addon installati e non applica alcun
+   * filtro di lingua o paese: italiani e stranieri restano insieme.
+   *
    * Prima di ogni nuovo caricamento i risultati della categoria precedente vengono
    * azzerati e non esiste alcun seed da `allMedia`: la categoria mostra solo ciò
-   * che l'addon ha restituito oppure un fallback TMDB EXPLICITAMENTE dichiarato in
-   * [SearchCategoryState].
+   * che la fonte ha restituito oppure uno stato dichiarato in [SearchCategoryState].
    *
    * @param categoryId id della categoria (per diagnostica e test).
    * @param keywords etichette/descrizioni della categoria dalla quale cercare i cataloghi.
    * @param movieGenreId id genere TMDB film (fallback TMDB Discover esplicito).
-   * @param tvGenreId id genere TMDB serie (fallback TMDB Discover esplicito).
+   * @param tvGenreId id genere TMDB serie (categoria nativa TMDB oppure fallback).
+   * @param contentFilter fonte della categoria (genere oppure nativa TMDB).
    */
   fun initCategory(
     categoryId: String,
     keywords: List<String>,
     movieGenreId: Int?,
-    tvGenreId: Int?
+    tvGenreId: Int?,
+    contentFilter: SearchCategoryFilter = SearchCategoryFilter.GENRE
   ) {
     activeSearchCategoryId = categoryId
+    activeCategoryFilter = contentFilter
     activeCategoryLabel = keywords.firstOrNull().orEmpty()
     activeCategoryKeywords = keywords +
       listOfNotNull(movieGenreId?.let { TMDB_MOVIE_GENRE_NAMES[it] }) +
@@ -2185,7 +2333,7 @@ class StreamNovaViewModel(
   }
 
   /**
-   * Ricalcola la categoria attiva mantenendo id e genere già noti (es. dopo il cambio
+   * Ricalcola la categoria attiva mantenendo id e filtro già noti (es. dopo il cambio
    * dello switch di fallback TMDB). Usa lo stesso contatore di generazione delle
    * risposte di [initCategory]: un ricalcolo non può sovrascrivere un caricamento più
    * recente, quindi non esistono risultati obsoleti che scavalcano quello corrente.
@@ -2202,7 +2350,22 @@ class StreamNovaViewModel(
   }
 
   /**
-   * Prima pagina della categoria.
+   * Prima pagina della categoria, instradata in base alla sua FONTE:
+   *  - [SearchCategoryFilter.GENRE] → cataloghi addon con fallback TMDB dichiarato;
+   *  - [SearchCategoryFilter.TMDB_TV_GENRE] → TMDB Discover nativo per genere TV
+   *    (categoria "Talk").
+   */
+  private fun loadInitialCategoryPage(generation: Int) {
+    when (activeCategoryFilter) {
+      SearchCategoryFilter.TMDB_TV_GENRE ->
+        loadInitialNativeTmdbCategoryPage(generation)
+      SearchCategoryFilter.GENRE ->
+        loadInitialGenreCategoryPage(generation)
+    }
+  }
+
+  /**
+   * Prima pagina di una categoria PER GENERE.
    *
    * Regole per OGNI tipo previsto dalla categoria (film e/o serie):
    *  1. un catalogo dell'utente applica il filtro per genere E restituisce risultati →
@@ -2217,7 +2380,7 @@ class StreamNovaViewModel(
    * Il fallback riguarda la SINGOLA combinazione: Serie TV → Horror con Film → Horror
    * coperto mostra film dai cataloghi e serie da TMDB nella stessa categoria.
    */
-  private fun loadInitialCategoryPage(generation: Int) {
+  private fun loadInitialGenreCategoryPage(generation: Int) {
     viewModelScope.launch {
       try {
         val addonLoad = try {
@@ -2290,6 +2453,82 @@ class StreamNovaViewModel(
         }
       }
     }
+  }
+
+  /**
+   * Prima pagina della categoria nativa TMDB ("Talk").
+   *
+   * La fonte è il genere TV ufficiale TMDB dichiarato dalla categoria
+   * (`discover/tv?with_genres=10767`): nessun catalogo di addon viene interrogato,
+   * nessuna verifica sulle sorgenti di riproduzione e nessuna dipendenza dalla
+   * modalità Debrid. I risultati sono ordinati per popolarità decrescente e
+   * deduplicati per identità TMDB/IMDb.
+   *
+   * Errore e stato vuoto sono dichiarati in [SearchCategoryState]: una griglia
+   * vuota non viene mai presentata come caricamento riuscito.
+   */
+  private fun loadInitialNativeTmdbCategoryPage(generation: Int) {
+    viewModelScope.launch {
+      try {
+        val genreId = activeCategoryTvGenreId
+        val series = genreId?.let {
+          MediaRepository.discoverByGenre(
+            MediaType.SERIE_TV,
+            it,
+            page = 1,
+            excludeNonEditorialTv = false
+          )
+        }
+        if (generation != categoryLoadGeneration) return@launch
+
+        val record = GenreLoadRecord(
+          mediaType = MediaType.SERIE_TV,
+          reason = if (series == null) {
+            GenreLoadReason.TMDB_UNAVAILABLE
+          } else {
+            GenreLoadReason.TMDB_NATIVE
+          },
+          tmdbPages = if (series == null) 0 else 1,
+          tmdbItems = series?.size ?: 0
+        )
+        _lastGenreLoads.value = listOf(record)
+        _categoryState.value = buildNativeTmdbCategoryState(
+          failed = series == null,
+          itemCount = series?.size ?: 0
+        )
+        currentCategoryPage = 1
+        _categoryItems.value = StremioCatalogRepository.deduplicateCrossSource(series.orEmpty())
+      } finally {
+        if (generation == categoryLoadGeneration) {
+          _isCategoryLoading.value = false
+        }
+      }
+    }
+  }
+
+  /**
+   * Stato della categoria nativa TMDB: fonte TMDB dichiarata e un messaggio quando
+   * la pagina è vuota o la chiamata è fallita.
+   *
+   * Il messaggio non attribuisce il limite agli addon: questa categoria non li
+   * consulta e deve funzionare anche senza addon installati e con Debrid spento.
+   */
+  private fun buildNativeTmdbCategoryState(
+    failed: Boolean,
+    itemCount: Int
+  ): SearchCategoryState {
+    val notice = when {
+      failed -> localized(R.string.search_category_tmdb_unavailable)
+      itemCount == 0 -> localized(
+        R.string.search_category_native_tmdb_no_results,
+        activeCategoryLabel.takeIf { it.isNotBlank() } ?: typeLabel(MediaType.SERIE_TV)
+      )
+      else -> null
+    }
+    return SearchCategoryState(
+      source = SearchCategorySource.TMDB,
+      statusMessage = notice
+    )
   }
 
   /**
@@ -2368,8 +2607,9 @@ class StreamNovaViewModel(
 
     // 4. Switch disattivato: nessuna chiamata TMDB, il caso resta dichiarato.
     //    L'eccezione è la configurazione NATIVA (nessun addon con cataloghi propri):
-    //    dopo la migrazione da Cinemeta, TMDB è la sorgente di default delle categorie
-    //    e lo switch riguarda solo il completamento quando sono attivi addon utente.
+    //    le categorie sono servite da Cinemeta e TMDB resta solo il completamento
+    //    quando Cinemeta non restituisce risultati. Lo switch riguarda il fallback
+    //    quando sono attivi addon utente.
     val hasCustomCatalogAddons = StremioCatalogRepository.hasCustomCatalogAddons()
     if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value && hasCustomCatalogAddons) {
       val reason = if (catalogWasEmpty) GenreLoadReason.SUPPORTED_BUT_EMPTY else GenreLoadReason.TMDB_DISABLED
@@ -2467,6 +2707,9 @@ class StreamNovaViewModel(
         } else {
           localized(R.string.search_category_tmdb_unavailable)
         }
+      // Il percorso della categoria nativa TMDB ("Talk") costruisce il proprio stato
+      // dedicato: qui non può comparire, ma il `when` resta esaustivo.
+      GenreLoadReason.TMDB_NATIVE -> null
     }
   }
 
@@ -2508,6 +2751,20 @@ class StreamNovaViewModel(
    */
   fun loadNextCategoryPage() {
     if (isCategoryLoadingMore || _isCategoryLoading.value) return
+    // Categoria nativa TMDB ("Talk"): nessun catalogo addon da paginare, la pagina
+    // successiva è una `discover/tv` con lo stesso genere.
+    if (activeCategoryFilter == SearchCategoryFilter.TMDB_TV_GENRE) {
+      isCategoryLoadingMore = true
+      val generation = categoryLoadGeneration
+      viewModelScope.launch {
+        try {
+          loadNextNativeTmdbPage(generation)
+        } finally {
+          isCategoryLoadingMore = false
+        }
+      }
+      return
+    }
     val addonEntries = activeCategoryEntries.filter { it.section.supportsSkip && it.section.items.isNotEmpty() }
     val tmdbTypes = tmdbFallbackTypes()
     if (addonEntries.isEmpty() && tmdbTypes.isEmpty()) return
@@ -2528,10 +2785,45 @@ class StreamNovaViewModel(
     }
   }
 
+  /**
+   * Pagina successiva della categoria nativa TMDB ("Talk"): una `discover/tv` con
+   * lo stesso genere TV e la pagina successiva. I nuovi titoli vengono deduplicati
+   * per identità TMDB/IMDb contro quelli già mostrati, così una pagina Discover che
+   * ripete un titolo non produce una card doppia.
+   *
+   * La pagina avanza solo quando TMDB risponde con successo: un errore lascia il
+   * contatore invariato e permette di ritentare. La generazione viene ricontrollata
+   * dopo la risposta: un cambio di categoria non può essere sovrascritto da una
+   * pagina obsoleta.
+   */
+  private suspend fun loadNextNativeTmdbPage(generation: Int) {
+    val nextPage = currentCategoryPage + 1
+    val genreId = activeCategoryTvGenreId ?: return
+    try {
+      val newItems = MediaRepository.discoverByGenre(
+        MediaType.SERIE_TV,
+        genreId,
+        nextPage,
+        excludeNonEditorialTv = false
+      ) ?: return
+      if (generation != categoryLoadGeneration) return
+      currentCategoryPage = nextPage
+      if (newItems.isEmpty()) return
+      _categoryItems.value = StremioCatalogRepository.deduplicateCrossSource(
+        _categoryItems.value + newItems
+      )
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Errore paginazione categoria Talk pagina $nextPage: ${e.message}")
+    }
+  }
+
   /** Tipi serviti da TMDB nell'ultimo caricamento della categoria (vuoto = nessuno). */
   private fun tmdbFallbackTypes(): List<MediaType> {
     // Con addon utente attivi lo switch mantiene il suo significato: senza switch,
-    // nessuna pagina TMDB. Senza addon la categoria è nativa TMDB e si pagina sempre.
+    // nessuna pagina TMDB. Senza addon la categoria è servita da Cinemeta e TMDB
+    // pagina solo i tipi che Cinemeta non ha restituito.
     if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value &&
       StremioCatalogRepository.hasCustomCatalogAddons()
     ) {
@@ -2710,8 +3002,9 @@ class StreamNovaViewModel(
     providerCatalogCache.clear()
     StremioCatalogRepository.clearCache()
     StremioCatalogRepository.resetProviderPaging()
-    _homeCatalogs.value = StremioCatalogRepository.buildDefaultHomeCatalogs(allMedia.value)
-    refreshHomeCatalogs(allMedia.value)
+    // Nessun azzeramento preventivo: le righe già visibili restano finché la nuova
+    // risoluzione (forzata: la modalità del motore è cambiata) non le sostituisce.
+    refreshHomeCatalogs(allMedia.value, force = true)
   }
 
   /**
@@ -4841,6 +5134,9 @@ fun backToBrowsing() {
    *    protetta da [stremioLoadingKeys] per evitare richieste duplicate concorrenti);
    *  - TMDB: paginazione nativa, usata come completamento quando la copertura è
    *    PARTIAL (o come fonte unica quando è NONE).
+   *
+   * Cinemeta non è una sorgente provider: il suo manifest non contiene
+   * l'associazione titolo/provider necessaria per dichiarare la disponibilità.
    */
   fun loadNextProviderPage(providerId: Int, isTv: Boolean) {
     val key = Pair(providerId, isTv)
@@ -5094,7 +5390,13 @@ fun backToBrowsing() {
     * Carica i contenuti di una sottocategoria provider per Film o Serie TV.
     * Se l'addon attivo non possiede il catalogo del provider, esegue il fallback
     * automatico su TMDB Discover (con logica HBO-specifica: network ID per serie,
-    * watch_region=US per film). Cinemeta non è più una sorgente dei provider.
+    * watch_region=US per film).
+    *
+    * LIMITE CINEMETA: l'addon ufficiale non espone per titolo la disponibilità su
+    * un provider. Usare i suoi cataloghi generici qui mostrerebbe contenuti non
+    * verificati come disponibili sul provider: per questo la schermata Provider
+    * resta su TMDB Discover (fonte che conferma l'associazione) e sui cataloghi
+    * provider degli addon utente.
     */
    fun loadCategoryProvider(providerId: String, tmdbProviderId: Int, isTv: Boolean) {
      val key: Pair<String, Boolean> = Pair(providerId, isTv)

@@ -69,6 +69,7 @@ import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wallpaper
 import android.widget.Toast
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -102,6 +103,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -109,7 +111,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.snapshotFlow
 import androidx.annotation.StringRes
@@ -123,6 +124,7 @@ import com.example.data.repository.MediaIdentity
 import com.example.data.repository.SimklRepository
 import com.example.data.repository.SimklSyncManager
 import com.example.data.remote.simkl.SimklSyncStatus
+import com.example.data.model.SearchCategoryFilter
 import com.example.data.model.SearchTypeFilter
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.BackBufferOption
@@ -748,7 +750,13 @@ data class GlobalSearchCategory(
   val accentColor: Color,
   val keywords: List<String>,
   val movieGenreId: Int? = null,
-  val tvGenreId: Int? = null
+  val tvGenreId: Int? = null,
+  /**
+   * Fonte della categoria. Default [SearchCategoryFilter.GENRE] per le categorie
+   * storiche; "Talk" usa [SearchCategoryFilter.TMDB_TV_GENRE] ed è servita
+   * nativamente da TMDB tramite [tvGenreId].
+   */
+  val contentFilter: SearchCategoryFilter = SearchCategoryFilter.GENRE
 )
 
 val GLOBAL_SEARCH_CATEGORIES = listOf(
@@ -775,7 +783,25 @@ val GLOBAL_SEARCH_CATEGORIES = listOf(
   GlobalSearchCategory("storia", R.string.search_cat_history, Color(0xFFD97706), Color(0xFF78350F), Color(0xFFFDE68A), listOf("Storia", "History", "Storico", "Biografia"), movieGenreId = 36, tvGenreId = 18),
   GlobalSearchCategory("thriller", R.string.search_cat_thriller, Color(0xFFEA580C), Color(0xFF9A3412), Color(0xFFFFEDD5), listOf("Thriller", "Suspense"), movieGenreId = 53, tvGenreId = 9648),
   GlobalSearchCategory("western", R.string.search_cat_western, Color(0xFFB45309), Color(0xFF713F12), Color(0xFFFEF3C7), listOf("Western"), movieGenreId = 37, tvGenreId = 37),
-  GlobalSearchCategory("televisione_film", R.string.search_cat_tv_movie, Color(0xFF38BDF8), Color(0xFF0369A1), Color(0xFFE0F2FE), listOf("Televisione Film", "Film TV", "TV Movie", "Cinema", "Film"), movieGenreId = 10770, tvGenreId = null)
+  /**
+   * "Talk" occupa il posto che era di "Televisione film" (genere TMDB 10770).
+   *
+   * È il genere TV ufficiale TMDB "Talk" (id 10767) e viene servita NATIVAMENTE da
+   * `discover/tv?with_genres=10767`, ordinata per popolarità e paginata. Non passa
+   * dai cataloghi degli addon e non richiede la modalità Debrid: funziona anche
+   * senza addon installati. Nessun filtro di lingua o paese: la categoria mostra
+   * talk show italiani e stranieri.
+   */
+  GlobalSearchCategory(
+    id = "talk",
+    labelRes = R.string.search_cat_talk,
+    gradientStart = Color(0xFF38BDF8),
+    gradientEnd = Color(0xFF0369A1),
+    accentColor = Color(0xFFE0F2FE),
+    keywords = listOf("Talk", "Talk Show"),
+    tvGenreId = 10767,
+    contentFilter = SearchCategoryFilter.TMDB_TV_GENRE
+  )
 )
 
 /**
@@ -988,6 +1014,63 @@ internal object SearchFocusDiagnostics {
   const val TAG = "SEARCH_FOCUS"
 }
 
+/** Direzione del movimento verticale D-pad in una griglia a righe. */
+internal enum class SearchGridVerticalDirection { UP, DOWN }
+
+/** Key stabile della card nella griglia dei risultati (identifica il contenuto). */
+internal fun searchResultGridItemKey(media: MediaItem): String = "search_${media.id}"
+
+/** Key stabile della card nella griglia di una categoria (tipo incluso: id grezzi condivisi). */
+internal fun searchCategoryGridItemKey(
+  cat: GlobalSearchCategory,
+  media: MediaItem
+): String = "cat_${cat.id}_${media.type}_${media.id}"
+
+/**
+ * Indice della cella da raggiungere con un movimento verticale del D-pad in una griglia a
+ * righe piene (LazyVerticalGrid senza span): la COLONNA corrente viene preservata.
+ *
+ * Se la riga di destinazione ha meno colonne (ultima riga parziale) si sceglie la cella
+ * valida più vicina alla colonna corrente; `null` quando il movimento non ha destinazione
+ * (prima riga in Su, ultima riga in Giù) e deve decidere il focus system.
+ */
+internal fun searchGridVerticalTargetIndex(
+  currentRow: Int,
+  currentColumn: Int,
+  itemCount: Int,
+  columns: Int,
+  direction: SearchGridVerticalDirection
+): Int? {
+  if (columns <= 0 || itemCount <= 0) return null
+  if (currentRow < 0 || currentColumn < 0 || currentColumn >= columns) return null
+  val targetRow = when (direction) {
+    SearchGridVerticalDirection.DOWN -> currentRow + 1
+    SearchGridVerticalDirection.UP -> currentRow - 1
+  }
+  if (targetRow < 0) return null
+  val rowStart = targetRow * columns
+  if (rowStart >= itemCount) return null
+  val rowLength = minOf(columns, itemCount - rowStart)
+  return rowStart + minOf(currentColumn, rowLength - 1)
+}
+
+/**
+ * Numero ESATTO di colonne letto dal layout reale della griglia.
+ *
+ * Un item delle righe successive alla prima dichiara riga e colonna: `index - column` è
+ * l'inizio della sua riga, quindi `(index - column) / row` è il numero di colonne. Quando è
+ * composta solo la prima riga, la si conta direttamente (occupa l'intera larghezza).
+ * `null` se il layout non espone ancora riga/colonna per nessun item.
+ */
+internal fun LazyGridState.exactColumnCount(): Int? {
+  val visible = layoutInfo.visibleItemsInfo.filter { it.row >= 0 && it.column >= 0 }
+  if (visible.isEmpty()) return null
+  visible.firstOrNull { it.row > 0 && it.index - it.column > 0 }?.let { info ->
+    return (info.index - info.column) / info.row
+  }
+  return visible.filter { it.row == 0 }.maxOfOrNull { it.column + 1 }
+}
+
 @OptIn(ExperimentalLayoutApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun SearchScreen(  viewModel: StreamNovaViewModel,
@@ -999,7 +1082,14 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
    * mantiene in vista la card corrente) senza passare dalla rete. In produzione resta `null`
    * e la schermata osserva [StreamNovaViewModel.filteredSearchResults].
    */
-  resultsOverride: List<MediaItem>? = null
+  resultsOverride: List<MediaItem>? = null,
+  /**
+   * Contenuti espliciti della categoria selezionata, con lo stesso scopo di [resultsOverride]:
+   * i test della griglia categoria (navigazione verticale e ripristino dal Dettaglio) non
+   * possono passare dalla rete. In produzione resta `null` e la schermata osserva
+   * [StreamNovaViewModel.categoryItems].
+   */
+  categoryItemsOverride: List<MediaItem>? = null
 ) {
   val query by viewModel.searchQuery.collectAsState()
   // Contesto applicativo al ViewModel: i messaggi della categoria sono risorse
@@ -1012,7 +1102,8 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
     viewModel.filteredSearchResults.collectAsState().value
   }
   val searchFilter by viewModel.searchFilter.collectAsState()
-  val categoryItems by viewModel.categoryItems.collectAsState()
+  val categoryItems = categoryItemsOverride
+    ?: viewModel.categoryItems.collectAsState().value
   val isCategoryLoading by viewModel.isCategoryLoading.collectAsState()
   val categoryState by viewModel.categoryState.collectAsState()
 
@@ -1026,14 +1117,6 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   }
 
   var isSearchSubmitted by remember { mutableStateOf(false) }
-
-  // Focus restoration: riceve il segnale dal ViewModel
-  val focusRestoreSignal = remember { mutableStateOf<String?>(null) }
-  LaunchedEffect(viewModel) {
-    viewModel.focusRestoreSignal?.collect { mediaId ->
-      focusRestoreSignal.value = mediaId
-    }
-  }
 
   val searchBarFocusRequester = remember { FocusRequester() }
   val tuttiFilterFocusRequester = remember { FocusRequester() }
@@ -1062,8 +1145,10 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
     SearchTypeFilter.SERIE_TV -> serieTvFilterFocusRequester
   }
 
-  // Consumer il segnale di focus restoration per ripristinare il focus sulla card corretta
-  val gridState = rememberLazyGridState()
+  // Stato di scroll della griglia dei risultati, PERSISTENTE attraverso la navigazione verso
+  // il Dettaglio: al BACK la griglia ritrova la posizione da cui si era entrati, quindi la
+  // card ripristinata resta visibile nella stessa riga.
+  val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
 
   // Requester PER IDENTITÀ di card dei risultati: il D-pad Giù dai filtri deve chiedere il
   // focus a una cella che è DAVVERO composta in questo momento (non alla cella 0, che può
@@ -1084,19 +1169,205 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
     }
   }
   // Stato di scroll della griglia categoria, definito FUORI dal ramo `when`: il Giù dai
-  // filtri in modalità categoria legge qui il viewport reale della griglia.
-  val categoryGridState = rememberLazyGridState()
+  // filtri in modalità categoria legge qui il viewport reale della griglia. Saveable come la
+  // griglia dei risultati: al BACK dal Dettaglio la sezione ritrova la posizione di scroll.
+  val categoryGridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
 
   val searchFocusScope = rememberCoroutineScope()
+
+  // Passo verticale tra le righe della griglia (16dp): serve alla navigazione verticale per
+  // far ENTRARE la riga di destinazione dal bordo del viewport quando non è ancora composta.
+  val gridRowSpacingPx = with(LocalDensity.current) { 16.dp.toPx() }
 
   // Stessa struttura per la griglia della CATEGORIA selezionata: la chiave replica la key
   // della griglia (una film e una serie possono condividere lo stesso id grezzo).
   val categoryResultFocusRequesters = remember { mutableMapOf<String, FocusRequester>() }
 
   fun categoryResultFocusRequester(cat: GlobalSearchCategory, media: MediaItem): FocusRequester =
-    categoryResultFocusRequesters.getOrPut("cat_${cat.id}_${media.type}_${media.id}") {
+    categoryResultFocusRequesters.getOrPut(searchCategoryGridItemKey(cat, media)) {
       FocusRequester()
     }
+
+  // ── Ripristino del focus al ritorno dal Dettaglio ─────────────────────────────────────
+  // Canali condivisi con le altre schermate (MainActivity/HomeScreen): target salvato al
+  // click, token dell'evento (riattiva il tentativo su ritorni consecutivi dalla STESSA
+  // card) e rilascio del target quando il focus è DAVVERO sulla card.
+  //
+  // Il vecchio percorso ascoltava un SharedFlow e chiedeva il focus a un requester FISSO
+  // (quello della cella 0 dei badge, non agganciato alle card): dopo un'attesa arbitraria
+  // il focus atterrava sui chip Film/Serie TV. Qui il ripristino è per IDENTITÀ della card,
+  // sulla griglia del contesto corrente (categoria o risultati della query).
+  val restoreMediaId = LocalLastFocusedMediaId.current
+  val focusRestoreToken = LocalFocusRestoreToken.current
+  val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
+
+  // Card che QUESTA schermata ha aperto (salvata al click). Distingue una VERA richiesta di
+  // ripristino (si torna dal Dettaglio di una card della Ricerca) da un target lasciato da
+  // un'altra schermata o andato a vuoto: il secondo va solo rilasciato, senza spostare il
+  // focus, perché la schermata lo sta gestendo con il proprio ingresso naturale (barra,
+  // filtri). Saveable: sopravvive allo smontaggio della destinazione durante il Dettaglio.
+  var claimedRestoreId by rememberSaveable { mutableStateOf<String?>(null) }
+  val pendingRestoreForThisScreen = restoreMediaId != null && restoreMediaId == claimedRestoreId
+
+  // Card REALMENTE focalizzata in ciascuna griglia, espressa con la STESSA key usata dal
+  // lazy grid. La navigazione verticale risolve l'indice sulla lista corrente, quindi un
+  // filtro o un riordino non fanno atterrare il movimento sulla colonna sbagliata.
+  var focusedResultKey by remember { mutableStateOf<String?>(null) }
+  var focusedCategoryKey by remember { mutableStateOf<String?>(null) }
+
+  // Requester dell'ancora di recupero di un ripristino fallito. Vive in un effetto dedicato
+  // perché il rilascio del target (che apre il gate `canFocus` delle card) riavvia l'effetto
+  // di ripristino e ne cancellerebbe il corpo.
+  var recoveryFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
+  LaunchedEffect(recoveryFocusRequester) {
+    val requester = recoveryFocusRequester ?: return@LaunchedEffect
+    recoveryFocusRequester = null
+    requestFocusWhenAttached(requester, maxAttempts = 5)
+  }
+
+  /**
+   * UNICO punto di ingresso del ripristino dal Dettaglio: risolve la card per identità nella
+   * griglia del contesto corrente, la porta nel viewport se non è composta e le chiede il
+   * focus. Se la card non esiste più, il target viene rilasciato e il focus va alla prima
+   * card GIÀ visibile della stessa sezione; i chip dei filtri sono l'ultima risorsa, usata
+   * solo quando non esiste alcuna card su cui atterrare.
+   */
+  LaunchedEffect(
+    restoreMediaId,
+    focusRestoreToken,
+    selectedCategory,
+    searchFilter,
+    displayedCategoryMedia,
+    results
+  ) {
+    val mediaId = restoreMediaId ?: return@LaunchedEffect
+    if (mediaId != claimedRestoreId) {
+      // Target di un'altra schermata (o già andato a vuoto): va rilasciato subito, così i
+      // cancelletti `canFocus` delle card si riaprono, ma senza sottrarre il focus
+      // all'ingresso naturale della schermata (barra di ricerca / filtri).
+      if (BuildConfig.DEBUG) {
+        Log.d(
+          SearchFocusDiagnostics.TAG,
+          "stale restore target '$mediaId' not claimed by search screen: released"
+        )
+      }
+      clearLastFocusedMedia?.invoke()
+      return@LaunchedEffect
+    }
+    val cat = selectedCategory
+    val items = if (cat != null) displayedCategoryMedia else results
+    val grid = if (cat != null) categoryGridState else gridState
+    val index = items.indexOfFirst { it.id == mediaId }
+    if (index < 0) {
+      // Target non più disponibile (catalogo cambiato mentre il Dettaglio era aperto):
+      // nessuno scroll, nessuna card indovinata per posizione e nessun salto ai badge se
+      // esiste una card composta. Il rilascio del target riapre i cancelletti `canFocus`.
+      if (BuildConfig.DEBUG) {
+        Log.d(
+          SearchFocusDiagnostics.TAG,
+          "stale restore target '$mediaId' absent from current list: cleared"
+        )
+      }
+      var frames = 0
+      var firstVisibleIndex = grid.layoutInfo.visibleItemsInfo.firstOrNull()?.index
+      while (firstVisibleIndex == null && frames < 8) {
+        withFrameNanos { }
+        frames++
+        firstVisibleIndex = grid.layoutInfo.visibleItemsInfo.firstOrNull()?.index
+      }
+      val anchor = firstVisibleIndex?.let { items.getOrNull(it) }
+      recoveryFocusRequester = when {
+        anchor != null && cat != null -> categoryResultFocusRequester(cat, anchor)
+        anchor != null -> resultFocusRequester(anchor.id)
+        else -> activeFilterRequester
+      }
+      clearLastFocusedMedia?.invoke()
+      return@LaunchedEffect
+    }
+    // La visibilità del target si valuta solo su una griglia GIÀ misurata (almeno una cella
+    // in composizione): finché `visibleItemsInfo` è vuoto ogni verdetto sarebbe falso.
+    var measuredFrames = 0
+    while (grid.layoutInfo.visibleItemsInfo.isEmpty() && measuredFrames < 8) {
+      withFrameNanos { }
+      measuredFrames++
+    }
+    val targetVisible = grid.layoutInfo.visibleItemsInfo.any { it.index == index }
+    if (!targetVisible && !grid.isScrollInProgress) {
+      try {
+        grid.scrollToItemVerified(index)
+      } catch (_: Exception) {
+        // La richiesta di focus sotto attende comunque il montaggio della card.
+      }
+    }
+    requestFocusWhenAttached(
+      if (cat != null) {
+        categoryResultFocusRequester(cat, items[index])
+      } else {
+        resultFocusRequester(items[index].id)
+      },
+      maxAttempts = 5
+    )
+  }
+
+  /**
+   * Navigazione verticale ESPLICITA delle griglie della Ricerca.
+   *
+   * Il focus system di Compose, quando la riga successiva non è ancora composta (viewport TV
+   * alto quanto una riga), scorre la griglia e consegna il focus alla PRIMA cella composta
+   * della nuova riga: con la terza card selezionata il Giù "tornava" alla prima colonna. Qui
+   * la cella di destinazione è calcolata dalla riga/colonna REALI del layout (colonna
+   * preservata, in una riga più corta si sceglie la colonna valida più vicina), la riga viene
+   * portata in composizione e solo allora si chiede il focus a QUELLA card.
+   *
+   * @return `true` se il tasto è stato gestito (e consumato); `false` quando non esiste una
+   *   destinazione verticale valida: in quel caso decide il focus system (es. Su dalla prima
+   *   riga verso la riga dei filtri).
+   */
+  fun moveGridFocusVertically(
+    event: androidx.compose.ui.input.key.KeyEvent,
+    grid: LazyGridState,
+    items: List<MediaItem>,
+    keyOf: (MediaItem) -> String,
+    focusedKey: String?,
+    requesterOf: (MediaItem) -> FocusRequester
+  ): Boolean {
+    if (event.type != KeyEventType.KeyDown) return false
+    val direction = when (event.key) {
+      Key.DirectionDown -> SearchGridVerticalDirection.DOWN
+      Key.DirectionUp -> SearchGridVerticalDirection.UP
+      else -> return false
+    }
+    val currentIndex = items.indexOfFirst { keyOf(it) == focusedKey }
+    if (currentIndex < 0) return false
+    val current = grid.layoutInfo.visibleItemsInfo.firstOrNull { it.index == currentIndex }
+      ?: return false
+    val columns = grid.exactColumnCount() ?: return false
+    val targetIndex = searchGridVerticalTargetIndex(
+      currentRow = current.row,
+      currentColumn = current.column,
+      itemCount = items.size,
+      columns = columns,
+      direction = direction
+    ) ?: return false
+    val targetRequester = requesterOf(items[targetIndex])
+    searchFocusScope.launch {
+      if (grid.layoutInfo.visibleItemsInfo.none { it.index == targetIndex }) {
+        // La riga di destinazione non è composta: la si fa ENTRARE dal bordo del viewport
+        // (mezza riga) invece di incollarla in alto con `scrollToItem`. Così resta composta
+        // insieme a quella corrente (nessun frame senza focus) e il bring-into-view
+        // condiviso può centrarla esattamente come per il movimento nativo.
+        val halfRowPx = (current.size.height + gridRowSpacingPx) / 2f
+        val delta = if (direction == SearchGridVerticalDirection.DOWN) halfRowPx else -halfRowPx
+        try {
+          grid.scrollBy(delta)
+        } catch (_: Exception) {
+          // La richiesta di focus sotto attende comunque il montaggio della card.
+        }
+      }
+      requestFocusWhenAttached(targetRequester, maxAttempts = 8)
+    }
+    return true
+  }
 
   /**
    * Prima card delle categorie attualmente composta e visibile nella griglia (stesso
@@ -1129,7 +1400,6 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
     return item to resultFocusRequester(item.id)
   }
 
-  val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
   val focusManager = LocalFocusManager.current
   // Prova REALE che il focus è entrato nell'area contenuti: `hasFocus` del contenitore
   // (nella Box qui sotto) diventa true solo quando una sua discendente — cioè una card
@@ -1138,51 +1408,16 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   // focalizzabile (gate di ripristino chiuso) rifiuta la richiesta in silenzio.
   var contentAreaHasFocus by remember { mutableStateOf(false) }
 
-  // Un target di ripristino che NON appartiene alla lista corrente è STANTIO e va
-  // rilasciato. Le card della schermata possono prendere il focus solo se non c'è un
-  // target pendente di altro id (gate `canFocus` di PosterMediaCard): un id orfano —
-  // tipicamente l'ancora sintetica "home_content_anchor" scritta dalla MainActivity al
-  // rientro dal Dettaglio, o il target di una sezione precedente — renderebbe PERMANENTE
-  // l'annullamento del focus di TUTTE le card, lasciando morto il Giù dai filtri. Il
-  // rilascio avviene solo con la lista popolata: durante il caricamento non si decide.
-  LaunchedEffect(lastFocusedMediaId, results, categoryItems, selectedCategory, searchFilter) {
-    val pending = lastFocusedMediaId ?: return@LaunchedEffect
-    val visibleIds: Set<String> = if (selectedCategory != null) {
-      when (searchFilter) {
-        SearchTypeFilter.ALL -> categoryItems
-        SearchTypeFilter.FILM -> categoryItems.filter { it.type == MediaType.FILM }
-        SearchTypeFilter.SERIE_TV -> categoryItems.filter { it.type == MediaType.SERIE_TV }
-      }.map { it.id }.toSet()
-    } else {
-      results.map { it.id }.toSet()
-    }
-    if (visibleIds.isNotEmpty() && pending !in visibleIds) {
-      if (BuildConfig.DEBUG) {
-        Log.d(
-          SearchFocusDiagnostics.TAG,
-          "stale restore target '$pending' absent from current list: cleared"
-        )
-      }
-      viewModel.clearLastFocusedMedia()
-    }
-  }
-
-  LaunchedEffect(focusRestoreSignal.value, gridState) {
-    val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
-    focusRestoreSignal.value = null
-
-    // Cerca il mediaId tra i risultati visibili (query results o category results)
-    val index = results.indexOfFirst { it.id == mediaId }
-    if (index >= 0) {
-      gridState.scrollToItem(index)
-      kotlinx.coroutines.delay(100)
-      try {
-        contentFirstItemFocusRequester.requestFocus()
-      } catch (_: Exception) {}
-    }
-  }
+  // NOTA: il rilascio di un target STANTIO (id non più nella lista corrente — tipicamente
+  // l'ancora sintetica "home_content_anchor" scritta dalla MainActivity al rientro dal
+  // Dettaglio) è gestito dall'effetto di ripristino qui sopra, nello STESSO corpo che assegna
+  // l'ancora di recupero. Un effetto separato che chiamasse clearLastFocusedMedia() poteva
+  // cancellare l'effetto di ripristino a metà, lasciando la schermata senza focus.
 
   LaunchedEffect(savedCategoryId) {
+    // Al rientro dal Dettaglio il focus appartiene al ripristino della card (effetto sopra):
+    // portarlo qui sui badge sarebbe proprio il difetto "il focus finisce su Film/Serie TV".
+    if (pendingRestoreForThisScreen) return@LaunchedEffect
     if (savedCategoryId != null) {
       if (selectedCategory == null || selectedCategory?.id != savedCategoryId) {
         selectedCategory = GLOBAL_SEARCH_CATEGORIES.find { it.id == savedCategoryId }
@@ -1198,6 +1433,9 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   }
 
   LaunchedEffect(selectedCategory) {
+    // Stessa guardia del ripristino: al ritorno dal Dettaglio il focus deve andare alla card
+    // salvata, non ai chip dei filtri.
+    if (pendingRestoreForThisScreen) return@LaunchedEffect
     if (selectedCategory != null) {
       try {
         contentFirstItemFocusRequester.requestFocus()
@@ -1211,6 +1449,9 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
 
   // All'ingresso nella schermata Cerca porta il focus sulla barra di ricerca (a riposo, senza tastiera)
   LaunchedEffect(Unit) {
+    // Al rientro dal Dettaglio il focus appartiene al ripristino della card: la barra di
+    // ricerca non deve sottrarlo (difetto: il focus non tornava sulla card dei risultati).
+    if (pendingRestoreForThisScreen) return@LaunchedEffect
     if (savedCategoryId != null || selectedCategory != null) return@LaunchedEffect
     withFrameNanos { }
     try {
@@ -1559,8 +1800,18 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       R.string.search_category_desc_fallback,
                       stringResource(cat.labelRes)
                     )
+                    // Categoria nativa TMDB ("Talk"): fonte TMDB dichiarata, non un
+                    // fallback dovuto alla mancanza di un catalogo addon.
+                    SearchCategorySource.TMDB -> stringResource(
+                      R.string.search_category_desc_tmdb,
+                      stringResource(cat.labelRes)
+                    )
                     null -> if (isCategoryLoading) {
-                      stringResource(R.string.search_category_loading)
+                      if (cat.contentFilter == SearchCategoryFilter.TMDB_TV_GENRE) {
+                        stringResource(R.string.search_category_loading_tmdb)
+                      } else {
+                        stringResource(R.string.search_category_loading)
+                      }
                     } else {
                       ""
                     }
@@ -1642,11 +1893,24 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                     contentPadding = PaddingValues(bottom = 48.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.fillMaxSize()
+                    // Su/Giù espliciti: mantengono la COLONNA corrente anche quando la riga
+                    // successiva non è ancora composta (viewport TV alto quanto una riga).
+                    modifier = Modifier
+                      .fillMaxSize()
+                      .onPreviewKeyEvent { event ->
+                        moveGridFocusVertically(
+                          event = event,
+                          grid = categoryGridState,
+                          items = displayedCategoryMedia,
+                          keyOf = { searchCategoryGridItemKey(cat, it) },
+                          focusedKey = focusedCategoryKey,
+                          requesterOf = { categoryResultFocusRequester(cat, it) }
+                        )
+                      }
                   ) {
                     // La key include il tipo: film e serie possono condividere lo stesso
                     // id grezzo senza collidere (una key duplicata crasherebbe la griglia).
-                    itemsIndexed(displayedCategoryMedia, key = { _, item -> "cat_${cat.id}_${item.type}_${item.id}" }, contentType = { _, _ -> "media_poster" }) { index, item ->
+                    itemsIndexed(displayedCategoryMedia, key = { _, item -> searchCategoryGridItemKey(cat, item) }, contentType = { _, _ -> "media_poster" }) { index, item ->
                       Box(
                         modifier = Modifier
                           .fillMaxWidth()
@@ -1659,13 +1923,27 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       ) {
                         PosterMediaCard(
                           media = item,
-                          onClick = { onMediaClick(item) },
+                          onClick = {
+                            // Target di ripristino PRIMA del Dettaglio: al BACK il focus
+                            // torna su QUESTA card (identità, non posizione). La "claim"
+                            // distingue questo ripristino dai target di altre schermate.
+                            claimedRestoreId = item.id
+                            viewModel.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
+                            onMediaClick(item)
+                          },
                           // Requester per identità: è il nodo focalizzabile REALE della
                           // card, target del Giù dai filtri in modalità categoria. Le
                           // celle fuori viewport non sono composte: nessun requester
                           // fisso sulla cella 0.
                           focusRequester = categoryResultFocusRequester(cat, item),
+                          // Protocollo con CONFERMA reale del focus (tentativi a frame):
+                          // al rientro dal Dettaglio la card può non essere ancora pronta
+                          // quando arriva la richiesta.
+                          confirmFocusRestore = true,
                           modifier = Modifier.onFocusChanged { state ->
+                            if (state.isFocused) {
+                              focusedCategoryKey = searchCategoryGridItemKey(cat, item)
+                            }
                             if (BuildConfig.DEBUG && state.isFocused) {
                               Log.d(
                                 SearchFocusDiagnostics.TAG,
@@ -1731,9 +2009,22 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                     contentPadding = PaddingValues(bottom = 48.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.fillMaxSize()
+                    // Su/Giù espliciti: mantengono la COLONNA corrente anche quando la riga
+                    // successiva non è ancora composta (viewport TV alto quanto una riga).
+                    modifier = Modifier
+                      .fillMaxSize()
+                      .onPreviewKeyEvent { event ->
+                        moveGridFocusVertically(
+                          event = event,
+                          grid = gridState,
+                          items = results,
+                          keyOf = { searchResultGridItemKey(it) },
+                          focusedKey = focusedResultKey,
+                          requesterOf = { resultFocusRequester(it.id) }
+                        )
+                      }
                   ) {
-                    itemsIndexed(results, key = { _, item -> "search_${item.id}" }, contentType = { _, _ -> "media_poster" }) { index, item ->
+                    itemsIndexed(results, key = { _, item -> searchResultGridItemKey(item) }, contentType = { _, _ -> "media_poster" }) { index, item ->
                       Box(
                         modifier = Modifier
                           .fillMaxWidth()
@@ -1746,14 +2037,28 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       ) {
                         PosterMediaCard(
                           media = item,
-                          onClick = { onMediaClick(item) },
+                          onClick = {
+                            // Target di ripristino PRIMA del Dettaglio: al BACK il focus
+                            // torna su QUESTA card (identità, non posizione). La "claim"
+                            // distingue questo ripristino dai target di altre schermate.
+                            claimedRestoreId = item.id
+                            viewModel.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
+                            onMediaClick(item)
+                          },
                           // Requester per identità: è il nodo focalizzabile REALE della
                           // card (non un contenitore esterno), quindi il Giù dai filtri
                           // consegna il focus a una cella composta qualunque sia lo
                           // scroll. La Box-cella NON è un target di focus: agganciarci il
                           // requester produce richieste rifiute invisibili.
                           focusRequester = resultFocusRequester(item.id),
+                          // Protocollo con CONFERMA reale del focus (tentativi a frame):
+                          // al rientro dal Dettaglio la card può non essere ancora pronta
+                          // quando arriva la richiesta.
+                          confirmFocusRestore = true,
                           modifier = Modifier.onFocusChanged { state ->
+                            if (state.isFocused) {
+                              focusedResultKey = searchResultGridItemKey(item)
+                            }
                             if (BuildConfig.DEBUG && state.isFocused) {
                               Log.d(
                                 SearchFocusDiagnostics.TAG,
@@ -1836,7 +2141,8 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       categoryId = cat.id,
                       keywords = cat.keywords,
                       movieGenreId = cat.movieGenreId,
-                      tvGenreId = cat.tvGenreId
+                      tvGenreId = cat.tvGenreId,
+                      contentFilter = cat.contentFilter
                     )
                     selectedCategory = cat
                     isSearchSubmitted = false

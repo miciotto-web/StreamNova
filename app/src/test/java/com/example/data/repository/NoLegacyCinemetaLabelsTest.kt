@@ -57,6 +57,7 @@ class NoLegacyCinemetaLabelsTest {
           popularMovies, topRatedMovies, newMovies,
           popularSeries, topRatedSeries, newSeries,
           onAirSeries, digitalNew, hboNew,
+          hboMaxMoviesNew, hboMaxSeriesNew,
           netflixMoviesNew, netflixSeriesNew,
           disneyMoviesNew, disneySeriesNew,
           primeMoviesNew, primeSeriesNew,

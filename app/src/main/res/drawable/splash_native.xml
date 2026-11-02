@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Splash NATIVO (starting window del sistema).
+
+  Viene mostrato dal launcher prima che l'app disegni il proprio primo frame:
+  stesso fondo del video d'intro e logo ufficiale centrato, così non compare una
+  finestra vuota. Non sostituisce il video: la splash video resta gestita dalla
+  schermata interna (SplashVideoScreen) e ne mantiene durata e pausa finale.
+
+  Il logo è dimensionato in dp (stessa frazione di larghezza usata dalla splash
+  statica di attesa) per non dipendere dalla densità dello schermo.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_video_background" />
+    <item
+        android:width="340dp"
+        android:height="199dp"
+        android:gravity="center">
+        <bitmap
+            android:gravity="fill"
+            android:src="@drawable/streamnova_logo" />
+    </item>
+</layer-list>

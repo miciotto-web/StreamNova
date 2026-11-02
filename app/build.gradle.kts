@@ -249,6 +249,18 @@ base {
   archivesName.set("StreamNova")
 }
 
+// Report del compiler Compose (stabilita' delle classi + skippability dei composable),
+// scritti in app/build/compose_compiler/ a ogni compilazione. Non cambiano il codice
+// prodotto: servono come EVIDENZA misurabile per le ottimizzazioni di ricomposizione,
+// invece di dedurre la stabilita' dei modelli a occhio.
+// Nota: la destinazione e' condivisa da tutti i task di compilazione del modulo, quindi
+// il report riferito al codice dell'app si ottiene con `:app:compileDebugKotlin` (la
+// compilazione dei test lo sovrascrive con le proprie classi).
+composeCompiler {
+  reportsDestination.set(layout.buildDirectory.dir("compose_compiler"))
+  metricsDestination.set(layout.buildDirectory.dir("compose_compiler"))
+}
+
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
 // to match the convention used in Web projects.
 secrets {

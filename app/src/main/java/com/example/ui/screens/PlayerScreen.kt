@@ -70,6 +70,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -273,6 +274,52 @@ internal fun resolveVideoFocusTarget(
   return if (isIntroActive) VideoFocusTarget.INTRO_BANNER else VideoFocusTarget.IDLE
 }
 
+/** Azione eseguita dal BACK del telecomando nel player. */
+internal enum class PlayerBackAction {
+  /** Un modale del player è aperto: il BACK chiude quello e nient'altro. */
+  DISMISS_MODALS,
+
+  /** Anteprima di scrubbing aperta o in settling: il BACK annulla la seek e il player resta aperto. */
+  CANCEL_SCRUB,
+
+  /** Banner "Salta intro" a video: il BACK lo dismette, il player resta aperto. */
+  DISMISS_SKIP_INTRO,
+
+  /** Overlay "Prossimo Episodio" a video: il BACK lo nasconde, il player resta aperto. */
+  DISMISS_NEXT_EPISODE,
+
+  /** Nessuna superficie contestuale da chiudere: il BACK chiude il player. */
+  CLOSE_PLAYER
+}
+
+/**
+ * Decide l'azione del BACK a partire dallo stato del player. Funzione PURA, testabile
+ * senza Compose.
+ *
+ * Regola: **una sola pressione fa una sola cosa**, con la priorità delle superfici
+ * contestuali a video. L'anteprima di scrubbing conta come superficie aperta sia mentre
+ * l'utente sta scegliendo la posizione ([activeScrub]) sia durante il settling
+ * ([seekSettling]): in quest'ultimo caso la seek è già stata applicata, ma l'overlay è
+ * ancora a video e il BACK deve annullarla riportando il player al punto di partenza.
+ *
+ * Modale aperto, banner "Salta intro" e overlay "Prossimo Episodio" conservano la
+ * priorità che avevano prima di questa fase. Senza alcuna di queste superfici il BACK
+ * chiude il player come sempre.
+ */
+internal fun resolvePlayerBackAction(
+  anyModalOpen: Boolean,
+  activeScrub: Boolean,
+  seekSettling: Boolean,
+  skipIntroVisible: Boolean,
+  nextEpisodePromptVisible: Boolean
+): PlayerBackAction = when {
+  anyModalOpen -> PlayerBackAction.DISMISS_MODALS
+  activeScrub || seekSettling -> PlayerBackAction.CANCEL_SCRUB
+  skipIntroVisible -> PlayerBackAction.DISMISS_SKIP_INTRO
+  nextEpisodePromptVisible -> PlayerBackAction.DISMISS_NEXT_EPISODE
+  else -> PlayerBackAction.CLOSE_PLAYER
+}
+
 /**
  * Risale alla [Activity] ospite anche quando il [Context] è un wrapper
  * (ContextThemeWrapper/ContextWrapper), così da poter gestire i flag della
@@ -294,7 +341,23 @@ fun PlayerScreen(
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
-  val playbackState by viewModel.playbackState.collectAsState()
+  // Fase 6.1: il polling del player chiama `updatePlaybackPosition` ogni 500 ms. Se lo stato
+  // raccolto fosse letto direttamente nel corpo della schermata, OGNI tick la
+  // ricomporrebbe per intero (media, stream, sottotitoli, AndroidView inclusi) anche se
+  // l'unica cosa cambiata è la posizione — che ora vive in `playbackClock` e viene
+  // letta solo dai composable foglia.
+  //
+  // `livePlaybackState` è lo stato realmente emesso dal ViewModel (posizione inclusa):
+  // serve ai punti che devono conoscere la posizione corrente quando eseguono (creazione
+  // player, cambio episodio/sorgente). `playbackState` è la PROIEZIONE usata in
+  // composizione: identica, ma con i soli campi "tick" azzerati. `derivedStateOf` usa
+  // l'uguaglianza strutturale, quindi finché cambia solo la posizione i lettori NON
+  // vengono invalidati.
+  val playbackStateFlow = viewModel.playbackState
+  val livePlaybackState by playbackStateFlow.collectAsState()
+  val playbackState by remember(playbackStateFlow) {
+    derivedStateOf { playbackStateWithoutPosition(livePlaybackState) }
+  }
   val playbackSettings by viewModel.playbackSettings.collectAsState()
 
   /**
@@ -385,8 +448,16 @@ fun PlayerScreen(
   // sotto diventa `true` solo se il buffering dura almeno REVEAL_DELAY_MS e torna subito
   // `false` quando la riproduzione riparte (o durante scrubbing/errore).
   var showBufferingOverlay by remember { mutableStateOf(false) }
-  var currentPosition by remember { mutableLongStateOf(playbackState.currentPositionMs) }
-  var totalDuration by remember { mutableLongStateOf(playbackState.durationMs.coerceAtLeast(1L)) }
+  // Fase 6.1: posizione e durata NON sono più `MutableState` del corpo di questa schermata.
+  // Vivono in un holder `@Stable` letto solo dai figli che le mostrano (timeline, minutaggio)
+  // e dai flag booleani derivati: il tick da 500 ms non invalida più l'intera PlayerScreen.
+  val playbackClock = remember {
+    PlayerPlaybackClock(
+      // Posizione di ripresa letta dallo stato REALE (la proiezione la azzera).
+      initialPositionMs = viewModel.playbackState.value.currentPositionMs,
+      initialDurationMs = playbackState.durationMs.coerceAtLeast(1L)
+    )
+  }
   var isPlaying by remember { mutableStateOf(true) }
   var areControlsVisible by remember { mutableStateOf(true) }
   // Scrubbing a schermo intero (◀ / ▶ con i controlli nascosti): stato di anteprima
@@ -449,9 +520,11 @@ fun PlayerScreen(
   // Overlay "Prossimo Episodio": attivo negli ultimi 35 secondi o a STATE_ENDED.
   // Durante lo scrubbing resta fuori schermo: nessun overlay e nessun countdown di
   // auto-avanzamento mentre l'utente sta solo cercando nel contenuto.
-  val isNextEpisodePromptVisible = !isScrubbing && NextEpisodePromptUtils.shouldShow(
-    positionMs = currentPosition,
-    durationMs = totalDuration,
+  // Fase 6.1: il flag è DERIVATO dalla posizione, quindi questa schermata si ricompone solo
+  // quando l'overlay deve davvero comparire/scomparire, non ad ogni tick del polling.
+  val isNextEpisodePromptVisible = rememberNextEpisodePromptVisible(
+    clock = playbackClock,
+    isScrubbing = isScrubbing,
     playbackEnded = playbackEnded,
     isTvShow = isTvShow,
     hasNextEpisode = nextEpisode != null,
@@ -533,15 +606,8 @@ fun PlayerScreen(
   val skipIntroOkReleasePending = remember { mutableStateOf(false) }
   var hideTimerTick by remember { mutableLongStateOf(0L) }
 
-  // BACK gerarchico (livello 1): finché è aperto un modale, il tasto Back chiude SOLO il modale.
-  BackHandler(enabled = anyModalOpen) {
-    Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler (modale)")
-    Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
-    showTrackQuickPanel = false
-    showSubtitleModal = false
-    showQualityModal = false
-    showSpeedModal = false
-  }
+  // Il BACK del telecomando è gestito in un unico punto (vedi `performPlayerBack` più sotto):
+  // qui non serve più un BackHandler dedicato ai modali.
 
   val streamHeaders = playbackState.streamHeaders
   // FASE 3.3: frazione altezza per la dimensione testo sottotitoli (lettura tracciata in
@@ -549,10 +615,29 @@ fun PlayerScreen(
   val subtitleTextSizeFraction = playbackSettings.subtitleSize.textSizeFraction
   // FASE 3.4: stile caption per lo sfondo dei sottotitoli (lettura tracciata in
   // composizione: qualsiasi cambio preferenza ri-esegue l'update del PlayerView).
-  val subtitleCaptionStyle = subtitleCaptionStyleFor(playbackSettings.subtitleBackground)
+  // Fase 6.1: l'istanza è memorizzata sulla preferenza di sfondo: ricrearla ad ogni
+  // ricomposizione rendeva impossibile riconoscere "stesso stile" nell'update della vista.
+  val subtitleCaptionStyle = remember(playbackSettings.subtitleBackground) {
+    subtitleCaptionStyleFor(playbackSettings.subtitleBackground)
+  }
   // FASE 3.5: frazione per la posizione verticale dei sottotitoli (lettura tracciata in
   // composizione: qualsiasi cambio preferenza ri-esegue l'update del PlayerView).
   val subtitleBottomPaddingFraction = playbackSettings.subtitlePosition.bottomPaddingFraction
+  // Fase 6.1: valori effettivamente applicati al SubtitleView, confrontabili per valore, e
+  // guardia che evita di riapplicare stile/dimensione/posizione (e di loggare) quando non
+  // sono cambiati. La guardia è per-istanza di PlayerView: una vista ricreata riapplica.
+  val subtitleStyleSnapshot = remember(
+    subtitleTextSizeFraction,
+    subtitleCaptionStyle,
+    subtitleBottomPaddingFraction
+  ) {
+    SubtitleStyleSnapshot(
+      textSizeFraction = subtitleTextSizeFraction,
+      backgroundColor = subtitleCaptionStyle.backgroundColor,
+      bottomPaddingFraction = subtitleBottomPaddingFraction
+    )
+  }
+  val subtitleStyleApplier = remember { SubtitleStyleApplier() }
   // Sorgente riproducibile SOLO se reale. Per un titolo TMDB la mancanza di stream NON
   // deve mai ripiegare su un video demo di un altro contenuto: in quel caso videoUrl = null.
   // Il fallback al video seed è consentito esclusivamente per gli elementi demo reali.
@@ -818,7 +903,8 @@ fun PlayerScreen(
           loadStreamOnPlayer(
             player = this,
             url = videoUrl,
-            positionMs = playbackState.currentPositionMs,
+            // Stato REALE: la proiezione di composizione azzera la posizione.
+            positionMs = viewModel.playbackState.value.currentPositionMs,
             source = "creazione-player"
           )
         } else if (isCurrentlySwitching) {
@@ -865,7 +951,7 @@ fun PlayerScreen(
     }
     Log.d(
       "StreamNovaIntro",
-      "Stato intro: isTvShow=$isTvShow, introWindow=$resolved, currentPosition=$currentPosition, playbackState=${exoPlayer.playbackState}"
+      "Stato intro: isTvShow=$isTvShow, introWindow=$resolved, currentPosition=${playbackClock.positionMs}, playbackState=${exoPlayer.playbackState}"
     )
   }
 
@@ -1536,11 +1622,13 @@ fun PlayerScreen(
     }
 
     if (isEpisodeChange || isUrlChange || isManualSourceChange) {
+      // Stato REALE del ViewModel: la proiezione di composizione azzera la posizione.
+      val livePositionMs = viewModel.playbackState.value.currentPositionMs
       val targetPos = if (isEpisodeChange) {
         lastLoadedEpKey = currentEpKey
-        playbackState.currentPositionMs
+        livePositionMs
       } else {
-        exoPlayer.currentPosition.takeIf { it > 0 } ?: playbackState.currentPositionMs
+        exoPlayer.currentPosition.takeIf { it > 0 } ?: livePositionMs
       }
 
       Log.i(
@@ -1555,7 +1643,7 @@ fun PlayerScreen(
       )
       isBuffering = true
       playbackFailed = false
-      currentPosition = targetPos
+      playbackClock.updatePosition(targetPos)
 
       // Ferma e ripulisce la vecchia istanza di ExoPlayer per evitare STATE_BUFFERING fantasma:
       // stessa sequenza IDENTICA usata al primo avvio (S1E1), così headers HTTP,
@@ -1757,15 +1845,15 @@ fun PlayerScreen(
   DisposableEffect(simklScrobbler) {
     val previousScrobbler = simklScrobbler
     onDispose {
-      // `currentPosition`/`totalDuration` sono MutableState: la chiusura legge i valori
+      // `playbackClock` è lo stato condiviso della schermata: la chiusura legge i valori
       // correnti (ultima posizione pollata dell'episodio appena abbandonato) senza
       // accedere al player, che potrebbe già essere stato rilasciato.
       Log.d(
         "[NEXT_EP_DEBUG]",
         "SimklScrobbler onDispose: stop sessione precedente " +
-          "(${simklMedia.episode?.let { "S${it.season}E${it.number}" } ?: "film"}) pos=$currentPosition"
+          "(${simklMedia.episode?.let { "S${it.season}E${it.number}" } ?: "film"}) pos=${playbackClock.positionMs}"
       )
-      previousScrobbler.onStop(simklProgressPercent(currentPosition, totalDuration))
+      previousScrobbler.onStop(simklProgressPercent(playbackClock.positionMs, playbackClock.durationMs))
     }
   }
 
@@ -1852,7 +1940,7 @@ fun PlayerScreen(
           // Flusso riprodotto con successo: salvalo come "ultimo funzionante" per il titolo
           // (funzione "Riusa l'ultimo link"). Nessun salvataggio su READY di contenuti demo.
           viewModel.onStreamPlaybackReady()
-          totalDuration = exoPlayer.duration.coerceAtLeast(1L)
+          playbackClock.updateDuration(exoPlayer.duration)
           val vf = exoPlayer.videoFormat
           val vs = exoPlayer.videoSize
           val activeTrack = exoPlayer.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
@@ -1902,7 +1990,7 @@ fun PlayerScreen(
 
       override fun onTimelineChanged(timeline: Timeline, reason: Int) {
         if (exoPlayer.duration > 0L) {
-          totalDuration = exoPlayer.duration.coerceAtLeast(1L)
+          playbackClock.updateDuration(exoPlayer.duration)
           updateIntroWindow()
         }
       }
@@ -2217,9 +2305,14 @@ fun PlayerScreen(
     }
   }
 
-  // Polling periodico per la posizione e aggiornamento risoluzione se non ancora agganciata
-  val currentPositionRef by rememberUpdatedState(currentPosition)
-  val totalDurationRef by rememberUpdatedState(totalDuration)
+  // Polling periodico per la posizione e aggiornamento risoluzione se non ancora agganciata.
+  //
+  // Fase 6.1: il ciclo vive in un composable FIGLIO (`PlayerPositionTicker`) e scrive in un
+  // holder stabile (`playbackClock`) che aggiorna lo stato solo su valori realmente cambiati
+  // e non campiona affatto in pausa. Il corpo di `PlayerScreen` non legge più posizione e
+  // durata, quindi il tick da 500 ms non invalida più l'intera schermata: restano invalidati
+  // solo la timeline, il minutaggio e i flag derivati quando cambiano valore.
+  val playerPositionSource = remember(exoPlayer) { ExoPlayerPositionSource(exoPlayer) }
   val selectedQualityLabelRef by rememberUpdatedState(selectedQualityLabel)
   val detectedResolutionRef by rememberUpdatedState(detectedResolution)
 
@@ -2227,50 +2320,50 @@ fun PlayerScreen(
   // a ~5 secondi per non spammare il logcat durante la finestra di fine episodio.
   var lastNextEpLogBucket by remember { mutableLongStateOf(-1L) }
 
-  LaunchedEffect(exoPlayer, isPlaying) {
-    while (true) {
-      if (exoPlayer.isPlaying) {
-        currentPosition = exoPlayer.currentPosition
-        // player.duration può essere C.TIME_UNSET (-1) o non ancora pronto: in tal
-        // caso si mantengono i valori noti, senza basare overlay/countdown su durate fittizie.
-        val rawDuration = exoPlayer.duration
-        if (rawDuration > 0L && rawDuration != C.TIME_UNSET) {
-          totalDuration = rawDuration
-        }
-        viewModel.updatePlaybackPosition(currentPosition, totalDuration, exoPlayer.bufferedPosition)
-        // [NextEpisode] diagnostica negli ultimi 40 secondi (log throttled a ~5s).
-        val remaining = totalDuration - currentPosition
-        if (isTvShow && nextEpisode != null && remaining in 0L..40_000L) {
-          val bucket = currentPosition / 5_000L
-          if (bucket != lastNextEpLogBucket) {
-            lastNextEpLogBucket = bucket
-            Log.i(
-              "NextEpisode",
-              "pos=$currentPosition / dur=$totalDuration, remaining=${remaining}ms, shouldShowPrompt=$isNextEpisodePromptVisible"
-            )
-          }
-        }
-        if (selectedQualityLabelRef == "Auto" && detectedResolutionRef.isEmpty()) {
-          val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
-          val w = exoPlayer.videoFormat?.width ?: exoPlayer.videoSize.width
-          updateResolutionFromHeight(h, w)
-        }
-        if (introWindow == null && introDbWindow != null) {
-          updateIntroWindow()
-        }
-        introWindow?.let { win ->
-          if (currentPosition in (win.startMs - 15_000L)..(win.endMs)) {
-            val visible = !isIntroDismissed && PlayerIntroUtils.isButtonVisible(currentPosition, win)
-            Log.d(
-              "StreamNovaIntro",
-              "Posizione intro: currentPosition=$currentPosition, startMs=${win.startMs}, endMs=${win.endMs}, isButtonVisible=$visible, isIntroDismissed=$isIntroDismissed, isTvShow=$isTvShow"
-            )
-          }
-        }
+  // Lavoro NON grafico di ogni campione (ViewModel, diagnostica, risoluzione, intro).
+  // Posizione e durata arrivano come PARAMETRI: nessuna lettura di stato nel corpo della
+  // schermata, così l'isolamento della ricomposizione resta effettivo.
+  val onPlaybackSample: (Long, Long) -> Unit = { positionMs, durationMs ->
+    viewModel.updatePlaybackPosition(positionMs, durationMs, exoPlayer.bufferedPosition)
+    // [NextEpisode] diagnostica negli ultimi 40 secondi (log throttled a ~5s).
+    val remaining = durationMs - positionMs
+    if (isTvShow && nextEpisode != null && remaining in 0L..40_000L) {
+      val bucket = positionMs / 5_000L
+      if (bucket != lastNextEpLogBucket) {
+        lastNextEpLogBucket = bucket
+        Log.i(
+          "NextEpisode",
+          "pos=$positionMs / dur=$durationMs, remaining=${remaining}ms, shouldShowPrompt=$isNextEpisodePromptVisible"
+        )
       }
-      delay(500)
+    }
+    if (selectedQualityLabelRef == "Auto" && detectedResolutionRef.isEmpty()) {
+      val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
+      val w = exoPlayer.videoFormat?.width ?: exoPlayer.videoSize.width
+      updateResolutionFromHeight(h, w)
+    }
+    if (introWindow == null && introDbWindow != null) {
+      updateIntroWindow()
+    }
+    introWindow?.let { win ->
+      if (positionMs in (win.startMs - 15_000L)..(win.endMs)) {
+        val visible = !isIntroDismissed && PlayerIntroUtils.isButtonVisible(positionMs, win)
+        Log.d(
+          "StreamNovaIntro",
+          "Posizione intro: currentPosition=$positionMs, startMs=${win.startMs}, endMs=${win.endMs}, isButtonVisible=$visible, isIntroDismissed=$isIntroDismissed, isTvShow=$isTvShow"
+        )
+      }
     }
   }
+
+  PlayerPositionTicker(
+    playerKey = exoPlayer,
+    isPlaying = isPlaying,
+    source = playerPositionSource,
+    clock = playbackClock,
+    onSample = onPlaybackSample
+  )
+
 
   // ---------------------------------------------------------------------------
   // INTRO / "SALTA INTRO" (IntroDB e Metadati Reali)
@@ -2307,8 +2400,13 @@ fun PlayerScreen(
     updateIntroWindow()
   }
 
-  val isIntroActive = !isIntroDismissed &&
-    PlayerIntroUtils.isButtonVisible(currentPosition, introWindow)
+  // Fase 6.1: stato DERIVATO dal booleano — la schermata si ricompone solo quando il
+  // pulsante/banner "Salta intro" deve davvero comparire o sparire, non ad ogni tick.
+  val isIntroActive = rememberIntroActive(
+    clock = playbackClock,
+    isIntroDismissed = isIntroDismissed,
+    introWindow = introWindow
+  )
 
   // Durante lo scrubbing l'HUD resta nascosto anche a video in pausa o durante il settling:
   // l'unico elemento a video è l'overlay di anteprima della posizione.
@@ -2354,7 +2452,7 @@ fun PlayerScreen(
       (exoPlayer.currentPosition + seekDelta).coerceAtLeast(0L)
     }
     exoPlayer.seekTo(target)
-    currentPosition = target
+    playbackClock.updatePosition(target)
     hideTimerTick++
   }
 
@@ -2413,10 +2511,10 @@ fun PlayerScreen(
     introWindow?.let { window ->
       Log.d(
         "StreamNovaIntro",
-        "Salta Intro: seekTo=${window.endMs}, currentPosition=$currentPosition, isTvShow=$isTvShow"
+        "Salta Intro: seekTo=${window.endMs}, currentPosition=${playbackClock.positionMs}, isTvShow=$isTvShow"
       )
       exoPlayer.seekTo(window.endMs)
-      currentPosition = window.endMs
+      playbackClock.updatePosition(window.endMs)
     }
     isIntroDismissed = true
     try {
@@ -2523,19 +2621,25 @@ fun PlayerScreen(
    * del player (quindi stessi URL, header HTTP, cookie, redirect, proxy, HLS/DASH/DRM).
    * Cambiare episodio o fonte sostituisce la sorgente: il registro rilascia la precedente
    * e il controller azzera cache e overlay. Nessun riferimento alla superficie del player.
+   *
+   * La creazione è DIFFERITA: qui si registra solo la factory, così nessun oggetto
+   * dell'anteprima (né il controllo piattaforma) viene costruito all'apertura del player.
+   * L'estrattore nasce alla prima richiesta del controller, cioè al primo scrubbing.
    */
-  val previewSource = remember(videoUrl, playbackMediaSourceFactory) {
+  val previewSourceFactory = remember(videoUrl, playbackMediaSourceFactory) {
     videoUrl?.takeIf { it.isNotBlank() }?.let { url ->
-      PlayerSeekPreviewExtractor(
-        context = context,
-        mediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, emptyList()),
-        mediaSourceFactory = playbackMediaSourceFactory
-      )
+      {
+        PlayerSeekPreviewExtractor(
+          context = context,
+          mediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, emptyList()),
+          mediaSourceFactory = playbackMediaSourceFactory
+        )
+      }
     }
   }
-  DisposableEffect(previewSource) {
-    if (previewSource != null) {
-      SeekPreviewRegistry.install(previewSource)
+  DisposableEffect(previewSourceFactory) {
+    if (previewSourceFactory != null) {
+      SeekPreviewRegistry.installLazy(previewSourceFactory)
     } else {
       SeekPreviewRegistry.clear()
     }
@@ -2552,12 +2656,16 @@ fun PlayerScreen(
     scrub.commit()
   }
 
-  /** BACK durante lo scrubbing: nessuna seek, si riprende dal punto di partenza. */
+  /**
+   * BACK durante lo scrubbing: nessuna seek se la sessione è ancora aperta; se la seek è
+   * già stata confermata e l'overlay è in settling, il controller riporta il player
+   * all'origine con `CLOSEST_SYNC` (keyframe più vicino, non necessariamente il
+   * millisecondo esatto).
+   */
   fun cancelScrub() {
     isSeekSettling = false
     activePreviewPositionMs = 0L
     seekPreview.hide()
-    (exoPlayer as? ExoPlayer)?.setSeekParameters(SeekParameters.CLOSEST_SYNC)
     scrub.cancel()
   }
 
@@ -2647,35 +2755,98 @@ fun PlayerScreen(
     }
   }
 
-  // BACK su controlli: se l'overlay "Prossimo Episodio" è visibile, il primo BACK lo
-  // nasconde (consente di vedere i titoli di coda senza auto-next); il BACK successivo
-  // esce dal player.
-  BackHandler(enabled = !anyModalOpen) {
-    Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler")
-    Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
+  // ---------------------------------------------------------------------------
+  // BACK DEL TELECOMANDO — UNA PRESSIONE, UNA AZIONE
+  //
+  // Il tasto fisico arriva qui come KEY_DOWN + KEY_UP. Il DOWN viene CONSUMATO senza
+  // eseguire l'azione (l'unico effetto è congelare la conferma dello scrubbing) e l'azione
+  // avviene UNA sola volta sul rilascio. Consumare il DOWN non è una preferenza: sulle TV
+  // con dispatch "legacy" del BACK (Android 11 e precedenti, quindi la maggior parte dei
+  // televisori) `Activity.onKeyUp` chiama `onBackPressed()` solo se il DOWN ha armato il
+  // tracking; un DOWN lasciato passare viene consumato più in basso nella gerarchia di
+  // viste e il dispatcher non viene mai interpellato: la pressione andava persa e serviva
+  // un secondo BACK per uscire dal player. Gestendo il tasto direttamente sul rilascio
+  // l'esito non dipende più da chi consuma il DOWN né dalla versione della piattaforma.
+  //
+  // `backKeyDownPending` distingue un BACK FISICO (DOWN+UP gestiti qui) da un BACK avviato dal
+  // SISTEMA (predictive back / OnBackPressedDispatcher, che arriva senza i nostri KEY_DOWN): in
+  // quel caso agisce il BackHandler. Il flag garantisce che una pressione fisica non produca
+  // DUE azioni quando la piattaforma recapita anche il proprio callback.
+  var backKeyDownPending by remember { mutableStateOf(false) }
+
+  /**
+   * Esegue UNA volta l'azione decisa per lo stato corrente del player.
+   *
+   * Lo scrub viene letto dallo stato VIVO del controller (`scrub.isScrubbing`): non passa
+   * da Compose e non può restare indietro rispetto a un'apertura, a una conferma o al
+   * congelamento del timer avvenuti nello stesso frame del KEY_UP. Il settling resta invece
+   * lo stato Compose che descrive l'overlay ancora a video (`isSeekSettling`).
+   */
+  fun performPlayerBack() {
+    val activeScrub = scrub.isScrubbing
+    val seekSettling = isSeekSettling
+    val action = resolvePlayerBackAction(
+      anyModalOpen = anyModalOpen,
+      activeScrub = activeScrub,
+      seekSettling = seekSettling,
+      skipIntroVisible = showSkipIntro,
+      nextEpisodePromptVisible = isNextEpisodePromptVisible
+    )
     FocusTrace.log(
       "PLAYER",
-      "BackHandler: scrubbing=${isScrubbing || isSeekSettling} skipIntro=$showSkipIntro " +
-        "nextEpisode=$isNextEpisodePromptVisible -> ${if (isScrubbing || isSeekSettling || showSkipIntro || isNextEpisodePromptVisible) "dismiss" else "closePlayer"}"
+      "BACK -> $action (modale=$anyModalOpen scrubbing=$activeScrub settling=$seekSettling " +
+        "skipIntro=$showSkipIntro nextEpisode=$isNextEpisodePromptVisible)"
     )
-    if (isScrubbing || isSeekSettling) {
-      Log.i("SeekSync", "PLAYERSCREEN: BackHandler durante scrubbing/settling: annulla scrubbing")
-      cancelScrub()
-    } else if (showSkipIntro) {
-      Log.d("BACK_TRACE", "PLAYERSCREEN: BACK con banner Salta Intro visibile: chiusura banner")
-      isIntroDismissed = true
-      try {
-        idleFocusRequester.requestFocus()
-      } catch (_: Exception) {}
-    } else if (isNextEpisodePromptVisible) {
-      Log.d("BACK_TRACE", "PLAYERSCREEN: BACK su overlay Prossimo Episodio: chiusura overlay")
-      nextEpisodeDismissed = true
-      nextEpisodeCountdownSeconds = 0
-    } else {
-      Log.d("BACK_TRACE", "PLAYERSCREEN: chiamata a closePlayer()")
-      viewModel.resetStreamState()
-      viewModel.closePlayer()
+    when (action) {
+      PlayerBackAction.DISMISS_MODALS -> {
+        Log.d("BACK_TRACE", "PLAYERSCREEN: BACK con modale aperto: chiusura modale")
+        showTrackQuickPanel = false
+        showSubtitleModal = false
+        showQualityModal = false
+        showSpeedModal = false
+      }
+
+      PlayerBackAction.CANCEL_SCRUB -> {
+        Log.i("SeekSync", "PLAYERSCREEN: BACK durante scrub/settling: annulla e torna all'origine")
+        cancelScrub()
+      }
+
+      PlayerBackAction.DISMISS_SKIP_INTRO -> {
+        Log.d("BACK_TRACE", "PLAYERSCREEN: BACK con banner Salta Intro visibile: chiusura banner")
+        isIntroDismissed = true
+        try {
+          idleFocusRequester.requestFocus()
+        } catch (_: Exception) {}
+      }
+
+      PlayerBackAction.DISMISS_NEXT_EPISODE -> {
+        Log.d("BACK_TRACE", "PLAYERSCREEN: BACK su overlay Prossimo Episodio: chiusura overlay")
+        nextEpisodeDismissed = true
+        nextEpisodeCountdownSeconds = 0
+      }
+
+      PlayerBackAction.CLOSE_PLAYER -> {
+        Log.d("BACK_TRACE", "PLAYERSCREEN: chiamata a closePlayer()")
+        viewModel.resetStreamState()
+        viewModel.closePlayer()
+      }
     }
+  }
+
+  // BACK avviato dal sistema (predictive back / dispatcher) oppure con un modale aperto nella
+  // finestra principale: non c'è alcun KEY_DOWN in corso e l'azione va eseguita subito.
+  //
+  // Questo BackHandler è composto DOPO quello del player in MainActivity (e dopo quello della
+  // risoluzione stream): il dispatcher li interroga in ordine inverso di registrazione, quindi
+  // finché PlayerScreen è composto è questo a decidere. Il BACK di sistema non può quindi
+  // scavalcare scrub/settling e chiudere il player al posto di annullare la seek.
+  BackHandler {
+    if (backKeyDownPending) {
+      Log.d("BACK_TRACE", "PLAYERSCREEN: BACK di sistema ignorato: pressione fisica in corso")
+      return@BackHandler
+    }
+    Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler")
+    performPlayerBack()
   }
 
   Box(
@@ -2683,6 +2854,10 @@ fun PlayerScreen(
       .fillMaxSize()
       .onFocusChanged { state ->
         playerHasFocus = state.hasFocus
+        // Pressione BACK rimasta "aperta" mentre il player perde il focus (UP mai recapitato):
+        // il flag va azzerato, altrimenti il prossimo BACK avviato dal sistema verrebbe
+        // ignorato come se appartenesse ancora a quella pressione.
+        if (!state.hasFocus) backKeyDownPending = false
         FocusTrace.log("PLAYER", "focus root hasFocus=${state.hasFocus}")
       }
       .background(Color.Black)
@@ -2696,15 +2871,32 @@ fun PlayerScreen(
         val isKeyDown = native.action == KeyEvent.ACTION_DOWN
         val scrubDirection = PlayerScrub.directionForKeyCode(keyCode)
 
-        // BACK: solo osservazione. Il tasto NON viene consumato qui (né su DOWN né su UP),
-        // così arriva intatto al dispatcher e lo consuma un solo BackHandler sul rilascio.
+        // BACK: gestito QUI, sul rilascio, e consumato sia sul DOWN sia sull'UP.
+        //
+        // Il DOWN viene consumato senza eseguire nulla: così nessun altro livello può
+        // interpretarlo (né la gerarchia di viste, né un tracking di sistema che non
+        // arriverebbe mai al dispatcher) e l'unica azione avviene sul rilascio, UNA volta.
+        // Vedi il commento di `performPlayerBack`: è ciò che rende il tasto indipendente
+        // dal dispatch "legacy" delle TV.
         if (keyCode == KeyEvent.KEYCODE_BACK) {
           FocusTrace.log(
             "PLAYER",
             "KEY_BACK ${if (isKeyDown) "DOWN" else "UP"} repeat=${native.repeatCount} " +
               "scrubbing=${scrub.isScrubbing} settling=$isSeekSettling hud=$hudShown"
           )
-          return@onPreviewKeyEvent false
+          if (isKeyDown) {
+            backKeyDownPending = true
+            // BACK premuto durante uno scrubbing ancora aperto: il timer di conferma viene
+            // congelato. Tra DOWN e UP il silenzio può superare COMMIT_DELAY_MS e la seek
+            // verrebbe applicata proprio mentre l'utente sta annullando. Se la conferma è
+            // già avvenuta (settling) non c'è timer: il rollback userà l'origine conservata.
+            scrub.freezeCommit()
+          } else {
+            val physicalPress = backKeyDownPending
+            backKeyDownPending = false
+            if (physicalPress) performPlayerBack()
+          }
+          return@onPreviewKeyEvent true
         }
 
         // Rilascio dell'OK che ha confermato lo skip intro: consumato qui, altrimenti il
@@ -2736,11 +2928,7 @@ fun PlayerScreen(
         if (scrub.isScrubbing || isSeekSettling) {
           // Con l'anteprima aperta o in settling il telecomando appartiene allo scrubbing: ogni pressione
           // (comprese le ripetizioni del sistema) vale un passo, OK conferma.
-          //
-          // BACK non è gestito qui: chiudere lo scrubbing su KEY_DOWN consumerebbe il DOWN ma
-          // non il relativo KEY_UP, che verrebbe recapitato all'Activity e farebbe scattare il
-          // BackHandler sottostante (uscita dal player, o peggio pop della destinazione).
-          // Il BACK resta al BackHandler del player, che sul rilascio annulla lo scrubbing.
+          // BACK è già stato gestito sopra (ramo dedicato): qui non arriva.
           when {
             keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER -> {
               if (isKeyDown) {
@@ -2765,7 +2953,7 @@ fun PlayerScreen(
         // aperta) l'evento NON viene toccato: resta a Compose, che sposta il focus fra i
         // controlli a video (Play, Tracce audio, Sottotitoli, ...).
         if (scrubDirection != 0) {
-          if (hudShown || anyModalOpen || isLive || totalDuration <= 0) return@onPreviewKeyEvent false
+          if (hudShown || anyModalOpen || isLive || playbackClock.durationMs <= 0) return@onPreviewKeyEvent false
           if (isKeyDown) onScrubArrowPressed(scrubDirection)
           return@onPreviewKeyEvent true
         }
@@ -2777,13 +2965,7 @@ fun PlayerScreen(
         val keyCode = native.keyCode
         val isKeyDown = native.action == KeyEvent.ACTION_DOWN
 
-        // Il BACK NON è gestito sui KeyEvent: un solo tasto fisico produce un KEY_DOWN e un
-        // KEY_UP. Chiudendo il player (o lo scrubbing, o un banner) sul KEY_DOWN, il KEY_UP
-        // successivo non trova più il gestore che l'aveva consumato e viene recapitato
-        // all'Activity: `Activity.onKeyUp` chiama `onBackPressed()`, che sul dispatcher trova
-        // il BackHandler della destinazione sottostante (Dettaglio) e la fa POPpare -> Home.
-        // Il BACK è quindi di competenza esclusiva dei BackHandler (uno solo, sul rilascio):
-        // qui non va né consumato né interpretato.
+        // Il BACK fisico è gestito in PREVIEW (vedi sopra), sul rilascio e una sola volta.
 
         if (!isKeyDown) return@onKeyEvent false
 
@@ -2928,27 +3110,35 @@ fun PlayerScreen(
         // FASE 3.3 "Dimensione sottotitoli": applica la dimensione persistente al rendering
         // dei sottotitoli Media3 (SubtitleView di PlayerView). Frazione dell'altezza vista;
         // senza tracce sottotitoli non produce alcun effetto o errore.
-        view.subtitleView?.setFractionalTextSize(subtitleTextSizeFraction)
         // FASE 3.4 "Sfondo dei sottotitoli": applica lo sfondo persistente via
         // SubtitleView.setStyle(CaptionStyleCompat) (API disponibile in Media3 1.5.1).
         // Nei cue senza background incorporato, SubtitlePainter disegna
         // CaptionStyleCompat.backgroundColor dietro al testo solo se alpha > 0, quindi
         // con "Nessuno" (alpha 0) nessuno sfondo è disegnato. Senza tracce sottotitoli
         // non produce alcun effetto o errore.
-        view.subtitleView?.setStyle(subtitleCaptionStyle)
         // FASE 3.5 "Posizione dei sottotitoli": applica la posizione verticale persistente
         // via SubtitleView.setBottomPaddingFraction (API nativa disponibile in Media3 1.5.1).
         // È la distanza dal bordo inferiore come frazione dell'altezza vista, usata da
         // SubtitlePainter per i cue senza posizione esplicita (Cue.line == DIMEN_UNSET,
         // caso standard); cue con posizione propria e cue bitmap restano nativi Media3.
         // Senza tracce sottotitoli non produce alcun effetto o errore.
-        view.subtitleView?.setBottomPaddingFraction(subtitleBottomPaddingFraction)
-        Log.i(
-          "PlayerScreen",
-          "Dimensione sottotitoli: ${playbackSettings.subtitleSize.label} (fraction=$subtitleTextSizeFraction); " +
-            "sfondo: ${playbackSettings.subtitleBackground.label} (${subtitleCaptionStyle.backgroundColor}); " +
-            "posizione: ${playbackSettings.subtitlePosition.label} (bottomFraction=$subtitleBottomPaddingFraction)"
-        )
+        //
+        // Fase 6.1: le tre chiamate e il log diagnostico vengono eseguiti SOLO quando i
+        // valori effettivi cambiano (o quando la PlayerView è stata ricreata). Prima
+        // venivano ripetuti ad ogni ricomposizione della schermata.
+        val subtitleView = view.subtitleView
+        if (subtitleView != null && subtitleStyleApplier.shouldApply(subtitleView, subtitleStyleSnapshot)) {
+          subtitleView.setFractionalTextSize(subtitleStyleSnapshot.textSizeFraction)
+          subtitleView.setStyle(subtitleCaptionStyle)
+          subtitleView.setBottomPaddingFraction(subtitleStyleSnapshot.bottomPaddingFraction)
+          subtitleStyleApplier.markApplied(subtitleView, subtitleStyleSnapshot)
+          Log.i(
+            "PlayerScreen",
+            "Dimensione sottotitoli: ${playbackSettings.subtitleSize.label} (fraction=$subtitleTextSizeFraction); " +
+              "sfondo: ${playbackSettings.subtitleBackground.label} (${subtitleCaptionStyle.backgroundColor}); " +
+              "posizione: ${playbackSettings.subtitlePosition.label} (bottomFraction=$subtitleBottomPaddingFraction)"
+          )
+        }
       },
       modifier = Modifier.fillMaxSize()
     )
@@ -3266,10 +3456,10 @@ fun PlayerScreen(
                   introWindow?.let { window ->
                     Log.d(
                       "StreamNovaIntro",
-                      "Click Salta Intro (HUD): seekTo=${window.endMs}, currentPosition=$currentPosition, isTvShow=$isTvShow"
+                      "Click Salta Intro (HUD): seekTo=${window.endMs}, currentPosition=${playbackClock.positionMs}, isTvShow=$isTvShow"
                     )
                     exoPlayer.seekTo(window.endMs)
-                    currentPosition = window.endMs
+                    playbackClock.updatePosition(window.endMs)
                   }
                   isIntroDismissed = true
                   requestFocusOn(playPauseFocusRequester)
@@ -3318,14 +3508,9 @@ fun PlayerScreen(
           // -------------------------------------------------------------------
           // 2. BARRA DI SCORRIMENTO (Timeline)
           // -------------------------------------------------------------------
-          val progressFraction = if (totalDuration > 0 && !isLive) {
-            (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
-          } else 0f
-
-          val bufferFraction = if (totalDuration > 0 && !isLive) {
-            (exoPlayer.bufferedPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
-          } else 0f
-
+          // Fase 6.1: le frazioni non sono più calcolate qui (nel corpo dell'HUD): vengono
+          // lette nello scope più piccolo che le mostra, così il tick di 500 ms ricompone
+          // solo la barra e non l'intero OSD.
           Box(
             modifier = Modifier
               .fillMaxWidth()
@@ -3394,6 +3579,17 @@ fun PlayerScreen(
                 contentAlignment = Alignment.CenterStart
               ) {
                 val widthPx = maxWidth
+
+                // Fase 6.1: posizione e durata sono lette qui, nel più piccolo scope che le
+                // mostra. Il tick da 500 ms invalida solo questa barra (3 Box e il thumb) e
+                // non l'HUD né il resto della schermata.
+                val clockDurationMs = playbackClock.durationMs
+                val progressFraction = if (clockDurationMs > 0 && !isLive) {
+                  (playbackClock.positionMs.toFloat() / clockDurationMs.toFloat()).coerceIn(0f, 1f)
+                } else 0f
+                val bufferFraction = if (clockDurationMs > 0 && !isLive) {
+                  (exoPlayer.bufferedPosition.toFloat() / clockDurationMs.toFloat()).coerceIn(0f, 1f)
+                } else 0f
 
                 // Track Base della Timeline
                 Box(
@@ -3575,12 +3771,9 @@ fun PlayerScreen(
             }
 
             // LATO DESTRO: Minutaggio formattato (es. "00:02 / 41:54")
-            Text(
-              text = if (isLive) "LIVE" else formatTimePair(currentPosition, totalDuration),
-              color = Color.White,
-              fontSize = 16.sp,
-              fontWeight = FontWeight.SemiBold
-            )
+            // Fase 6.1: composable foglia dedicato, così il tick da 500 ms ricompone solo
+            // questa Text e non la barra controlli dell'HUD.
+            PlayerPlaybackTimeLabel(clock = playbackClock, isLive = isLive)
           }
         }
       }
@@ -3682,7 +3875,7 @@ fun PlayerScreen(
       ) {
         PlayerScrubOverlay(
           positionMs = overlayPosition,
-          durationMs = totalDuration,
+          durationMs = playbackClock.durationMs,
           deltaMs = overlayDelta,
           previewState = seekPreviewState
         )
@@ -5056,6 +5249,26 @@ private fun formatTimePair(currentMs: Long, totalMs: Long): String {
     }
   }
   return "${fmt(curSec)} / ${fmt(totSec)}"
+}
+
+/**
+ * Minutaggio dell'HUD (Fase 6.1).
+ *
+ * Composable FOGLIA dedicato alla lettura di [PlayerPlaybackClock]: il tick del polling
+ * invalida solo questa `Text`, non la barra controlli o l'intero OSD. Testo, colore e
+ * tipografia sono identici a prima ("LIVE" sui canali live).
+ */
+@Composable
+private fun PlayerPlaybackTimeLabel(
+  clock: PlayerPlaybackClock,
+  isLive: Boolean
+) {
+  Text(
+    text = if (isLive) "LIVE" else formatTimePair(clock.positionMs, clock.durationMs),
+    color = Color.White,
+    fontSize = 16.sp,
+    fontWeight = FontWeight.SemiBold
+  )
 }
 
 data class MediaAudioTrackOption(

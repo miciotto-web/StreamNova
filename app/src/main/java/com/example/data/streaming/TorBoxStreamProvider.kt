@@ -123,12 +123,15 @@ open class TorBoxStreamProvider(
   suspend fun resolveItems(candidates: List<StremioStreamCandidate>): List<StreamSource> {
     if (candidates.isEmpty() || !torBox.isConfigured()) return emptyList()
 
-    // Deduplica per coppia (infoHash, fileIdx) per preservare file differenti
-    // all'interno dello stesso torrent (es. 1080p vs 720p dello stesso episodio).
+    // Deduplica per installazione + coppia (infoHash, fileIdx): preserva file
+    // differenti dello stesso torrent (1080p vs 720p) e, soprattutto, i risultati
+    // di due CONFIGURAZIONI dello stesso addon (Torrentio globale e Torrentio IT),
+    // che condividono `manifest.id` e possono restituire gli stessi torrent.
+    // Deduplicare solo per hash scarterebbe sistematicamente la seconda.
     val distinct = candidates.distinctBy {
-      "${it.item.infoHash?.trim()?.lowercase()}_${it.item.fileIdx ?: -1}"
+      "${it.baseUrl.trimEnd('/')}|${it.item.infoHash?.trim()?.lowercase()}_${it.item.fileIdx ?: -1}"
     }
-    val hashes = distinct.mapNotNull { it.item.infoHash?.trim()?.lowercase() }
+    val hashes = distinct.mapNotNull { it.item.infoHash?.trim()?.lowercase() }.distinct()
 
     // DIAG TEMPORANEO (B): prima/dopo la deduplicazione per addon INTERROGATO.
     candidates.groupBy { it.baseUrl }.forEach { (baseUrl, items) ->
@@ -220,6 +223,11 @@ open class TorBoxStreamProvider(
           isProgressive = true,
           isItalian = isItalian,
           addonName = providerName,
+          // Identità dell'installazione (baseUrl con configurazione): attribuisce
+          // la sorgente alla configurazione corretta e la rende distinta nella
+          // deduplica di StreamManager anche quando un'altra installazione
+          // restituisce lo stesso infoHash/fileIdx.
+          addonInstallId = candidate.baseUrl.trimEnd('/'),
           instantTag = instantTag,
           releaseTitle = releaseTitle,
           details = details,

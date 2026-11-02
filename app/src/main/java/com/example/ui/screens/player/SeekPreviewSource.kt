@@ -190,15 +190,36 @@ internal interface SeekPreviewSource {
  * scrubbing, mentre l'URL e le richieste HTTP della sorgente attiva sono altro stato della
  * composizione. Il registro tiene l'unico riferimento vivo alla sorgente ed evita che una
  * ricomposizione (o un nuovo controller) ne crei una seconda.
+ *
+ * La sorgente può essere installata anche come **factory**: la creazione dell'estrattore
+ * (decoder dedicato, controlli di piattaforma) avviene alla PRIMA richiesta effettiva,
+ * cioè quando lo scrubbing comincia. All'avvio del player non si costruisce nulla.
  */
 internal object SeekPreviewRegistry {
 
-  @Volatile
+  private val lock = Any()
+
   private var current: SeekPreviewSource? = null
+  private var pendingFactory: (() -> SeekPreviewSource)? = null
 
-  fun source(): SeekPreviewSource? = current
+  @Synchronized
+  fun source(): SeekPreviewSource? {
+    current?.let { return it }
+    val factory = pendingFactory ?: return null
+    // La factory si consuma anche se fallisce: un errore di costruzione non deve
+    // trasformare ogni pressione di scrubbing in un nuovo tentativo (e in un nuovo log).
+    pendingFactory = null
+    val created = runCatching { factory() }
+      .onFailure { Log.w(TAG, "Creazione della sorgente di anteprima fallita", it) }
+      .getOrNull()
+      ?: return null
+    current = created
+    return created
+  }
 
+  @Synchronized
   fun install(source: SeekPreviewSource) {
+    pendingFactory = null
     val previous = current
     current = source
     if (previous !== source) {
@@ -207,9 +228,26 @@ internal object SeekPreviewRegistry {
     }
   }
 
+  /**
+   * Installa una factory che costruisce la sorgente alla prima richiesta. Sostituire
+   * un'installazione precedente rilascia subito la sorgente già creata.
+   */
+  @Synchronized
+  fun installLazy(factory: () -> SeekPreviewSource) {
+    val previous = current
+    current = null
+    pendingFactory = factory
+    if (previous != null) {
+      runCatching { previous.release() }
+        .onFailure { Log.w(TAG, "Rilascio della sorgente precedente fallito", it) }
+    }
+  }
+
+  @Synchronized
   fun clear() {
     val previous = current
     current = null
+    pendingFactory = null
     runCatching { previous?.release() }
       .onFailure { Log.w(TAG, "Rilascio della sorgente fallito", it) }
   }

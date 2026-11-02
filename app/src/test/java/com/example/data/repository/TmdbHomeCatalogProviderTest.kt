@@ -70,6 +70,7 @@ class TmdbHomeCatalogProviderTest {
     MediaRepository.init(context, database)
     StremioAddonRepository.getInstalledAddons().forEach { StremioAddonRepository.removeAddon(it.id) }
     StremioAddonRepository.clearCaches()
+    StremioCatalogRepository.resetHomeSectionMemory()
 
     server = FakeTmdbServer().apply { start() }
     TmdbHomeCatalogProvider.apiKeyProvider = { TEST_KEY }
@@ -91,7 +92,7 @@ class TmdbHomeCatalogProviderTest {
       ?.substringAfter("=", "")
       ?.takeIf { it.isNotEmpty() }
 
-  /** Id delle 10 righe provider nell'ordine editoriale della Home. */
+  /** Id delle 10 righe provider nell'ordine editoriale della vecchia Home TMDB. */
   private fun expectedProviderRowIds(): List<String> = listOf(
     TmdbHomeCatalogProvider.SECTION_NETFLIX_MOVIES_NEW,
     TmdbHomeCatalogProvider.SECTION_NETFLIX_SERIES_NEW,
@@ -99,6 +100,20 @@ class TmdbHomeCatalogProviderTest {
     TmdbHomeCatalogProvider.SECTION_DISNEY_SERIES_NEW,
     TmdbHomeCatalogProvider.SECTION_PRIME_MOVIES_NEW,
     TmdbHomeCatalogProvider.SECTION_PRIME_SERIES_NEW,
+    TmdbHomeCatalogProvider.SECTION_APPLE_MOVIES_NEW,
+    TmdbHomeCatalogProvider.SECTION_APPLE_SERIES_NEW,
+    TmdbHomeCatalogProvider.SECTION_PARAMOUNT_MOVIES_NEW,
+    TmdbHomeCatalogProvider.SECTION_PARAMOUNT_SERIES_NEW
+  )
+
+  /** Id delle 10 righe Novità provider usate dalla Home dopo il ripristino di Cinemeta. */
+  private fun expectedNoveltyRowIds(): List<String> = listOf(
+    TmdbHomeCatalogProvider.SECTION_NETFLIX_MOVIES_NEW,
+    TmdbHomeCatalogProvider.SECTION_NETFLIX_SERIES_NEW,
+    TmdbHomeCatalogProvider.SECTION_HBO_MAX_MOVIES_NEW,
+    TmdbHomeCatalogProvider.SECTION_HBO_MAX_SERIES_NEW,
+    TmdbHomeCatalogProvider.SECTION_DISNEY_MOVIES_NEW,
+    TmdbHomeCatalogProvider.SECTION_DISNEY_SERIES_NEW,
     TmdbHomeCatalogProvider.SECTION_APPLE_MOVIES_NEW,
     TmdbHomeCatalogProvider.SECTION_APPLE_SERIES_NEW,
     TmdbHomeCatalogProvider.SECTION_PARAMOUNT_MOVIES_NEW,
@@ -516,45 +531,188 @@ class TmdbHomeCatalogProviderTest {
 
   // ── 5. Integrazione con resolveHomeCatalogs ────────────────────────────────
 
-  @Test
-  fun laHomeSenzaAddonVieneAlimentataDaTmdb() = runBlocking {
-    val catalogs = StremioCatalogRepository.resolveHomeCatalogs(emptyList())
+  /**
+   * Righe stock sintetiche con gli id reali del manifest Cinemeta. Il loader è
+   * iniettato: la Home non deve dipendere dalla rete nei test, ma la forma delle
+   * sezioni (catalogId, mediaType, origin) è quella prodotta dal repository.
+   */
+  private fun syntheticCinemetaStock(): List<CatalogSection> {
+    fun cinemetaSection(
+      catalogId: String,
+      mediaType: MediaType,
+      itemId: String,
+      title: String
+    ): CatalogSection = CatalogSection(
+      id = "stremio_com.linvo.cinemeta_" +
+        "${if (mediaType == MediaType.SERIE_TV) "series" else "movie"}_$catalogId",
+      title = "$catalogId • Cinemeta",
+      addonId = "com.linvo.cinemeta",
+      addonName = "Cinemeta",
+      catalogId = catalogId,
+      mediaType = mediaType,
+      origin = CatalogSourceOrigin.STREMIO_ADDON,
+      items = listOf(
+        MediaItem(
+          id = itemId,
+          title = title,
+          synopsis = "",
+          videoUrl = "",
+          type = mediaType
+        )
+      )
+    )
 
-    assertTrue(catalogs.popularMovies.isNotEmpty())
-    assertTrue(catalogs.top10Movies.isNotEmpty())
-    assertTrue(catalogs.trendingMovies.isNotEmpty())
-    assertTrue(catalogs.popularSeries.isNotEmpty())
-    assertTrue(catalogs.top10Series.isNotEmpty())
-    assertTrue(catalogs.trendingSeries.isNotEmpty())
+    return listOf(
+      cinemetaSection("top", MediaType.FILM, "tt1001", "Popolare Film"),
+      cinemetaSection("top", MediaType.SERIE_TV, "tt2001", "Popolare Serie"),
+      cinemetaSection("imdbRating", MediaType.FILM, "tt1002", "Film in evidenza"),
+      cinemetaSection("imdbRating", MediaType.SERIE_TV, "tt2002", "Serie in evidenza"),
+      cinemetaSection("year", MediaType.FILM, "tt1003", "Nuovo Film"),
+      cinemetaSection("year", MediaType.SERIE_TV, "tt2003", "Nuova Serie")
+    )
+  }
+
+  @Test
+  fun laHomeSenzaAddonUsaCinemetaPerLeRigheStockELeNovitaProviderPerLeRigheExtra() = runBlocking {
+    val stock = syntheticCinemetaStock()
+    val catalogs = StremioCatalogRepository.resolveHomeCatalogs(emptyList()) { mediaTypes ->
+      stock.filter { it.mediaType in mediaTypes } +
+        TmdbHomeCatalogProvider.loadProviderNewSections(mediaTypes)
+    }
+
+    // Righe stock: dati Cinemeta, Film e Serie TV separati.
+    assertEquals(listOf("tt1001"), catalogs.popularMovies.map { it.id })
+    assertEquals(listOf("tt1002"), catalogs.top10Movies.map { it.id })
+    assertEquals(listOf("tt1003"), catalogs.trendingMovies.map { it.id })
+    assertEquals(listOf("tt2001"), catalogs.popularSeries.map { it.id })
+    assertEquals(listOf("tt2002"), catalogs.top10Series.map { it.id })
+    assertEquals(listOf("tt2003"), catalogs.trendingSeries.map { it.id })
+    assertEquals(listOf("tt1001", "tt1002", "tt1003"), catalogs.allMovies.map { it.id })
+    assertEquals(listOf("tt2001", "tt2002", "tt2003"), catalogs.allSeries.map { it.id })
     assertTrue(catalogs.heroItems.isNotEmpty())
 
-    assertTrue(catalogs.moviesFromTmdbDefault)
-    assertTrue(catalogs.seriesFromTmdbDefault)
-    assertFalse(catalogs.moviesFromDefaultCatalog)
-    assertFalse(catalogs.seriesFromDefaultCatalog)
-    assertFalse(catalogs.isMoviesFromStremio)
-    assertFalse(catalogs.isSeriesFromStremio)
+    // La paginazione delle schermate categoria usa Cinemeta, non TMDB.
+    assertTrue(catalogs.moviesFromDefaultCatalog)
+    assertTrue(catalogs.seriesFromDefaultCatalog)
+    assertFalse(catalogs.moviesFromTmdbDefault)
+    assertFalse(catalogs.seriesFromTmdbDefault)
+    assertTrue(catalogs.isMoviesFromStremio)
+    assertTrue(catalogs.isSeriesFromStremio)
     assertFalse(catalogs.hasCustomCatalogAddons)
+    assertEquals(CatalogSourceOrigin.STREMIO_ADDON, catalogs.stockSourceOrigin)
 
+    // Righe extra: solo le 10 Novità provider, nell'ordine editoriale richiesto.
+    assertEquals(expectedNoveltyRowIds(), catalogs.extraSections.map { it.id })
     assertEquals(
-      expectedExtraIds(),
-      catalogs.extraSections.map { it.id }
-    )
-    assertEquals(
-      listOf(MediaType.SERIE_TV, MediaType.FILM, MediaType.SERIE_TV) +
-        List(5) { listOf(MediaType.FILM, MediaType.SERIE_TV) }.flatten(),
+      List(5) { listOf(MediaType.FILM, MediaType.SERIE_TV) }.flatten(),
       catalogs.extraSections.map { it.mediaType }
     )
-    // Nessuna riga nativa può esporre un nome addon come attribuzione.
+    // Nessuna riga TMDB può esporre un nome addon come attribuzione.
     catalogs.extraSections.forEach { section ->
       assertNull(section.addonId)
       assertNull(section.addonName)
       assertNull(section.attributionAddonName)
+      assertTrue(section.items.isNotEmpty())
     }
-    // Le righe stock sono tutte TMDB: la UI può mostrare il badge TMDB e mai un addon.
-    assertEquals(CatalogSourceOrigin.TMDB_NATIVE, catalogs.stockSourceOrigin)
-    assertTrue(catalogs.allMovies.isNotEmpty())
-    assertTrue(catalogs.allSeries.isNotEmpty())
+    // Ogni riga provider ha contenuti propri e non duplica l'altra riga dello
+    // stesso provider (id distinti per tipo).
+    assertEquals(
+      catalogs.extraSections.size,
+      catalogs.extraSections.map { it.items.map(MediaItem::id) }.toSet().size
+    )
+  }
+
+  @Test
+  fun leRigheNovitaProviderUsanoICinqueProviderRichiestiConHboMax() = runBlocking {
+    val sections = TmdbHomeCatalogProvider.loadProviderNewSections(
+      listOf(MediaType.FILM, MediaType.SERIE_TV)
+    )
+
+    assertEquals(expectedNoveltyRowIds(), sections.map { it.id })
+    assertEquals(5, sections.count { it.mediaType == MediaType.FILM })
+    assertEquals(5, sections.count { it.mediaType == MediaType.SERIE_TV })
+    assertEquals(
+      listOf(
+        "Novità Netflix Film",
+        "Novità Netflix Serie",
+        "Novità HBO / Max Film",
+        "Novità HBO / Max Serie",
+        "Novità Disney+ Film",
+        "Novità Disney+ Serie",
+        "Novità Apple TV+ Film",
+        "Novità Apple TV+ Serie",
+        "Novità Paramount+ Film",
+        "Novità Paramount+ Serie"
+      ),
+      sections.map { it.title }
+    )
+
+    val providerIds = server.requestsFor("/3/discover/movie")
+      .mapNotNull { it.queryParam("with_watch_providers") }
+      .toSet()
+    assertEquals(setOf("8", "1899", "337", "350", "531"), providerIds)
+    assertFalse(providerIds.contains("119"))
+  }
+
+  @Test
+  fun leRigheNovitaProviderOrdinanoPerDataDecrescenteEVerificanoLaDisponibilita() = runBlocking {
+    TmdbHomeCatalogProvider.loadProviderNewSections(
+      listOf(MediaType.FILM, MediaType.SERIE_TV)
+    )
+
+    val movieRequests = server.requestsFor("/3/discover/movie")
+    val seriesRequests = server.requestsFor("/3/discover/tv")
+    assertEquals(5, movieRequests.size)
+    assertEquals(5, seriesRequests.size)
+
+    movieRequests.forEach { request ->
+      assertEquals("IT", request.queryParam("watch_region"))
+      assertEquals("flatrate", request.queryParam("with_watch_monetization_types"))
+      assertEquals("primary_release_date.desc", request.queryParam("sort_by"))
+      assertNotNull(request.queryParam("primary_release_date.gte"))
+      assertNotNull(request.queryParam("primary_release_date.lte"))
+    }
+    seriesRequests.forEach { request ->
+      assertEquals("IT", request.queryParam("watch_region"))
+      assertEquals("flatrate", request.queryParam("with_watch_monetization_types"))
+      assertEquals("first_air_date.desc", request.queryParam("sort_by"))
+      assertNotNull(request.queryParam("first_air_date.gte"))
+      assertNotNull(request.queryParam("first_air_date.lte"))
+    }
+
+    // Finestra film: 90 giorni per Netflix/Disney+, 365 per HBO / Max, Apple e Paramount.
+    val movieSinceByProvider = movieRequests.associate { request ->
+      request.queryParam("with_watch_providers").orEmpty() to
+        request.queryParam("primary_release_date.gte").orEmpty()
+    }
+    assertEquals("2026-08-02", movieSinceByProvider["8"])
+    assertEquals("2026-08-02", movieSinceByProvider["337"])
+    assertEquals("2025-10-31", movieSinceByProvider["1899"])
+    assertEquals("2025-10-31", movieSinceByProvider["350"])
+    assertEquals("2025-10-31", movieSinceByProvider["531"])
+  }
+
+  @Test
+  fun unaRigaNovitaProviderVuotaOSenzaReteNonAzzeraLeAltre() = runBlocking {
+    server.emptyProviderRows += "movie:1899"
+    val sections = TmdbHomeCatalogProvider.loadProviderNewSections(
+      listOf(MediaType.FILM, MediaType.SERIE_TV)
+    )
+
+    assertNull(sections.firstOrNull { it.id == TmdbHomeCatalogProvider.SECTION_HBO_MAX_MOVIES_NEW })
+    assertNotNull(sections.firstOrNull { it.id == TmdbHomeCatalogProvider.SECTION_HBO_MAX_SERIES_NEW })
+    assertEquals(9, sections.size)
+  }
+
+  @Test
+  fun unErroreDelCatalogoNovitaNonAzzeraLeAltreRighe() = runBlocking {
+    server.failPaths += "/3/discover/movie"
+    val sections = TmdbHomeCatalogProvider.loadProviderNewSections(
+      listOf(MediaType.FILM, MediaType.SERIE_TV)
+    )
+
+    assertTrue(sections.none { it.mediaType == MediaType.FILM })
+    assertEquals(5, sections.count { it.mediaType == MediaType.SERIE_TV })
   }
 
   // ── Fixture: server TMDB locale ────────────────────────────────────────────

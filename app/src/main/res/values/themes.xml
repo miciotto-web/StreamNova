@@ -6,6 +6,6 @@
          Il video resta gestito dalla schermata interna (SplashVideoScreen), non
          dallo splash di sistema. -->
     <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar">
-        <item name="android:windowBackground">@color/splash_video_background</item>
+        <item name="android:windowBackground">@drawable/splash_native</item>
     </style>
 </resources>

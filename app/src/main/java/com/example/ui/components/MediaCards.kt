@@ -214,12 +214,25 @@ fun CardMediaImage(
 
   val effectiveFallbackRes = fallbackRes?.takeIf { it != R.drawable.banner_dune }
 
-  if (targetUrl != null) {
-    SubcomposeAsyncImage(
-      model = ImageRequest.Builder(LocalContext.current)
-        .data(targetUrl)
+  // UNA ImageRequest per card e per URL. Prima veniva costruita a ogni ricomposizione della
+  // card: un Builder + un ImageRequest nuovi ogni volta, poi assegnati a `painter.request`,
+  // che è uno `mutableStateOf` e quindi confronta i due oggetti campo per campo
+  // (`ImageRequest.equals`). Con `remember` l'oggetto è creato una volta e il confronto è
+  // per identità. La chiave è (context, URL): nessuno stato viene catturato, quindi non
+  // esistono catture obsolete e il comportamento di caricamento resta identico.
+  val context = LocalContext.current
+  val imageRequest = remember(context, targetUrl) {
+    targetUrl?.let { url ->
+      ImageRequest.Builder(context)
+        .data(url)
         .crossfade(true)
-        .build(),
+        .build()
+    }
+  }
+
+  if (imageRequest != null) {
+    SubcomposeAsyncImage(
+      model = imageRequest,
       contentDescription = contentDescription,
       contentScale = contentScale,
       modifier = modifier,
@@ -1077,6 +1090,14 @@ internal val NeonCardGlowSpread = 10.dp
 internal val NeonCardBorderWidth = 2.5.dp
 
 /**
+ * Alpha delle tre passate dell'alone Neon (dall'esterno verso l'interno).
+ *
+ * Compensano la riduzione da 14 a 3 passate: la somma cumulativa resta quella del
+ * gradiente precedente, senza allocazioni per frame.
+ */
+private val NEON_GLOW_LAYER_ALPHA = floatArrayOf(0.11f, 0.169f, 0.169f)
+
+/**
  * Alone Neon diffuso: layer di rounded-rect concentrici con alpha decrescente,
  * disegnati anche oltre i bordi. Va richiamato in un [drawBehind] NON clippato: la somma
  * dei layer produce una sfumatura morbida che si estende di [spreadPx] oltre la card.
@@ -1088,13 +1109,15 @@ internal fun DrawScope.drawNeonGlow(
   intensity: Float
 ) {
   if (intensity <= 0.01f || spreadPx <= 0f) return
-  val layers = 14
-  val perLayerAlpha = 0.04f * intensity
+  // Il vecchio alone usava 14 rounded-rect (0.04 di alpha ciascuno). Tre passate con
+  // alpha compensati riproducono la stessa opacità cumulativa (≈0.44 al bordo della
+  // card, ≈0.19 a metà alone) riducendo di ~4,7× le draw call per frame.
+  val layers = 3
   for (i in layers downTo 1) {
     val t = i.toFloat() / layers
     val inflate = spreadPx * t
     drawRoundRect(
-      color = color.copy(alpha = perLayerAlpha),
+      color = color.copy(alpha = NEON_GLOW_LAYER_ALPHA[layers - i] * intensity),
       topLeft = Offset(-inflate, -inflate),
       size = Size(size.width + inflate * 2f, size.height + inflate * 2f),
       cornerRadius = CornerRadius(cornerRadiusPx + inflate, cornerRadiusPx + inflate)

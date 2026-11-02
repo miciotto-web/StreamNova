@@ -17,6 +17,7 @@ import com.example.data.api.TmdbSeasonDetailDto
 import com.example.data.api.TmdbTvDetailDto
 import com.example.data.api.TmdbEpisodeDto
 import com.example.data.api.TmdbVideosResponseDto
+import androidx.room.withTransaction
 import com.example.data.local.CachedMediaItemEntity
 import com.example.data.local.CatalogProgressEntity
 import com.example.data.local.EpisodeProgressEntity
@@ -43,6 +44,7 @@ import com.example.data.model.WatchProgress
 import com.example.data.model.toEpisode
 import com.example.data.api.TmdbCompanyDetailDto
 import com.example.data.model.PersonDetails
+import com.example.data.prefs.AppSettingsRepository
 import com.example.data.model.ProductionCompany
 import com.example.data.model.VideoResolution
 import kotlinx.coroutines.CancellationException
@@ -217,6 +219,13 @@ object MediaRepository {
    * Questi elementi possono usare il proprio video demo; i titoli provenienti da TMDB no.
    */
   private val demoSeedIds: Set<String> by lazy { getInitialMedia().map { it.id }.toSet() }
+
+  /**
+   * Catalogo seed calcolato UNA volta. Prima ogni checkpoint del refresh ne
+   * ricostruiva una lista identica (decine di oggetti) solo per leggere
+   * poster/backdrop di fallback.
+   */
+  private val initialMediaForMerge: List<MediaItem> by lazy { getInitialMedia() }
 
   /** true se l'elemento appartiene al catalogo seed/demo (non un titolo TMDB live). */
   fun isDemoSeedItem(id: String): Boolean = id in demoSeedIds
@@ -1066,6 +1075,17 @@ object MediaRepository {
    * non esiste alcun limite fisso del tipo `for (pg in 1..2)`.
    */
   const val MAX_PROVIDER_PAGES = 25
+
+  /**
+   * Pagine di catalogo provider caricate durante il bootstrap (refresh all'avvio).
+   *
+   * La Home usa solo i titoli della prima pagina per popolare le righe; le pagine
+   * successive non servono finché l'utente non apre la scheda del provider e scorre
+   * la griglia. Il crawl completo all'avvio (fino a [MAX_PROVIDER_PAGES] pagine per
+   * ogni coppia provider/tipo) era quindi lavoro di rete inutile. Le pagine restano
+   * tutte disponibili: [loadProviderCatalog] le richiede on-demand dalla ProviderScreen.
+   */
+  const val INITIAL_PROVIDER_PAGES = 1
 
    /** TMDB ID di Crunchyroll: fallback watch_region (IT -> US) e priorita' alle serie TV. */
    const val CRUNCHYROLL_TMDB_ID = 283
@@ -3176,83 +3196,108 @@ object MediaRepository {
    * Un errore TMDB (rete/HTTP/credenziale) restituisce `null`: il chiamante deve
    * dichiararlo come errore, mai presentarlo come "nessun risultato".
    *
-    * @param mediaType tipo di contenuto (film o serie TV).
-    * @param genreId id di genere TMDB del tipo (es. 27 = Horror). Per le SERIE TV un
-    *        id che TMDB TV non definisce (es. Horror=27) viene servito dal keyword
-    *        canonico `horror` (315058), perché `with_genres=27` sull'endpoint TV
-    *        restituirebbe sempre zero risultati.
-    * @param page pagina Discover (1-based).
+   * @param mediaType tipo di contenuto (film o serie TV).
+   * @param genreId id di genere TMDB del tipo (es. 27 = Horror). Per le SERIE TV un
+   *        id che TMDB TV non definisce (es. Horror=27) viene servito dal keyword
+   *        canonico `horror` (315058), perché `with_genres=27` sull'endpoint TV
+   *        restituirebbe sempre zero risultati.
+   * @param page pagina Discover (1-based).
+   * @param excludeNonEditorialTv true (default) per i cataloghi generici, che devono
+   *        scartare podcast/talk show/recensioni. La categoria dedicata "Talk" passa
+   *        false: il genere TMDB è già la selezione editoriale e un talk show con
+   *        "Talk Show" nel titolo non deve essere scartato.
    * @return titoli convertiti in [MediaItem], oppure `null` se la chiamata è fallita.
    */
   suspend fun discoverByGenre(
     mediaType: MediaType,
     genreId: Int,
-    page: Int = 1
+    page: Int = 1,
+    excludeNonEditorialTv: Boolean = true
+  ): List<MediaItem>? = discoverTmdb(
+    contentLanguage = "it-IT",
+    failureLog = "Fallback TMDB per genere fallito (tipo=$mediaType, genere=$genreId, pag=$page)",
+    cacheLog = "Errore salvataggio Room discoverByGenre"
+  ) { cleanKey, contentLanguage, currentList ->
+    when (mediaType) {
+      MediaType.SERIE_TV -> {
+        // TMDB non definisce "Horror" tra i generi TV (`/3/genre/tv/list` non ha
+        // l'id 27): `discover/tv?with_genres=27` risponde 200 con zero risultati,
+        // quindi il fallback sembrerebbe riuscito senza mai produrre titoli.
+        // La scoperta delle serie horror usa il keyword TMDB canonico `horror`
+        // (id 315058), che restituisce le serie horror reali del catalogo TV.
+        val tvResponse = if (genreId == TMDB_GENRE_ID_HORROR) {
+          TmdbApiClient.service.discoverTvByKeyword(
+            apiKey = cleanKey,
+            keywordId = TMDB_KEYWORD_TV_HORROR.toString(),
+            sortBy = "popularity.desc",
+            language = contentLanguage,
+            page = page
+          )
+        } else {
+          TmdbApiClient.service.discoverTvByGenre(
+            apiKey = cleanKey,
+            genreId = genreId.toString(),
+            sortBy = "popularity.desc",
+            language = contentLanguage,
+            page = page
+          )
+        }
+        tvResponse.results
+          .filterNot { excludeNonEditorialTv && isBlockedTv(it.id, it.name) }
+          .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
+          .map { tvToMediaItem(it, currentList) }
+      }
+      else -> {
+        val movieResponse = TmdbApiClient.service.discoverMoviesByGenre(
+          apiKey = cleanKey,
+          genreId = genreId.toString(),
+          sortBy = "popularity.desc",
+          language = contentLanguage,
+          page = page
+        )
+        movieResponse.results
+          .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
+          .map { movieToMediaItem(it, currentList) }
+      }
+    }
+  }
+
+  /**
+   * Percorso comune delle scoperte TMDB della sezione Ricerca: chiave effettiva,
+   * conversione dei DTO, cache Room e merge in `_mediaList`.
+   *
+   * @param contentLanguage lingua dei metadati TMDB (`language`).
+   * @param failureLog testo del log quando la chiamata fallisce.
+   * @param cacheLog testo del log quando la scrittura in Room fallisce.
+   * @param fetch chiamata specifica della categoria, già convertita in [MediaItem].
+   * @return lista dei risultati, oppure `null` su errore/credenziale assente.
+   */
+  private suspend fun discoverTmdb(
+    contentLanguage: String,
+    failureLog: String,
+    cacheLog: String,
+    fetch: suspend (apiKey: String, contentLanguage: String, existing: List<MediaItem>) -> List<MediaItem>
   ): List<MediaItem>? = withContext(Dispatchers.IO) {
     val cleanKey = getEffectiveApiKey()
     if (cleanKey.isBlank()) return@withContext null
     val currentList = _mediaList.value
     val results = try {
-      when (mediaType) {
-        MediaType.SERIE_TV -> {
-          // TMDB non definisce "Horror" tra i generi TV (`/3/genre/tv/list` non ha
-          // l'id 27): `discover/tv?with_genres=27` risponde 200 con zero risultati,
-          // quindi il fallback sembrerebbe riuscito senza mai produrre titoli.
-          // La scoperta delle serie horror usa il keyword TMDB canonico `horror`
-          // (id 315058), che restituisce le serie horror reali del catalogo TV.
-          val tvResponse = if (genreId == TMDB_GENRE_ID_HORROR) {
-            TmdbApiClient.service.discoverTvByKeyword(
-              apiKey = cleanKey,
-              keywordId = TMDB_KEYWORD_TV_HORROR.toString(),
-              sortBy = "popularity.desc",
-              language = "it-IT",
-              page = page
-            )
-          } else {
-            TmdbApiClient.service.discoverTvByGenre(
-              apiKey = cleanKey,
-              genreId = genreId.toString(),
-              sortBy = "popularity.desc",
-              language = "it-IT",
-              page = page
-            )
-          }
-          tvResponse.results
-            .filterNot { isBlockedTv(it.id, it.name) }
-            .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
-            .map { tvToMediaItem(it, currentList) }
-        }
-        else -> {
-          val movieResponse = TmdbApiClient.service.discoverMoviesByGenre(
-            apiKey = cleanKey,
-            genreId = genreId.toString(),
-            sortBy = "popularity.desc",
-            language = "it-IT",
-            page = page
-          )
-          movieResponse.results
-            .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
-            .map { movieToMediaItem(it, currentList) }
-        }
-      }
+      fetch(cleanKey, contentLanguage, currentList)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
-      Log.w(
-        "MediaRepository",
-        "Fallback TMDB per genere fallito (tipo=$mediaType, genere=$genreId, pag=$page): ${e.message}"
-      )
+      Log.w("MediaRepository", "$failureLog: ${e.message}")
       return@withContext null
     }
 
     if (results.isNotEmpty()) {
       // Stessa cache-first di [loadCategoryPage]: la tabella Room resta la sorgente
-      // del catalogo, il fallback aggiunge solo i titoli che non vi erano ancora.
+      // del catalogo, la scoperta aggiunge solo i titoli che non vi erano ancora.
       database?.let { db ->
         try {
           db.cachedMediaDao().insertOrUpdate(results.map { it.toEntity() })
         } catch (e: Exception) {
-          Log.w("MediaRepository", "Errore salvataggio Room discoverByGenre: ${e.message}")
+          Log.w("MediaRepository", "$cacheLog: ${e.message}")
         }
       }
       val updated = _mediaList.value.toMutableList()
@@ -3553,7 +3598,8 @@ object MediaRepository {
     val existing = existingItems.firstOrNull { it.tmdbId == movie.id && it.type == MediaType.FILM }
     val year = movie.releaseDate?.take(4)?.toIntOrNull() ?: 2024
     val backdrop = TmdbApiClient.backdropUrl(movie.backdropPath)
-    val poster = TmdbApiClient.posterUrl(movie.posterPath)
+    // Card standard: w342 è sufficiente e riduce download/cache rispetto a w780.
+    val poster = TmdbApiClient.posterUrl(movie.posterPath, size = "w342")
     val streams = listOf(URL_DUNE, URL_OPPENHEIMER, URL_COSMOS, URL_LASTOFUS)
     val assignedStream = streams[kotlin.math.abs(movie.id) % streams.size]
     val genres = mapGenreIds(movie.genreIds, isMovie = true)
@@ -3601,7 +3647,8 @@ object MediaRepository {
     val existing = existingItems.firstOrNull { it.tmdbId == tv.id && it.type == MediaType.SERIE_TV }
     val year = tv.firstAirDate?.take(4)?.toIntOrNull() ?: 2023
     val backdrop = TmdbApiClient.backdropUrl(tv.backdropPath)
-    val poster = TmdbApiClient.posterUrl(tv.posterPath)
+    // Card standard: w342 è sufficiente e riduce download/cache rispetto a w780.
+    val poster = TmdbApiClient.posterUrl(tv.posterPath, size = "w342")
     val streams = listOf(URL_LASTOFUS, URL_COSMOS, URL_OPPENHEIMER, URL_DUNE)
     val assignedStream = streams[kotlin.math.abs(tv.id) % streams.size]
     val genres = mapGenreIds(tv.genreIds, isMovie = false)
@@ -3910,7 +3957,8 @@ object MediaRepository {
     val existing = existingItems.firstOrNull { it.tmdbId == movie.id && it.type == MediaType.FILM }
     val year = movie.releaseDate?.take(4)?.toIntOrNull() ?: 2024
     val backdrop = TmdbApiClient.backdropUrl(movie.backdropPath)
-    val poster = TmdbApiClient.posterUrl(movie.posterPath)
+    // Card standard: w342 è sufficiente e riduce download/cache rispetto a w780.
+    val poster = TmdbApiClient.posterUrl(movie.posterPath, size = "w342")
     val streams = listOf(URL_DUNE, URL_OPPENHEIMER, URL_COSMOS, URL_LASTOFUS)
     val assignedStream = streams[kotlin.math.abs(movie.id) % streams.size]
     val genres = mapGenreIds(movie.genreIds, isMovie = true)
@@ -3962,7 +4010,8 @@ object MediaRepository {
     val existing = existingItems.firstOrNull { it.tmdbId == tv.id && it.type == MediaType.SERIE_TV }
     val year = tv.firstAirDate?.take(4)?.toIntOrNull() ?: 2023
     val backdrop = TmdbApiClient.backdropUrl(tv.backdropPath)
-    val poster = TmdbApiClient.posterUrl(tv.posterPath)
+    // Card standard: w342 è sufficiente e riduce download/cache rispetto a w780.
+    val poster = TmdbApiClient.posterUrl(tv.posterPath, size = "w342")
     val streams = listOf(URL_LASTOFUS, URL_COSMOS, URL_OPPENHEIMER, URL_DUNE)
     val assignedStream = streams[kotlin.math.abs(tv.id) % streams.size]
     val genres = mapGenreIds(tv.genreIds, isMovie = false)
@@ -4050,8 +4099,10 @@ object MediaRepository {
           // emissioni/ricomposizioni durante la sincronizzazione iniziale.
           val persistedIds = HashSet<String>()
 
-          // Persistenza progressiva: la UI (che legge dalla tabella Room) si aggiorna
-          // dopo ogni blocco invece di restare ferma per tutto il refresh.
+          // Persistenza progressiva a CHECKPOINT CONSOLIDATI: la UI (che legge dalla
+          // tabella Room) riceve pochi stati significativi invece di una scrittura per
+          // ogni blocco. Ogni checkpoint legge la tabella una sola volta e persiste il
+          // solo delta accumulato.
           suspend fun checkpoint(label: String) {
             val pendingIds = fetchedItemsMap.keys - persistedIds
             val total = mergeAndPersistCatalog(currentList, fetchedItemsMap, pendingIds)
@@ -4132,7 +4183,6 @@ object MediaRepository {
           } catch (e: Exception) {
             Log.w("MediaRepository", "Popular TV call failed: ${e.message}")
           }
-          checkpoint("popular")
 
           // 4. Top Rated Movies & TV
           try {
@@ -4162,10 +4212,12 @@ object MediaRepository {
           } catch (e: Exception) {
             Log.w("MediaRepository", "Top Rated TV call failed: ${e.message}")
           }
-          checkpoint("top_rated")
+          checkpoint("popular_top_rated")
 
           // 5. Cataloghi Provider per Serie TV: discover/tv con with_watch_providers
           //    + watch_region=IT e STESSI provider ID reali dei cataloghi Film.
+          //    Bootstrap: SOLO la prima pagina per provider/tipo. Le pagine successive
+          //    sono caricate on-demand da ProviderScreen (loadNextProviderPage).
           for ((pIds, pName) in TMDB_PROVIDERS) {
             crawlProviderCatalog(
               isTv = true,
@@ -4173,9 +4225,9 @@ object MediaRepository {
               providerTag = pName,
               apiKey = cleanKey,
               currentList = currentList,
-              fetchedItems = fetchedItemsMap
+              fetchedItems = fetchedItemsMap,
+              maxPages = INITIAL_PROVIDER_PAGES
             )
-            checkpoint("provider_tv_$pName")
           }
 
           // 6. Cataloghi Provider per Film: discover/movie con with_watch_providers + watch_region=IT
@@ -4186,10 +4238,14 @@ object MediaRepository {
               providerTag = pName,
               apiKey = cleanKey,
               currentList = currentList,
-              fetchedItems = fetchedItemsMap
+              fetchedItems = fetchedItemsMap,
+              maxPages = INITIAL_PROVIDER_PAGES
             )
-            checkpoint("provider_movie_$pName")
           }
+          // Un solo checkpoint per tutti i cataloghi provider: gli intermedi (uno per
+          // provider/tipo) ripetevano la scansione completa della tabella e la merge
+          // dell'intero catalogo senza che la UI ne avesse bisogno.
+          checkpoint("provider_catalogs")
 
           // 7. Genere Discover (Azione, Fantascienza, Dramma, Commedia)
           val genreQueries = listOf(
@@ -4242,10 +4298,13 @@ object MediaRepository {
   }
 
   /**
-   * Scarica l'intero catalogo di UN provider per UN tipo (Film o Serie TV) con
+   * Scarica il catalogo di UN provider per UN tipo (Film o Serie TV) con
    * paginazione indipendente: parte dalla pagina 1 e si ferma su
-   * `min(total_pages, MAX_PROVIDER_PAGES)` o su una pagina vuota.
-   * Non esiste più il limite fisso `for (pg in 1..2)`.
+   * `min(total_pages, [maxPages])` o su una pagina vuota.
+   *
+   * [maxPages] vale [INITIAL_PROVIDER_PAGES] nel bootstrap della Home (solo prima
+   * pagina) e [MAX_PROVIDER_PAGES] per un eventuale crawl completo. La ProviderScreen
+   * non usa questa funzione: pagina on-demand con [loadProviderCatalog].
    */
    private suspend fun crawlProviderCatalog(
      isTv: Boolean,
@@ -4253,12 +4312,14 @@ object MediaRepository {
      providerTag: String,
      apiKey: String,
      currentList: List<MediaItem>,
-     fetchedItems: MutableMap<String, MediaItem>
+     fetchedItems: MutableMap<String, MediaItem>,
+     maxPages: Int = MAX_PROVIDER_PAGES
    ) {
      val hbo = isHboProvider(providerTag)
+     val pageLimit = maxPages.coerceIn(1, MAX_PROVIDER_PAGES)
      var page = 1
      var totalPages = 0
-     while (page <= MAX_PROVIDER_PAGES && (page == 1 || page <= totalPages)) {
+     while (ProviderCatalogCrawlPolicy.shouldFetchPage(page, totalPages, pageLimit)) {
        val cacheKey = providerCacheKey(providerIds, isTv, page)
        val pageItems: List<MediaItem> = try {
          if (isTv) {
@@ -4339,7 +4400,7 @@ object MediaRepository {
     }
     Log.d(
       "MediaRepository",
-      "Catalogo $providerTag (${mediaTypeKey(isTv)}): ${page - 1} pagine scaricate (total_pages=$totalPages, max=$MAX_PROVIDER_PAGES)"
+      "Catalogo $providerTag (${mediaTypeKey(isTv)}): ${page - 1} pagine scaricate (total_pages=$totalPages, max=$pageLimit)"
     )
   }
 
@@ -4356,6 +4417,63 @@ object MediaRepository {
     fetchedItems: Map<String, MediaItem>,
     idsToPersist: Set<String>? = null
   ): Int {
+    val combinedList = mergeCatalogForCheckpoint(currentList, fetchedItems, initialMediaForMerge)
+
+    val db = database
+    if (db != null) {
+      try {
+        val dao = db.cachedMediaDao()
+        // Preserva SEMPRE preferiti, progressi ed episodio visto sui dati remoti.
+        // Lettura e scrittura sono nella STESSA transazione: uno stato utente
+        // modificato fra la lettura e l'upsert non può essere sovrascritto.
+        // La lettura resta sull'intero catalogo (serve lo stato utente di ogni
+        // riga), ma la SCRITTURA è limitata al delta del checkpoint.
+        db.withTransaction {
+          val existingById = dao.getAllCachedMedia().associateBy { it.id }
+          val toPersist = if (idsToPersist == null) {
+            combinedList
+          } else {
+            combinedList.filter { it.id in idsToPersist }
+          }
+          if (toPersist.isNotEmpty()) {
+            val preservedList = toPersist.map { item ->
+              existingById[item.id]?.preserveUserStateInto(item) ?: item
+            }
+            dao.insertOrUpdate(preservedList.map { it.toEntity() })
+          }
+        }
+        // Fallback solo se l'osservatore del Flow non fosse attivo
+        if (dbObserverJob?.isActive != true) {
+          _mediaList.value = mapEntitiesToUiState(dao.getAllCachedMedia())
+        }
+        return combinedList.size
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Salvataggio in Room fallito: ${e.message}")
+        _mediaList.value = combinedList
+        return combinedList.size
+      }
+    }
+    // Nessun database disponibile: fallback in-memory
+    _mediaList.value = combinedList
+    return combinedList.size
+  }
+
+  /**
+   * Merge PURO del catalogo per un checkpoint: nessun accesso a Room.
+   *
+   * Estratto dal salvataggio per verificare nei test che raggruppare i checkpoint
+   * non cambi il risultato finale (stessi titoli, stesso ordine, stessa
+   * deduplicazione) e che preferiti/progressi già noti non vengano persi.
+   *
+   * @param currentList catalogo già noto (con lo stato utente della riga Room).
+   * @param fetchedItems titoli accumulati dal refresh, per chiave canonica.
+   * @param initialItems catalogo seed di fallback per poster/backdrop.
+   */
+  internal fun mergeCatalogForCheckpoint(
+    currentList: List<MediaItem>,
+    fetchedItems: Map<String, MediaItem>,
+    initialItems: List<MediaItem>
+  ): List<MediaItem> {
     val finalMap = LinkedHashMap<String, MediaItem>()
     // Prima tutti i titoli appena fetchati (chiavi distinte movie/tv)
     fetchedItems.values.forEach { item ->
@@ -4363,7 +4481,7 @@ object MediaRepository {
     }
 
     // Poi sovrapponi/preserva quelli già noti: preferiti e progressi non si perdono mai
-    val initMap = getInitialMedia().associateBy { it.id }
+    val initMap = initialItems.associateBy { it.id }
     currentList.forEach { cur ->
       val existingKey = cur.tmdbId?.let { tmdbKey(it, cur.type == MediaType.SERIE_TV) } ?: cur.id
       val fetched = finalMap[existingKey] ?: finalMap[cur.id]
@@ -4392,41 +4510,7 @@ object MediaRepository {
 
     // Catalogo PERSISTENTE e senza limite artificiale: non si elimina più un titolo
     // solo perché manca il poster/backdrop, basta che abbia un titolo.
-    val combinedList = finalMap.values.filter { it.title.isNotBlank() }.sortedByDescending { it.rating }
-
-    val db = database
-    if (db != null) {
-      try {
-        val dao = db.cachedMediaDao()
-        // Preserva SEMPRE preferiti, progressi ed episodio visto sui dati remoti.
-        // La lettura resta sull'intero catalogo (serve lo stato utente di ogni
-        // riga), ma la SCRITTURA è limitata al delta del checkpoint.
-        val existingById = dao.getAllCachedMedia().associateBy { it.id }
-        val toPersist = if (idsToPersist == null) {
-          combinedList
-        } else {
-          combinedList.filter { it.id in idsToPersist }
-        }
-        if (toPersist.isNotEmpty()) {
-          val preservedList = toPersist.map { item ->
-            existingById[item.id]?.preserveUserStateInto(item) ?: item
-          }
-          dao.insertOrUpdate(preservedList.map { it.toEntity() })
-        }
-        // Fallback solo se l'osservatore del Flow non fosse attivo
-        if (dbObserverJob?.isActive != true) {
-          _mediaList.value = mapEntitiesToUiState(dao.getAllCachedMedia())
-        }
-        return combinedList.size
-      } catch (e: Exception) {
-        Log.w("MediaRepository", "Salvataggio in Room fallito: ${e.message}")
-        _mediaList.value = combinedList
-        return combinedList.size
-      }
-    }
-    // Nessun database disponibile: fallback in-memory
-    _mediaList.value = combinedList
-    return combinedList.size
+    return finalMap.values.filter { it.title.isNotBlank() }.sortedByDescending { it.rating }
   }
 
   private fun getInitialMedia(): List<MediaItem> = listOf(
@@ -5674,3 +5758,24 @@ object MediaRepository {
   )
 }
 
+
+/**
+ * Regola pura di avanzamento del crawl dei cataloghi provider.
+ *
+ * Separa la POLICY (quante pagine chiedere) dall'esecuzione di rete: la Home
+ * carica solo la prima pagina per provider/tipo, mentre la ProviderScreen usa la
+ * paginazione on-demand di MediaRepository.loadProviderCatalog.
+ */
+internal object ProviderCatalogCrawlPolicy {
+
+  /**
+   * Vero se la pagina va richiesta con il limite corrente.
+   *
+   * La pagina 1 si chiede sempre (anche quando total_pages non è ancora noto,
+   * valore 0); le successive solo se TMDB dichiara di averle e il limite lo consente.
+   */
+  fun shouldFetchPage(page: Int, totalPages: Int, pageLimit: Int): Boolean {
+    if (page < 1 || pageLimit < 1 || page > pageLimit) return false
+    return page == 1 || page <= totalPages
+  }
+}

@@ -665,7 +665,26 @@ data class InstalledAddon(
   val manifest: StremioManifest,
   val isEnabled: Boolean = true
 ) {
-  /** Chiave stabile per la rimozione/identità (manifest.id, con fallback sull'URL). */
+  /**
+   * Identità del MANIFEST, condivisa da tutte le installazioni dello stesso addon.
+   *
+   * Non è una chiave di installazione: Torrentio (e altri addon configurabili)
+   * restituisce lo stesso `manifest.id` per ogni configurazione. Serve ai binding
+   * di catalogo/provider (`CatalogKey`) e al riconoscimento degli addon di sistema,
+   * non alla gestione delle singole installazioni.
+   */
   val id: String
     get() = manifest.id?.takeIf { it.isNotBlank() } ?: baseUrl
+
+  /**
+   * Identità dell'INSTALLAZIONE, univoca per configurazione.
+   *
+   * È il `baseUrl` normalizzato, che include il percorso/query di configurazione
+   * (token Debrid, provider, lingua). Due installazioni dello stesso addon — es.
+   * Torrentio globale e Torrentio IT — hanno lo stesso [id] ma [installId]
+   * diversi: abilitazione, disabilitazione e rimozione passano da qui, così non
+   * possono più agire su entrambe.
+   */
+  val installId: String
+    get() = baseUrl.trimEnd('/')
 }

@@ -69,7 +69,7 @@
 
     <!-- Source Selection Dialog -->
     <string name="source_dialog_title">Select Source (%d)</string>
-    <string name="source_dialog_hints">↑↓ navigate  •  ENTER select  •  🡄 🡆 filter</string>
+    <string name="source_dialog_hints">↑↓ navigate  •  ENTER select  •  ← → filter</string>
     <string name="source_dialog_filter_all">All</string>
     <string name="torbox_source_cached">Cached</string>
     <string name="torbox_source_not_cached">Not cached</string>
@@ -155,6 +155,8 @@
      <string name="search_category_desc_addon">Addon catalog: %1$s</string>
      <string name="search_category_desc_fallback">%1$s results from TMDB</string>
      <string name="search_category_loading">Loading addon catalog…</string>
+     <string name="search_category_desc_tmdb">%1$s results from TMDB</string>
+     <string name="search_category_loading_tmdb">Loading TMDB catalog…</string>
      <string name="search_category_type_movies">movies</string>
      <string name="search_category_type_series">TV series</string>
      <string name="search_category_tmdb_fallback_reason">No configured catalog covers this genre: titles shown from TMDB</string>
@@ -165,6 +167,7 @@
      <string name="search_category_tmdb_unavailable">TMDB search unavailable: check your connection and try again</string>
      <string name="search_category_empty_type">%1$s catalog queried but returned no results</string>
      <string name="search_category_failed_type">%1$s catalog unreachable: try again later</string>
+     <string name="search_category_native_tmdb_no_results">No results for %1$s on TMDB</string>
      <string name="search_titles_available">%d Available Titles</string>
      <string name="search_no_content_for_category">No content found for %s</string>
      <string name="search_results_found">Results for \"%1$s\" (%2$d)</string>
@@ -191,7 +194,7 @@
      <string name="search_cat_history">History</string>
      <string name="search_cat_thriller">Thriller</string>
      <string name="search_cat_western">Western</string>
-     <string name="search_cat_tv_movie">TV Movie</string>
+     <string name="search_cat_talk">Talk</string>
  
      <!-- Settings Screen -->
      <string name="settings_title">Settings</string>

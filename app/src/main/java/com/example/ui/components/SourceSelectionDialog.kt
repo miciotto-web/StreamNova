@@ -984,9 +984,20 @@ private fun providerInitials(name: String): String {
   return (words[0].first().toString() + words[1].first().toString()).uppercase()
 }
 
-/** Chiave stabile per gli item della lista (evita ricreazioni del nodo focusabile). */
-private fun sourceKey(source: StreamSource, index: Int): String =
-  source.infoHash?.let { "$it#${source.fileIdx ?: -1}" } ?: "src_$index"
+/**
+ * Chiave stabile per gli item della lista (evita ricreazioni del nodo focusabile).
+ *
+ * Include l'identità dell'installazione Stremio ([StreamSource.addonInstallId]): due
+ * configurazioni dello stesso addon (Torrentio globale e IT) possono restituire
+ * lo stesso infoHash/fileIdx, che altrimenti produrrebbe chiavi duplicate e
+ * farebbe fallire la LazyColumn.
+ */
+private fun sourceKey(source: StreamSource, index: Int): String = buildString {
+  source.addonInstallId?.takeIf { it.isNotBlank() }?.let { append(it).append('#') }
+  val hash = source.infoHash
+  if (hash != null) append(hash).append('#').append(source.fileIdx ?: -1)
+  else append("src_$index")
+}
 
 /** Formatta una dimensione in byte ("2.18 GB"); null se assente/zero. */
 private fun formatSize(bytes: Long?): String? {

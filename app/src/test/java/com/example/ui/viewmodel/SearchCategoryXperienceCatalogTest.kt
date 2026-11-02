@@ -3,6 +3,7 @@ package com.example.ui.viewmodel
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.MediaType
+import com.example.data.model.SearchCategoryFilter
 import com.example.data.api.TmdbApiClient
 import com.example.data.repository.StremioCatalogRepository
 import com.example.data.stremio.StremioAddonRepository
@@ -807,8 +808,14 @@ class SearchCategoryXperienceCatalogTest {
       try {
         StremioAddonRepository.installAddon(baseUrl)
 
-        assertTrue("Categorie attese", GLOBAL_SEARCH_CATEGORIES.isNotEmpty())
-        GLOBAL_SEARCH_CATEGORIES.forEach { cat ->
+        // Solo le categorie servite da catalogo: "Talk" è servita nativamente da
+        // TMDB (`discover/tv?with_genres=10767`) e i cataloghi degli addon non sono
+        // la sua fonte.
+        val genreCategories = GLOBAL_SEARCH_CATEGORIES.filter {
+          it.contentFilter == SearchCategoryFilter.GENRE
+        }
+        assertTrue("Categorie attese", genreCategories.isNotEmpty())
+        genreCategories.forEach { cat ->
           val slug = slugOf(cat.keywords.first())
           val requests = StremioCatalogRepository.findCategoryRequests(cat.keywords)
           val found = requests.map { "${it.target.type}/${it.target.catalogId}" }

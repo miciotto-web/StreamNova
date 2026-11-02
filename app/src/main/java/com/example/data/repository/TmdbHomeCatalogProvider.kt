@@ -20,22 +20,18 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
 /**
- * Provider NATIVO dei cataloghi TMDB che alimentano la Home di StreamNova.
+ * Provider TMDB delle NOVITÀ DEI PROVIDER per la Home di StreamNova.
  *
- * SOSTITUISCE Cinemeta come sorgente predefinita: nessuna riga della Home dipende
- * più da un addon Stremio. Gli addon restano opzionali e, quando sono attivi, il
- * data layer continua a preferirli per il tipo che riescono a popolare.
+ * Dopo il ripristino di Cinemeta, le righe stock (Popolari / In evidenza / Novità)
+ * non sono più alimentate da TMDB: [StremioCatalogRepository] interroga i cataloghi
+ * ufficiali di Cinemeta. Questo oggetto resta la sorgente delle 10 sezioni
+ * `Novità <provider> Film/Serie` (Netflix, HBO / Max, Disney+, Apple TV+,
+ * Paramount+), che TMDB può verificare con `with_watch_providers` per l'Italia.
  *
- * MAPPATURA RIGHE → ENDPOINT TMDB
- * - Popolari Film .................. `movie/popular`
- * - In evidenza Film (Top 10) ...... `movie/top_rated`
- * - Novità Film .................... `movie/now_playing?region=IT`
- * - Popolari Serie ................. `tv/popular`
- * - In evidenza Serie (Top 10) ..... `tv/top_rated`
- * - Novità Serie ................... `discover/tv?first_air_date_year=<anno corrente>`
- * - Serie TV in onda ............... `tv/on_the_air`
- * - Novità in digitale ............. `discover/movie?region=IT&with_release_type=4&release_date.gte/lte`
- * - Novità HBO ..................... `discover/tv?with_networks=49|3186&first_air_date.gte/lte`
+ * [loadHomeSections] è la vecchia pipeline TMDB completa (stock + extra): resta
+ * disponibile per i test di compatibilità ma NON è più chiamata dalla Home.
+ *
+ * MAPPATURA RIGHE PROVIDER → ENDPOINT TMDB
  * - Novità provider Film (5 righe) . `discover/movie?with_watch_providers=<id>&watch_region=IT`
  *                                    `&with_watch_monetization_types=flatrate`
  *                                    `&primary_release_date.gte/lte&sort_by=primary_release_date.desc`
@@ -43,20 +39,20 @@ import kotlinx.coroutines.withContext
  *                                    `&with_watch_monetization_types=flatrate`
  *                                    `&first_air_date.gte/lte&sort_by=first_air_date.desc`
  *
- * Provider delle 10 righe (verificati per l'Italia): Netflix, Disney+, Prime Video,
- * Apple TV+, Paramount+. Ogni riga ha id/section id STABILI (`tmdb_<provider>_<tipo>_new`).
+ * Provider e ordine (verificati per l'Italia): Netflix, HBO / Max, Disney+,
+ * Apple TV+, Paramount+. Ogni riga ha id/section id STABILI.
  *
  * PROVIDER E FINESTRA DELLE NOVITÀ
  * - Gli ID dei provider sono quelli restituiti da TMDB per l'Italia
  *   (`/watch/providers/{movie,tv}?watch_region=IT`), NON gli ID globali/US:
- *   Netflix = 8, Disney Plus = 337, Amazon Prime Video = **119** (negli USA è 9),
- *   Apple TV (Apple TV+) = 350, Paramount Plus = 531.
+ *   Netflix = 8, HBO Max = **1899**, Disney Plus = 337, Apple TV (Apple TV+) = 350,
+ *   Paramount Plus = 531.
  * - "Novità" significa: film con data di uscita (`primary_release_date`) negli ultimi
- *   [PROVIDER_MOVIES_WINDOW_DAYS] giorni (365 per Apple TV+ e Paramount+, che hanno
- *   cataloghi più piccoli); serie con prima messa in onda (`first_air_date`) negli
- *   ultimi [PROVIDER_SERIES_WINDOW_DAYS] giorni. Entrambe le liste sono ordinate per
- *   data DECRESCENTE, quindi un titolo vecchio ma popolare non può comparire solo per
- *   la sua popolarità.
+ *   [PROVIDER_MOVIES_WINDOW_DAYS] giorni (365 per HBO / Max, Apple TV+ e Paramount+,
+ *   che hanno cataloghi italiani più piccoli); serie con prima messa in onda
+ *   (`first_air_date`) negli ultimi [PROVIDER_SERIES_WINDOW_DAYS] giorni. Entrambe le
+ *   liste sono ordinate per data DECRESCENTE, quindi un titolo vecchio ma popolare
+ *   non può comparire solo per la sua popolarità.
  * - LIMITE TMDB DOCUMENTATO: Discover non espone la data in cui un titolo è stato
  *   aggiunto al catalogo del provider. La finestra è quindi sulla data di
  *   uscita/trasmissione, non sull'effettiva disponibilità editoriale. Se un provider
@@ -65,12 +61,10 @@ import kotlinx.coroutines.withContext
  *
  * CACHE E AFFIDABILITÀ
  * - Ogni risposta passa da [MediaRepository.fetchMoviesWithCache] /
- *   [MediaRepository.fetchTvWithCache]: cache Room con TTL 12h, condivisa con la
- *   sincronizzazione TMDB esistente (le chiavi delle righe Popolari/In evidenza sono
- *   le stesse, quindi il refresh periodico della Home non duplica la rete).
+ *   [MediaRepository.fetchTvWithCache]: cache Room con TTL 12h.
  * - Un endpoint che fallisce non azzera le altre righe: ogni catalogo è isolato.
- * - Senza credenziale TMDB non parte alcuna richiesta e le righe native restano
- *   vuote (la cache locale e «Continua a guardare» restano disponibili).
+ * - Senza credenziale TMDB non parte alcuna richiesta e le righe provider restano
+ *   vuote (Cinemeta, la cache locale e «Continua a guardare» restano disponibili).
  */
 object TmdbHomeCatalogProvider {
 
@@ -125,6 +119,13 @@ object TmdbHomeCatalogProvider {
     const val PRIME_VIDEO = 119
     const val APPLE_TV_PLUS = 350
     const val PARAMOUNT_PLUS = 531
+
+    /**
+     * HBO Max / Max: provider 1899 verificato su
+     * `/watch/providers/{movie,tv}?watch_region=IT`. È distinto da
+     * "HBO Max Amazon Channel" (1825), escluso perché canale aggiuntivo.
+     */
+    const val HBO_MAX = 1899
   }
 
   /** Monetizzazione TMDB delle righe "Novità provider": solo abbonamento. */
@@ -134,7 +135,7 @@ object TmdbHomeCatalogProvider {
   const val PROVIDER_MOVIES_WINDOW_DAYS = 90
 
   /**
-   * Finestra estesa delle novità FILM, usata SOLO da Apple TV+ e Paramount+.
+   * Finestra estesa delle novità FILM, usata da Apple TV+, Paramount+ e HBO / Max.
    *
    * Su TMDB i loro cataloghi italiani hanno pochi titoli nella finestra standard:
    * 365 giorni restituiscono una riga utile senza ricorrere al catalogo completo
@@ -158,6 +159,13 @@ object TmdbHomeCatalogProvider {
   const val SECTION_PARAMOUNT_MOVIES_NEW = "tmdb_paramount_movies_new"
   const val SECTION_PARAMOUNT_SERIES_NEW = "tmdb_paramount_series_new"
 
+  /**
+   * Righe HBO / Max usate dalla Home dopo il ripristino di Cinemeta.
+   * Id distinti dalla vecchia riga network "Novità HBO" ([SECTION_HBO_NEW]).
+   */
+  const val SECTION_HBO_MAX_MOVIES_NEW = "tmdb_hbo_max_movies_new"
+  const val SECTION_HBO_MAX_SERIES_NEW = "tmdb_hbo_max_series_new"
+
   const val CATALOG_NETFLIX_MOVIES_NEW = "tmdb_movies_netflix_new"
   const val CATALOG_NETFLIX_SERIES_NEW = "tmdb_series_netflix_new"
   const val CATALOG_DISNEY_MOVIES_NEW = "tmdb_movies_disney_new"
@@ -168,6 +176,8 @@ object TmdbHomeCatalogProvider {
   const val CATALOG_APPLE_SERIES_NEW = "tmdb_series_apple_new"
   const val CATALOG_PARAMOUNT_MOVIES_NEW = "tmdb_movies_paramount_new"
   const val CATALOG_PARAMOUNT_SERIES_NEW = "tmdb_series_paramount_new"
+  const val CATALOG_HBO_MAX_MOVIES_NEW = "tmdb_movies_hbo_max_new"
+  const val CATALOG_HBO_MAX_SERIES_NEW = "tmdb_series_hbo_max_new"
 
   /** Id dei cataloghi stock: identificano la sezione, non un addon. */
   const val CATALOG_POPULAR_MOVIES = "tmdb_movies_popular"
@@ -519,6 +529,131 @@ object TmdbHomeCatalogProvider {
     }
 
   /**
+   * Carica SOLO le 10 righe "Novità <provider> Film/Serie" usate dalla Home
+   * dopo il ripristino di Cinemeta come sorgente dei cataloghi stock.
+   *
+   * Provider e ordine editoriale:
+   * Netflix, HBO / Max, Disney+, Apple TV+, Paramount+ (Film e Serie alternate).
+   *
+   * Ogni riga è verificata su TMDB per l'Italia:
+   * `with_watch_providers=<id>&watch_region=IT&with_watch_monetization_types=flatrate`.
+   * I titoli sono ordinati per data DECRESCENTE (`primary_release_date.desc` per i
+   * film, `first_air_date.desc` per le serie) e filtrati con la finestra della riga.
+   * Le sezioni vuote o fallite vengono omesse senza azzerare le altre.
+   */
+  suspend fun loadProviderNewSections(mediaTypes: List<MediaType>): List<CatalogSection> =
+    withContext(Dispatchers.IO) {
+      if (mediaTypes.isEmpty()) return@withContext emptyList()
+      val apiKey = apiKeyProvider().trim()
+      if (apiKey.isBlank()) {
+        Log.w(TAG, "Credenziale TMDB assente: righe Novità provider non caricate")
+        return@withContext emptyList()
+      }
+
+      val language = languageProvider()
+      val labels = labelsFor(language)
+      val now = clockProvider()
+      val today = formatDate(now, "yyyy-MM-dd")
+      val compactToday = formatDate(now, "yyyyMMdd")
+      val providerSeriesSince =
+        formatDate(addDays(now, -PROVIDER_SERIES_WINDOW_DAYS), "yyyy-MM-dd")
+      val rows = providerNoveltyRows(labels)
+      val wantsMovies = MediaType.FILM in mediaTypes
+      val wantsSeries = MediaType.SERIE_TV in mediaTypes
+
+      // Ogni voce conserva l'id della sezione: l'ordine finale è quello editoriale
+      // dei provider, non l'ordine di completamento delle chiamate di rete.
+      val loaders = mutableListOf<Pair<String, suspend () -> CatalogSection?>>()
+
+      if (wantsMovies) {
+        rows.forEach { row ->
+          loaders += row.movieSectionId to {
+            val providerMoviesSince =
+              formatDate(addDays(now, -row.movieWindowDays), "yyyy-MM-dd")
+            loadSpec(
+              label = row.movieTitle,
+              spec = SectionSpec(
+                id = row.movieSectionId,
+                title = row.movieTitle,
+                catalogId = row.movieCatalogId,
+                mediaType = MediaType.FILM,
+                slot = null
+              )
+            ) {
+              MediaRepository.fetchMoviesWithCache(
+                "home_tmdb_provider_${row.slug}_movies_" +
+                  "${row.movieWindowDays}d_${compactToday}_p1"
+              ) {
+                TmdbApiClient.service.discoverNewMoviesByProvider(
+                  apiKey = apiKey,
+                  providerId = row.providerId.toString(),
+                  region = REGION_ITALY,
+                  monetizationTypes = PROVIDER_MONETIZATION_FLATRATE,
+                  releasedAfter = providerMoviesSince,
+                  releasedBefore = today,
+                  page = 1
+                )
+              }.results.let(::mapMovies)
+            }
+          }
+        }
+      }
+
+      if (wantsSeries) {
+        rows.forEach { row ->
+          loaders += row.seriesSectionId to {
+            loadSpec(
+              label = row.seriesTitle,
+              spec = SectionSpec(
+                id = row.seriesSectionId,
+                title = row.seriesTitle,
+                catalogId = row.seriesCatalogId,
+                mediaType = MediaType.SERIE_TV,
+                slot = null
+              )
+            ) {
+              MediaRepository.fetchTvWithCache(
+                "home_tmdb_provider_${row.slug}_series_${compactToday}_p1"
+              ) {
+                TmdbApiClient.service.discoverNewTvByProvider(
+                  apiKey = apiKey,
+                  providerId = row.providerId.toString(),
+                  region = REGION_ITALY,
+                  monetizationTypes = PROVIDER_MONETIZATION_FLATRATE,
+                  firstAirDateGte = providerSeriesSince,
+                  firstAirDateLte = today,
+                  page = 1
+                )
+              }.results.let(::mapSeries)
+            }
+          }
+        }
+      }
+
+      val loaded = loaders.map { (_, loader) -> async { loader() } }.awaitAll().filterNotNull()
+      val editorialOrder = rows.flatMap { listOf(it.movieSectionId, it.seriesSectionId) }
+      loaded.sortedBy { section ->
+        editorialOrder.indexOf(section.id).let { index ->
+          if (index >= 0) index else Int.MAX_VALUE
+        }
+      }
+    }
+
+  /**
+   * Variante isolata delle righe Novità provider: un errore imprevisto non deve
+   * interrompere la Home (le righe Cinemeta restano caricate).
+   */
+  suspend fun loadProviderNewSectionsSafely(mediaTypes: List<MediaType>): List<CatalogSection> =
+    try {
+      loadProviderNewSections(mediaTypes)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Righe Novità provider non disponibili: ${e.message}")
+      emptyList()
+    }
+
+  /**
    * Pagina successiva del catalogo "Popolari Film" per la schermata Film.
    * La numerazione è quella TMDB (1-based): [page] deve essere >= 2.
    */
@@ -643,6 +778,8 @@ object TmdbHomeCatalogProvider {
     val onAirSeries: String,
     val digitalNew: String,
     val hboNew: String,
+    val hboMaxMoviesNew: String,
+    val hboMaxSeriesNew: String,
     val netflixMoviesNew: String,
     val netflixSeriesNew: String,
     val disneyMoviesNew: String,
@@ -656,10 +793,15 @@ object TmdbHomeCatalogProvider {
   )
 
   /**
-   * Definizione delle 10 righe provider. L'ORDINE è quello editoriale della Home:
-   * Netflix Film, Netflix Serie, Disney+ Film, Disney+ Serie, Prime Video Film,
-   * Prime Video Serie, Apple TV+ Film, Apple TV+ Serie, Paramount+ Film,
-   * Paramount+ Serie.
+   * Definizione delle 10 righe provider usate dalla vecchia Home TMDB
+   * ([loadHomeSections], mantenuta per compatibilità dei test).
+   *
+   * L'ORDINE è: Netflix Film, Netflix Serie, Disney+ Film, Disney+ Serie,
+   * Prime Video Film, Prime Video Serie, Apple TV+ Film, Apple TV+ Serie,
+   * Paramount+ Film, Paramount+ Serie.
+   *
+   * La Home di produzione usa [providerNoveltyRows] (HBO / Max al posto di
+   * Prime Video) tramite [loadProviderNewSections].
    */
   internal data class ProviderNewRow(
     val slug: String,
@@ -670,7 +812,7 @@ object TmdbHomeCatalogProvider {
     val seriesCatalogId: String,
     val movieTitle: String,
     val seriesTitle: String,
-    /** Finestra FILM in giorni: 90 di default, 365 solo per Apple TV+/Paramount+. */
+    /** Finestra FILM in giorni: 90 di default, 365 per HBO / Max, Apple TV+ e Paramount+. */
     val movieWindowDays: Int = PROVIDER_MOVIES_WINDOW_DAYS
   )
 
@@ -729,6 +871,72 @@ object TmdbHomeCatalogProvider {
     )
   )
 
+  /**
+   * Righe "Novità <provider>" usate dalla Home quando i cataloghi stock sono
+   * Cinemeta. Ordine editoriale richiesto:
+   * Netflix, HBO / Max, Disney+, Apple TV+, Paramount+ (Film e Serie alternate).
+   *
+   * HBO / Max usa il provider TMDB 1899 con `watch_region=IT`: la riga mostra solo
+   * titoli che TMDB associa davvero al servizio in Italia, non produzioni HBO
+   * generiche. La finestra film è estesa a 365 giorni perché il catalogo italiano
+   * ha pochi titoli nella finestra standard.
+   */
+  internal fun providerNoveltyRows(labels: HomeLabels): List<ProviderNewRow> = listOf(
+    ProviderNewRow(
+      slug = "netflix",
+      providerId = ItalyProviderIds.NETFLIX,
+      movieSectionId = SECTION_NETFLIX_MOVIES_NEW,
+      movieCatalogId = CATALOG_NETFLIX_MOVIES_NEW,
+      seriesSectionId = SECTION_NETFLIX_SERIES_NEW,
+      seriesCatalogId = CATALOG_NETFLIX_SERIES_NEW,
+      movieTitle = labels.netflixMoviesNew,
+      seriesTitle = labels.netflixSeriesNew
+    ),
+    ProviderNewRow(
+      slug = "hbo_max",
+      providerId = ItalyProviderIds.HBO_MAX,
+      movieSectionId = SECTION_HBO_MAX_MOVIES_NEW,
+      movieCatalogId = CATALOG_HBO_MAX_MOVIES_NEW,
+      seriesSectionId = SECTION_HBO_MAX_SERIES_NEW,
+      seriesCatalogId = CATALOG_HBO_MAX_SERIES_NEW,
+      movieTitle = labels.hboMaxMoviesNew,
+      seriesTitle = labels.hboMaxSeriesNew,
+      movieWindowDays = PROVIDER_MOVIES_EXTENDED_WINDOW_DAYS
+    ),
+    ProviderNewRow(
+      slug = "disney",
+      providerId = ItalyProviderIds.DISNEY_PLUS,
+      movieSectionId = SECTION_DISNEY_MOVIES_NEW,
+      movieCatalogId = CATALOG_DISNEY_MOVIES_NEW,
+      seriesSectionId = SECTION_DISNEY_SERIES_NEW,
+      seriesCatalogId = CATALOG_DISNEY_SERIES_NEW,
+      movieTitle = labels.disneyMoviesNew,
+      seriesTitle = labels.disneySeriesNew
+    ),
+    ProviderNewRow(
+      slug = "apple",
+      providerId = ItalyProviderIds.APPLE_TV_PLUS,
+      movieSectionId = SECTION_APPLE_MOVIES_NEW,
+      movieCatalogId = CATALOG_APPLE_MOVIES_NEW,
+      seriesSectionId = SECTION_APPLE_SERIES_NEW,
+      seriesCatalogId = CATALOG_APPLE_SERIES_NEW,
+      movieTitle = labels.appleMoviesNew,
+      seriesTitle = labels.appleSeriesNew,
+      movieWindowDays = PROVIDER_MOVIES_EXTENDED_WINDOW_DAYS
+    ),
+    ProviderNewRow(
+      slug = "paramount",
+      providerId = ItalyProviderIds.PARAMOUNT_PLUS,
+      movieSectionId = SECTION_PARAMOUNT_MOVIES_NEW,
+      movieCatalogId = CATALOG_PARAMOUNT_MOVIES_NEW,
+      seriesSectionId = SECTION_PARAMOUNT_SERIES_NEW,
+      seriesCatalogId = CATALOG_PARAMOUNT_SERIES_NEW,
+      movieTitle = labels.paramountMoviesNew,
+      seriesTitle = labels.paramountSeriesNew,
+      movieWindowDays = PROVIDER_MOVIES_EXTENDED_WINDOW_DAYS
+    )
+  )
+
   /** Etichette nella lingua dell'app (le righe extra le mostrano come titolo). */
   internal fun labelsFor(language: String): HomeLabels =
     when (language.substringBefore("-").trim().lowercase()) {
@@ -742,6 +950,8 @@ object TmdbHomeCatalogProvider {
         onAirSeries = "On Air TV Shows",
         digitalNew = "New on Digital",
         hboNew = "New on HBO",
+        hboMaxMoviesNew = "New on HBO / Max Movies",
+        hboMaxSeriesNew = "New on HBO / Max TV Shows",
         netflixMoviesNew = "New on Netflix Movies",
         netflixSeriesNew = "New on Netflix TV Shows",
         disneyMoviesNew = "New on Disney+ Movies",
@@ -763,6 +973,8 @@ object TmdbHomeCatalogProvider {
         onAirSeries = "Series en emisión",
         digitalNew = "Novedades digitales",
         hboNew = "Novedades HBO",
+        hboMaxMoviesNew = "Novedades HBO / Max: Películas",
+        hboMaxSeriesNew = "Novedades HBO / Max: Series",
         netflixMoviesNew = "Novedades Netflix: Películas",
         netflixSeriesNew = "Novedades Netflix: Series",
         disneyMoviesNew = "Novedades Disney+: Películas",
@@ -784,6 +996,8 @@ object TmdbHomeCatalogProvider {
         onAirSeries = "Séries en diffusion",
         digitalNew = "Nouveautés numériques",
         hboNew = "Nouveautés HBO",
+        hboMaxMoviesNew = "Nouveautés HBO / Max : Films",
+        hboMaxSeriesNew = "Nouveautés HBO / Max : Séries",
         netflixMoviesNew = "Nouveautés Netflix : Films",
         netflixSeriesNew = "Nouveautés Netflix : Séries",
         disneyMoviesNew = "Nouveautés Disney+ : Films",
@@ -805,6 +1019,8 @@ object TmdbHomeCatalogProvider {
         onAirSeries = "Aktuelle Serien",
         digitalNew = "Neu digital",
         hboNew = "Neu auf HBO",
+        hboMaxMoviesNew = "Neu auf HBO / Max: Filme",
+        hboMaxSeriesNew = "Neu auf HBO / Max: Serien",
         netflixMoviesNew = "Neu auf Netflix: Filme",
         netflixSeriesNew = "Neu auf Netflix: Serien",
         disneyMoviesNew = "Neu auf Disney+: Filme",
@@ -826,6 +1042,8 @@ object TmdbHomeCatalogProvider {
         onAirSeries = "Serie TV in onda",
         digitalNew = "Novità in digitale",
         hboNew = "Novità HBO",
+        hboMaxMoviesNew = "Novità HBO / Max Film",
+        hboMaxSeriesNew = "Novità HBO / Max Serie",
         netflixMoviesNew = "Novità Netflix Film",
         netflixSeriesNew = "Novità Netflix Serie",
         disneyMoviesNew = "Novità Disney+ Film",

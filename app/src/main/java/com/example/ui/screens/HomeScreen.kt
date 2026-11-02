@@ -425,6 +425,14 @@ class HomeRowFocusCoordinator(
     _rowIdentities[rowKey]?.getOrNull(colIndex)
 
   /**
+   * Identità ordinate dei contenuti della riga [rowKey] nell'ultima composizione applicata
+   * (lista vuota se la riga non fornisce identità). Serve ai percorsi che devono tradurre
+   * l'ID di un contenuto nella sua COLONNA corrente: la posizione ricordata può essere
+   * cambiata da un riordino della riga mentre l'azione era in corso.
+   */
+  fun rowItemIdentities(rowKey: String): List<String> = _rowIdentities[rowKey].orEmpty()
+
+  /**
    * Riallinea la richiesta pendente ai dati di riga appena aggiornati da [updateRows]:
    *
    * - riga rimossa o svuotata: la richiesta è annullata (nessuna cella potrà mai soddisfarla);
@@ -1177,6 +1185,27 @@ private const val CW_REMOVAL_FOCUS_TIMEOUT_MS = 500L
 private const val CW_REMOVAL_FOCUS_RETRIES = 3
 
 /**
+ * Tetto dell'attesa che la rimozione da «Continua a guardare» sia APPLICATA ai dati composti
+ * (repository -> flusso -> allMedia -> riga): la nuova ancora di focus si pubblica solo quando
+ * la card eliminata non è più nella riga, così la richiesta non viene consumata dalla card che
+ * sta per essere smontata. Non è un ritardo fisso: l'attesa finisce all'evento di dati.
+ */
+private const val CW_REMOVAL_APPLY_TIMEOUT_MS = 500L
+
+/**
+ * Ancoraggio del focus dopo una rimozione da «Continua a guardare».
+ *
+ * [preRemovalCount] è il numero di card nella riga PRIMA della rimozione: serve a riconoscere
+ * l'ondata di dati che applica davvero la rimozione. [column] è la posizione della card
+ * eliminata nella composizione in cui la rimozione è stata richiesta (`null` se non risolvibile):
+ * è il punto in cui il focus deve restare, clampato alla riga superstite.
+ */
+private data class ContinueWatchingRemovalAnchor(
+  val preRemovalCount: Int,
+  val column: Int?
+)
+
+/**
  * Tentativi (spaziati a frame) dell'escalation di ripristino e finestra di conferma del
  * singolo tentativo: la riga ancorata può essere in riallineamento sull'ancora quando arriva
  * la prima richiesta di focus, e una richiesta scartata da un frame di assestamento non deve
@@ -1238,6 +1267,19 @@ private suspend fun awaitRestoreColumn(
   }
   val visibleItems = rowState.layoutInfo.visibleItemsInfo.map { RestoreRowItem(it.index, it.key) }
   return resolveRestoreColumn(identityIndex, stableKey, visibleItems)
+}
+
+/**
+ * Chiave Compose STABILE e univoca di una card di una riga "extra" (catalogo addon o
+ * riga Novità provider): identità della sezione + identità del contenuto.
+ *
+ * L'id del contenuto è la parte stabile dell'identità; quando l'addon non lo fornisce
+ * (id vuoto) si usa titolo+anno, così due card senza id non collidono e una card già
+ * composta non viene ricreata a ogni refresh della riga.
+ */
+internal fun homeExtraCardKey(sectionId: String, item: MediaItem): String {
+  val identity = item.id.trim().ifBlank { "${item.title.trim().lowercase()}_${item.year}" }
+  return "extra_${sectionId}_$identity"
 }
 
 @Composable
@@ -1345,6 +1387,10 @@ fun HomeMainBrowsingContent(
   // l'applicazione è in DUE TEMPI (vedi il commento nell'handler del menu contestuale), così
   // la card non viene mai smontata mentre un `focusRestorer` trattiene un PIN sul suo item.
   val pendingCwRemovals = remember { mutableStateListOf<String>() }
+
+  // Ancoraggio del focus da assegnare quando la rimozione è visibile nei dati composti
+  // (vedi l'effetto dedicato): vive oltre la fine dell'effetto della rimozione.
+  var cwRemovalAnchor by remember { mutableStateOf<ContinueWatchingRemovalAnchor?>(null) }
 
   // Letto dentro le coroutine della sincronizzazione del focus senza riavviarle: mentre il
   // menu contestuale è aperto il protocollo della Home NON deve muovere il focus.
@@ -1973,21 +2019,62 @@ fun HomeMainBrowsingContent(
     pendingCwRemovals.clear()
     removedIds.forEach { onRemoveFromContinueWatching(it) }
 
-    // Ancoraggio canonico della Home: la card rimossa era quella con il focus, quindi il
-    // cursore va riportato su una cella valida PRIMA che il primo tasto venga risolto dalla
-    // ricerca geometrica (che a sinistra trova la sidebar). L'Hero è la cella canonica; se non
-    // è disegnato (catalogo senza hero) o se è la riga stessa a sparire con l'ultima card, si
-    // ripiega sulla prima riga che sopravvive alla rimozione. Il conteggio viene dal
-    // coordinatore (dati vivi della composizione corrente), non da una lista catturata.
-    val cwRowWillBeEmpty =
-      (coordinator.rowItemCounts[CONTINUE_WATCHING_ROW_KEY] ?: 0) - removedIds.size <= 0
-    val anchorRow = HOME_CONTENT_ANCHOR_ROW.takeIf { it in coordinator.activeRowKeys }
-      ?: coordinator.activeRowKeys.firstOrNull {
-        !(cwRowWillBeEmpty && it == CONTINUE_WATCHING_ROW_KEY)
+    // Ancoraggio del focus DOPO la rimozione (effetto dedicato, sotto): la rimozione è
+    // ASINCRONA (repository -> flusso -> allMedia -> riga composta), quindi l'ancora va
+    // pubblicata quando la card eliminata non è più nella riga. Pubblicarla subito farebbe
+    // consumare la richiesta alla card che sta per sparire (già focalizzata), lasciando la
+    // Home senza destinazione al suo smontaggio.
+    val identitiesBeforeRemoval = coordinator.rowItemIdentities(CONTINUE_WATCHING_ROW_KEY)
+    cwRemovalAnchor = ContinueWatchingRemovalAnchor(
+      preRemovalCount = coordinator.rowItemCounts[CONTINUE_WATCHING_ROW_KEY]
+        ?: identitiesBeforeRemoval.size,
+      // Colonna della card eliminata nella composizione CORRENTE (identità, non indice
+      // ricordato): è la posizione che il focus deve occupare dopo la rimozione.
+      column = removedIds
+        .asSequence()
+        .map { identitiesBeforeRemoval.indexOf(it) }
+        .filter { it >= 0 }
+        .minOrNull()
+    )
+  }
+
+  // ANCORAGGIO del focus dopo una rimozione da «Continua a guardare».
+  //
+  // Vive in un effetto PROPRIO (non in quello della rimozione, che viene riavviato quando la
+  // lista delle rimozioni in attesa si svuota) e attende REATTIVAMENTE l'evento di dati che
+  // applica la rimozione: nessun ritardo fisso. Poi:
+  // - riga ancora popolata: il focus resta nella SEZIONE, sulla card che occupa la posizione
+  //   della card eliminata (clamp all'ultimo valido -> se era l'ultima si atterra sulla
+  //   precedente), senza mai spostarsi sulla Hero;
+  // - riga svuotata (sparita dalla Home): ancora canonica del contenuto (Hero), con ripiego
+  //   sulla prima riga superstite.
+  LaunchedEffect(cwRemovalAnchor) {
+    val anchor = cwRemovalAnchor ?: return@LaunchedEffect
+    if (anchor.preRemovalCount > 0) {
+      awaitCondition(CW_REMOVAL_APPLY_TIMEOUT_MS) {
+        (coordinator.rowItemCounts[CONTINUE_WATCHING_ROW_KEY] ?: 0) < anchor.preRemovalCount
       }
-      ?: coordinator.activeRowKeys.firstOrNull()
-    if (anchorRow != null) {
-      coordinator.requestPendingFocus(anchorRow, 0)
+    }
+    cwRemovalAnchor = null
+
+    val remainingCount = coordinator.rowItemCounts[CONTINUE_WATCHING_ROW_KEY] ?: 0
+    if (remainingCount > 0 && CONTINUE_WATCHING_ROW_KEY in coordinator.activeRowKeys) {
+      // Se nel frattempo l'utente ha navigato in un'ALTRA riga, la rimozione non gliela ruba:
+      // l'ancora vale finché il focus è ancora nella sezione o è andato perso.
+      val focusIsStillInSection = coordinator.focusedRowKey == null ||
+        coordinator.focusedRowKey == CONTINUE_WATCHING_ROW_KEY
+      if (focusIsStillInSection) {
+        val anchorColumn = (anchor.column
+          ?: coordinator.lastFocusedColumn(CONTINUE_WATCHING_ROW_KEY)
+          ?: 0).coerceIn(0, remainingCount - 1)
+        coordinator.requestPendingFocus(CONTINUE_WATCHING_ROW_KEY, anchorColumn)
+      }
+    } else {
+      val anchorRow = HOME_CONTENT_ANCHOR_ROW.takeIf { it in coordinator.activeRowKeys }
+        ?: coordinator.activeRowKeys.firstOrNull()
+      if (anchorRow != null) {
+        coordinator.requestPendingFocus(anchorRow, 0)
+      }
     }
   }
 
@@ -2566,7 +2653,7 @@ fun HomeMainBrowsingContent(
               contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
               modifier = rowGroupModifier("section_${extraSec.id}")
             ) {
-              itemsIndexed(extraSec.items, key = { _, item -> "extra_${extraSec.id}_${item.id}" }, contentType = { _, _ -> "poster" }) { index, item ->
+              itemsIndexed(extraSec.items, key = { _, item -> homeExtraCardKey(extraSec.id, item) }, contentType = { _, _ -> "poster" }) { index, item ->
                 PosterMediaCard(
                   media = item,
                   onClick = { handleRowMediaClick("section_${extraSec.id}", index, item) },

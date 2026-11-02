@@ -10,16 +10,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Verifica il mapping dei cataloghi NATIVI TMDB sulle righe della Home
- * ([StremioCatalogRepository.buildHomeCatalogs]), senza rete.
+ * Compatibilità del mapping delle sezioni TMDB su [StremioCatalogRepository.buildHomeCatalogs],
+ * senza rete.
+ *
+ * La Home di produzione usa Cinemeta per le righe stock e TMDB solo per le Novità
+ * provider; questi test restano utili per la funzione PURA e per il percorso
+ * legacy/test di [TmdbHomeCatalogProvider.loadHomeSections].
  *
  * Regole coperte:
  *  - le sezioni stock (slot POPULAR / TOP_RATED / NEW) alimentano le righe esistenti;
  *  - le sezioni senza slot sono righe EXTRA e restano nell'ordine fornito;
- *  - un addon che popola un tipo sopprime TUTTE le righe native di quel tipo,
- *    comprese le nuove righe (digitale per i film, in onda/HBO per le serie);
- *  - la sorgente TMDB imposta i flag di paginazione corretti e non riattiva il
- *    percorso Stremio/Cinemeta;
+ *  - un addon che popola un tipo sopprime TUTTE le righe native di quel tipo;
+ *  - la sorgente TMDB imposta i flag di paginazione corretti;
  *  - le liste categoria deduplicano i titoli e usano la cache locale come fallback.
  */
 class HomeCatalogTmdbSourceTest {

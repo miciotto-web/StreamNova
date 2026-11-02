@@ -36,19 +36,22 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * BACK DEL TELECOMANDO: UNA PRESSIONE FISICA = UNA SOLA CONSEGNA.
+ * BACK DEL TELECOMANDO: UNA PRESSIONE FISICA = UNA SOLA AZIONE.
  *
- * Difetto coperto (riprodotto sull'emulatore Android TV): un tasto BACK reale produce un
- * KEY_DOWN e un KEY_UP separati da decine di millisecondi. Il vecchio `PlayerScreen`
- * chiudeva il player nel proprio `onKeyEvent` sul KEY_DOWN; il KEY_UP successivo, rimasto
- * senza il gestore che l'aveva consumato, veniva recapitato all'Activity e il dispatcher
- * trovava il `BackHandler` del Dettaglio: `popBackStack()` verso la Home. Il ripristino del
- * focus sul pulsante «Riproduci» non aveva quindi alcuna schermata su cui avvenire.
+ * Un tasto BACK reale produce un KEY_DOWN e un KEY_UP separati da decine di millisecondi.
+ * Sulle TV con dispatch "legacy" del BACK (Android 11 e precedenti) `Activity.onKeyUp`
+ * chiama `onBackPressed()` solo se il KEY_DOWN ha armato il tracking: un DOWN consumato
+ * nella gerarchia di viste faceva perdere la pressione e serviva un secondo BACK per uscire
+ * dal player (difetto riscontrato sul telecomando di una TV reale).
+ *
+ * Il player ora gestisce il tasto fisico direttamente in `onPreviewKeyEvent`: consuma il
+ * DOWN senza eseguire nulla e agisce UNA volta sul rilascio. Il `BackHandler` resta per i
+ * BACK avviati dal sistema (predictive back), che non hanno un KEY_DOWN del player.
  *
  * I test preesistenti premevano BACK con `onBackPressedDispatcher.onBackPressed()` (solo
- * la fase di rilascio): non potevano vedere la doppia consegna. Qui si usa il
- * [PlayerScreen] REALE e si iniettano gli eventi di tasto grezzi, con il DOWN e l'UP
- * separati da frame di composizione, come fa un telecomando vero.
+ * la fase di rilascio): non potevano vedere la consegna reale. Qui si usa il [PlayerScreen]
+ * REALE e si iniettano gli eventi di tasto grezzi, DOWN e UP separati da frame di
+ * composizione, come fa un telecomando vero.
  */
 @OptIn(ExperimentalTestApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -110,7 +113,7 @@ class PlayerBackKeySingleDeliveryTest {
       }
 
       // Stesso ordine della MainActivity: BackHandler del player dopo il NavHost, poi
-      // l'overlay reale del player (che registra il proprio BackHandler ancora dopo).
+      // l'overlay reale del player (che gestisce il tasto fisico in preview).
       BackHandler(enabled = screenState == ScreenState.PLAYER) {
         viewModel.closePlayer()
       }
@@ -138,9 +141,8 @@ class PlayerBackKeySingleDeliveryTest {
     (rule as AndroidComposeTestRule<*, *>).activity as androidx.activity.ComponentActivity
 
   /**
-   * Prima metà di una pressione fisica: il KEY_DOWN arriva al nodo focalizzato del player
-   * (cioè ai suoi handler `onPreviewKeyEvent`/`onKeyEvent`, dove il vecchio codice chiudeva
-   * subito il player consumando l'evento).
+   * Prima metà di una pressione fisica: il KEY_DOWN arriva al nodo focalizzato del player.
+   * Non deve eseguire alcuna azione (l'uscita avviene sul rilascio).
    */
   private fun backKeyDown() {
     rule.onNode(isFocused(), useUnmergedTree = true).performKeyInput { keyDown(Key.Back) }
@@ -148,12 +150,19 @@ class PlayerBackKeySingleDeliveryTest {
   }
 
   /**
-   * Seconda metà: il KEY_UP arriva all'Activity, che chiama `onBackPressed()` sul
-   * dispatcher. Se il KEY_DOWN ha già smontato il player, qui il dispatcher trova il
-   * BackHandler del Dettaglio e lo poppa (il difetto). Con la correzione il player è
-   * ancora aperto e il suo BackHandler chiude solo l'overlay.
+   * Seconda metà: il KEY_UP arriva allo stesso nodo. Il player lo consuma e chiude
+   * l'overlay UNA sola volta, quindi l'`onBackPressed()` dell'Activity non viene
+   * interpellato (sul dispatch legacy il DOWN consumato non arma il tracking).
    */
-  private fun backKeyUpViaActivityDispatcher() {
+  private fun backKeyUp() {
+    rule.mainClock.advanceTimeBy(64)
+    rule.waitForIdle()
+    rule.onNode(isFocused(), useUnmergedTree = true).performKeyInput { keyUp(Key.Back) }
+    rule.waitForIdle()
+  }
+
+  /** BACK di sistema (nessun KEY_DOWN del player), es. predictive back / dispatcher. */
+  private fun backViaActivityDispatcher() {
     rule.mainClock.advanceTimeBy(64)
     rule.waitForIdle()
     rule.runOnUiThread {
@@ -163,13 +172,28 @@ class PlayerBackKeySingleDeliveryTest {
   }
 
   @Test
+  fun ilKeyDownDaSoloNonChiudeIlPlayer() {
+    render()
+    assertEquals(ScreenState.PLAYER, viewModel.screenState.value)
+
+    backKeyDown()
+
+    assertEquals(
+      "il KEY_DOWN non deve eseguire l'uscita: l'azione avviene sul rilascio",
+      ScreenState.PLAYER,
+      viewModel.screenState.value
+    )
+    assertEquals(0, detailPops)
+  }
+
+  @Test
   fun backConDownEUpSeparatiChiudeIlPlayerSenzaPoppareIlDettaglio() {
     render()
     assertEquals(ScreenState.PLAYER, viewModel.screenState.value)
     val tokenBefore = viewModel.playerClosedToken.value
 
     backKeyDown()
-    backKeyUpViaActivityDispatcher()
+    backKeyUp()
 
     // La destinazione Dettaglio è ancora quella attiva: nessun pop verso la Home.
     assertEquals(
@@ -198,15 +222,29 @@ class PlayerBackKeySingleDeliveryTest {
   fun ilBackSuccessivoDalDettaglioContinuaATornareAllaHome() {
     render()
     backKeyDown()
-    backKeyUpViaActivityDispatcher()
+    backKeyUp()
     assertEquals(0, detailPops)
 
     // BACK premuto nel Dettaglio (player già chiuso): unico passaggio che deve poppare.
-    backKeyUpViaActivityDispatcher()
+    backViaActivityDispatcher()
     assertEquals(
       "il BACK nel Dettaglio deve continuare a tornare alla Home",
       1,
       detailPops
     )
+  }
+
+  @Test
+  fun ilBackDiSistemaSenzaKeyDownContinuaAChiudereIlPlayer() {
+    render()
+    assertEquals(ScreenState.PLAYER, viewModel.screenState.value)
+    val tokenBefore = viewModel.playerClosedToken.value
+
+    // Predictive back / dispatcher: nessun KEY_DOWN consegnato al player.
+    backViaActivityDispatcher()
+
+    assertEquals(0, detailPops)
+    assertEquals(ScreenState.DETAIL, viewModel.screenState.value)
+    assertEquals(tokenBefore + 1, viewModel.playerClosedToken.value)
   }
 }

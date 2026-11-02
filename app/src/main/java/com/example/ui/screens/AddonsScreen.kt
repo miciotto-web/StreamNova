@@ -43,6 +43,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,9 +68,11 @@ import com.example.data.stremio.provider.UserProviderBindingStore
 import com.example.data.repository.StremioCatalogRepository
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.QrCodeInfoCard
+import com.example.ui.components.FocusRestoreConfirmation
 import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.components.TextInputDialog
+import com.example.ui.components.requestFocusConfirmed
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCardBgFocused
@@ -107,6 +111,25 @@ fun AddonsScreen(
   val message by viewModel.addonMessage.collectAsState()
 
   var showAddDialog by remember { mutableStateOf(false) }
+
+  // ── Focus della sezione durante il flusso di installazione ───────────────
+  // Il dialog di installazione è un overlay nella STESSA finestra: alla chiusura il nodo
+  // focalizzato (il campo di testo) esce dalla composizione e Compose azzera il focus.
+  // Senza una richiesta esplicita il ripiego geometrico atterra sul primo focusabile
+  // della finestra, cioè una voce della sidebar (focusabile anche quando è chiusa):
+  // l'utente si ritrovava fuori dalla sezione Addon a ogni installazione.
+  //
+  // Il focus viene quindi affidato al controllo che ha avviato l'installazione, che è
+  // sempre presente. La conferma arriva da `onFocusChanged` (non dal solo requestFocus)
+  // e i tentativi attendono i frame: nessun ritardo arbitrario.
+  val addButtonFocusRequester = remember { FocusRequester() }
+  val addButtonFocusConfirmation = remember { FocusRestoreConfirmation() }
+  var focusRestoreToken by remember { mutableStateOf(0) }
+
+  LaunchedEffect(focusRestoreToken) {
+    if (focusRestoreToken == 0) return@LaunchedEffect
+    addButtonFocusRequester.requestFocusConfirmed(addButtonFocusConfirmation)
+  }
 
   // ── Micro-server locale per la configurazione da smartphone ─────────────
   // Il server resta in ascolto finché la schermata è attiva: il QR Code
@@ -211,7 +234,10 @@ fun AddonsScreen(
             shape = RoundedCornerShape(50),
             focusedScale = 1.04f,
             onClick = { if (!isInstalling) showAddDialog = true },
-            modifier = Modifier.weight(1f, fill = false)
+            modifier = Modifier
+              .weight(1f, fill = false)
+              .focusRequester(addButtonFocusRequester)
+              .onFocusChanged { addButtonFocusConfirmation.onFocusChanged(it.isFocused) }
           ) { isFocused ->
             Row(
               modifier = Modifier
@@ -314,8 +340,8 @@ fun AddonsScreen(
           userBindings = userBindings,
           resolver = resolver,
           providerNames = providerNames,
-          onToggleEnabled = { enabled -> viewModel.setAddonEnabled(addon.id, enabled) },
-          onRemove = { viewModel.removeAddon(addon.id) },
+          onToggleEnabled = { enabled -> viewModel.setAddonEnabled(addon.installId, enabled) },
+          onRemove = { viewModel.removeAddon(addon.installId) },
           onConfirmBinding = onConfirmBinding,
           onRemoveBinding = onRemoveBinding
         )
@@ -330,9 +356,16 @@ fun AddonsScreen(
       confirmLabel = stringResource(R.string.addons_dialog_install),
       onConfirm = { url ->
         showAddDialog = false
+        // Ripristina SUBITO il focus sulla schermata: il campo del dialog sta per
+        // smontarsi e senza questa richiesta il focus ricadrebbe sulla sidebar.
+        focusRestoreToken++
         viewModel.installAddon(url)
       },
-      onDismiss = { showAddDialog = false }
+      onDismiss = {
+        showAddDialog = false
+        // Anche l'annullamento chiude lo stesso overlay focalizzato: stessa restituzione.
+        focusRestoreToken++
+      }
     )
   }
 }
@@ -355,8 +388,8 @@ private fun AddonCard(
   onRemoveBinding: (CatalogKey, String) -> Unit
 ) {
   val manifest = addon.manifest
-  var isCatalogsExpanded by rememberSaveable(addon.id) { mutableStateOf(false) }
-  var isProvidersExpanded by rememberSaveable(addon.id) { mutableStateOf(false) }
+  var isCatalogsExpanded by rememberSaveable(addon.installId) { mutableStateOf(false) }
+  var isProvidersExpanded by rememberSaveable(addon.installId) { mutableStateOf(false) }
   val catalogs = manifest.validCatalogs()
   val proposals = rememberProviderProposals(addon, userBindings, resolver)
   val idPrefixes = manifest.idPrefixesForResource(RESOURCE_CATALOG) ?: manifest.idPrefixes
@@ -798,7 +831,7 @@ private fun rememberProviderProposals(
   addon: InstalledAddon,
   userBindings: List<ProviderBinding>,
   resolver: ProviderCatalogResolver
-): List<ProviderBindingProposalView> = remember(addon.id, userBindings, resolver) {
+): List<ProviderBindingProposalView> = remember(addon.installId, userBindings, resolver) {
   ProviderBindingConfirmation.proposalsFor(
     manifest = addon.manifest,
     providers = DefaultProviderCatalogResolver.defaultAliasProviders(),

@@ -29,6 +29,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
@@ -50,7 +51,6 @@ import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.prefs.StreamingEngineMode
-import com.example.data.repository.MediaRepository
 import com.example.data.streaming.StreamResult
 import com.example.data.update.UpdateRepository
 import com.example.data.update.shouldShowStartupUpdatePrompt
@@ -90,9 +90,23 @@ import com.example.ui.viewmodel.SidebarSection
 import com.example.ui.viewmodel.StreamNovaViewModel
 import com.example.ui.viewmodel.StreamResolutionState
 import com.example.ui.viewmodel.TrailerPlaybackState
+import kotlinx.coroutines.delay
 
 /** Finestra temporale del doppio Back sulla Home per uscire dall'app (feedback breve). */
 private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
+
+/**
+ * Limite oltre il quale la Home viene composta anche se la splash non ha ancora
+ * segnalato l'avvio del video (rete di sicurezza, non un timeout di riproduzione).
+ */
+private const val HOME_CONTENT_GATE_SAFETY_TIMEOUT_MS = 10_000L
+
+/**
+ * Pausa tra il primo frame del video splash e la composizione della Home: lascia
+ * al decoder il tempo di avviarsi senza contesa di CPU. Non incide sulla durata
+ * del video né sulla pausa finale di 4 s (la Home si compone durante il filmato).
+ */
+private const val HOME_CONTENT_GATE_DELAY_AFTER_VIDEO_MS = 1_500L
 
 /**
  * Tasti di navigazione/conferma che la finestra della Home non deve ricevere mentre un
@@ -168,15 +182,29 @@ class MainActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    MediaRepository.init(applicationContext)
+    StartupTrace.mark("main_activity_oncreate_enter")
+    // MediaRepository è già inizializzato in StreamNovaApplication.onCreate() (con il
+    // database Room): ripeterlo qui rieseguiva la stessa inizializzazione sullo stesso
+    // database, quindi è stato rimosso per evitare il lavoro ridondante del bootstrap.
     // Controllo aggiornamenti all'avvio: in background (Dispatchers.IO) e una sola volta
     // per processo, quindi non blocca né rallenta la Home. Se trova una versione più
     // recente il popup compare a schermata libera; in ogni altro esito — app aggiornata,
     // offline, errore — non disturba. Nessun download parte senza la scelta dell'utente.
     UpdateRepository.checkForUpdatesOnStartup()
+    StartupTrace.mark("after_update_check_scheduled")
     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+    StartupTrace.mark("after_requested_orientation")
     enableEdgeToEdge()
+    StartupTrace.mark("after_enable_edge_to_edge")
     setContent {
+      StartupTrace.mark("compose_content_enter")
+      // Primo frame realmente disegnato: è il confine tra "schermo vuoto/splash
+      // nativo" e "app visibile". Lo splash video parte solo dopo questo evento.
+      LaunchedEffect(Unit) {
+        StartupTrace.mark("first_frame_effect")
+        androidx.compose.runtime.withFrameNanos { }
+        StartupTrace.mark("first_frame_drawn")
+      }
       val appLanguage by viewModel.appLanguage.collectAsState()
       val context = LocalContext.current
       val currentLocale = remember(appLanguage) { java.util.Locale(appLanguage) }
@@ -199,7 +227,9 @@ class MainActivity : ComponentActivity() {
           StreamNovaApp(viewModel = viewModel, activity = this@MainActivity)
         }
       }
+      StartupTrace.mark("compose_content_exit")
     }
+    StartupTrace.mark("main_activity_oncreate_exit")
   }
 }
 
@@ -281,6 +311,45 @@ fun StreamNovaApp(
   // sotto la splash per tutta la riproduzione, quindi i dati si caricano in
   // parallelo al video e al termine non c'è nulla da ricaricare.
   var isSplashActive by rememberSaveable { mutableStateOf(true) }
+
+  // Contenuto principale (Home + sidebar) composto solo DOPO il primo frame del
+  // video splash.
+  //
+  // Perché: la splash è disegnata SOPRA la Home, ma Compose compone l'intero albero
+  // prima della prima cornice. Comporre hero, righe, card e immagini prima di
+  // mostrare la splash sposta in avanti di secondi la comparsa dello splash video
+  // sui TV box più lenti (misurato con StartupTrace). Il primo frame deve contenere
+  // SOLO la splash; la Home viene composta appena il video mostra il suo primo
+  // frame, così continua a caricarsi/comporsi in parallelo alla riproduzione,
+  // senza ritardarla e senza lasciare nulla da ricaricare alla fine.
+  // `rememberSaveable`: alla ricreazione dell'Activity la Home è già pronta.
+  var isMainContentReady by rememberSaveable { mutableStateOf(false) }
+
+  // Primo frame del video realmente a schermo. La composizione della Home parte
+  // poco dopo: il decoder deve poter mostrare il filmato senza contendere CPU
+  // nella fase più delicata dell'avvio. Il resto del video e la pausa di 4 s
+  // bastano comunque a completare il caricamento della Home.
+  var isVideoFirstFrameRendered by remember { mutableStateOf(false) }
+  LaunchedEffect(isVideoFirstFrameRendered) {
+    if (!isVideoFirstFrameRendered || isMainContentReady) return@LaunchedEffect
+    delay(HOME_CONTENT_GATE_DELAY_AFTER_VIDEO_MS)
+    if (!isMainContentReady) {
+      isMainContentReady = true
+      StartupTrace.mark("home_content_gate_open_video_started")
+    }
+  }
+
+  // Rete di sicurezza: se la splash non segnala mai l'avvio (player non
+  // riproducibile, surface mai pronta) la Home viene comunque composta dopo
+  // questo limite, invece di restare fuori per sempre.
+  LaunchedEffect(Unit) {
+    if (isMainContentReady) return@LaunchedEffect
+    delay(HOME_CONTENT_GATE_SAFETY_TIMEOUT_MS)
+    if (!isMainContentReady) {
+      isMainContentReady = true
+      StartupTrace.mark("home_content_gate_open_timeout")
+    }
+  }
 
   /*
    * BACK GERARCHICO DEL TELECOMANDO TV — ordine di priorità:
@@ -517,65 +586,71 @@ fun StreamNovaApp(
             }
         ) {
           // Main Screen Content — larghezza e posizione fisse, non si sposta mai.
-          CompositionLocalProvider(
-            LocalLastFocusedTarget provides lastFocusedTarget,
-            LocalLastFocusedMediaId provides lastFocusedMediaId,
-            LocalLastFocusedProviderId provides lastFocusedProviderId,
-            LocalFocusRestoreToken provides focusRestoreToken,
-            LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() },
-            LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() }
-          ) {
-            HomeScreen(
-              viewModel = viewModel,
-              onProviderClick = { provider ->
-                viewModel.openProvider(provider)
-                navController.navigate(Screen.Provider.createRoute(provider.id))
-              },
-              onMediaClick = { media ->
-                // NON chiamare viewModel.saveLastFocusedMedia(media.id) qui!
-                // HomeScreen.kt gestisce già internamente handleRowMediaClick salvando la rowKey specifica.
-                // Canale LIVE (addon Stremio, es. TvVoo): nessuna scheda stagioni/episodi,
-                // si aprono direttamente le sorgenti del canale.
-                if (viewModel.isLiveChannel(media.id)) {
-                  viewModel.openLiveChannel(media)
-                  navController.navigate(Screen.Detail.createRoute(media.type, media.tmdbId ?: 0))
-                } else {
-                  viewModel.openDetail(media)
-                  val tmdbId = media.tmdbId ?: 0
-                  navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
+          //
+          // Composta solo quando il primo frame della splash è già a schermo (vedi
+          // `isMainContentReady`): durante la splash resta comunque invisibile, ma la
+          // sua composizione non deve precedere la comparsa del video.
+          if (isMainContentReady) {
+            CompositionLocalProvider(
+              LocalLastFocusedTarget provides lastFocusedTarget,
+              LocalLastFocusedMediaId provides lastFocusedMediaId,
+              LocalLastFocusedProviderId provides lastFocusedProviderId,
+              LocalFocusRestoreToken provides focusRestoreToken,
+              LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() },
+              LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() }
+            ) {
+              HomeScreen(
+                viewModel = viewModel,
+                onProviderClick = { provider ->
+                  viewModel.openProvider(provider)
+                  navController.navigate(Screen.Provider.createRoute(provider.id))
+                },
+                onMediaClick = { media ->
+                  // NON chiamare viewModel.saveLastFocusedMedia(media.id) qui!
+                  // HomeScreen.kt gestisce già internamente handleRowMediaClick salvando la rowKey specifica.
+                  // Canale LIVE (addon Stremio, es. TvVoo): nessuna scheda stagioni/episodi,
+                  // si aprono direttamente le sorgenti del canale.
+                  if (viewModel.isLiveChannel(media.id)) {
+                    viewModel.openLiveChannel(media)
+                    navController.navigate(Screen.Detail.createRoute(media.type, media.tmdbId ?: 0))
+                  } else {
+                    viewModel.openDetail(media)
+                    val tmdbId = media.tmdbId ?: 0
+                    navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
+                  }
+                },
+                modifier = Modifier
+                  .fillMaxSize()
+                  .padding(start = 60.dp)
+              )
+            }
+
+            // Left Sidebar Menu — overlay sopra la Home.
+            // onFocusChanged ESTERNO aggiorna sidebarHasFocus (solo tracking, NON collassa la sidebar).
+            SidebarNavigation(
+              currentSection = currentSection,
+              itemFocusRequesters = sidebarItemFocusRequesters,
+              onSectionSelected = { section ->
+                if (section == SidebarSection.HOME) {
+                  isSidebarExpanded = false
+                  viewModel.requestHomeScrollToTop()
                 }
+                if (section == SidebarSection.CERCA) {
+                  isSidebarExpanded = false
+                }
+                viewModel.setSection(section)
               },
+              isSidebarExpanded = isSidebarExpanded,
+              onCollapseRequest = { isSidebarExpanded = false },
+              // La voce "Addon" compare nella sidebar solo in modalità Debrid TorBox:
+              // in Web Streaming (HTTP) gli addon non alimentano la risoluzione sorgenti.
+              showAddons = streamingEngineMode.supportsAddonsSection,
               modifier = Modifier
-                .fillMaxSize()
-                .padding(start = 60.dp)
+                .align(Alignment.CenterStart)
+                .focusRequester(sidebarFocusRequester)
+                .onFocusChanged { sidebarHasFocus = it.hasFocus }
             )
           }
-
-          // Left Sidebar Menu — overlay sopra la Home.
-          // onFocusChanged ESTERNO aggiorna sidebarHasFocus (solo tracking, NON colapsa la sidebar).
-          SidebarNavigation(
-            currentSection = currentSection,
-            itemFocusRequesters = sidebarItemFocusRequesters,
-            onSectionSelected = { section ->
-              if (section == SidebarSection.HOME) {
-                isSidebarExpanded = false
-                viewModel.requestHomeScrollToTop()
-              }
-              if (section == SidebarSection.CERCA) {
-                isSidebarExpanded = false
-              }
-              viewModel.setSection(section)
-            },
-            isSidebarExpanded = isSidebarExpanded,
-            onCollapseRequest = { isSidebarExpanded = false },
-            // La voce "Addon" compare nella sidebar solo in modalità Debrid TorBox:
-            // in Web Streaming (HTTP) gli addon non alimentano la risoluzione sorgenti.
-            showAddons = streamingEngineMode.supportsAddonsSection,
-            modifier = Modifier
-              .align(Alignment.CenterStart)
-              .focusRequester(sidebarFocusRequester)
-              .onFocusChanged { sidebarHasFocus = it.hasFocus }
-          )
         }
       }
 
@@ -949,8 +1024,17 @@ targetCompanyId = lastFocusedCompanyId,
       // poi Home. Errore reale o impossibilità di avviare il video chiudono
       // subito la splash: nessun percorso la lascia sopra la Home.
       SplashVideoScreen(
+        // Il primo frame del video è realmente a schermo: la Home può essere
+        // composta dopo una breve pausa (vedi `isVideoFirstFrameRendered`),
+        // senza rubare CPU al decoder nella fase di avvio.
+        onVideoStarted = {
+          isVideoFirstFrameRendered = true
+        },
         onFinished = {
           Log.i("SplashIntro", "HOME_VISIBLE t=${SystemClock.elapsedRealtime()}")
+          // Anche un'uscita anomala (player non disponibile) deve lasciare una
+          // Home composta: la splash non è mai l'ultima schermata.
+          isMainContentReady = true
           isSplashActive = false
         }
       )

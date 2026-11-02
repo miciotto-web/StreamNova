@@ -19,6 +19,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -41,13 +42,32 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.R
+import com.example.StartupTrace
 import kotlinx.coroutines.delay
 
 private const val TAG = "SplashIntro"
 
+/** Larghezza del logo statico durante l'attesa del player, in frazione della finestra. */
+private const val SPLASH_LOGO_WIDTH_FRACTION = 0.35f
+
+/**
+ * Stato di costruzione del player dell'intro. `Pending` NON è un errore: la splash
+ * statica è già a schermo e resta visibile finché il player non esiste.
+ */
+internal sealed interface SplashPlayerLoadState {
+  data object Pending : SplashPlayerLoadState
+
+  /** [player] nullo = costruzione fallita: la splash si chiude subito. */
+  data class Created(val player: Player?) : SplashPlayerLoadState
+}
+
 /**
  * Intro animata ufficiale di StreamNova: il logo 3D viene riprodotto una sola
  * volta, a schermo intero e senza audio, subito dopo lo splash nativo.
+ *
+ * Il player Media3 viene costruito DOPO il primo frame, quando la splash statica
+ * (fondo del filmato + logo ufficiale) è già disegnata: la creazione del decoder e
+ * il caricamento delle librerie native non ritardano più la prima schermata.
  *
  * Sequenza:
  *  1. la riproduzione parte SOLO quando la finestra dell'app è visibile e il
@@ -59,9 +79,10 @@ private const val TAG = "SplashIntro"
  *  4. solo allora la splash viene smontata e compare la Home.
  *
  * Il player resta vivo durante la pausa (niente `release()`), così la
- * SurfaceView continua a mostrare l'ultimo frame. La Home è già composta sotto
- * l'overlay per tutta la sequenza: al termine non c'è nulla da ricaricare e non
- * compare alcun frame nero.
+ * SurfaceView continua a mostrare l'ultimo frame. La Home viene composta appena
+ * il primo frame del video è a schermo e completa caricamento e composizione
+ * durante la riproduzione e la pausa: al termine non c'è nulla da ricaricare e
+ * non compare alcun frame nero.
  *
  * Errore reale o impossibilità di avviare il video chiudono subito l'intro:
  * nessun watchdog interrompe una riproduzione che ha già mostrato un frame.
@@ -71,16 +92,58 @@ private const val TAG = "SplashIntro"
 @Composable
 fun SplashVideoScreen(
   onFinished: () -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  /** Invocata quando il primo frame del video è realmente a schermo. */
+  onVideoStarted: () -> Unit = {}
 ) {
   val context = LocalContext.current
   val appContext = remember(context) { context.applicationContext }
 
   // Un solo player per composizione: le recomposition non devono istanziare un
-  // secondo decoder. `runCatching` copre i dispositivi senza Media3 utilizzabile.
-  val player = remember(appContext) { createSplashPlayer(appContext) }
+  // secondo decoder. Due frame di attesa: il primo disegna la splash statica, il
+  // secondo applica la modifica; solo allora la costruzione del player può
+  // occupare il thread principale senza nascondere nulla.
+  val loadState by produceState<SplashPlayerLoadState>(
+    initialValue = SplashPlayerLoadState.Pending,
+    key1 = appContext
+  ) {
+    withFrameNanos { }
+    withFrameNanos { }
+    StartupTrace.mark("splash_player_create_start")
+    val player = createSplashPlayer(appContext)
+    StartupTrace.mark("splash_player_create_end")
+    value = SplashPlayerLoadState.Created(player)
+  }
 
-  SplashVideoStage(player = player, onFinished = onFinished, modifier = modifier)
+  when (val state = loadState) {
+    SplashPlayerLoadState.Pending -> SplashVideoPendingStage(modifier = modifier)
+    is SplashPlayerLoadState.Created -> SplashVideoStage(
+      player = state.player,
+      onFinished = onFinished,
+      modifier = modifier,
+      onVideoStarted = onVideoStarted
+    )
+  }
+}
+
+/**
+ * Schermata statica mostrata mentre il player viene costruito: stesso fondo del
+ * filmato e logo ufficiale, così il passaggio allo splash video non ha stacchi
+ * di colore né schermate vuote.
+ */
+@Composable
+internal fun SplashVideoPendingStage(modifier: Modifier = Modifier) {
+  val backgroundColor = colorResource(R.color.splash_video_background)
+  Box(modifier = modifier.fillMaxSize().background(backgroundColor)) {
+    Image(
+      painter = painterResource(R.drawable.streamnova_logo),
+      contentDescription = null,
+      modifier = Modifier
+        .align(Alignment.Center)
+        .fillMaxWidth(SPLASH_LOGO_WIDTH_FRACTION),
+      contentScale = ContentScale.Fit
+    )
+  }
 }
 
 /**
@@ -93,10 +156,12 @@ fun SplashVideoScreen(
 internal fun SplashVideoStage(
   player: Player?,
   onFinished: () -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  onVideoStarted: () -> Unit = {}
 ) {
   // L'ultimo `onFinished` ricevuto, non quello catturato alla prima composizione.
   val currentOnFinished by rememberUpdatedState(onFinished)
+  val currentOnVideoStarted by rememberUpdatedState(onVideoStarted)
   val lifecycleOwner = LocalLifecycleOwner.current
   val backgroundColor = colorResource(R.color.splash_video_background)
 
@@ -146,6 +211,9 @@ internal fun SplashVideoStage(
         // Solo per il fallback "video non avviabile": l'avvio della
         // riproduzione è già stato registrato quando è partito `play()`.
         timeline.onFirstFrameRendered()
+        // Primo frame del video DAVVERO a schermo: solo ora la Home può essere
+        // composta, senza contendere CPU al decoder nella fase di avvio.
+        currentOnVideoStarted()
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {

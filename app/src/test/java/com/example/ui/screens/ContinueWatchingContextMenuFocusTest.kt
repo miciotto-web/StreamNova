@@ -650,7 +650,7 @@ class ContinueWatchingContextMenuFocusTest {
   }
 
   @Test
-  fun laVoceRimuoviEsegueUnaSolaRimozioneEAncoraIlFocusAllaHome() {
+  fun laVoceRimuoviEsegueUnaSolaRimozioneEMantieneIlFocusNellaRiga() {
     render()
     focusCard("CW 2")
     openContextMenuWithLongPress()
@@ -669,8 +669,11 @@ class ContinueWatchingContextMenuFocusTest {
     assertEquals("nessuna riproduzione", 0, playClicks)
     assertEquals("nessuna navigazione ai dettagli", 0, detailClicks)
     assertTrue("il popup deve chiudersi", showingDialog() == null)
-    // La card non esiste più: la Home ancora il focus all'Hero, mai a un nodo smontato.
-    assertFocusOnCard(HERO_TITLE, "dopo la rimozione della card di origine")
+    // La riga ha ancora contenuti: il focus resta nella sezione, sulla card che occupa la
+    // posizione della card eliminata (CW 3), mai sulla Hero.
+    assertFocusOnCard("CW 3", "dopo la rimozione della card di origine")
+    assertFalse("la card eliminata non deve conservare il focus", isCardFocused("CW 2"))
+    assertFalse("il focus non deve andare sulla Hero", isCardFocused(HERO_TITLE))
     assertTrue("il D-pad deve restare operativo", focusedNodes().isNotEmpty())
   }
 

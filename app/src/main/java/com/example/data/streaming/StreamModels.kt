@@ -30,6 +30,10 @@ enum class CacheState { Cached, NotCached, Unknown }
  * @param codec codec video ("H264", "HEVC", "AV1").
  * @param streamUrl URL diretto NULL fino al click dell'utente! Sbloccato on-demand.
  * @param subtitles sottotitoli esterni gia' risolti dal bridge per questa sorgente.
+ * @param addonInstallId identità dell'installazione Stremio che ha prodotto la sorgente
+ *        (`baseUrl` normalizzato, configurazione inclusa). Distingue due
+ *        installazioni con lo stesso `manifest.id` (es. Torrentio globale e IT);
+ *        null per le sorgenti che non provengono da un addon Stremio.
  */
 data class StreamSource(
   val streamUrl: String? = null,
@@ -57,6 +61,12 @@ data class StreamSource(
   val releaseType: String? = null,
   /** Sottotitoli esterni associati a questa sorgente (addon Stremio). */
   val subtitles: List<Subtitle> = emptyList(),
+  /**
+   * Identità dell'installazione Stremio di origine (vedi KDoc della classe).
+   * Fa parte della chiave di deduplica: lo stesso torrent restituito da due
+   * configurazioni distinte resta una sorgente per ciascuna installazione.
+   */
+  val addonInstallId: String? = null,
 ) {
   val title: String
     get() = releaseTitle?.takeIf { it.isNotBlank() } ?: serverName

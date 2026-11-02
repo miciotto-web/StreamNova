@@ -69,7 +69,7 @@
 
     <!-- Source Selection Dialog -->
     <string name="source_dialog_title">Seleziona sorgente (%d)</string>
-    <string name="source_dialog_hints">↑↓ naviga  •  INVIO seleziona  •  🡄 🡆 filtra</string>
+    <string name="source_dialog_hints">↑↓ naviga  •  INVIO seleziona  •  ← → filtra</string>
     <string name="source_dialog_filter_all">Tutto</string>
     <string name="torbox_source_cached">Cached</string>
     <string name="torbox_source_not_cached">Non in cache</string>
@@ -155,6 +155,8 @@
     <string name="search_category_desc_addon">Catalogo addon: %1$s</string>
     <string name="search_category_desc_fallback">Risultati %1$s da TMDB</string>
     <string name="search_category_loading">Caricamento del catalogo addon…</string>
+    <string name="search_category_desc_tmdb">Risultati %1$s da TMDB</string>
+    <string name="search_category_loading_tmdb">Caricamento del catalogo TMDB…</string>
     <!-- Fallback TMDB della sezione Ricerca: un messaggio per tipo (film / serie TV),
          così nessun limite viene attribuito all'app o a un addon che non ne è la causa. -->
     <string name="search_category_type_movies">film</string>
@@ -167,6 +169,7 @@
     <string name="search_category_tmdb_unavailable">Ricerca TMDB non disponibile: verifica la connessione e riprova</string>
     <string name="search_category_empty_type">Catalogo %1$s interrogato ma senza risultati</string>
     <string name="search_category_failed_type">Catalogo %1$s non raggiungibile: riprova più tardi</string>
+    <string name="search_category_native_tmdb_no_results">Nessun risultato per %1$s su TMDB</string>
     <string name="search_titles_available">%d Titoli Disponibili</string>
     <string name="search_no_content_for_category">Nessun contenuto trovato per %s</string>
     <string name="search_results_found">Risultati trovati per \"%1$s\" (%2$d)</string>
@@ -193,7 +196,7 @@
     <string name="search_cat_history">Storia</string>
     <string name="search_cat_thriller">Thriller</string>
     <string name="search_cat_western">Western</string>
-    <string name="search_cat_tv_movie">Televisione film</string>
+    <string name="search_cat_talk">Talk</string>
 
     <!-- Settings Screen -->
     <string name="settings_title">Impostazioni</string>

@@ -121,6 +121,16 @@ internal class PlayerScrubController(
   private var session: PlayerScrubSession? = null
   private var commitJob: Job? = null
 
+  /**
+   * Ultima sessione CONFERMATA, finché il suo overlay può essere ancora a video (settling).
+   *
+   * La seek è già stata applicata: questa copia non è una sessione aperta e non accetta
+   * altri passi. Serve solo a conservare `originPositionMs` e `wasPlaying` per l'eventuale
+   * rollback di BACK durante il settling. Viene azzerata quando una nuova sessione prende
+   * il posto della precedente, quando il rollback viene eseguito o al rilascio.
+   */
+  private var committedSession: PlayerScrubSession? = null
+
   /** true mentre una sessione di scrubbing è aperta. */
   val isScrubbing: Boolean get() = session != null
 
@@ -153,6 +163,9 @@ internal class PlayerScrubController(
       wasPlaying = player.isPlaying || player.playWhenReady,
       startDirection = direction
     )
+    // Una nuova sessione sostituisce quella eventualmente già confermata: il rollback di
+    // BACK ora riguarda solo questo nuovo punto di partenza, mai quello precedente.
+    committedSession = null
     session = started
     // Il video si ferma sull'anteprima: durante lo scrubbing la posizione mostrata è
     // quella scelta dall'utente, non quella del player (che resta al punto di partenza).
@@ -167,23 +180,58 @@ internal class PlayerScrubController(
   }
 
   /**
+   * Congela la conferma automatica mentre BACK è premuto (KEY_DOWN), senza chiudere la
+   * sessione.
+   *
+   * Tra KEY_DOWN e KEY_UP passano decine di millisecondi: se il timer di inattività
+   * scadesse in quella finestra la seek verrebbe applicata e il BACK — che deve annullare —
+   * troverebbe il player già spostato. Annullare il job qui lascia l'anteprima aperta e
+   * rimanda ogni decisione al rilascio del tasto.
+   *
+   * Se la conferma è già avvenuta non c'è alcun timer da fermare: l'origine resta in
+   * [committedSession] e il rilascio eseguirà il rollback. Idempotente.
+   */
+  fun freezeCommit() {
+    if (session == null || commitJob == null) return
+    commitJob?.cancel()
+    commitJob = null
+    Log.i(TAG, "Conferma congelata: BACK in corso, la sessione resta aperta")
+  }
+
+  /**
    * Conferma lo scrubbing: la posizione di anteprima diventa una seek reale e, se il video
    * era in riproduzione, la riproduzione riprende. Idempotente: senza sessione non fa nulla.
    */
   fun commit() {
     commitJob?.cancel()
     commitJob = null
-    finish(applyPreview = true)
+    commitActiveSession()
   }
 
   /**
-   * Annulla lo scrubbing: nessuna seek (il player non è mai stato spostato, quindi è
-   * ancora al punto di partenza) e riproduzione ripristinata se era attiva.
+   * Annulla lo scrubbing.
+   *
+   * Con la sessione ancora aperta non esegue seek: il player non è mai stato spostato e
+   * resta al punto di partenza; la riproduzione viene ripristinata se era attiva.
+   *
+   * Se invece la sessione è già stata confermata e l'overlay è ancora in settling, la seek
+   * applicata viene annullata riportando il player a `originPositionMs` con
+   * [SeekParameters.CLOSEST_SYNC] e ripristinando lo stato di riproduzione precedente.
+   * `CLOSEST_SYNC` può agganciare il keyframe più vicino all'origine, non necessariamente
+   * il millisecondo esatto.
+   *
+   * Idempotente: un secondo annullamento non produce seek né riprese e non tocca una
+   * sessione diversa da quella a cui è riferito.
    */
   fun cancel() {
     commitJob?.cancel()
     commitJob = null
-    finish(applyPreview = false)
+    // Nulla da annullare: un secondo BACK non deve toccare il player.
+    if (session == null && committedSession == null) return
+    // Il rollback torna a una posizione non scelta dall'utente come target di seek: la
+    // parametrizzazione normale del player (keyframe più vicino) è quella corretta.
+    (player as? ExoPlayer)?.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+    rollbackOrFinish()
   }
 
   /**
@@ -194,9 +242,39 @@ internal class PlayerScrubController(
   fun release() {
     commitJob?.cancel()
     commitJob = null
+    committedSession = null
     val wasActive = session != null
     session = null
     if (wasActive) onScrubStateChanged(null)
+  }
+
+  private fun rollbackOrFinish() {
+    val active = session
+    if (active != null) {
+      session = null
+      if (active.wasPlaying) player.play()
+      Log.i(
+        TAG,
+        "Scrubbing annullato: nessuna seek, riproduzione al punto di partenza " +
+          "${active.originPositionMs}ms (ripresa=${active.wasPlaying})"
+      )
+      onScrubStateChanged(null)
+      return
+    }
+
+    val committed = committedSession ?: return
+    // Azzerato PRIMA della seek: un secondo BACK non può ripetere il rollback.
+    committedSession = null
+    player.seekTo(committed.originPositionMs)
+    // La conferma aveva già riavviato la riproduzione: si torna allo stato precedente
+    // senza richiedere un play ridondante se il player sta già riproducendo.
+    if (committed.wasPlaying && !player.playWhenReady) player.play()
+    Log.i(
+      TAG,
+      "Conferma annullata durante il settling: ritorno a ${committed.originPositionMs}ms " +
+        "con CLOSEST_SYNC (target annullato=${committed.positionMs}ms, " +
+        "ripresa=${committed.wasPlaying}; il keyframe più vicino può differire di qualche ms)"
+    )
   }
 
   private fun armCommitTimer() {
@@ -204,30 +282,24 @@ internal class PlayerScrubController(
     commitJob = scope.launch {
       delay(PlayerScrub.COMMIT_DELAY_MS)
       commitJob = null
-      finish(applyPreview = true)
+      commitActiveSession()
     }
   }
 
-  private fun finish(applyPreview: Boolean) {
+  private fun commitActiveSession() {
     val active = session ?: return
     session = null
-    if (applyPreview) {
-      (player as? ExoPlayer)?.setSeekParameters(SeekParameters.EXACT)
-      player.seekTo(active.positionMs)
-      if (active.wasPlaying) player.play()
-      Log.i(
-        TAG,
-        "Scrubbing confermato: seek EXACT a ${active.positionMs}ms (da ${active.originPositionMs}ms, " +
-          "delta=${active.deltaMs}ms), ripresa=${active.wasPlaying}"
-      )
-    } else {
-      if (active.wasPlaying) player.play()
-      Log.i(
-        TAG,
-        "Scrubbing annullato: nessuna seek, riproduzione al punto di partenza " +
-          "${active.originPositionMs}ms (ripresa=${active.wasPlaying})"
-      )
-    }
+    (player as? ExoPlayer)?.setSeekParameters(SeekParameters.EXACT)
+    player.seekTo(active.positionMs)
+    if (active.wasPlaying) player.play()
+    // Conservata per il settling: se BACK arriva prima che l'overlay sparisca, questa
+    // è l'unica copia di origine e stato di riproduzione con cui tornare indietro.
+    committedSession = active
+    Log.i(
+      TAG,
+      "Scrubbing confermato: seek EXACT a ${active.positionMs}ms (da ${active.originPositionMs}ms, " +
+        "delta=${active.deltaMs}ms), ripresa=${active.wasPlaying}"
+    )
     onScrubStateChanged(null)
   }
 

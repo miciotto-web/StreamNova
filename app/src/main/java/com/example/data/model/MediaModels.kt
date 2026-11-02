@@ -1,5 +1,6 @@
 package com.example.data.model
 
+import androidx.compose.runtime.Immutable
 import kotlin.math.ceil
 
 enum class MediaType(val labelItalian: String) {
@@ -18,6 +19,23 @@ enum class SearchTypeFilter(val label: String) {
   ALL("Tutti"),
   FILM("Film"),
   SERIE_TV("Serie TV")
+}
+
+/**
+ * Filtro che alimenta una categoria della sezione Ricerca.
+ *
+ * [GENRE] è il percorso storico: i cataloghi degli addon (o Cinemeta) vengono
+ * interrogati per genere; solo quando nessuno copre la combinazione tipo+genere si
+ * usa il fallback TMDB Discover.
+ *
+ * [TMDB_TV_GENRE] è una categoria servita NATIVAMENTE da TMDB tramite un genere TV
+ * ufficiale (es. "Talk", id 10767). Il percorso non consulta cataloghi di addon,
+ * non richiede la modalità Debrid e non dipende dalle sorgenti di riproduzione:
+ * `discover/tv` con `with_genres` è la fonte primaria, non un fallback.
+ */
+enum class SearchCategoryFilter {
+  GENRE,
+  TMDB_TV_GENRE
 }
 
 data class AudioTrack(
@@ -83,6 +101,26 @@ data class NextEpisodeInfo(
   val airDate: String,
 )
 
+/**
+ * Modello universale di un contenuto, usato direttamente dalle card e dalle liste Compose.
+ *
+ * [Immutable] è una PROMESSA sul contratto del tipo, verificata sul codice: tutte le
+ * proprietà sono `val` e nessun punto dell'app modifica in-place le collezioni
+ * (`qualityTags`, `genres`, `cast`, `episodes`, `seasonEpisodesCount`). Il data layer
+ * produce sempre istanze nuove tramite il costruttore o `copy(...)` con liste ricostruite
+ * (`map`, `filter`, `+`), mai mutando quelle già pubblicate in uno `StateFlow`.
+ *
+ * Perché serve: senza l'annotazione il compiler Compose considera il tipo **unstable**
+ * (le `List<T>`/`Map` sono interfacce e l'immutabilità non è dimostrabile), quindi nelle
+ * card un `media` nuovo ma identico viene confrontato per IDENTITÀ e forza ricomposizione.
+ * Con `@Immutable` il confronto è per `equals()` (data class): una card con gli stessi dati
+ * viene saltata anche se l'istanza è nuova.
+ *
+ * Vincolo per il futuro: chi costruisce un [MediaItem] non deve passare una collezione che
+ * verrà mutata dopo. Violare questa regola produce una card "congelata" (salto di
+ * ricomposizione nonostante il contenuto sia cambiato).
+ */
+@Immutable
 data class MediaItem(
   val id: String,
   val title: String,

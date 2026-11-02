@@ -13,10 +13,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -143,6 +145,13 @@ class ContinueWatchingRemovalFocusTest {
   /** Riga «Continua a guardare» osservabile: la rimozione la accorcia come fa il repository. */
   private var cwList by mutableStateOf(emptyList<MediaItem>())
 
+  /**
+   * Rimozioni richieste ma non ancora APPLICATE: riproducono il roundtrip ASINCRONO del
+   * repository (la lista si accorcia in un frame successivo, non nell'istante della richiesta).
+   */
+  private var deferredRemovals by mutableStateOf<Set<String>>(emptySet())
+  private var removalIsAsync = false
+
   /** Uscita dalla schermata: la Home viene SMONTATA (cambio sezione dalla sidebar). */
   private var homeVisible by mutableStateOf(true)
 
@@ -151,6 +160,16 @@ class ContinueWatchingRemovalFocusTest {
     val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
     val lastFocusedTarget by viewModel.lastFocusedTarget.collectAsState()
     val focusRestoreToken by viewModel.focusRestoreToken.collectAsState()
+
+    // Rimozione asincrona: la lista osservata si accorcia solo DOPO la richiesta, come la
+    // catena repository -> flusso -> allMedia della Home reale.
+    LaunchedEffect(deferredRemovals) {
+      if (deferredRemovals.isEmpty()) return@LaunchedEffect
+      withFrameNanos { }
+      val applied = deferredRemovals
+      cwList = cwList.filterNot { it.id in applied }
+      deferredRemovals = emptySet()
+    }
 
     CompositionLocalProvider(
       LocalLastFocusedMediaId provides lastFocusedMediaId,
@@ -167,7 +186,11 @@ class ContinueWatchingRemovalFocusTest {
             onPlayClick = {},
             // Stessa catena della MainActivity: la riga si accorcia e la card viene smontata.
             onRemoveFromContinueWatching = { mediaId ->
-              cwList = cwList.filterNot { it.id == mediaId }
+              if (removalIsAsync) {
+                deferredRemovals = deferredRemovals + mediaId
+              } else {
+                cwList = cwList.filterNot { it.id == mediaId }
+              }
             },
             viewModel = viewModel,
             modifier = Modifier
@@ -212,9 +235,11 @@ class ContinueWatchingRemovalFocusTest {
     }
   }
 
-  private fun render(items: List<MediaItem> = cwItems()) {
+  private fun render(items: List<MediaItem> = cwItems(), asynchronousRemoval: Boolean = false) {
     viewModel = StreamNovaViewModel(ioDispatcher = StandardTestDispatcher())
     cwList = items
+    deferredRemovals = emptySet()
+    removalIsAsync = asynchronousRemoval
     homeVisible = true
     rule.setContent { App() }
     rule.waitForIdle()
@@ -557,7 +582,120 @@ class ContinueWatchingRemovalFocusTest {
     assertNoCrashOnDisposal(crash, "dopo la rimozione di tutti gli elementi")
   }
 
-  // ---------------------------------------------------------------- 4. uscita e rientro
+  // ---------------------------------------------------------------- 4. focus dopo la rimozione
+
+  /** La card [title] deve avere il focus. L'attesa è reattiva: la rimozione vive in due tempi. */
+  private fun assertFocusedCard(title: String, step: String) {
+    try {
+      rule.waitUntil(timeoutMillis = 5_000) { isCardFocused(title) }
+    } catch (timeout: Throwable) {
+      throw AssertionError(
+        "$step: focus su [${focusedNodes().flatMap { allTextsOf(it) }} " +
+          "(${focusedNodes().map { testTagOf(it) }})] invece che sulla card «$title»",
+        timeout
+      )
+    }
+    assertTrue(
+      "$step: focus su [${focusedNodes().flatMap { allTextsOf(it) }}] invece che sulla card «$title»",
+      isCardFocused(title)
+    )
+  }
+
+  /** Il focus non deve essere finito su una superficie fuori dal contenuto (es. la sidebar). */
+  private fun assertFocusIsNotOnSidebar(step: String) {
+    focusedNodes().forEach { node ->
+      assertFalse(
+        "$step: il focus è finito sulla SIDEBAR (tag=${testTagOf(node)})",
+        testTagOf(node)?.startsWith(SIDEBAR_TAG_PREFIX) == true
+      )
+    }
+  }
+
+  /**
+   * Eliminando un elemento INTERMEDIO il focus resta NEL contenuto e va sulla card che ne
+   * occupa la posizione (la successiva, traslata a sinistra), mai sulla Hero.
+   */
+  @Test
+  fun rimozioneDiUnElementoIntermedioMantieneIlFocusNellaRiga() {
+    render()
+    removeCardByTitle("CW 3", expectedRemaining = 3)
+
+    assertFocusedCard("CW 4", "posizione dell'elemento intermedio eliminato")
+    assertFalse("la card eliminata non deve conservare il focus", isCardFocused("CW 3"))
+    assertFalse("il focus non deve andare sulla Hero", isCardFocused(HERO_TITLE))
+    assertFocusIsNotOnSidebar("dopo la rimozione dell'elemento intermedio")
+  }
+
+  /** Eliminando il PRIMO elemento il focus va sulla nuova prima card della riga. */
+  @Test
+  fun rimozioneDelPrimoElementoMantieneIlFocusNellaRiga() {
+    render()
+    removeCardByTitle("CW 1", expectedRemaining = 3)
+
+    assertFocusedCard("CW 2", "dopo la rimozione del primo elemento")
+    assertFalse("la card eliminata non deve conservare il focus", isCardFocused("CW 1"))
+    assertFalse("il focus non deve andare sulla Hero", isCardFocused(HERO_TITLE))
+    assertFocusIsNotOnSidebar("dopo la rimozione del primo elemento")
+  }
+
+  /** Eliminando l'ULTIMO elemento il focus va sulla card PRECEDENTE. */
+  @Test
+  fun rimozioneDellUltimoElementoMantieneIlFocusNellaRiga() {
+    render()
+    removeCardByTitle("CW 4", expectedRemaining = 3)
+
+    assertFocusedCard("CW 3", "dopo la rimozione dell'ultimo elemento")
+    assertFalse("la card eliminata non deve conservare il focus", isCardFocused("CW 4"))
+    assertFalse("il focus non deve andare sulla Hero", isCardFocused(HERO_TITLE))
+    assertFocusIsNotOnSidebar("dopo la rimozione dell'ultimo elemento")
+  }
+
+  /** Eliminando l'UNICO elemento la riga sparisce: solo allora il focus va sulla Hero. */
+  @Test
+  fun rimozioneDellUnicoElementoSpostaIlFocusSullaHero() {
+    render(items = cwItems(count = 1))
+    removeCardByTitle("CW 1", expectedRemaining = 0)
+
+    assertFocusedCard(HERO_TITLE, "riga «Continua a guardare» svuotata")
+    assertFalse("la card eliminata non deve conservare il focus", isCardFocused("CW 1"))
+    assertFalse("la riga non deve più essere disegnata", isContinueWatchingRowShown())
+    assertFocusIsNotOnSidebar("dopo la rimozione dell'unico elemento")
+  }
+
+  /**
+   * Dopo la rimozione il D-pad continua a muovere il focus TRA le card superstiti della riga:
+   * nessun cursore orfano, nessuna fuga verso la sidebar.
+   */
+  @Test
+  fun dopoLaRimozioneIlDpadNavigaLeCardSuperstiti() {
+    render()
+    removeCardByTitle("CW 3", expectedRemaining = 3)
+
+    assertFocusedCard("CW 4", "posizione dell'elemento eliminato")
+    pressKey(Key.DirectionLeft)
+    assertFocusedCard("CW 2", "LEFT dopo la rimozione")
+    pressKey(Key.DirectionRight)
+    assertFocusedCard("CW 4", "RIGHT dopo la rimozione")
+    assertFocusIsNotOnSidebar("dopo la navigazione orizzontale")
+  }
+
+  /**
+   * Rimozione ASINCRONA (la lista si accorcia in un frame successivo, come la catena
+   * repository -> flusso -> allMedia): l'ancora non deve essere consumata dalla card che sta
+   * per sparire e deve comunque atterrare sulla card superstite.
+   */
+  @Test
+  fun conRimozioneAsincronaIlFocusRestaNellaRigaSullaCardSuperstite() {
+    render(asynchronousRemoval = true)
+    removeCardByTitle("CW 3", expectedRemaining = 3)
+
+    assertFocusedCard("CW 4", "rimozione asincrona")
+    assertFalse("la card eliminata non deve conservare il focus", isCardFocused("CW 3"))
+    assertFalse("il focus non deve andare sulla Hero", isCardFocused(HERO_TITLE))
+    assertFocusIsNotOnSidebar("dopo la rimozione asincrona")
+  }
+
+  // ---------------------------------------------------------------- 5. uscita e rientro
 
   /**
    * Uscita dalla schermata e RIENTRO con la Home ricomposta: la riga rimontata deve riflettere

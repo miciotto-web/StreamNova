@@ -69,7 +69,7 @@
 
     <!-- Source Selection Dialog -->
     <string name="source_dialog_title">Sélectionner la source (%d)</string>
-    <string name="source_dialog_hints">↑↓ naviguer  •  ENTRÉE choisir  •  🡄 🡆 filtrer</string>
+    <string name="source_dialog_hints">↑↓ naviguer  •  ENTRÉE choisir  •  ← → filtrer</string>
     <string name="source_dialog_filter_all">Tout</string>
     <string name="torbox_source_cached">En cache</string>
     <string name="torbox_source_not_cached">Non en cache</string>
@@ -155,6 +155,8 @@
      <string name="search_category_desc_addon">Catalogue de l’addon : %1$s</string>
      <string name="search_category_desc_fallback">Résultats %1$s depuis TMDB</string>
      <string name="search_category_loading">Chargement du catalogue de l’addon…</string>
+     <string name="search_category_desc_tmdb">Résultats %1$s depuis TMDB</string>
+     <string name="search_category_loading_tmdb">Chargement du catalogue TMDB…</string>
      <string name="search_category_type_movies">films</string>
      <string name="search_category_type_series">séries</string>
      <string name="search_category_tmdb_fallback_reason">Aucun catalogue configuré ne couvre ce genre : titres affichés depuis TMDB</string>
@@ -165,6 +167,7 @@
      <string name="search_category_tmdb_unavailable">Recherche TMDB indisponible : vérifiez la connexion et réessayez</string>
      <string name="search_category_empty_type">Catalogue %1$s interrogé mais sans résultats</string>
      <string name="search_category_failed_type">Catalogue %1$s inaccessible : réessayez plus tard</string>
+     <string name="search_category_native_tmdb_no_results">Aucun résultat pour %1$s sur TMDB</string>
      <string name="search_titles_available">%d Titres disponibles</string>
      <string name="search_no_content_for_category">Aucun contenu trouvé pour %s</string>
      <string name="search_results_found">Résultats pour \"%1$s\" (%2$d)</string>
@@ -191,7 +194,7 @@
      <string name="search_cat_history">Histoire</string>
      <string name="search_cat_thriller">Thriller</string>
      <string name="search_cat_western">Western</string>
-     <string name="search_cat_tv_movie">Téléfilm</string>
+     <string name="search_cat_talk">Talk</string>
  
      <!-- Settings Screen -->
      <string name="settings_title">Paramètres</string>

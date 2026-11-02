@@ -105,8 +105,30 @@ object SimklRepository {
   val isSyncing: StateFlow<Boolean> = syncingMutable.asStateFlow()
 
   private var appContext: Context? = null
-  private var api: SimklApi = SimklApiClient.api
-  private var authClient: SimklAuthClient = SimklAuthClient(SimklApiClient.api)
+
+  // L'API SIMKL (Retrofit + Moshi + OkHttp) veniva costruita durante
+  // l'inizializzazione dell'oggetto, quindi PRIMA del primo frame (~150 ms,
+  // misurato con StartupTrace). Ora il default è lazily: la costruzione avviene
+  // alla prima chiamata reale, che gira su Dispatchers.IO. I test mantengono la
+  // possibilità di iniettare un'API finta tramite [init].
+  private val defaultApi: SimklApi by lazy { SimklApiClient.api }
+  @Volatile private var apiOverride: SimklApi? = null
+
+  private val api: SimklApi
+    get() = apiOverride ?: defaultApi
+
+  /**
+   * Client di autenticazione: DEVE avvolgere la stessa [api] effettiva (finta nei
+   * test, reale in produzione). Non è un `by lazy` perché [init] può riconfigurare
+   * l'API: in quel caso l'istanza viene ricostruita al primo uso successivo.
+   * Con l'API di default la costruzione resta differita a dopo il primo frame.
+   */
+  @Volatile private var authClientInstance: SimklAuthClient? = null
+  private val authClient: SimklAuthClient
+    get() = authClientInstance ?: synchronized(this) {
+      authClientInstance ?: SimklAuthClient(api).also { authClientInstance = it }
+    }
+
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   /** Un solo refresh per volta: due refresh paralleli si invaliderebbero a vicenda. */
@@ -125,14 +147,18 @@ object SimklRepository {
   private data class CacheEntry(val expiresAt: Long, val episodes: Set<Int>)
 
   @Synchronized
-  fun init(context: Context, simklApi: SimklApi = SimklApiClient.api) {
+  fun init(context: Context, simklApi: SimklApi? = null) {
     val applicationContext = context.applicationContext
     // Rientrare con lo stesso contesto E la stessa implementazione è un no-op; se l'API
     // iniettata cambia (test, ambiente alternativo) l'oggetto si riconfigura.
-    if (appContext === applicationContext && api === simklApi) return
+    // `simklApi == null` significa "usa il default lazy": non va risolto qui, altrimenti
+    // Retrofit/Moshi/OkHttp tornerebbero sul percorso di avvio.
+    if (appContext === applicationContext && apiOverride === simklApi) return
     appContext = applicationContext
-    api = simklApi
-    authClient = SimklAuthClient(simklApi)
+    apiOverride = simklApi
+    // Con un'API iniettata il client va ricostruito subito attorno a quella (i test
+    // usano un MockWebServer). Con il default resta differito al primo uso reale.
+    authClientInstance = simklApi?.let { SimklAuthClient(it) }
     scope.launch {
       val store = applicationContext.simklDataStore
       val first = store.data.first()

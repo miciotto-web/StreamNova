@@ -839,6 +839,9 @@ class StreamManager(
         isProgressive = true,
         isItalian = isItalian,
         addonName = candidate.addonName,
+        // Identità dell'INSTALLAZIONE (baseUrl con configurazione): due addon con
+        // lo stesso manifest.id (es. Torrentio globale e IT) restano distinti.
+        addonInstallId = candidate.baseUrl.trimEnd('/'),
         instantTag = instantTag,
         releaseTitle = releaseTitle,
         details = details,
@@ -858,12 +861,22 @@ class StreamManager(
      *    riproduzione. Nomi normalizzati in lowercase, valori con spazi esterni
      *    rimossi e ordine deterministico.
      *
+     * Se la sorgente proviene da un addon Stremio, l'identità dell'INSTALLAZIONE
+     * ([StreamSource.addonInstallId], cioè il baseUrl con la sua configurazione) entra
+     * nella chiave. Torrentio globale e Torrentio IT espongono lo stesso
+     * `manifest.id` e possono restituire lo stesso torrent/link: senza questo
+     * prefisso la seconda installazione verrebbe scartata come "duplicato" e non
+     * contribuirebbe mai ai risultati.
+     *
      * I valori degli header non vengono mai loggati: la chiave è solo per il
      * confronto in memoria.
      */
     internal fun sourceDedupKey(source: StreamSource): String {
+      val addon = source.addonInstallId?.trim()?.takeIf { it.isNotBlank() }
+        ?.let { "$it\u001d" }
+        .orEmpty()
       if (source.infoHash != null) {
-        return "torrent:${source.infoHash}_${source.fileIdx ?: -1}"
+        return "torrent:$addon${source.infoHash}_${source.fileIdx ?: -1}"
       }
       val url = source.streamUrl.orEmpty()
       val relevantHeaders = source.headers.entries
@@ -871,7 +884,7 @@ class StreamManager(
         .filter { (name, _) -> name in PLAYBACK_HEADERS || name.startsWith("x-") }
         .sortedWith(compareBy({ it.first }, { it.second }))
         .joinToString("\u001f") { (name, value) -> "$name=$value" }
-      return "url:$url\u001e$relevantHeaders"
+      return "url:$addon$url\u001e$relevantHeaders"
     }
 
     /** Aggiunge a [target] solo le sorgenti con chiave non ancora presente. */

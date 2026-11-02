@@ -69,7 +69,7 @@
 
     <!-- Source Selection Dialog -->
     <string name="source_dialog_title">Seleccionar fuente (%d)</string>
-    <string name="source_dialog_hints">↑↓ navegar  •  ENTER seleccionar  •  🡄 🡆 filtrar</string>
+    <string name="source_dialog_hints">↑↓ navegar  •  ENTER seleccionar  •  ← → filtrar</string>
     <string name="source_dialog_filter_all">Todo</string>
     <string name="torbox_source_cached">En caché</string>
     <string name="torbox_source_not_cached">Sin caché</string>
@@ -155,6 +155,8 @@
      <string name="search_category_desc_addon">Catálogo del addon: %1$s</string>
      <string name="search_category_desc_fallback">Resultados de %1$s en TMDB</string>
      <string name="search_category_loading">Cargando el catálogo del addon…</string>
+     <string name="search_category_desc_tmdb">Resultados de %1$s en TMDB</string>
+     <string name="search_category_loading_tmdb">Cargando el catálogo de TMDB…</string>
      <string name="search_category_type_movies">películas</string>
      <string name="search_category_type_series">series</string>
      <string name="search_category_tmdb_fallback_reason">Ningún catálogo configurado cubre este género: títulos mostrados desde TMDB</string>
@@ -165,6 +167,7 @@
      <string name="search_category_tmdb_unavailable">Búsqueda TMDB no disponible: comprueba la conexión e inténtalo de nuevo</string>
      <string name="search_category_empty_type">Catálogo de %1$s consultado pero sin resultados</string>
      <string name="search_category_failed_type">Catálogo de %1$s no accesible: inténtalo más tarde</string>
+     <string name="search_category_native_tmdb_no_results">Ningún resultado para %1$s en TMDB</string>
      <string name="search_titles_available">%d Títulos disponibles</string>
      <string name="search_no_content_for_category">No se encontró contenido para %s</string>
      <string name="search_results_found">Resultados para \"%1$s\" (%2$d)</string>
@@ -191,7 +194,7 @@
      <string name="search_cat_history">Historia</string>
      <string name="search_cat_thriller">Suspense</string>
      <string name="search_cat_western">Western</string>
-     <string name="search_cat_tv_movie">Película de TV</string>
+     <string name="search_cat_talk">Talk</string>
  
      <!-- Settings Screen -->
      <string name="settings_title">Ajustes</string>

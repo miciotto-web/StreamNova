@@ -1,12 +1,6 @@
 package com.example.ui.screens
 
 import android.util.Log
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,7 +20,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -214,28 +207,26 @@ private fun SeekPreviewPlaceholder(isLoading: Boolean) {
   }
 }
 
-/** Banda luminosa discreta che scorre mentre il fotogramma viene recuperato. */
+/**
+ * Banda luminosa discreta mostrata mentre il fotogramma viene recuperato.
+ *
+ * Fase 6.1: la banda NON scorre più. Prima era guidata da una `rememberInfiniteTransition`
+ * che, per tutta la durata del caricamento, ricomponeva questo composable ad ogni frame
+ * (~60 volte/s) e ricostruiva una `Brush.horizontalGradient` ogni volta — costo inutile
+ * durante lo scrubbing rapido, dove il caricamento si ripete ad ogni pressione.
+ * Lo sheen statico conserva colori, alpha (0.22) e geometria: nessuna animazione infinita,
+ * nessun ridisegno continuo.
+ */
 @Composable
 private fun LoadingSheen(modifier: Modifier = Modifier) {
-  val transition = rememberInfiniteTransition(label = "SeekPreviewLoading")
-  val progress by transition.animateFloat(
-    initialValue = 0f,
-    targetValue = 1f,
-    animationSpec = infiniteRepeatable(
-      animation = tween(durationMillis = 1_100, easing = LinearEasing),
-      repeatMode = RepeatMode.Restart
-    ),
-    label = "SeekPreviewSheen"
-  )
-  val head = progress.coerceIn(0f, 1f)
   Box(
     modifier = modifier.background(
       Brush.horizontalGradient(
         colorStops = arrayOf(
           0f to Color.Transparent,
-          (head - 0.18f).coerceIn(0f, 1f) to Color.Transparent,
-          head to NovaCyanBright.copy(alpha = 0.22f),
-          (head + 0.18f).coerceIn(0f, 1f) to Color.Transparent,
+          0.32f to Color.Transparent,
+          0.5f to NovaCyanBright.copy(alpha = 0.22f),
+          0.68f to Color.Transparent,
           1f to Color.Transparent
         )
       )
