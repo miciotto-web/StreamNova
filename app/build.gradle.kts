@@ -38,10 +38,10 @@ android {
     applicationId = "com.aistudio.streamnova.tvapp"
     minSdk = 24
     targetSdk = 36
-    // Release stabile ufficiale StreamNova V1.0.5.
+    // Release stabile ufficiale StreamNova V1.0.4.
     // Ogni release successiva deve incrementare versionCode.
-    versionCode = 1007
-    versionName = "1.0.5"
+    versionCode = 1006
+    versionName = "1.0.4"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     // TMDB API key is never hardcoded here: it would be committed and published.
