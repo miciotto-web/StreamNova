@@ -23,7 +23,8 @@ data class MediaSampleAssets(
  * Le credenziali non sono mai scritte nel codice sorgente: l'app le risolve
  * dalla propria build (variabili d'ambiente, `local.properties`, `.env`) e le
  * consegna qui prima di inizializzare i repository. Lo stesso vale per le
- * differenze tra l'app TV e l'app mobile (versione, canali, asset demo).
+ * differenze tra l'app TV e l'app mobile (versione, canali, asset demo,
+ * catalogo seed e generazione episodi).
  */
 data class StreamNovaClientConfig(
   /** Identificativo del client: "tv" oppure "mobile". */
@@ -38,7 +39,21 @@ data class StreamNovaClientConfig(
    * della macchina che ha compilato l'APK.
    */
   val simklClientIdChannels: List<SimklRepository.SimklClientIdChannel> = emptyList(),
-  val mediaSampleAssets: MediaSampleAssets = MediaSampleAssets()
+  val mediaSampleAssets: MediaSampleAssets = MediaSampleAssets(),
+  /**
+   * Il client può usare il catalogo seed/demo locale quando Room è ancora vuota.
+   *
+   * La TV mantiene il proprio comportamento offline-first (default `true`). Mobile
+   * lo disattiva: senza cataloghi reali mostra lo stato vuoto/errore, mai titoli
+   * inventati.
+   */
+  val includeDemoCatalog: Boolean = true,
+  /**
+   * Genera episodi provvisori per le serie di catalogo finché TMDB non fornisce
+   * le stagioni reali. La TV mantiene il comportamento storico (default `true`);
+   * Mobile lo disattiva per non mostrare episodi sintetici.
+   */
+  val generateSyntheticEpisodes: Boolean = true
 )
 
 /**

@@ -1,398 +1,765 @@
 package com.aistudio.streamnova.mobile.ui.screens
 
+import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
 import com.aistudio.streamnova.mobile.R
 import com.aistudio.streamnova.mobile.ui.LocalWindowWidthExpanded
+import com.aistudio.streamnova.mobile.ui.MobileDetailPolicy
+import com.aistudio.streamnova.mobile.ui.MobileDetailUiState
 import com.aistudio.streamnova.mobile.ui.MobileDetailViewModel
-import com.aistudio.streamnova.mobile.ui.components.MediaArtwork
-import com.aistudio.streamnova.mobile.ui.components.NovaPrimaryButton
-import com.aistudio.streamnova.mobile.ui.components.backdropModel
-import com.example.data.model.Episode
+import com.aistudio.streamnova.mobile.ui.MobileManualSourcePolicy
+import com.aistudio.streamnova.mobile.ui.MobileOrientationController
+import com.aistudio.streamnova.mobile.ui.MobileTrailerOverlay
+import com.aistudio.streamnova.mobile.ui.MobileTrailerState
+import com.aistudio.streamnova.mobile.ui.components.MobileCastCarousel
+import com.aistudio.streamnova.mobile.ui.components.MobileDetailActionBar
+import com.aistudio.streamnova.mobile.ui.components.MobileDetailBadges
+import com.aistudio.streamnova.mobile.ui.components.MobileDetailErrorBanner
+import com.aistudio.streamnova.mobile.ui.components.MobileDetailSectionHeader
+import com.aistudio.streamnova.mobile.ui.components.MobileDetailStatusCard
+import com.aistudio.streamnova.mobile.ui.components.MobileDetailTabs
+import com.aistudio.streamnova.mobile.ui.components.MobileEpisodeCard
+import com.aistudio.streamnova.mobile.ui.components.MobileFullSynopsisDialog
+import com.aistudio.streamnova.mobile.ui.components.MobileProductionSection
+import com.aistudio.streamnova.mobile.ui.components.MobileProviderBadge
+import com.aistudio.streamnova.mobile.ui.components.MobileSeasonChip
+import com.aistudio.streamnova.mobile.ui.components.MobileSeasonStatusBar
 import com.example.data.model.MediaItem
-import com.example.data.model.MediaType
 import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
+import com.example.ui.components.ProviderConstants
 import com.example.ui.theme.NovaBackground
-import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
-import java.util.Locale
 
+private val DetailHeroMaxWidth = 1000.dp
+
+/**
+ * Scheda Dettaglio Mobile allineata alla TV 1.0.4.
+ *
+ * Contenuti e gerarchia sono quelli della scheda TV: backdrop, logo originale con
+ * fallback testuale, tagline, metadati reali, generi, sinossi, barra azioni
+ * (Riproduci + Preferiti + Guardato + Trailer + Seleziona fonte in modalità
+ * Debrid), cast, tab Episodi/Produzione, stagioni ed episodi TMDB, case di
+ * produzione. L'adattamento mobile è solo la disposizione touch/portrait-landscape
+ * e la gestione delle safe area, già applicata dalla shell.
+ *
+ * [onSelectSource] è `null` quando la selezione manuale delle sorgenti non è
+ * supportata (modalità HTTP/direct): il pulsante «Seleziona fonte» non viene
+ * composto. Quando è presente riceve lo STESSO episodio del pulsante Riproduci,
+ * così la ricerca e il contesto SxE coincidono con quelli della TV.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DetailScreen(
   mediaId: String,
   onBack: () -> Unit,
-  onPlay: (media: MediaItem, season: Int?, episode: Int?) -> Unit
+  onPlay: (media: MediaItem, season: Int?, episode: Int?) -> Unit,
+  orientationController: MobileOrientationController,
+  onSelectSource: ((media: MediaItem, season: Int?, episode: Int?) -> Unit)? = null
 ) {
   BackHandler(onBack = onBack)
   val viewModel: MobileDetailViewModel = viewModel()
   val state by viewModel.state.collectAsStateWithLifecycle()
   val expanded = LocalWindowWidthExpanded.current
+  val configuration = LocalConfiguration.current
+  val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
   LaunchedEffect(mediaId) { viewModel.load(mediaId) }
 
+  // Trailer: su telefono abilita il landscape finché l'overlay è aperto e
+  // riapplica il portrait alla chiusura. Il player principale non è coinvolto:
+  // usa il proprio ingresso nel controller (Fase 8.1).
+  val trailerActive = state.trailer !is MobileTrailerState.Idle
+  LaunchedEffect(orientationController, trailerActive) {
+    if (trailerActive) {
+      orientationController.setTrailerVisible(visible = true)
+    } else {
+      orientationController.clearTrailer()
+    }
+  }
+  DisposableEffect(orientationController) {
+    onDispose { orientationController.clearTrailer() }
+  }
+
   val media = state.media
   if (media == null) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-      if (state.error != null) {
-        Text(text = state.error.orEmpty(), color = NovaTextSecondary)
-      } else {
+    if (state.notFound) {
+      MobileDetailFatalState(
+        onBack = onBack,
+        onRetry = viewModel::retryLoad
+      )
+    } else {
+      Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         CircularProgressIndicator(color = NovaCyan)
       }
     }
     return
   }
 
-  val isSeries = media.type == MediaType.SERIE_TV
-  // L'episodio da riprendere deriva dall'ultima visione salvata (o S1E1 se mai
-  // avviata). La lista della stagione può essere ancora vuota o appartenere a un'altra
-  // stagione: l'episodio viene ricostruito con gli stessi numeri, mai sostituito da S1E1.
-  val resumeEpisode = if (isSeries) {
-    EpisodeResumeResolver.resolve(media, extraEpisodes = state.episodes)
+  val isSeries = state.isSeries
+  val tabs = if (isSeries) {
+    listOf(
+      stringResource(R.string.detail_tab_episodes),
+      stringResource(R.string.detail_tab_production)
+    )
   } else {
-    null
+    listOf(stringResource(R.string.detail_tab_production))
   }
-  val initialEpisode = resumeEpisode?.let { episode ->
-    episode.copy(
-      currentProgressMs = MediaRepository.getEpisodeProgress(
-        media.id,
+  var selectedTab by rememberSaveable(media.id) { mutableIntStateOf(0) }
+  var synopsisDialogOpen by rememberSaveable(media.id) { mutableStateOf(false) }
+
+  val resumeEpisode = remember(media, state.episodes, state.selectedSeason, isSeries) {
+    if (!isSeries || !MobileDetailPolicy.hasResolvableSeriesTarget(state)) {
+      null
+    } else {
+      EpisodeResumeResolver.resolveWithLookup(
+        media = media,
+        extraEpisodes = state.episodes,
+        progressOf = { season, episode ->
+          MediaRepository.getEpisodeProgress(media.id, season, episode)
+        },
+        durationOf = { season, episode ->
+          MediaRepository.getEpisodeDurationMs(media.id, season, episode)
+        }
+      )
+    }
+  }
+
+  val playLabel = if (isSeries) {
+    val episode = resumeEpisode
+    when {
+      episode == null -> stringResource(R.string.action_play)
+      episode.currentProgressMs > 0L -> stringResource(
+        R.string.detail_resume_episode_format,
         episode.seasonNumber,
         episode.episodeNumber
       )
-    )
+      else -> stringResource(
+        R.string.detail_play_episode_format,
+        episode.seasonNumber,
+        episode.episodeNumber
+      )
+    }
+  } else if (media.currentProgressMs > 0L) {
+    stringResource(R.string.home_continue)
+  } else {
+    stringResource(R.string.action_play)
   }
 
-  Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+  /**
+   * Bersaglio condiviso da Riproduci e «Seleziona fonte»: stessa puntata per
+   * le due azioni (come sulla TV), così la ricerca manuale parte esattamente
+   * sull'episodio mostrato dalla scheda.
+   */
+  val playTarget = remember(media, resumeEpisode) {
+    MobileManualSourcePolicy.searchTarget(media, resumeEpisode)
+  }
+
+  val metadata = state.metadata
+  val synopsisText = state.details?.overview?.takeIf { it.isNotBlank() }
+    ?: media.synopsis.takeIf { it.isNotBlank() }
+  val backdropUrl = state.details?.backdropUrl?.takeIf { it.isNotBlank() }
+    ?: media.backdropUrl?.takeIf { it.isNotBlank() }
+  val backdropRes = media.backdropRes
+  val provider = ProviderConstants.ALL.firstOrNull {
+    it.id == media.provider?.lowercase()
+  }
+
+  Box(
+    modifier = Modifier.fillMaxSize(),
+    contentAlignment = Alignment.TopCenter
+  ) {
     LazyColumn(
       modifier = Modifier
         .fillMaxSize()
-        .widthIn(max = 1000.dp),
-      contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp)
+        .widthIn(max = DetailHeroMaxWidth),
+      contentPadding = PaddingValues(bottom = 36.dp)
     ) {
       item(key = "hero") {
         Box(
           modifier = Modifier
             .fillMaxWidth()
-            .height(if (expanded) 420.dp else 300.dp)
+            .height(detailHeroHeight(expanded, isLandscape))
         ) {
-          MediaArtwork(
-            media = media,
-            preferPoster = false,
-            modifier = Modifier.fillMaxSize()
-          )
+          when {
+            backdropUrl != null -> AsyncImage(
+              model = ImageRequest.Builder(LocalContext.current)
+                .data(backdropUrl)
+                .crossfade(300)
+                .build(),
+              contentDescription = media.title,
+              contentScale = ContentScale.Crop,
+              modifier = Modifier.fillMaxSize()
+            )
+            backdropRes != null -> Image(
+              painter = painterResource(id = backdropRes),
+              contentDescription = media.title,
+              contentScale = ContentScale.Crop,
+              modifier = Modifier.fillMaxSize()
+            )
+            else -> Box(
+              modifier = Modifier
+                .fillMaxSize()
+                .background(
+                  Brush.verticalGradient(
+                    listOf(Color(0xFF0F172A), NovaBackground)
+                  )
+                )
+            )
+          }
+
+          // Vignette TV: contrasto a sinistra e fusione verticale nel background.
           Box(
             modifier = Modifier
               .fillMaxSize()
               .background(
+                Brush.horizontalGradient(
+                  colors = listOf(
+                    Color.Black.copy(alpha = 0.65f),
+                    Color.Black.copy(alpha = 0.22f),
+                    Color.Transparent
+                  )
+                )
+              )
+              .background(
                 Brush.verticalGradient(
-                  0f to Color(0x6607090E),
-                  0.55f to Color(0x2207090E),
-                  1f to NovaBackground
+                  colors = listOf(
+                    Color.Transparent,
+                    Color.Transparent,
+                    NovaBackground.copy(alpha = 0.75f),
+                    NovaBackground
+                  )
                 )
               )
           )
+
           IconButton(
             onClick = onBack,
             modifier = Modifier
               .align(Alignment.TopStart)
-              .statusBarsPadding()
-              .padding(8.dp)
+              .padding(10.dp)
+              .size(42.dp)
+              .background(Color.Black.copy(alpha = 0.42f), CircleShape)
+              .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
           ) {
             Icon(
-              Icons.Default.ArrowBack,
+              imageVector = Icons.Default.ArrowBack,
               contentDescription = stringResource(R.string.action_back),
               tint = NovaTextPrimary
             )
           }
-          IconButton(
-            onClick = viewModel::toggleFavorite,
+        }
+      }
+
+      if (state.isLoadingDetails) {
+        item(key = "details-loading") {
+          Row(
             modifier = Modifier
-              .align(Alignment.TopEnd)
-              .statusBarsPadding()
-              .padding(8.dp)
+              .padding(start = 20.dp, top = 12.dp)
+              .background(
+                NovaSurfaceVariant.copy(alpha = 0.8f),
+                RoundedCornerShape(20.dp)
+              )
+              .border(1.dp, NovaCyan.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
+              .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
           ) {
-            Icon(
-              imageVector = if (state.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-              contentDescription = stringResource(
-                if (state.isFavorite) R.string.action_favorite_remove
-                else R.string.action_favorite_add
-              ),
-              tint = if (state.isFavorite) NovaCyanBright else NovaTextPrimary
+            CircularProgressIndicator(
+              modifier = Modifier.size(14.dp),
+              color = NovaCyanBright,
+              strokeWidth = 2.dp
+            )
+            Text(
+              text = stringResource(R.string.detail_loading_tmdb),
+              color = NovaCyanBright,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Medium
             )
           }
+        }
+      }
+
+      state.detailsError?.let { detailsErrorRes ->
+        item(key = "details-error") {
+          MobileDetailErrorBanner(
+            message = stringResource(detailsErrorRes),
+            onRetry = viewModel::retryDetails,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+          )
         }
       }
 
       item(key = "header") {
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-          Text(
-            text = media.title,
-            color = NovaTextPrimary,
-            fontSize = if (expanded) 34.sp else 26.sp,
-            fontWeight = FontWeight.ExtraBold
+          if (provider != null) {
+            MobileProviderBadge(provider = provider)
+            Spacer(modifier = Modifier.height(10.dp))
+          }
+
+          DetailLogoOrTitle(
+            media = media,
+            logoUrl = state.logoUrl,
+            expanded = expanded
           )
-          Spacer(modifier = Modifier.height(6.dp))
-          Text(
-            text = media.detailMetadata(),
-            color = NovaTextSecondary,
-            fontSize = 13.sp
-          )
-          Spacer(modifier = Modifier.height(14.dp))
-          Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            NovaPrimaryButton(
-              text = stringResource(
-                if (media.currentProgressMs > 0 || (initialEpisode?.currentProgressMs ?: 0L) > 0)
-                  R.string.action_resume
-                else R.string.action_play
-              ),
-              onClick = {
-                if (isSeries && initialEpisode != null) {
-                  onPlay(media, initialEpisode.seasonNumber, initialEpisode.episodeNumber)
-                } else {
-                  onPlay(media, null, null)
-                }
-              }
+
+          metadata.tagline?.let { tagline ->
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+              text = "\"$tagline\"",
+              color = NovaCyanBright.copy(alpha = 0.85f),
+              fontSize = 13.sp
             )
-            OutlinedButton(onClick = viewModel::toggleFavorite) {
-              Icon(
-                imageVector = if (state.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                contentDescription = null,
-                tint = if (state.isFavorite) NovaCyanBright else NovaTextSecondary
-              )
-              Spacer(modifier = Modifier.width(6.dp))
-              Text(
-                text = if (state.isFavorite) "Nei preferiti" else "Preferiti",
-                color = NovaTextSecondary
-              )
+          }
+
+          Spacer(modifier = Modifier.height(10.dp))
+          MobileDetailBadges(
+            year = metadata.year,
+            durationMinutes = metadata.durationMinutes,
+            seasonsCount = metadata.seasonsCount,
+            episodesCount = metadata.episodesCount,
+            ageRating = metadata.ageRating,
+            rating = metadata.rating
+          )
+
+          if (metadata.genres.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            FlowRow(
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              metadata.genres.take(5).forEach { genre ->
+                GenreChip(genre)
+              }
             }
           }
-          Spacer(modifier = Modifier.height(18.dp))
-          Text(
-            text = stringResource(R.string.detail_synopsis),
-            color = NovaTextPrimary,
-            fontSize = 17.sp,
-            fontWeight = FontWeight.Bold
-          )
-          Spacer(modifier = Modifier.height(6.dp))
-          Text(
-            text = media.synopsis.ifBlank { "Nessuna trama disponibile." },
-            color = NovaTextSecondary,
-            fontSize = 14.sp,
-            lineHeight = 20.sp
-          )
-          Spacer(modifier = Modifier.height(18.dp))
-        }
-      }
 
-      if (isSeries && state.seasons.isNotEmpty()) {
-        item(key = "seasons") {
-          Column {
+          if (synopsisText != null) {
+            Spacer(modifier = Modifier.height(14.dp))
+            var hasOverflow by remember(media.id, synopsisText) { mutableStateOf(false) }
             Text(
-              text = stringResource(R.string.detail_seasons),
-              color = NovaTextPrimary,
-              fontSize = 17.sp,
-              fontWeight = FontWeight.Bold,
-              modifier = Modifier.padding(horizontal = 20.dp)
+              text = synopsisText,
+              color = NovaTextSecondary,
+              fontSize = 14.sp,
+              lineHeight = 21.sp,
+              maxLines = 4,
+              overflow = TextOverflow.Ellipsis,
+              onTextLayout = { hasOverflow = it.hasVisualOverflow }
             )
-            Spacer(modifier = Modifier.height(8.dp))
-            LazyRow(
-              contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
-              horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-              items(state.seasons, key = { it }) { season ->
-                FilterChip(
-                  selected = state.selectedSeason == season,
-                  onClick = { viewModel.selectSeason(season) },
-                  label = { Text("Stagione $season") },
-                  colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = NovaCyan.copy(alpha = 0.18f),
-                    selectedLabelColor = NovaCyan,
-                    labelColor = NovaTextMuted
-                  )
+            if (hasOverflow) {
+              TextButton(
+                onClick = { synopsisDialogOpen = true },
+                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
+              ) {
+                Text(
+                  text = stringResource(R.string.detail_read_more),
+                  color = NovaCyanBright,
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.Bold
                 )
               }
             }
           }
-        }
 
-        item(key = "episodes-title") {
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 20.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Text(
-              text = stringResource(R.string.detail_episodes),
-              color = NovaTextPrimary,
-              fontSize = 17.sp,
-              fontWeight = FontWeight.Bold
+          Spacer(modifier = Modifier.height(20.dp))
+          MobileDetailActionBar(
+            playLabel = playLabel,
+            onPlay = {
+              onPlay(media, playTarget.season, playTarget.episode)
+            },
+            isFavorite = state.isFavorite,
+            onToggleFavorite = viewModel::toggleFavorite,
+            isWatched = state.isWatched,
+            onToggleWatched = viewModel::toggleWatched,
+            onPlayTrailer = viewModel::playTrailer,
+            // «Seleziona fonte»: presente solo in modalità Debrid (callback null
+            // in HTTP/direct). La puntata è quella del pulsante Riproduci.
+            onSelectSource = onSelectSource?.let { callback ->
+              { callback(media, playTarget.season, playTarget.episode) }
+            }
+          )
+          Spacer(modifier = Modifier.height(26.dp))
+        }
+      }
+
+      if (state.cast.isNotEmpty()) {
+        item(key = "cast") {
+          MobileCastCarousel(cast = state.cast)
+          Spacer(modifier = Modifier.height(22.dp))
+        }
+      }
+
+      item(key = "tabs") {
+        MobileDetailTabs(
+          labels = tabs,
+          selectedIndex = selectedTab.coerceIn(0, tabs.lastIndex),
+          onSelect = { selectedTab = it },
+          modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        Spacer(modifier = Modifier.height(14.dp))
+      }
+
+      val showEpisodes = isSeries && (selectedTab.coerceIn(0, tabs.lastIndex) == 0)
+      if (showEpisodes) {
+        val season = state.selectedSeason
+        if (state.seasons.isEmpty()) {
+          item(key = "no-seasons") {
+            MobileDetailStatusCard(
+              text = stringResource(R.string.detail_no_seasons),
+              showSpinner = state.isLoadingDetails,
+              onRetry = viewModel::retryDetails,
+              modifier = Modifier.padding(horizontal = 20.dp)
             )
-            Spacer(modifier = Modifier.weight(1f))
-            if (state.episodesLoading) {
-              CircularProgressIndicator(
-                modifier = Modifier.size(18.dp),
-                color = NovaCyan,
-                strokeWidth = 2.dp
+          }
+        } else if (season != null) {
+          item(key = "season-selector") {
+            Column(modifier = Modifier.fillMaxWidth()) {
+              MobileDetailSectionHeader(
+                text = stringResource(R.string.detail_season_selection),
+                icon = Icons.Default.Tv,
+                modifier = Modifier.padding(horizontal = 20.dp)
+              )
+              Spacer(modifier = Modifier.height(10.dp))
+              LazyRow(
+                contentPadding = PaddingValues(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                items(state.seasons, key = { it }) { seasonNumber ->
+                  val count = MobileDetailPolicy.seasonEpisodeCount(
+                    media = media,
+                    details = state.details,
+                    season = seasonNumber
+                  )
+                  MobileSeasonChip(
+                    label = if (seasonNumber == 0) {
+                      stringResource(R.string.detail_specials)
+                    } else {
+                      stringResource(R.string.detail_season_format, seasonNumber)
+                    },
+                    episodeCountLabel = count?.let {
+                      stringResource(R.string.detail_episodes_count_badge, it)
+                    },
+                    isSelected = seasonNumber == season,
+                    onClick = { viewModel.selectSeason(seasonNumber) }
+                  )
+                }
+              }
+              Spacer(modifier = Modifier.height(12.dp))
+
+              val episodesLoaded = !state.episodesLoading &&
+                (state.season != null || state.episodes.isNotEmpty())
+              val episodeCount = MobileDetailPolicy.seasonEpisodeCount(
+                media = media,
+                details = state.details,
+                season = season,
+                loadedEpisodes = state.episodes,
+                loadedSeason = season,
+                episodesLoaded = episodesLoaded
+              )
+              val statusText = if (season == 0) {
+                if (episodeCount != null) {
+                  stringResource(R.string.detail_specials_episodes_status, episodeCount)
+                } else {
+                  stringResource(R.string.detail_specials)
+                }
+              } else if (episodeCount != null) {
+                stringResource(R.string.detail_season_episodes_status, season, episodeCount)
+              } else {
+                stringResource(R.string.detail_season_format, season)
+              }
+              MobileSeasonStatusBar(
+                text = statusText,
+                modifier = Modifier.padding(horizontal = 20.dp)
+              )
+
+              state.season?.name?.takeIf {
+                val normalized = it.trim()
+                it.isNotBlank() && season != 0 &&
+                  !normalized.equals("Season $season", ignoreCase = true) &&
+                  !normalized.equals("Stagione $season", ignoreCase = true)
+              }?.let { seasonName ->
+                Text(
+                  text = seasonName,
+                  color = NovaTextPrimary,
+                  fontSize = 14.sp,
+                  fontWeight = FontWeight.SemiBold,
+                  modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+                )
+              }
+              state.season?.airDate?.takeIf { it.isNotBlank() }?.let { airDate ->
+                Text(
+                  text = stringResource(R.string.detail_air_date_format, airDate),
+                  color = NovaTextMuted,
+                  fontSize = 11.sp,
+                  modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                )
+              }
+              state.season?.overview?.takeIf { it.isNotBlank() }?.let { overview ->
+                Text(
+                  text = overview,
+                  color = NovaTextSecondary,
+                  fontSize = 12.sp,
+                  lineHeight = 18.sp,
+                  maxLines = 3,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+                )
+              }
+              Spacer(modifier = Modifier.height(8.dp))
+            }
+          }
+
+          if (state.episodesLoading) {
+            if (state.episodes.isEmpty()) {
+              item(key = "episodes-loading") {
+                MobileDetailStatusCard(
+                  text = stringResource(R.string.detail_loading_episodes, season),
+                  showSpinner = true,
+                  modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                )
+              }
+            } else {
+              item(key = "episodes-refreshing") {
+                LinearProgressIndicator(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .height(2.dp),
+                  color = NovaCyan,
+                  trackColor = Color.Transparent
+                )
+              }
+            }
+          }
+
+          state.episodesError?.let { episodesErrorRes ->
+            item(key = "episodes-error") {
+              MobileDetailStatusCard(
+                text = stringResource(episodesErrorRes),
+                isError = true,
+                onRetry = viewModel::retrySeason,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
               )
             }
           }
-        }
 
-        if (!state.episodesLoading && state.episodes.isEmpty()) {
-          item(key = "episodes-empty") {
-            Text(
-              text = stringResource(R.string.detail_no_episodes),
-              color = NovaTextMuted,
-              fontSize = 14.sp,
-              modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+          if (!state.episodesLoading &&
+            state.episodesError == null &&
+            state.episodes.isEmpty()
+          ) {
+            item(key = "episodes-empty") {
+              MobileDetailStatusCard(
+                text = stringResource(R.string.detail_no_episodes),
+                onRetry = viewModel::retrySeason,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+              )
+            }
+          }
+
+          items(state.episodes, key = { it.id }) { episode ->
+            MobileEpisodeCard(
+              episode = episode,
+              isSimklWatched = episode.episodeNumber in state.simklWatchedEpisodes,
+              fallbackBackdropUrl = state.details?.backdropUrl ?: media.backdropUrl,
+              onClick = { onPlay(media, episode.seasonNumber, episode.episodeNumber) },
+              expanded = expanded,
+              modifier = Modifier.padding(horizontal = 20.dp, vertical = 5.dp)
             )
           }
-        } else {
-          items(state.episodes, key = { it.id }) { episode ->
-            EpisodeRow(
-              episode = episode,
-              onClick = { onPlay(media, episode.seasonNumber, episode.episodeNumber) }
-            )
+        }
+      } else {
+        item(key = "production") {
+          Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+            val companies = state.details?.productionCompanies.orEmpty()
+            if (state.isLoadingDetails && companies.isEmpty()) {
+              MobileDetailStatusCard(
+                text = stringResource(R.string.detail_production_loading),
+                showSpinner = true
+              )
+            } else {
+              MobileProductionSection(companies = companies)
+            }
           }
         }
       }
+    }
+
+    MobileTrailerOverlay(
+      state = state.trailer,
+      onClose = viewModel::closeTrailer
+    )
+
+    if (synopsisDialogOpen && synopsisText != null) {
+      MobileFullSynopsisDialog(
+        title = media.title,
+        text = synopsisText,
+        onDismiss = { synopsisDialogOpen = false }
+      )
     }
   }
 }
 
 @Composable
-private fun EpisodeRow(episode: Episode, onClick: () -> Unit) {
-  Row(
+private fun DetailLogoOrTitle(
+  media: MediaItem,
+  logoUrl: String?,
+  expanded: Boolean
+) {
+  val titleStyle = TextStyle(
+    color = NovaTextPrimary,
+    fontSize = if (expanded) 36.sp else 28.sp,
+    fontWeight = FontWeight.Black,
+    letterSpacing = 0.5.sp,
+    shadow = Shadow(color = Color.Black.copy(alpha = 0.7f), blurRadius = 8f)
+  )
+  if (logoUrl != null) {
+    SubcomposeAsyncImage(
+      model = ImageRequest.Builder(LocalContext.current)
+        .data(logoUrl)
+        .crossfade(true)
+        .build(),
+      contentDescription = media.title,
+      contentScale = ContentScale.Fit,
+      alignment = Alignment.CenterStart,
+      modifier = Modifier
+        .heightIn(min = 52.dp, max = if (expanded) 96.dp else 76.dp)
+        .widthIn(max = if (expanded) 480.dp else 320.dp),
+      error = {
+        Text(text = media.title, style = titleStyle)
+      }
+    )
+  } else {
+    Text(text = media.title, style = titleStyle)
+  }
+}
+
+@Composable
+private fun GenreChip(genre: String) {
+  Box(
     modifier = Modifier
-      .fillMaxWidth()
-      .clickable(onClick = onClick)
-      .padding(horizontal = 20.dp, vertical = 8.dp),
-    verticalAlignment = Alignment.CenterVertically
+      .background(NovaSurfaceVariant.copy(alpha = 0.8f), RoundedCornerShape(14.dp))
+      .border(1.dp, NovaCyan.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+      .padding(horizontal = 10.dp, vertical = 3.dp)
   ) {
-    Box(
-      modifier = Modifier
-        .width(132.dp)
-        .aspectRatio(16f / 9f)
-        .clip(RoundedCornerShape(10.dp))
-        .background(NovaCardBg)
-    ) {
-      if (!episode.thumbnailUrl.isNullOrBlank()) {
-        AsyncImage(
-          model = episode.thumbnailUrl,
-          contentDescription = episode.title,
-          contentScale = ContentScale.Crop,
-          modifier = Modifier.fillMaxSize()
-        )
-      }
-      if (episode.progressFraction > 0.01f) {
-        LinearProgressIndicator(
-          progress = { episode.progressFraction },
-          modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .fillMaxWidth()
-            .height(3.dp),
-          color = NovaCyan,
-          trackColor = Color.White.copy(alpha = 0.16f)
-        )
-      }
-    }
-    Column(
-      modifier = Modifier
-        .weight(1f)
-        .padding(horizontal = 12.dp)
-    ) {
-      Text(
-        text = "S${episode.seasonNumber}E${episode.episodeNumber} • ${episode.title}",
-        color = NovaTextPrimary,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.SemiBold,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis
-      )
-      Spacer(modifier = Modifier.height(2.dp))
-      Text(
-        text = episode.synopsis.ifBlank { "${episode.durationMinutes} min" },
-        color = NovaTextMuted,
-        fontSize = 12.sp,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis
-      )
-    }
-    Icon(
-      imageVector = Icons.Default.PlayArrow,
-      contentDescription = stringResource(R.string.action_play),
-      tint = NovaCyan
+    Text(
+      text = genre,
+      color = NovaCyanBright,
+      fontSize = 11.sp,
+      fontWeight = FontWeight.Medium
     )
   }
 }
 
-private fun MediaItem.detailMetadata(): String {
-  val typeText = when (type) {
-    MediaType.FILM -> "Film"
-    MediaType.SERIE_TV -> "Serie TV"
-    MediaType.DOCUMENTARIO -> "Documentario"
+@Composable
+private fun MobileDetailFatalState(
+  onBack: () -> Unit,
+  onRetry: () -> Unit
+) {
+  Column(
+    modifier = Modifier
+      .fillMaxSize()
+      .padding(24.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center
+  ) {
+    Text(
+      text = stringResource(R.string.detail_not_found),
+      color = NovaTextPrimary,
+      fontSize = 18.sp,
+      fontWeight = FontWeight.Bold
+    )
+    Spacer(modifier = Modifier.height(16.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+      Button(
+        onClick = onRetry,
+        colors = ButtonDefaults.buttonColors(
+          containerColor = NovaCyan,
+          contentColor = Color.Black
+        )
+      ) {
+        Text(stringResource(R.string.action_retry), fontWeight = FontWeight.Bold)
+      }
+      TextButton(onClick = onBack) {
+        Text(
+          text = stringResource(R.string.action_back),
+          color = NovaTextSecondary
+        )
+      }
+    }
   }
-  val yearText = if (year > 0) year.toString() else ""
-  val durationText = if (durationMinutes > 0) "$durationMinutes min" else ""
-  val ratingText = if (rating > 0f) String.format(Locale.ITALY, "%.1f", rating) else ""
-  val genresText = genres.take(3).joinToString(", ")
-  return listOf(typeText, yearText, durationText, ratingText, genresText)
-    .filter { it.isNotBlank() }
-    .joinToString(" • ")
+}
+
+private fun detailHeroHeight(expanded: Boolean, isLandscape: Boolean) = when {
+  isLandscape && expanded -> 300.dp
+  isLandscape -> 220.dp
+  expanded -> 360.dp
+  else -> 280.dp
 }

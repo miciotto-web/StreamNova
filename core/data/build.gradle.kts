@@ -28,6 +28,8 @@ dependencies {
   api(project(":core:model"))
 
   implementation(libs.androidx.core.ktx)
+  implementation(platform(libs.androidx.compose.bom))
+  implementation(libs.androidx.compose.runtime)
   implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.room.runtime)
   implementation(libs.androidx.room.ktx)

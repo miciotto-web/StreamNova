@@ -162,7 +162,7 @@ object MediaCacheMapper {
 
     // Reuse existing episodes or generate for TV
     val eps = if (mediaType == MediaType.SERIE_TV) {
-      existingEpisodes[this.id] ?: MediaRepository.generateEpisodesForTv(
+      existingEpisodes[this.id] ?: MediaRepository.syntheticEpisodesIfEnabled(
         tvId = this.tmdbId ?: (this.id.hashCode() and 0x7FFFFFFF),
         tvTitle = this.title,
         backdropUrl = this.backdropUrl,

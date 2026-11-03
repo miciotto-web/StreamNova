@@ -14,10 +14,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aistudio.streamnova.mobile.R
 import com.aistudio.streamnova.mobile.ui.MobileCatalogViewModel
 import com.aistudio.streamnova.mobile.ui.components.MobileEmptyState
+import com.aistudio.streamnova.mobile.ui.components.MobileLoadingState
 import com.aistudio.streamnova.mobile.ui.components.MobilePosterCard
 import com.aistudio.streamnova.mobile.ui.components.MobileTopBar
 import com.example.data.model.MediaItem
@@ -26,11 +26,11 @@ enum class CatalogKind { MOVIES, SERIES, FAVORITES }
 
 @Composable
 fun CatalogScreen(
+  viewModel: MobileCatalogViewModel,
   @StringRes titleRes: Int,
   kind: CatalogKind,
   onMediaClick: (MediaItem) -> Unit
 ) {
-  val viewModel: MobileCatalogViewModel = viewModel()
   val state by viewModel.catalog.collectAsStateWithLifecycle()
 
   val items = when (kind) {
@@ -51,15 +51,28 @@ fun CatalogScreen(
     }
     if (items.isEmpty()) {
       item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
-        if (kind == CatalogKind.FAVORITES) {
-          MobileEmptyState(
+        when {
+          state.isLoading -> MobileLoadingState(
+            message = stringResource(R.string.catalog_loading)
+          )
+
+          state.error != null -> MobileEmptyState(
+            title = stringResource(R.string.catalog_error_title),
+            body = stringResource(R.string.catalog_error_body),
+            actionLabel = stringResource(R.string.action_retry),
+            onAction = viewModel::retry
+          )
+
+          kind == CatalogKind.FAVORITES -> MobileEmptyState(
             title = stringResource(R.string.favorites_empty_title),
             body = stringResource(R.string.favorites_empty_body)
           )
-        } else {
-          MobileEmptyState(
+
+          else -> MobileEmptyState(
             title = stringResource(titleRes),
-            body = stringResource(R.string.catalog_empty)
+            body = stringResource(R.string.catalog_empty),
+            actionLabel = stringResource(R.string.action_retry),
+            onAction = viewModel::retry
           )
         }
       }
@@ -73,10 +86,12 @@ fun CatalogScreen(
 
 @Composable
 fun FavoritesScreen(
+  viewModel: MobileCatalogViewModel,
   onMediaClick: (MediaItem) -> Unit,
   onExplore: () -> Unit
 ) {
   CatalogScreen(
+    viewModel = viewModel,
     titleRes = R.string.nav_favorites,
     kind = CatalogKind.FAVORITES,
     onMediaClick = onMediaClick

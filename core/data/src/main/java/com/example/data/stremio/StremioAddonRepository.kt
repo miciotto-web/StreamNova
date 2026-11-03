@@ -213,24 +213,34 @@ object StremioAddonRepository {
   /** Suffisso terminale dell'endpoint manifest, rimosso in [normalizeUrl]. */
   private const val MANIFEST_SUFFIX = "/manifest.json"
 
-  private val moshi: Moshi = Moshi.Builder()
-    .add(KotlinJsonAdapterFactory())
-    .build()
+  // Moshi, i suoi adapter e l'OkHttp client sono usati SOLO dai percorsi di rete e di
+  // parsing, che girano fuori dal thread principale. Costruirli all'avvio costava
+  // ~1,3 s sul primo frame (verificato con StartupTrace su emulatore TV): la loro
+  // inizializzazione è quindi differita al primo uso reale, dove non blocca la UI.
+  private val moshi: Moshi by lazy {
+    Moshi.Builder()
+      .add(KotlinJsonAdapterFactory())
+      .build()
+  }
 
-  private val addonListAdapter: com.squareup.moshi.JsonAdapter<List<InstalledAddon>> = moshi.adapter(
-    Types.newParameterizedType(List::class.java, InstalledAddon::class.java)
-  )
-  private val manifestAdapter = moshi.adapter(StremioManifest::class.java)
-  private val streamResponseAdapter = moshi.adapter(StremioStreamResponse::class.java)
-  private val catalogResponseAdapter = moshi.adapter(StremioCatalogResponse::class.java)
-
-  private val httpClient: OkHttpClient = OkHttpClient.Builder()
-    .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
-    .readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS)
-    .addInterceptor(
-      HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
+  private val addonListAdapter: com.squareup.moshi.JsonAdapter<List<InstalledAddon>> by lazy {
+    moshi.adapter(
+      Types.newParameterizedType(List::class.java, InstalledAddon::class.java)
     )
-    .build()
+  }
+  private val manifestAdapter by lazy { moshi.adapter(StremioManifest::class.java) }
+  private val streamResponseAdapter by lazy { moshi.adapter(StremioStreamResponse::class.java) }
+  private val catalogResponseAdapter by lazy { moshi.adapter(StremioCatalogResponse::class.java) }
+
+  private val httpClient: OkHttpClient by lazy {
+    OkHttpClient.Builder()
+      .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
+      .readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS)
+      .addInterceptor(
+        HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
+      )
+      .build()
+  }
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -257,6 +267,19 @@ object StremioAddonRepository {
    */
   fun init() {
     if (!initialized.compareAndSet(false, true)) return
+    // Riscala in BACKGROUND i componenti lazy (Moshi, adapter JSON, OkHttp): la
+    // prima operazione dell'utente (installazione/rimozione addon, fetch stream)
+    // non deve costruirli sul thread principale. Gira su Dispatchers.IO e si
+    // sovrappone all'intro video, senza toccare il primo frame.
+    scope.launch {
+      runCatching {
+        addonListAdapter
+        manifestAdapter
+        streamResponseAdapter
+        catalogResponseAdapter
+        httpClient
+      }
+    }
     scope.launch {
       AppSettingsRepository.installedAddonsJson.collect { json ->
         if (!localWrites) {
@@ -328,14 +351,15 @@ object StremioAddonRepository {
   fun getActiveAddons(): List<InstalledAddon> = _addons.value.filter { it.isEnabled }
 
   /**
-   * Addon di SISTEMA sempre attivi: il catalogo di default primario (Cinemeta),
-   * registrato dal manifest statico [CinemetaAddon] e non dipendente dalla
-   * persistenza utente. È la sorgente predefinita della Home quando non ci sono
-   * cataloghi personalizzati.
+   * Definizione dell'addon di SISTEMA storico (Cinemeta).
+   *
+   * LEGACY: non viene più registrato come catalogo predefinito e non alimenta la
+   * Home né le categorie. Le sorgenti native sono TMDB. L'API resta per
+   * compatibilità e per riconoscere/ignorare l'addon.
    */
   fun getSystemAddons(): List<InstalledAddon> = CinemetaAddon.systemAddons
 
-  /** true se [id] identifica un addon di sistema (Cinemeta). */
+  /** true se [id] identifica un addon di sistema legacy (Cinemeta). */
   fun isSystemAddon(id: String?): Boolean = CinemetaAddon.isSystemAddon(id)
 
   /** true se l'addon identificato corrisponde a Xperience. */
@@ -425,32 +449,70 @@ object StremioAddonRepository {
     val manifest = fetchManifest(cleanUrl)
     val addon = InstalledAddon(baseUrl = cleanUrl, manifest = manifest, isEnabled = true)
 
+    // La chiave di sostituzione è il baseUrl COMPLETO di configurazione, non il
+    // manifest id: Torrentio globale e Torrentio IT hanno lo stesso id ma path
+    // diversi, quindi restano due installazioni separate (una non sovrascrive
+    // l'altra); reinstallare lo stesso URL aggiorna quella installazione.
     val current = _addons.value.filterNot { it.baseUrl.equals(cleanUrl, ignoreCase = true) }
     persist(current + addon)
     Log.i(TAG, "Addon installato: ${manifest.displayTitle} ($cleanUrl)")
     addon
   }
 
-  /** Rimuove l'addon con l'id [id] (manifest.id oppure baseUrl). */
+  /**
+   * Cerca l'installazione corrispondente a [key].
+   *
+   * Precedenza:
+   *  1. [InstalledAddon.installId]/`baseUrl` (univoco per configurazione);
+   *  2. `manifest.id` come fallback legacy.
+   *
+   * Il fallback sul manifest id è deliberatamente limitato a **una** installazione:
+   * addon configurabili come Torrentio espongono lo stesso `manifest.id` per il
+   * globale e per la variante IT. Restituire entrambe (o applicare un'operazione a
+   * tutte) fonderebbe le due installazioni, che è esattamente il difetto da evitare.
+   */
+  fun findInstalledAddon(key: String): InstalledAddon? {
+    val clean = key.trim()
+    if (clean.isEmpty()) return null
+    _addons.value.firstOrNull { it.installId == clean }?.let { return it }
+    _addons.value.firstOrNull { it.installId.equals(clean, ignoreCase = true) }?.let { return it }
+    return _addons.value.firstOrNull { it.id.equals(clean, ignoreCase = true) }
+  }
+
+  /** Rimuove l'addon con l'id [id] (installId/baseUrl univoco oppure manifest.id). */
   fun removeAddon(id: String) {
-    val remaining = _addons.value.filterNot { it.id == id || it.baseUrl == id }
+    val target = findInstalledAddon(id) ?: run {
+      Log.w(TAG, "Rimozione addon ignorata: nessuna installazione per la chiave indicata")
+      return
+    }
+    val remaining = _addons.value.filterNot { it.installId == target.installId }
     if (remaining.size != _addons.value.size) {
       persist(remaining)
-      Log.i(TAG, "Addon rimosso: $id")
+      Log.i(TAG, "Addon rimosso: ${diagAddonLabel(target)}")
     }
     // I cataloghi sono dati dell'addon: cambiare l'insieme degli addon installati
     // invalida le risposte in cache (anche se l'addon non era presente).
     StremioCatalogEngine.clearCache()
   }
 
-  /** Abilita/disabilita un addon. */
+  /**
+   * Abilita/disabilita UNA installazione.
+   *
+   * Con un [id] ambiguo (manifest id condiviso da più configurazioni) viene
+   * modificata solo la prima installazione trovata: lo stato delle altre resta
+   * invariato. La UI passa sempre [InstalledAddon.installId].
+   */
   fun setAddonEnabled(id: String, enabled: Boolean) {
+    val target = findInstalledAddon(id) ?: run {
+      Log.w(TAG, "Abilitazione addon ignorata: nessuna installazione per la chiave indicata")
+      return
+    }
     val updated = _addons.value.map {
-      if (it.id == id || it.baseUrl == id) it.copy(isEnabled = enabled) else it
+      if (it.installId == target.installId) it.copy(isEnabled = enabled) else it
     }
     if (updated != _addons.value) {
       persist(updated)
-      Log.i(TAG, "Addon $id -> enabled=$enabled")
+      Log.i(TAG, "Addon ${diagAddonLabel(target)} -> enabled=$enabled")
     }
   }
 
@@ -647,6 +709,11 @@ object StremioAddonRepository {
 
   /**
    * Interroga **in parallelo** tutti gli addon attivi con risorsa `stream`.
+   *
+   * L'interrogazione avviene per INSTALLAZIONE, usando il rispettivo [InstalledAddon.baseUrl]
+   * (configurazione inclusa): due configurazioni dello stesso addon — es. Torrentio
+   * globale e Torrentio IT, che condividono `manifest.id` — producono due richieste
+   * distinte e due insiemi di candidati distinti.
    *
    * @param tmdbId id TMDB del titolo.
    * @param isTv true per le serie TV.

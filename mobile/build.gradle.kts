@@ -29,7 +29,7 @@ android {
     minSdk = 24
     targetSdk = 36
     versionCode = 1
-    versionName = "0.1.0"
+    versionName = "1.0.0"
 
     val localProps = Properties().apply {
       val localFile = rootProject.file("local.properties")
@@ -106,6 +106,16 @@ android {
     buildConfig = true
   }
 
+  testOptions {
+    unitTests {
+      // I test JVM del modulo toccano classi condivise del core che usano
+      // android.util.Log (StremioAddonRepository, UserProviderBindingStore):
+      // i metodi non strumentati restituiscono i valori di default invece di
+      // lanciare "not mocked". Stessa scelta di :core:data.
+      isReturnDefaultValues = true
+    }
+  }
+
   packaging {
     jniLibs {
       // Stessa scelta della TV: APK più piccolo, estrazione nativa al primo avvio.
@@ -127,6 +137,8 @@ configurations.all {
 
 dependencies {
   testImplementation(libs.junit)
+  // Test JVM del flusso Add-on: ViewModel con Main dispatcher sostituito.
+  testImplementation(libs.kotlinx.coroutines.test)
 
   implementation(project(":core:model"))
   implementation(project(":core:designsystem"))
@@ -147,6 +159,8 @@ dependencies {
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation(libs.androidx.navigation.compose)
   implementation(libs.androidx.recyclerview)
+  implementation(libs.androidx.room.ktx)
+  implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)

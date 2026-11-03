@@ -5,7 +5,11 @@ package com.example.data.api
  * restituiti da TMDB: clear logo del titolo e chiave YouTube del trailer.
  *
  * Nessuna dipendenza Android: le funzioni operano solo sui DTO TMDB, cosi' la priorita'
- * linguistica (it -> en -> miglior disponibile) e' verificabile dai test unitari.
+ * linguistica e' verificabile dai test unitari.
+ *
+ * La lingua del trailer viene determinata ESCLUSIVAMENTE dai metadati del singolo video
+ * (`iso_639_1` e, come ripiego, il nome del video): la lingua originale del film o della
+ * serie non viene mai usata come criterio.
  */
 object TmdbMediaAssets {
 
@@ -15,6 +19,9 @@ object TmdbMediaAssets {
   private const val TRAILER_TYPE = "Trailer"
   private const val TEASER_TYPE = "Teaser"
   private const val YOUTUBE_SITE = "YouTube"
+
+  /** Riconosce "ITA"/"italiano"/"italiana"/"italian" come parole intere nel nome del video. */
+  private val ITALIAN_NAME_PATTERN = Regex("\\b(?:ita|italian[oa]?)\\b", RegexOption.IGNORE_CASE)
 
   /**
    * Sceglie il clear logo da `images.logos` con priorita':
@@ -34,60 +41,89 @@ object TmdbMediaAssets {
   }
 
   /**
-   * Sceglie la chiave YouTube del trailer da `videos.results` con priorita' ASSOLUTA
-   * all'italiano:
-   * 1. `type == "Trailer"` in italiano (`iso_639_1 == "it"` o nome con
-   *    "italiano"/"ita"), preferendo i video `official == true`;
-   * 2. `type == "Teaser"` in italiano;
-   * 3. `type == "Trailer"` in inglese (`iso_639_1 == "en"`), preferendo `official == true`;
-   * 4. primo `type == "Trailer"` disponibile (qualsiasi lingua), infine qualsiasi
-   *    altro video YouTube restituito.
+   * Sceglie la chiave YouTube del trailer da `videos.results`.
+   *
+   * Ordine di priorita' (confronto lessicografico):
+   * 1. lingua del video: italiano > inglese > lingua non dichiarata > altre lingue;
+   * 2. tipo: `Trailer` > `Teaser` > `Clip`/`Featurette`/altro;
+   * 3. video ufficiali (`official == true`) prima dei non ufficiali;
+   * 4. pubblicazione piu' recente (`published_at`) prima.
+   *
+   * L'ordine richiesto "trailer italiano ufficiale -> trailer italiano non ufficiale ->
+   * trailer inglese ufficiale -> trailer inglese non ufficiale -> altri" e' quindi
+   * rispettato. A parita' di lingua il tipo `Trailer` vince sempre, anche se il
+   * `Teaser` della stessa lingua e' ufficiale.
+   *
+   * Vengono considerati solo i video con `site == "YouTube"` e `key` valorizzata: senza
+   * chiave il player embedded non puo' riprodurre nulla.
    */
-  fun pickTrailer(videos: List<TmdbVideoDto>?): TmdbVideoDto? {
-    val youtube = videos.orEmpty().filter {
-      !it.key.isNullOrBlank() && it.site.equals(YOUTUBE_SITE, ignoreCase = true)
-    }
-    if (youtube.isEmpty()) return null
-
-    // Preferenza per i video ufficiali, con fallback al primo del gruppo.
-    fun officialFirst(group: List<TmdbVideoDto>): TmdbVideoDto? =
-      group.firstOrNull { it.official == true } ?: group.firstOrNull()
-
-    // 1. Trailer italiano (priorita' massima).
-    officialFirst(
-      youtube.filter { it.type.equals(TRAILER_TYPE, ignoreCase = true) && it.isItalian() }
-    )?.let { return it }
-
-    // 2. Teaser italiano.
-    officialFirst(
-      youtube.filter { it.type.equals(TEASER_TYPE, ignoreCase = true) && it.isItalian() }
-    )?.let { return it }
-
-    // 3. Trailer inglese (fallback principale).
-    officialFirst(
-      youtube.filter {
-        it.type.equals(TRAILER_TYPE, ignoreCase = true) &&
-          it.language.equals("en", ignoreCase = true)
-      }
-    )?.let { return it }
-
-    // 4. Primo trailer YouTube di qualsiasi lingua, poi qualsiasi video YouTube.
-    youtube.firstOrNull { it.type.equals(TRAILER_TYPE, ignoreCase = true) }?.let { return it }
-    return youtube.first()
-  }
+  fun pickTrailer(videos: List<TmdbVideoDto>?): TmdbVideoDto? =
+    videos.orEmpty()
+      .filter { it.isPlayableYoutubeVideo() }
+      .sortedWith(
+        compareBy<TmdbVideoDto> { languageRank(it) }
+          .thenBy { typeRank(it.type) }
+          .thenBy { if (it.official == true) 0 else 1 }
+          .thenByDescending { it.publishedAt.orEmpty() }
+      )
+      .firstOrNull()
 
   /** Come [pickTrailer], ma restituisce solo la chiave YouTube (pronta per l'embed). */
   fun pickTrailerKey(videos: List<TmdbVideoDto>?): String? =
     pickTrailer(videos)?.key?.takeIf { it.isNotBlank() }
 
   /**
+   * true se il video selezionato da [pickTrailer] e' italiano secondo i metadati del
+   * video. Usato dal repository per decidere se serve una seconda richiesta localizzata.
+   */
+  fun isItalianVideo(video: TmdbVideoDto?): Boolean = video?.isItalian() == true
+
+  /**
+   * Unisce i risultati di piu' richieste localizzate TMDB senza perdere video e senza
+   * duplicarli. L'ordine di arrivo e' preservato: in caso di duplicato vince la prima
+   * occorrenza (tipicamente la risposta `language=it-IT`).
+   *
+   * L'identita' e' l'`id` TMDB del video; se assente si ripiega sulla coppia
+   * `site + key`, unica per il contenuto riproducibile.
+   */
+  fun mergeVideos(vararg responses: List<TmdbVideoDto>?): List<TmdbVideoDto> {
+    val merged = ArrayList<TmdbVideoDto>()
+    val seen = HashSet<String>()
+    for (video in responses.filterNotNull().flatten()) {
+      if (seen.add(video.identity())) merged += video
+    }
+    return merged
+  }
+
+  private fun TmdbVideoDto.identity(): String {
+    id?.takeIf { it.isNotBlank() }?.let { return "id:$it" }
+    return "key:${site.orEmpty().lowercase()}|${key.orEmpty()}"
+  }
+
+  private fun TmdbVideoDto.isPlayableYoutubeVideo(): Boolean =
+    !key.isNullOrBlank() && site.equals(YOUTUBE_SITE, ignoreCase = true)
+
+  private fun languageRank(video: TmdbVideoDto): Int = when {
+    video.isItalian() -> 0
+    video.language.equals("en", ignoreCase = true) -> 1
+    video.language.isNullOrBlank() -> 2
+    else -> 3
+  }
+
+  private fun typeRank(type: String?): Int = when {
+    type.equals(TRAILER_TYPE, ignoreCase = true) -> 0
+    type.equals(TEASER_TYPE, ignoreCase = true) -> 1
+    else -> 2
+  }
+
+  /**
    * true se il video e' in italiano: `iso_639_1 == "it"` oppure il nome del video
-   * contiene "italiano"/"ita" (TMDB classifica alcuni doppiaggi italiani come "en").
+   * contiene la parola "italiano"/"italiana"/"italian"/"ita" (TMDB classifica alcuni
+   * doppiaggi italiani con `iso_639_1` diverso da "it"). Il confronto e' per parola
+   * intera, cosi' titoli come "Capital" non vengono scambiati per italiani.
    */
   private fun TmdbVideoDto.isItalian(): Boolean {
     if (language.equals("it", ignoreCase = true)) return true
-    val videoName = name.orEmpty()
-    return videoName.contains("italiano", ignoreCase = true) ||
-      videoName.contains("ita", ignoreCase = true)
+    return ITALIAN_NAME_PATTERN.containsMatchIn(name.orEmpty())
   }
 }

@@ -9,10 +9,10 @@ import com.example.data.model.MediaType
  * (`lastWatchedSeason` / `lastWatchedEpisode`).
  *
  * La posizione salvata è **autorevole**: se l'episodio non è presente nella lista
- * locale — che per le serie di catalogo è spesso generata e troncata alle prime
- * stagioni, oppure non è ancora stata caricata da TMDB — NON si ripiega sul primo
+ * locale — per le serie di catalogo è spesso generata e troncata alle prime stagioni,
+ * oppure la stagione non è ancora stata caricata da TMDB — NON si ripiega sul primo
  * episodio disponibile. Si costruisce un [Episode] con gli stessi numeri di
- * stagione/episodio, così riprendere una serie da S5E2 non può più avviare S1E1.
+ * stagione/episodio, così riprendere una serie da S5E6 non può più avviare S1E1.
  *
  * Il ripiego al primo episodio resta solo per i titoli **mai avviati** (nessuna
  * posizione salvata), dove qualunque puntata va bene.
@@ -27,8 +27,10 @@ object EpisodeResumeResolver {
    * @param requestedEpisode episodio esplicitamente richiesto (click su una puntata).
    *        Hanno precedenza sullo stato salvato solo quando ENTRAMBI sono validi.
    * @param extraEpisodes episodi aggiuntivi già caricati (es. stagione selezionata
-   *        nella scheda dettaglio) uniti a `media.episodes` per la ricerca esatta.
+   *        nella scheda dettaglio o stagioni caricate in background dal player) uniti
+   *        a `media.episodes` per la ricerca esatta.
    * @param savedProgressMs posizione salvata dell'episodio risolto (0 se ignorata).
+   * @param savedDurationMs durata reale salvata dell'episodio risolto (0 se ignorata).
    * @return l'episodio da riprodurre, oppure `null` se [media] non è una serie TV.
    */
   fun resolve(
@@ -36,7 +38,29 @@ object EpisodeResumeResolver {
     requestedSeason: Int? = null,
     requestedEpisode: Int? = null,
     extraEpisodes: List<Episode> = emptyList(),
-    savedProgressMs: Long = 0L
+    savedProgressMs: Long = 0L,
+    savedDurationMs: Long = 0L
+  ): Episode? = resolveWithLookup(
+    media = media,
+    requestedSeason = requestedSeason,
+    requestedEpisode = requestedEpisode,
+    extraEpisodes = extraEpisodes,
+    progressOf = { _, _ -> savedProgressMs },
+    durationOf = { _, _ -> savedDurationMs }
+  )
+
+  /**
+   * Variante che legge posizione e durata **per la coppia stagione/episodio risolta**:
+   * è il percorso usato dal ViewModel, così il progresso applicato è sempre quello
+   * dell'episodio scelto e non quello aggregato di un altro episodio della serie.
+   */
+  fun resolveWithLookup(
+    media: MediaItem,
+    requestedSeason: Int? = null,
+    requestedEpisode: Int? = null,
+    extraEpisodes: List<Episode> = emptyList(),
+    progressOf: (season: Int, episode: Int) -> Long,
+    durationOf: (season: Int, episode: Int) -> Long
   ): Episode? {
     if (media.type != MediaType.SERIE_TV) return null
 
@@ -51,21 +75,37 @@ object EpisodeResumeResolver {
 
     // Mai avviata: si parte dalla prima puntata disponibile (o da S1E1).
     if (target == null) {
-      return pool.firstOrNull()?.withSeriesIdentity(media)
-        ?: syntheticEpisode(media, season = 1, episode = 1, totalDurationMs = 0L)
+      val first = pool.firstOrNull()
+      val season = first?.seasonNumber ?: 1
+      val episodeNumber = first?.episodeNumber ?: 1
+      val progress = progressOf(season, episodeNumber).coerceAtLeast(0L)
+      val duration = durationOf(season, episodeNumber).coerceAtLeast(0L)
+      val base = first ?: syntheticEpisode(media, season, episodeNumber, totalDurationMs = 0L)
+      return base.withSeriesIdentity(media).copy(
+        currentProgressMs = progress,
+        totalDurationMs = if (duration > 0L) duration else base.totalDurationMs
+      )
     }
 
     val found = pool.firstOrNull {
       it.seasonNumber == target.first && it.episodeNumber == target.second
     }
 
+    // Solo l'episodio dell'ultima visione può ereditare la posizione/durata aggregate
+    // della riga titolo: per una puntata diversa sarebbe una contaminazione.
+    val isSavedTarget = explicit == null
+    val roomProgress = progressOf(target.first, target.second).coerceAtLeast(0L)
+    val roomDuration = durationOf(target.first, target.second).coerceAtLeast(0L)
+    val legacyProgress = if (isSavedTarget) media.currentProgressMs.coerceAtLeast(0L) else 0L
+    val resolvedProgress = if (roomProgress > 0L) roomProgress else legacyProgress
+
     // La durata nota del titolo appartiene all'episodio dell'ultima visione: usarla
     // SOLO per quello. Per un episodio diverso (click esplicito) resta quella
     // dell'episodio stesso, o 0 se sconosciuta: mai una durata inventata.
-    val durationHint = if (target == saved && media.totalDurationMs > 0L) {
-      media.totalDurationMs
-    } else {
-      0L
+    val durationHint = when {
+      roomDuration > 0L -> roomDuration
+      isSavedTarget && media.totalDurationMs > 0L -> media.totalDurationMs
+      else -> 0L
     }
 
     val base = found ?: syntheticEpisode(
@@ -75,10 +115,9 @@ object EpisodeResumeResolver {
       totalDurationMs = durationHint
     )
 
-    return base.copy(
-      currentProgressMs = savedProgressMs.coerceAtLeast(0L),
-      totalDurationMs = if (durationHint > 0L) durationHint else base.totalDurationMs,
-      seriesImdbId = base.seriesImdbId?.takeIf { it.isNotBlank() } ?: media.effectiveImdbId
+    return base.withSeriesIdentity(media).copy(
+      currentProgressMs = resolvedProgress,
+      totalDurationMs = if (durationHint > 0L) durationHint else base.totalDurationMs
     )
   }
 

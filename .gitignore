@@ -64,3 +64,16 @@ local.properties
 /META-INF/
 /com/
 /io/
+
+# --- Log diagnostici raw (non versionare) ---
+logcat*.txt
+*_logcat*.txt
+hotfix_*.txt
+vv_*.txt
+vv_*.xml
+collaudo_*.txt
+*_log.txt
+p0fix_*.txt
+build_*.err
+p0fix_verify/
+update_popup_test_*/

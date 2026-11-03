@@ -1,5 +1,7 @@
 package com.example.data.repository
 
+import com.example.data.model.MediaItem
+import com.example.data.model.MediaType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,5 +44,27 @@ class MediaRepositoryTest {
         // So we fallback to watch_region=US
         assertEquals(true, isHbo)
         assertEquals("US", "US") // Expected fallback region
+    }
+
+    @Test
+    fun `registerExternalMedia aggiunge una card Cinemeta al catalogo senza sovrascrivere lo stato esistente`() {
+        val item = MediaItem(
+            id = "tt_phase4_external_registration_test",
+            title = "Titolo reale dal catalogo",
+            synopsis = "",
+            videoUrl = "",
+            type = MediaType.SERIE_TV
+        )
+
+        MediaRepository.registerExternalMedia(item)
+
+        val registered = MediaRepository.getMediaById(item.id)
+        assertEquals(item, registered)
+
+        // Una seconda registrazione dello stesso id non deve sostituire il record
+        // (e quindi lo stato utente) già presente.
+        val different = item.copy(title = "Titolo diverso")
+        MediaRepository.registerExternalMedia(different)
+        assertEquals("Titolo reale dal catalogo", MediaRepository.getMediaById(item.id)?.title)
     }
 }

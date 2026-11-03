@@ -3,6 +3,8 @@ package com.example.data.repository
 import android.content.Context
 import android.util.Log
 import com.example.data.api.TmdbApiClient
+import com.example.data.api.TmdbCatalogMapper
+import com.example.data.api.TmdbGenreMapper
 import com.example.data.api.TmdbMediaAssets
 import com.example.data.api.TmdbMovieDto
 import com.example.data.api.TmdbPaginatedResponse
@@ -11,7 +13,10 @@ import com.example.data.api.TmdbMultiSearchResultDto
 import com.example.data.api.TmdbMovieDetailDto
 import com.example.data.api.TmdbSeasonDetailDto
 import com.example.data.api.TmdbTvDetailDto
+import com.example.data.api.TmdbEpisodeDto
+import com.example.data.api.TmdbVideosResponseDto
 import com.example.data.config.StreamNovaConfig
+import androidx.room.withTransaction
 import com.example.data.local.CachedMediaItemEntity
 import com.example.data.local.CatalogProgressEntity
 import com.example.data.local.EpisodeProgressEntity
@@ -30,6 +35,7 @@ import com.example.data.model.ExtendedMediaDetails
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.model.NextEpisodeInfo
 import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
@@ -37,6 +43,7 @@ import com.example.data.model.WatchProgress
 import com.example.data.model.toEpisode
 import com.example.data.api.TmdbCompanyDetailDto
 import com.example.data.model.PersonDetails
+import com.example.data.prefs.AppSettingsRepository
 import com.example.data.model.ProductionCompany
 import com.example.data.model.VideoResolution
 import kotlinx.coroutines.CancellationException
@@ -44,18 +51,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import com.example.data.util.AgeRatingClassifier
 import com.example.data.util.AsyncSingleFlight
+import com.example.data.util.NextEpisodeEnricher
 import kotlinx.coroutines.withContext
 
 object MediaRepository {
@@ -65,7 +75,40 @@ object MediaRepository {
 
   private var database: StreamNovaDatabase? = null
   private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+  /**
+   * Provider iniettabile dei metadati che provano la conclusione di una serie
+   * (stato e conteggio episodi per stagione da TMDB). I test lo sostituiscono per
+   * non dipendere dalla rete; in produzione legge la cache Room e solo se serve TMDB.
+   */
+  internal var seriesCompletionFactsProvider: suspend (MediaItem) -> SeriesCompletionFacts? =
+    { item -> fetchSeriesCompletionFacts(item) }
+
+  /** Evita di avviare più di una riconciliazione delle serie concluse per processo. */
+  private var completionReconciliationStarted = false
+  /**
+   * Coda FIFO per la persistenza dei progressi episodio: due salvataggi ravvicinati
+   * (uscita dal player + cambio puntata) non devono completarsi fuori ordine e
+   * riportare la riga del titolo all'episodio precedente. Le righe `episode_progress`
+   * restano comunque indipendenti per (mediaId, stagione, episodio).
+   */
+  private val progressWriteDispatcher = Dispatchers.IO.limitedParallelism(1)
   private val episodeProgressMap = ConcurrentHashMap<String, Long>()
+
+  /**
+   * Durata reale misurata dal player per ciascun episodio, con la stessa chiave di
+   * [episodeProgressMap]. Serve alla ripresa dei record persistiti: senza di essa un
+   * episodio ricostruito (non presente nella lista locale troncata) non conoscerebbe
+   * la propria durata e potrebbe scambiare una posizione avanzata per "fine episodio".
+   */
+  private val episodeDurationMap = ConcurrentHashMap<String, Long>()
+
+  /**
+   * Generazione dello stato in memoria. Avanza quando un test (o un reset) sostituisce
+   * il database: un caricamento avviato con la generazione precedente non deve
+   * applicare i propri risultati sopra lo stato nuovo.
+   */
+  private val stateGeneration = java.util.concurrent.atomic.AtomicInteger(0)
 
   /**
    * Cache (LRU, massimo 1024 serie) degli episodi generati per i titoli non
@@ -81,27 +124,22 @@ object MediaRepository {
   private val ageRatingSingleFlight = AsyncSingleFlight<Int?>()
 
   /**
-   * Provider iniettabile dei metadati che provano la conclusione di una serie
-   * (stato e conteggio episodi per stagione da TMDB). I test lo sostituiscono per
-   * non dipendere dalla rete; in produzione legge la cache Room e solo se serve TMDB.
+   * Registro in memoria della prossima puntata TMDB (badge delle card Continua a guardare).
+   * Deduplica le richieste fra ricomposizioni e riapplica il dato alle ri-emissioni del
+   * Flow Room, che ricostruisce i [MediaItem] dalle entità persistite.
    */
-  internal var seriesCompletionFactsProvider: suspend (MediaItem) -> SeriesCompletionFacts? =
-    { item -> fetchSeriesCompletionFacts(item) }
-
-  /** Evita di avviare più di una riconciliazione delle serie concluse per processo. */
-  private var completionReconciliationStarted = false
+  private val nextEpisodeEnricher = NextEpisodeEnricher()
 
   /** Chiavi YouTube dei trailer gia' risolte nella sessione corrente (solo valori non nulli). */
   private val trailerKeyCache = ConcurrentHashMap<String, String>()
 
-  private val BLOCKED_TMDB_IDS = setOf(318508) // The Pitt Podcast - not the real TV show
-
-  private fun isBlockedTv(tvId: Int, tvName: String?): Boolean {
-    return tvId in BLOCKED_TMDB_IDS || tvName?.contains("Podcast", ignoreCase = true) == true ||
-           tvName?.contains("Talk Show", ignoreCase = true) == true ||
-           tvName?.contains("After Show", ignoreCase = true) == true ||
-           tvName?.contains("Review", ignoreCase = true) == true
-  }
+  /**
+   * Filtro unico dei contenuti TV non editoriali: la regola vive in
+   * [TmdbCatalogMapper] così i cataloghi nativi della Home e i cataloghi TMDB
+   * storici escludono esattamente gli stessi titoli.
+   */
+  private fun isBlockedTv(tvId: Int, tvName: String?): Boolean =
+    TmdbCatalogMapper.isBlockedTv(tvId, tvName)
 
   /**
    * Collettore del Flow Room: è l'unica sorgente della lista esposta all'UI.
@@ -181,8 +219,25 @@ object MediaRepository {
    */
   private val demoSeedIds: Set<String> by lazy { getInitialMedia().map { it.id }.toSet() }
 
+  /**
+   * Catalogo seed calcolato UNA volta. Prima ogni checkpoint del refresh ne
+   * ricostruiva una lista identica (decine di oggetti) solo per leggere
+   * poster/backdrop di fallback.
+   */
+  private val initialMediaForMerge: List<MediaItem> by lazy { getInitialMedia() }
+
   /** true se l'elemento appartiene al catalogo seed/demo (non un titolo TMDB live). */
   fun isDemoSeedItem(id: String): Boolean = id in demoSeedIds
+
+  /**
+   * Catalogo iniziale effettivo per il client configurato.
+   * Internal solo per i test: permette di verificare che Mobile parta vuoto.
+   */
+  internal fun initialCatalogForCurrentClient(): List<MediaItem> = getInitialMedia()
+
+  /** true se il client corrente genera episodi provvisori. Internal per i test. */
+  internal fun syntheticEpisodesEnabled(): Boolean =
+    StreamNovaConfig.current.generateSyntheticEpisodes
 
   val audioTracks = listOf(
     AudioTrack("it_51", "Italiano", "Dolby Digital Plus 5.1"),
@@ -754,6 +809,36 @@ object MediaRepository {
   }
 
   /**
+   * Registra nel catalogo condiviso un titolo proveniente da una sorgente reale
+   * esterna (tipicamente una card Cinemeta/addon Stremio).
+   *
+   * La Home compone le card direttamente dalle sezioni del catalogo, senza
+   * inserirle in `_mediaList`: senza questa registrazione la scheda Dettaglio,
+   * i preferiti e il progresso non troverebbero il titolo selezionato. Se il
+   * record esiste già non viene toccato (lo stato utente persistito è autorevole);
+   * altrimenti viene inserito in memoria e persistito in Room in background.
+   */
+  fun registerExternalMedia(item: MediaItem) {
+    if (item.id.isBlank()) return
+    if (_mediaList.value.any { it.id == item.id }) return
+    _mediaList.update { list ->
+      if (list.any { it.id == item.id }) list else list + item
+    }
+    database?.let { db ->
+      repoScope.launch {
+        try {
+          val dao = db.cachedMediaDao()
+          if (dao.getMediaById(item.id) == null) {
+            dao.insertOrUpdate(item.toEntity())
+          }
+        } catch (e: Exception) {
+          Log.w("MediaRepository", "Registrazione media esterno fallita (${item.id}): ${e.message}")
+        }
+      }
+    }
+  }
+
+  /**
    * La scheda con lo stato utente più recente fra quelle dello stesso contenuto di [id]
    * (identità forte: stesso `tmdb`/`imdb`). È la riga che «Continua a guardare» mostra e su
    * cui va scritta una posizione remota: scrivere su una riga qualsiasi del gruppo lascerebbe
@@ -777,10 +862,13 @@ object MediaRepository {
       .toMutableMap()
 
     // Episodi delle serie non seed: generati una sola volta e riusati fra le
-    // emissioni successive dell'osservatore Room.
-    cachedEntities.forEach { entity ->
-      if (entity.type == MediaType.SERIE_TV.name && entity.id !in episodesById) {
-        episodesById[entity.id] = generatedEpisodesFor(entity)
+    // emissioni successive dell'osservatore Room. Mobile disattiva la generazione:
+    // le puntate arrivano solo da TMDB e, se mancano, la UI resta vuota.
+    if (StreamNovaConfig.current.generateSyntheticEpisodes) {
+      cachedEntities.forEach { entity ->
+        if (entity.type == MediaType.SERIE_TV.name && entity.id !in episodesById) {
+          episodesById[entity.id] = generatedEpisodesFor(entity)
+        }
       }
     }
 
@@ -811,11 +899,14 @@ object MediaRepository {
       }
       itemWithSeed.copy(episodes = enrichedEpisodes)
     }
-    return mappedItems.sortedByDescending { it.rating }
+    // La prossima puntata TMDB non è persistita in Room (dipende dai dettagli TMDB, che
+    // hanno già la propria cache): il registro in memoria la riapplica a ogni emissione.
+    return nextEpisodeEnricher.applyTo(mappedItems).sortedByDescending { it.rating }
   }
 
   /** Episodi generati (deterministici) per una serie non seed, con cache LRU. */
   private fun generatedEpisodesFor(entity: CachedMediaItemEntity): List<Episode> {
+    if (!StreamNovaConfig.current.generateSyntheticEpisodes) return emptyList()
     val key = "${entity.id}:${entity.seasonsCount ?: 2}"
     synchronized(generatedEpisodesCache) {
       generatedEpisodesCache[key]?.let { return it }
@@ -841,21 +932,33 @@ object MediaRepository {
    * L'UI si aggiorna da sola tramite il Flow del DAO (nessun assegnazione diretta).
    */
   suspend fun loadFromCache() = withContext(Dispatchers.IO) {
+    // La generazione va letta PRIMA del database. Un caricamento avviato con un
+    // database precedente non deve applicare i propri risultati (svuotare e
+    // ripopolare la mappa dei progressi, avviare l'observer, seminare il catalogo)
+    // sopra lo stato di un database più recente.
+    val generation = stateGeneration.get()
     val db = database ?: return@withContext
     // Carica tutti i progressi degli episodi persistiti in memoria
     try {
-      val allEpisodeProgress = db.episodeProgressDao().getAllProgress()
-      allEpisodeProgress.forEach { ep ->
-        episodeProgressMap["${ep.mediaId}_s${ep.seasonNumber}e${ep.episodeNumber}"] = ep.progressMs
-      }
-      Log.i("MediaRepository", "Caricati ${allEpisodeProgress.size} progressi episodio da Room")
+      loadEpisodeProgressFromRoom(db, generation)
     } catch (e: Exception) {
       Log.w("MediaRepository", "Errore lettura progressi episodio: ${e.message}")
     }
 
+    // Reset o sostituzione del database durante il caricamento: il lavoro rimanente
+    // appartiene a uno stato che non è più quello corrente e va abbandonato.
+    if (database !== db || generation != stateGeneration.get()) return@withContext
+
     startDatabaseObserver()
     try {
       val dao = db.cachedMediaDao()
+      // Un client senza catalogo demo elimina le eventuali righe seed lasciate da
+      // un'installazione precedente: il percorso Mobile non deve mostrare titoli
+      // inventati nemmeno dopo un aggiornamento dell'app.
+      if (!StreamNovaConfig.current.includeDemoCatalog) {
+        val demoIds = demoCatalogItems().map { it.id }
+        if (demoIds.isNotEmpty()) dao.deleteByIds(demoIds, emptyList())
+      }
       val cachedEntities = dao.getAllCachedMedia()
       // Serie conclusive rimaste in cache (verifica non completata prima della chiusura):
       // la card viene rimossa in modo persistente partendo dalle righe Room, senza
@@ -863,10 +966,14 @@ object MediaRepository {
       scheduleCompletionReconciliation(cachedEntities)
       val initialList = getInitialMedia()
 
-      // 1) Primissimo avvio: seed del catalogo direttamente dentro Room
+      // 1) Primissimo avvio: seed del catalogo direttamente dentro Room.
+      // Con il seed disattivato non viene scritto nulla: la UI resta vuota finché
+      // non arrivano i cataloghi reali.
       if (cachedEntities.isEmpty()) {
-        dao.insertOrUpdate(initialList.map { it.toEntity() })
-        Log.i("MediaRepository", "Seed iniziale in Room: ${initialList.size} titoli disponibili offline")
+        if (initialList.isNotEmpty()) {
+          dao.insertOrUpdate(initialList.map { it.toEntity() })
+          Log.i("MediaRepository", "Seed iniziale in Room: ${initialList.size} titoli disponibili offline")
+        }
         return@withContext
       }
 
@@ -901,6 +1008,7 @@ object MediaRepository {
         dao.insertOrUpdate(healedList.map { it.toEntity() })
         // Evict delle vecchie risposte TMDB parsate con schema obsoleto
         db.tmdbResponseCacheDao().clearAll()
+        nextEpisodeEnricher.clear()
         return@withContext
       }
 
@@ -915,6 +1023,60 @@ object MediaRepository {
     } catch (e: Exception) {
       Log.w("MediaRepository", "Errore nel caricamento cache Room: ${e.message}")
     }
+  }
+
+  /**
+   * Ricarica in memoria TUTTI i progressi episodio persistiti in Room.
+   *
+   * La tabella `episode_progress` è la fonte di verità per coppia
+   * (mediaId, stagione, episodio): ogni episodio mantiene la propria posizione anche
+   * quando un altro episodio della stessa serie viene salvato o concluso.
+   *
+   * @param generation generazione dello stato osservata dal chiamante **prima** di
+   *        leggere [db]: se nel frattempo il database è stato scollegato/sostituito,
+   *        il risultato viene scartato invece di sovrascrivere lo stato corrente.
+   */
+  private suspend fun loadEpisodeProgressFromRoom(db: StreamNovaDatabase, generation: Int) {
+    val allEpisodeProgress = db.episodeProgressDao().getAllProgress()
+    // Il load vale solo se il database è ancora quello collegato e nessun reset
+    // (cambio database) è avvenuto nel frattempo.
+    if (database !== db || generation != stateGeneration.get()) return
+    episodeProgressMap.clear()
+    episodeDurationMap.clear()
+    allEpisodeProgress.forEach { ep ->
+      val key = episodeProgressKey(ep.mediaId, ep.seasonNumber, ep.episodeNumber)
+      episodeProgressMap[key] = ep.progressMs
+      if (ep.durationMs > 0L) episodeDurationMap[key] = ep.durationMs
+    }
+    Log.i("MediaRepository", "Caricati ${allEpisodeProgress.size} progressi episodio da Room")
+  }
+
+  private fun episodeProgressKey(mediaId: String, seasonNumber: Int, episodeNumber: Int): String =
+    "${mediaId}_s${seasonNumber}e${episodeNumber}"
+
+  /**
+   * Hook di test: collega (o scollega) il database e azzera lo stato in memoria, così
+   * ogni test parte da un repository pulito. Non viene usato dal percorso di produzione.
+   */
+  fun setDatabaseForTesting(db: StreamNovaDatabase?) {
+    stateGeneration.incrementAndGet()
+    dbObserverJob?.cancel()
+    dbObserverJob = null
+    database = db
+    episodeProgressMap.clear()
+    episodeDurationMap.clear()
+    synchronized(generatedEpisodesCache) { generatedEpisodesCache.clear() }
+    _mediaList.value = emptyList()
+  }
+
+  /**
+   * Hook di test: simula il riavvio del processo per i soli progressi episodio,
+   * rileggendoli dalla tabella Room (come fa [loadFromCache] all'avvio).
+   */
+  suspend fun reloadEpisodeProgressForTesting() {
+    val generation = stateGeneration.get()
+    val db = database ?: return
+    loadEpisodeProgressFromRoom(db, generation)
   }
 
   /**
@@ -942,17 +1104,24 @@ object MediaRepository {
         val userStateById = dao.getAllCachedMedia().associateBy { it.id }
 
         db.tmdbResponseCacheDao().clearAll()
+        // Anche il badge "Prossima puntata" va riletto da TMDB.
+        nextEpisodeEnricher.clear()
         // Annulla anche la progressione di paginazione provider: il prossimo
         // refresh riparte dalla pagina 1 per ogni coppia (provider, tipo).
         db.catalogProgressDao().clearAll()
         dao.clearAll()
 
-        // Re-seed immediato: Room resta popolata e la UI (che legge dalla tabella) non resta mai vuota
+        // Re-seed immediato solo per i client con catalogo demo: la TV resta
+        // offline-first, Mobile riparte vuoto e mostra lo stato di caricamento.
         val reseeded = getInitialMedia().map { item ->
           userStateById[item.id]?.preserveUserStateInto(item) ?: item
         }
-        dao.insertOrUpdate(reseeded.map { it.toEntity() })
-        Log.i("MediaRepository", "Cache Room svuotata e rieseminata con ${reseeded.size} titoli seed (stato utente preservato)")
+        if (reseeded.isNotEmpty()) {
+          dao.insertOrUpdate(reseeded.map { it.toEntity() })
+          Log.i("MediaRepository", "Cache Room svuotata e rieseminata con ${reseeded.size} titoli seed (stato utente preservato)")
+        } else {
+          Log.i("MediaRepository", "Cache Room svuotata: nessun catalogo seed per questo client")
+        }
       } catch (e: Exception) {
         Log.w("MediaRepository", "Errore cancellazione cache Room: ${e.message}")
       }
@@ -965,6 +1134,17 @@ object MediaRepository {
    * non esiste alcun limite fisso del tipo `for (pg in 1..2)`.
    */
   const val MAX_PROVIDER_PAGES = 25
+
+  /**
+   * Pagine di catalogo provider caricate durante il bootstrap (refresh all'avvio).
+   *
+   * La Home usa solo i titoli della prima pagina per popolare le righe; le pagine
+   * successive non servono finché l'utente non apre la scheda del provider e scorre
+   * la griglia. Il crawl completo all'avvio (fino a [MAX_PROVIDER_PAGES] pagine per
+   * ogni coppia provider/tipo) era quindi lavoro di rete inutile. Le pagine restano
+   * tutte disponibili: [loadProviderCatalog] le richiede on-demand dalla ProviderScreen.
+   */
+  const val INITIAL_PROVIDER_PAGES = 1
 
    /** TMDB ID di Crunchyroll: fallback watch_region (IT -> US) e priorita' alle serie TV. */
    const val CRUNCHYROLL_TMDB_ID = 283
@@ -1250,7 +1430,16 @@ object MediaRepository {
   }
 
   fun getEpisodeProgress(mediaId: String, seasonNumber: Int, episodeNumber: Int): Long {
-    return episodeProgressMap["${mediaId}_s${seasonNumber}e${episodeNumber}"] ?: 0L
+    return episodeProgressMap[episodeProgressKey(mediaId, seasonNumber, episodeNumber)] ?: 0L
+  }
+
+  /**
+   * Durata reale già misurata dal player per l'episodio indicato (0 se sconosciuta).
+   * È la durata che appartiene **solo** a quella puntata: mai quella della serie o di
+   * un episodio diverso.
+   */
+  fun getEpisodeDurationMs(mediaId: String, seasonNumber: Int, episodeNumber: Int): Long {
+    return episodeDurationMap[episodeProgressKey(mediaId, seasonNumber, episodeNumber)] ?: 0L
   }
 
   /**
@@ -1351,12 +1540,14 @@ object MediaRepository {
     durationMs: Long,
     lastWatchedAtMs: Long = System.currentTimeMillis()
   ) {
-    val key = "${mediaId}_s${seasonNumber}e${episodeNumber}"
+    val key = episodeProgressKey(mediaId, seasonNumber, episodeNumber)
     episodeProgressMap[key] = progressMs
     val now = lastWatchedAtMs
 
     // Durata dell'EPISODIO corrente (mai quella della serie o di un episodio precedente):
-    // millisecondi reali del player se disponibili, altrimenti la durata nota dell'episodio.
+    // millisecondi reali del player se disponibili, altrimenti la durata già persistita
+    // per QUESTA puntata, poi quella nota dell'episodio, infine il runtime del titolo.
+    val persistedEpisodeDurationMs = episodeDurationMap[key] ?: 0L
     val knownItemDurationMs = _mediaList.value.firstOrNull { it.id == mediaId }?.totalDurationMs ?: 0L
     val knownEpisodeDurationMs = _mediaList.value
       .firstOrNull { it.id == mediaId }
@@ -1368,8 +1559,12 @@ object MediaRepository {
       durationMs
     } else {
       // Ripiego sull'episodio, poi sul titolo: mai 0 se esiste una durata gia' nota.
-      knownEpisodeDurationMs.coerceAtLeast(0L).takeIf { it > 0L }
+      persistedEpisodeDurationMs.coerceAtLeast(0L).takeIf { it > 0L }
+        ?: knownEpisodeDurationMs.coerceAtLeast(0L).takeIf { it > 0L }
         ?: knownItemDurationMs.coerceAtLeast(0L)
+    }
+    if (effectiveEpisodeDurationMs > 0L) {
+      episodeDurationMap[key] = effectiveEpisodeDurationMs
     }
 
     _mediaList.update { list ->
@@ -1426,7 +1621,9 @@ object MediaRepository {
     }
 
     database?.let { db ->
-      repoScope.launch {
+      // Scritture serializzate in ordine di chiamata: la riga aggregata del titolo deve
+      // riflettere l'ULTIMO episodio salvato, non quello la cui scrittura finisce prima.
+      repoScope.launch(progressWriteDispatcher) {
         try {
           // Conserva la durata reale gia' persistita quando il player non ne fornisce una valida.
           val existingDurationMs = try {
@@ -1434,7 +1631,10 @@ object MediaRepository {
           } catch (e: Exception) {
             0L
           }
-          val persistedEpisodeDurationMs = WatchProgress.resolveDuration(existingDurationMs, durationMs)
+          val persistedEpisodeDurationMs = WatchProgress.resolveDuration(
+            existingDurationMs.takeIf { it > 0L } ?: effectiveEpisodeDurationMs,
+            durationMs
+          )
           db.episodeProgressDao().saveEpisodeProgress(
             EpisodeProgressEntity(
               mediaId = mediaId,
@@ -1767,11 +1967,10 @@ object MediaRepository {
   suspend fun upsertExternalItem(item: MediaItem, markFavorite: Boolean = false): MediaItem? =
     withContext(Dispatchers.IO) {
     val itemTmdbId = item.tmdbId
-    val itemImdbId = item.imdbId
     val existing = _mediaList.value.firstOrNull { candidate ->
       candidate.id == item.id ||
         (itemTmdbId != null && itemTmdbId > 0 && candidate.tmdbId == itemTmdbId && candidate.type == item.type) ||
-        (!itemImdbId.isNullOrBlank() && candidate.imdbId == itemImdbId && candidate.type == item.type)
+        (!item.imdbId.isNullOrBlank() && candidate.imdbId == item.imdbId && candidate.type == item.type)
     }
     val merged = if (existing != null) {
       item.copy(
@@ -1796,7 +1995,7 @@ object MediaRepository {
     // coerenti anche quando l'importazione avviene mentre la schermata è già composta.
     val effective = if (merged.type == MediaType.SERIE_TV && merged.episodes.isEmpty()) {
       merged.copy(
-        episodes = generateEpisodesForTv(
+        episodes = syntheticEpisodesIfEnabled(
           tvId = merged.tmdbId ?: (merged.id.hashCode() and 0x7FFFFFFF),
           tvTitle = merged.title,
           backdropUrl = merged.backdropUrl,
@@ -2077,9 +2276,25 @@ object MediaRepository {
       posterUrl = details.posterUrl ?: existingBase?.posterUrl,
       logoUrl = details.logoUrl ?: existingBase?.logoUrl,
       seasonEpisodesCount = if (details.seasonEpisodesCount.isNotEmpty()) details.seasonEpisodesCount else (existingBase?.seasonEpisodesCount ?: emptyMap()),
-      ageRating = details.ageRating ?: existingBase?.ageRating
+      ageRating = details.ageRating ?: existingBase?.ageRating,
+      // Il dettaglio TMDB appena letto è la verità: se non annuncia una prossima puntata,
+      // il valore precedente non va conservato (mostrerebbe una data non più valida).
+      tvStatus = details.status,
+      nextEpisode = details.nextEpisode
     )
     _detailUiState.value = MediaDetailUiState.Success(enrichedMedia, details)
+
+    // Prossima puntata: arriva dallo STESSO dettaglio TMDB appena caricato (nessuna
+    // chiamata aggiuntiva). Registrata in memoria e applicata alla lista così la card
+    // di Continua a guardare la mostra subito al ritorno sulla Home.
+    if (details.isTv) {
+      nextEpisodeEnricher.remember(tmdbId, details.status, details.nextEpisode)
+      _mediaList.update { list ->
+        list.map { item ->
+          if (item.id == enrichedMedia.id) nextEpisodeEnricher.applyTo(item) else item
+        }
+      }
+    }
 
     // Aggiorna lo stato in-memory e la riga Room quando un arricchimento e' nuovo:
     // rating d'eta' o clear logo arrivati da TMDB non devono essere persi alla riapertura.
@@ -2108,13 +2323,63 @@ object MediaRepository {
     }
   }
 
+  /**
+   * Recupera e applica la prossima puntata TMDB alle serie di "Continua a guardare".
+   *
+   * Non blocca Home né la riga: il chiamante la lancia in background, le card compaiono
+   * subito e il badge arriva quando il dato è disponibile. Riusa [fetchExtendedDetails]
+   * (cache Room `tmdb_response_cache` + single-flight), quindi le ricomposizioni della
+   * Home non producono richieste duplicate: [NextEpisodeEnricher.pendingTmdbIds] elenca
+   * solo le serie mai interrogate o con dato più vecchio di 12h.
+   *
+   * Il risultato è applicato alla lista SOLO se cambia qualcosa: nessuna emissione
+   * spuria del Flow verso la UI.
+   */
+  suspend fun refreshNextEpisodes(items: List<MediaItem>) = withContext(Dispatchers.IO) {
+    val pending = nextEpisodeEnricher.pendingTmdbIds(items)
+    if (pending.isEmpty()) return@withContext
+    // Marca subito: due refresh concorrenti non accodano la stessa serie.
+    pending.forEach(nextEpisodeEnricher::markRequested)
+    try {
+      coroutineScope {
+        pending.map { tmdbId ->
+          async {
+            try {
+              val details = fetchExtendedDetails(tmdbId, isTv = true)
+              nextEpisodeEnricher.remember(tmdbId, details.status, details.nextEpisode)
+            } catch (e: CancellationException) {
+              throw e
+            } catch (e: Exception) {
+              // Rete assente o TMDB non raggiungibile: la serie resta senza marca così
+              // può essere ritentata; il badge semplicemente non compare.
+              nextEpisodeEnricher.forgetRequest(tmdbId)
+              Log.w(
+                "MediaRepository",
+                "Prossima puntata non recuperata per TMDB $tmdbId: ${e.message}"
+              )
+            }
+          }
+        }.awaitAll()
+      }
+      _mediaList.update { list -> nextEpisodeEnricher.applyTo(list) }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Refresh prossime puntate fallito: ${e.message}")
+    }
+  }
+
   suspend fun fetchExtendedDetails(
     tmdbId: Int,
     isTv: Boolean,
     baseMedia: MediaItem? = null
   ): ExtendedMediaDetails = withContext(Dispatchers.IO) {
     val apiKey = getEffectiveApiKey()
-    val cacheKey = if (isTv) "tv_details_$tmdbId" else "movie_details_$tmdbId"
+    // v2: la risposta contiene ora `next_episode_to_air` (badge "Prossima puntata").
+    // La chiave versionata costringe un solo recupero per serie dopo l'aggiornamento:
+    // le voci `tv_details_*` precedenti non contengono il campo e resterebbero senza
+    // badge fino alla scadenza del TTL. Scadono comunque con la pulizia periodica.
+    val cacheKey = if (isTv) "tv_details_v2_$tmdbId" else "movie_details_$tmdbId"
 
     detailsSingleFlight.run(cacheKey) {
       val db = database
@@ -2432,62 +2697,76 @@ object MediaRepository {
   }
 
   /**
-   * Chiave YouTube del trailer interno, con priorita' ASSOLUTA all'italiano: prima
-   * `type == "Trailer"` in italiano (poi teaser italiano), poi inglese, poi qualsiasi
-   * lingua ([TmdbMediaAssets.pickTrailerKey]).
+   * Chiave YouTube del trailer interno, con priorita' all'italiano ([TmdbMediaAssets.pickTrailerKey]).
    *
-   * La prima chiede a TMDB `language=it-IT` + `include_video_language=it,en,null`
-   * (video IT ed EN insieme); se non produce nulla (titolo senza trailer italiani)
-   * viene ripetuta la chiamata in `language=en-US` come fallback.
+   * Film e serie TV usano lo stesso schema: `movie/{id}/videos` e `tv/{id}/videos`
+   * restituiscono la stessa lista di video, quindi la selezione e' identica.
    *
-   * Restituisce `null` quando TMDB non espone video utilizzabili o l'ID non e' valido: la
-   * UI mostra allora un messaggio "trailer non disponibile" senza mai aprire l'app esterna
-   * di YouTube. Le chiavi riuscite sono memorizzate in memoria per la sessione corrente.
+   * Richieste TMDB:
+   * 1. `language=it-IT` + `include_video_language=it,en,null`: una sola chiamata porta
+   *    i video italiani, quelli inglesi e quelli senza lingua dichiarata.
+   * 2. Solo se la selezione della prima risposta non e' italiana viene eseguita una
+   *    seconda chiamata `language=en-US` (sempre con `include_video_language=it,en,null`,
+   *    per non perdere i video italiani). Le due risposte vengono unite e deduplicate
+   *    per ID: nessun video della prima richiesta viene scartato e nessuna richiesta
+   *    viene duplicata quando l'italiano e' gia' disponibile.
+   *
+   * Restituisce `null` quando TMDB non espone video utilizzabili o la prima richiesta
+   * fallisce (rete assente): la UI mostra "trailer non disponibile" senza bloccare la
+   * riproduzione. Le chiavi riuscite sono memorizzate in memoria per la sessione.
    */
   suspend fun fetchTrailerKey(tmdbId: Int, isTv: Boolean): String? = withContext(Dispatchers.IO) {
     if (tmdbId <= 0) return@withContext null
     val cacheKey = if (isTv) "tv_$tmdbId" else "movie_$tmdbId"
     trailerKeyCache[cacheKey]?.let { return@withContext it }
 
-    try {
-      val apiKey = getEffectiveApiKey()
-      // Prima richiesta: video in italiano + inglese/privi di lingua in un'unica
-      // chiamata (`include_video_language=it,en,null`); la priorita' it -> en ->
-      // primo avviene dentro [TmdbMediaAssets.pickTrailerKey].
-      val videos = if (isTv) {
-        TmdbApiClient.service.getTvVideos(tmdbId, apiKey)
-      } else {
-        TmdbApiClient.service.getMovieVideos(tmdbId, apiKey)
-      }
-      var key = TmdbMediaAssets.pickTrailerKey(videos.results)
-
-      // Fallback: nessun video utilizzabile dalla richiesta italiana (titolo senza
-      // trailer in italiano) -> seconda chiamata esplicita in inglese.
-      if (key == null) {
-        val fallbackVideos = if (isTv) {
+    suspend fun loadVideos(language: String): TmdbVideosResponseDto? =
+      try {
+        val apiKey = getEffectiveApiKey()
+        if (isTv) {
           TmdbApiClient.service.getTvVideos(
             tmdbId,
             apiKey,
-            language = "en-US",
-            includeVideoLanguage = "en,null"
+            language = language,
+            includeVideoLanguage = "it,en,null"
           )
         } else {
           TmdbApiClient.service.getMovieVideos(
             tmdbId,
             apiKey,
-            language = "en-US",
-            includeVideoLanguage = "en,null"
+            language = language,
+            includeVideoLanguage = "it,en,null"
           )
         }
-        key = TmdbMediaAssets.pickTrailerKey(fallbackVideos.results)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Recupero video TMDB ($language) fallito per $cacheKey: ${e.message}")
+        null
       }
 
+    try {
+      val primary = loadVideos("it-IT")
+      if (primary == null) return@withContext null
+
+      var videos = primary.results.orEmpty()
+      if (!TmdbMediaAssets.isItalianVideo(TmdbMediaAssets.pickTrailer(videos))) {
+        // La risposta localizzata potrebbe non contenere il trailer italiano: la
+        // richiesta inglese viene unita (non sostituita) e deduplicata per ID.
+        loadVideos("en-US")?.results?.let { fallback ->
+          videos = TmdbMediaAssets.mergeVideos(videos, fallback)
+        }
+      }
+
+      val key = TmdbMediaAssets.pickTrailerKey(videos)
       if (key != null) {
         trailerKeyCache[cacheKey] = key
       } else {
         Log.w("MediaRepository", "Nessun trailer YouTube per $cacheKey")
       }
       key
+    } catch (e: CancellationException) {
+      throw e
     } catch (e: Exception) {
       Log.w("MediaRepository", "Recupero trailer TMDB fallito ($cacheKey): ${e.message}")
       null
@@ -2603,7 +2882,10 @@ object MediaRepository {
       rating = dto.voteAverage ?: baseMedia?.rating ?: 8.0f,
       voteCount = dto.voteCount ?: 0,
       durationMinutes = dto.episodeRunTime?.firstOrNull() ?: baseMedia?.durationMinutes ?: 50,
-      seasonsCount = dto.numberOfSeasons ?: baseMedia?.seasonsCount ?: 1,
+      // Nessun default sintetico: se TMDB non dichiara il numero di stagioni il
+      // dato resta assente e la UI Mobile non inventa una Stagione 1. La schermata
+      // TV continua a mostrare il proprio fallback storico (1) in fase di resa.
+      seasonsCount = dto.numberOfSeasons ?: baseMedia?.seasonsCount,
       episodesCount = dto.numberOfEpisodes,
       genres = dto.genres?.map { it.name }?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() } ?: baseMedia?.genres ?: listOf("Serie TV"),
       tagline = dto.tagline,
@@ -2624,7 +2906,24 @@ object MediaRepository {
           logoUrl = TmdbApiClient.logoUrl(it.logoPath),
           originCountry = it.originCountry
         )
-      } ?: emptyList()
+      } ?: emptyList(),
+      nextEpisode = dto.nextEpisodeToAir.toNextEpisodeInfo()
+    )
+  }
+
+  /**
+   * Converte `next_episode_to_air` nel modello UI. Restituisce `null` quando TMDB non
+   * espone una puntata completa e coerente: stagione/episodio mancanti o data vuota.
+   */
+  private fun TmdbEpisodeDto?.toNextEpisodeInfo(): NextEpisodeInfo? {
+    val dto = this ?: return null
+    if (dto.seasonNumber < 0 || dto.episodeNumber <= 0) return null
+    val airDate = dto.airDate?.trim().orEmpty()
+    if (airDate.isEmpty()) return null
+    return NextEpisodeInfo(
+      seasonNumber = dto.seasonNumber,
+      episodeNumber = dto.episodeNumber,
+      airDate = airDate
     )
   }
 
@@ -2650,7 +2949,9 @@ object MediaRepository {
       director = details.director,
       cast = details.cast.map { it.name },
       seasonEpisodesCount = details.seasonEpisodesCount,
-      ageRating = details.ageRating
+      ageRating = details.ageRating,
+      tvStatus = details.status,
+      nextEpisode = details.nextEpisode
     )
   }
 
@@ -2780,6 +3081,11 @@ object MediaRepository {
           }
         )
       } else {
+        // Mobile (generateSyntheticEpisodes = false) non deve MAI mostrare episodi
+        // provvisori: la UI riceve l'errore reale e offre il retry. La TV mantiene
+        // il proprio comportamento storico (fallback sintetico) perché la sua
+        // configurazione lascia il flag a true.
+        if (!StreamNovaConfig.current.generateSyntheticEpisodes) throw e
         val count = 8
         val generated = (1..count).map { epIndex ->
           EpisodeItem(
@@ -2806,18 +3112,36 @@ object MediaRepository {
     }
   }
 
-  private fun TmdbSeasonDetailDto.toSeasonItem(tvTmdbId: Int, fallbackSeries: MediaItem? = null): SeasonItem {
+  /**
+   * Converte la risposta TMDB in [SeasonItem].
+   *
+   * [strictRealMetadata] = true (client Mobile) conserva solo i valori realmente
+   * restituiti da TMDB: un titolo, una sinossi o una durata assenti restano vuoti/0
+   * invece di essere riempiti con testi o runtime di comodo. La TV mantiene i
+   * fallback storici tramite il valore di default derivato dalla configurazione.
+   */
+  internal fun TmdbSeasonDetailDto.toSeasonItem(
+    tvTmdbId: Int,
+    fallbackSeries: MediaItem? = null,
+    strictRealMetadata: Boolean = !StreamNovaConfig.current.generateSyntheticEpisodes
+  ): SeasonItem {
     val epList = this.episodes?.map { epDto ->
       EpisodeItem(
         id = "tmdb_tv_${tvTmdbId}_s${epDto.seasonNumber}e${epDto.episodeNumber}",
         tmdbId = epDto.id,
         episodeNumber = epDto.episodeNumber,
         seasonNumber = epDto.seasonNumber,
-        title = epDto.name?.takeIf { it.isNotBlank() } ?: "Episodio ${epDto.episodeNumber}",
-        overview = epDto.overview?.takeIf { it.isNotBlank() } ?: "Nessuna sinossi disponibile per questo episodio.",
+        title = epDto.name?.takeIf { it.isNotBlank() }
+          ?: if (strictRealMetadata) "" else "Episodio ${epDto.episodeNumber}",
+        overview = epDto.overview?.takeIf { it.isNotBlank() }
+          ?: if (strictRealMetadata) "" else "Nessuna sinossi disponibile per questo episodio.",
+        // L'artwork di fallback è presentazione, non un metadato inventato: resta
+        // identico alla TV. La durata, invece, non viene mai stimata in modalità strict.
         stillUrl = TmdbApiClient.stillUrl(epDto.stillPath) ?: fallbackSeries?.backdropUrl,
-        durationMinutes = epDto.runtime?.takeIf { it > 0 } ?: fallbackSeries?.durationMinutes ?: 50,
-        rating = epDto.voteAverage ?: fallbackSeries?.rating ?: 8.0f,
+        durationMinutes = epDto.runtime?.takeIf { it > 0 }
+          ?: if (strictRealMetadata) 0 else (fallbackSeries?.durationMinutes ?: 50),
+        rating = epDto.voteAverage
+          ?: if (strictRealMetadata) 0f else (fallbackSeries?.rating ?: 8.0f),
         airDate = epDto.airDate,
         videoUrl = fallbackSeries?.videoUrl ?: ""
       )
@@ -2958,83 +3282,108 @@ object MediaRepository {
    * Un errore TMDB (rete/HTTP/credenziale) restituisce `null`: il chiamante deve
    * dichiararlo come errore, mai presentarlo come "nessun risultato".
    *
-    * @param mediaType tipo di contenuto (film o serie TV).
-    * @param genreId id di genere TMDB del tipo (es. 27 = Horror). Per le SERIE TV un
-    *        id che TMDB TV non definisce (es. Horror=27) viene servito dal keyword
-    *        canonico `horror` (315058), perché `with_genres=27` sull'endpoint TV
-    *        restituirebbe sempre zero risultati.
-    * @param page pagina Discover (1-based).
+   * @param mediaType tipo di contenuto (film o serie TV).
+   * @param genreId id di genere TMDB del tipo (es. 27 = Horror). Per le SERIE TV un
+   *        id che TMDB TV non definisce (es. Horror=27) viene servito dal keyword
+   *        canonico `horror` (315058), perché `with_genres=27` sull'endpoint TV
+   *        restituirebbe sempre zero risultati.
+   * @param page pagina Discover (1-based).
+   * @param excludeNonEditorialTv true (default) per i cataloghi generici, che devono
+   *        scartare podcast/talk show/recensioni. La categoria dedicata "Talk" passa
+   *        false: il genere TMDB è già la selezione editoriale e un talk show con
+   *        "Talk Show" nel titolo non deve essere scartato.
    * @return titoli convertiti in [MediaItem], oppure `null` se la chiamata è fallita.
    */
   suspend fun discoverByGenre(
     mediaType: MediaType,
     genreId: Int,
-    page: Int = 1
+    page: Int = 1,
+    excludeNonEditorialTv: Boolean = true
+  ): List<MediaItem>? = discoverTmdb(
+    contentLanguage = "it-IT",
+    failureLog = "Fallback TMDB per genere fallito (tipo=$mediaType, genere=$genreId, pag=$page)",
+    cacheLog = "Errore salvataggio Room discoverByGenre"
+  ) { cleanKey, contentLanguage, currentList ->
+    when (mediaType) {
+      MediaType.SERIE_TV -> {
+        // TMDB non definisce "Horror" tra i generi TV (`/3/genre/tv/list` non ha
+        // l'id 27): `discover/tv?with_genres=27` risponde 200 con zero risultati,
+        // quindi il fallback sembrerebbe riuscito senza mai produrre titoli.
+        // La scoperta delle serie horror usa il keyword TMDB canonico `horror`
+        // (id 315058), che restituisce le serie horror reali del catalogo TV.
+        val tvResponse = if (genreId == TMDB_GENRE_ID_HORROR) {
+          TmdbApiClient.service.discoverTvByKeyword(
+            apiKey = cleanKey,
+            keywordId = TMDB_KEYWORD_TV_HORROR.toString(),
+            sortBy = "popularity.desc",
+            language = contentLanguage,
+            page = page
+          )
+        } else {
+          TmdbApiClient.service.discoverTvByGenre(
+            apiKey = cleanKey,
+            genreId = genreId.toString(),
+            sortBy = "popularity.desc",
+            language = contentLanguage,
+            page = page
+          )
+        }
+        tvResponse.results
+          .filterNot { excludeNonEditorialTv && isBlockedTv(it.id, it.name) }
+          .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
+          .map { tvToMediaItem(it, currentList) }
+      }
+      else -> {
+        val movieResponse = TmdbApiClient.service.discoverMoviesByGenre(
+          apiKey = cleanKey,
+          genreId = genreId.toString(),
+          sortBy = "popularity.desc",
+          language = contentLanguage,
+          page = page
+        )
+        movieResponse.results
+          .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
+          .map { movieToMediaItem(it, currentList) }
+      }
+    }
+  }
+
+  /**
+   * Percorso comune delle scoperte TMDB della sezione Ricerca: chiave effettiva,
+   * conversione dei DTO, cache Room e merge in `_mediaList`.
+   *
+   * @param contentLanguage lingua dei metadati TMDB (`language`).
+   * @param failureLog testo del log quando la chiamata fallisce.
+   * @param cacheLog testo del log quando la scrittura in Room fallisce.
+   * @param fetch chiamata specifica della categoria, già convertita in [MediaItem].
+   * @return lista dei risultati, oppure `null` su errore/credenziale assente.
+   */
+  private suspend fun discoverTmdb(
+    contentLanguage: String,
+    failureLog: String,
+    cacheLog: String,
+    fetch: suspend (apiKey: String, contentLanguage: String, existing: List<MediaItem>) -> List<MediaItem>
   ): List<MediaItem>? = withContext(Dispatchers.IO) {
     val cleanKey = getEffectiveApiKey()
     if (cleanKey.isBlank()) return@withContext null
     val currentList = _mediaList.value
     val results = try {
-      when (mediaType) {
-        MediaType.SERIE_TV -> {
-          // TMDB non definisce "Horror" tra i generi TV (`/3/genre/tv/list` non ha
-          // l'id 27): `discover/tv?with_genres=27` risponde 200 con zero risultati,
-          // quindi il fallback sembrerebbe riuscito senza mai produrre titoli.
-          // La scoperta delle serie horror usa il keyword TMDB canonico `horror`
-          // (id 315058), che restituisce le serie horror reali del catalogo TV.
-          val tvResponse = if (genreId == TMDB_GENRE_ID_HORROR) {
-            TmdbApiClient.service.discoverTvByKeyword(
-              apiKey = cleanKey,
-              keywordId = TMDB_KEYWORD_TV_HORROR.toString(),
-              sortBy = "popularity.desc",
-              language = "it-IT",
-              page = page
-            )
-          } else {
-            TmdbApiClient.service.discoverTvByGenre(
-              apiKey = cleanKey,
-              genreId = genreId.toString(),
-              sortBy = "popularity.desc",
-              language = "it-IT",
-              page = page
-            )
-          }
-          tvResponse.results
-            .filterNot { isBlockedTv(it.id, it.name) }
-            .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
-            .map { tvToMediaItem(it, currentList) }
-        }
-        else -> {
-          val movieResponse = TmdbApiClient.service.discoverMoviesByGenre(
-            apiKey = cleanKey,
-            genreId = genreId.toString(),
-            sortBy = "popularity.desc",
-            language = "it-IT",
-            page = page
-          )
-          movieResponse.results
-            .filterNot { genreId == 16 && it.originalLanguage.equals("ja", ignoreCase = true) }
-            .map { movieToMediaItem(it, currentList) }
-        }
-      }
+      fetch(cleanKey, contentLanguage, currentList)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
-      Log.w(
-        "MediaRepository",
-        "Fallback TMDB per genere fallito (tipo=$mediaType, genere=$genreId, pag=$page): ${e.message}"
-      )
+      Log.w("MediaRepository", "$failureLog: ${e.message}")
       return@withContext null
     }
 
     if (results.isNotEmpty()) {
       // Stessa cache-first di [loadCategoryPage]: la tabella Room resta la sorgente
-      // del catalogo, il fallback aggiunge solo i titoli che non vi erano ancora.
+      // del catalogo, la scoperta aggiunge solo i titoli che non vi erano ancora.
       database?.let { db ->
         try {
           db.cachedMediaDao().insertOrUpdate(results.map { it.toEntity() })
         } catch (e: Exception) {
-          Log.w("MediaRepository", "Errore salvataggio Room discoverByGenre: ${e.message}")
+          Log.w("MediaRepository", "$cacheLog: ${e.message}")
         }
       }
       val updated = _mediaList.value.toMutableList()
@@ -3332,7 +3681,8 @@ object MediaRepository {
     val existing = existingItems.firstOrNull { it.tmdbId == movie.id && it.type == MediaType.FILM }
     val year = movie.releaseDate?.take(4)?.toIntOrNull() ?: 2024
     val backdrop = TmdbApiClient.backdropUrl(movie.backdropPath)
-    val poster = TmdbApiClient.posterUrl(movie.posterPath)
+    // Card standard: w342 è sufficiente e riduce download/cache rispetto a w780.
+    val poster = TmdbApiClient.posterUrl(movie.posterPath, size = "w342")
     val streams = listOf(URL_DUNE, URL_OPPENHEIMER, URL_COSMOS, URL_LASTOFUS)
     val assignedStream = streams[kotlin.math.abs(movie.id) % streams.size]
     val genres = mapGenreIds(movie.genreIds, isMovie = true)
@@ -3380,7 +3730,8 @@ object MediaRepository {
     val existing = existingItems.firstOrNull { it.tmdbId == tv.id && it.type == MediaType.SERIE_TV }
     val year = tv.firstAirDate?.take(4)?.toIntOrNull() ?: 2023
     val backdrop = TmdbApiClient.backdropUrl(tv.backdropPath)
-    val poster = TmdbApiClient.posterUrl(tv.posterPath)
+    // Card standard: w342 è sufficiente e riduce download/cache rispetto a w780.
+    val poster = TmdbApiClient.posterUrl(tv.posterPath, size = "w342")
     val streams = listOf(URL_LASTOFUS, URL_COSMOS, URL_OPPENHEIMER, URL_DUNE)
     val assignedStream = streams[kotlin.math.abs(tv.id) % streams.size]
     val genres = mapGenreIds(tv.genreIds, isMovie = false)
@@ -3389,7 +3740,7 @@ object MediaRepository {
     val ratingVal = (tv.voteAverage ?: 8.0f).coerceIn(1.0f, 10.0f)
     val titleStr = tv.name?.takeIf { it.isNotBlank() } ?: tv.originalName ?: "Serie TMDB"
     val eps = existing?.episodes?.takeIf { it.isNotEmpty() }
-      ?: generateEpisodesForTv(tv.id, titleStr, backdrop, poster, seasons = 2)
+      ?: syntheticEpisodesIfEnabled(tv.id, titleStr, backdrop, poster, seasons = 2)
 
     return MediaItem(
       id = existing?.id ?: "tmdb_tv_${tv.id}",
@@ -3635,27 +3986,18 @@ object MediaRepository {
     }
   }.flowOn(Dispatchers.IO)
 
-  private fun mapGenreIds(genreIds: List<Int>?, isMovie: Boolean): List<String> {
-    if (genreIds.isNullOrEmpty()) return listOf(if (isMovie) "Cinema" else "Serie TV")
-    val movieGenres = mapOf(
-      28 to "Azione", 12 to "Avventura", 16 to "Animazione", 35 to "Commedia",
-      80 to "Crime", 99 to "Documentario", 18 to "Dramma", 10751 to "Famiglia",
-      14 to "Fantasy", 36 to "Storia", 27 to "Horror", 10402 to "Musica",
-      9648 to "Mistero", 10749 to "Romance", 878 to "Fantascienza", 10770 to "Film TV",
-      53 to "Thriller", 10752 to "Guerra", 37 to "Western"
-    )
-    val tvGenres = mapOf(
-      10759 to "Azione & Avventura", 16 to "Animazione", 35 to "Commedia",
-      80 to "Crime", 99 to "Documentario", 18 to "Dramma", 10762 to "Kids",
-      9648 to "Mistero", 10763 to "News", 10764 to "Reality",
-      10765 to "Sci-Fi & Fantasy", 10766 to "Soap", 10767 to "Talk",
-      10768 to "Guerra & Politica", 37 to "Western"
-    )
-    val dict = if (isMovie) movieGenres else tvGenres
-    val result = genreIds.mapNotNull { dict[it] }
-    return if (result.isNotEmpty()) result else listOf(if (isMovie) "Cinema" else "Serie TV")
-  }
+  private fun mapGenreIds(genreIds: List<Int>?, isMovie: Boolean): List<String> =
+    TmdbGenreMapper.mapGenreIds(genreIds, isMovie)
 
+  /**
+   * Episodi **placeholder** (mai persistiti) per una serie di catalogo di cui non sono
+   * ancora noti gli episodi TMDB.
+   *
+   * Non contengono alcun progresso: una posizione inventata su S1E1 (il vecchio seed di
+   * 12 minuti) diventava la posizione di ripresa quando la puntata salvata non era in
+   * lista, facendo ripartire sempre lo stesso minutaggio. Il progresso reale arriva
+   * esclusivamente da Room (`episode_progress`), per la coppia stagione/episodio.
+   */
   fun generateEpisodesForTv(
     tvId: Int,
     tvTitle: String,
@@ -3680,13 +4022,26 @@ object MediaRepository {
             durationMinutes = dur,
             thumbnailUrl = backdropUrl ?: posterUrl,
             videoUrl = streams[(tvId + s + e) % streams.size],
-            currentProgressMs = if (s == 1 && e == 1) 12 * 60 * 1000L else 0L
+            currentProgressMs = 0L
           )
         )
       }
     }
     return epList
   }
+
+  internal fun syntheticEpisodesIfEnabled(
+    tvId: Int,
+    tvTitle: String,
+    backdropUrl: String?,
+    posterUrl: String?,
+    seasons: Int
+  ): List<Episode> =
+    if (StreamNovaConfig.current.generateSyntheticEpisodes) {
+      generateEpisodesForTv(tvId, tvTitle, backdropUrl, posterUrl, seasons)
+    } else {
+      emptyList()
+    }
 
   private fun movieToMediaItem(
     movie: TmdbMovieDto,
@@ -3699,7 +4054,8 @@ object MediaRepository {
     val existing = existingItems.firstOrNull { it.tmdbId == movie.id && it.type == MediaType.FILM }
     val year = movie.releaseDate?.take(4)?.toIntOrNull() ?: 2024
     val backdrop = TmdbApiClient.backdropUrl(movie.backdropPath)
-    val poster = TmdbApiClient.posterUrl(movie.posterPath)
+    // Card standard: w342 è sufficiente e riduce download/cache rispetto a w780.
+    val poster = TmdbApiClient.posterUrl(movie.posterPath, size = "w342")
     val streams = listOf(URL_DUNE, URL_OPPENHEIMER, URL_COSMOS, URL_LASTOFUS)
     val assignedStream = streams[kotlin.math.abs(movie.id) % streams.size]
     val genres = mapGenreIds(movie.genreIds, isMovie = true)
@@ -3751,7 +4107,8 @@ object MediaRepository {
     val existing = existingItems.firstOrNull { it.tmdbId == tv.id && it.type == MediaType.SERIE_TV }
     val year = tv.firstAirDate?.take(4)?.toIntOrNull() ?: 2023
     val backdrop = TmdbApiClient.backdropUrl(tv.backdropPath)
-    val poster = TmdbApiClient.posterUrl(tv.posterPath)
+    // Card standard: w342 è sufficiente e riduce download/cache rispetto a w780.
+    val poster = TmdbApiClient.posterUrl(tv.posterPath, size = "w342")
     val streams = listOf(URL_LASTOFUS, URL_COSMOS, URL_OPPENHEIMER, URL_DUNE)
     val assignedStream = streams[kotlin.math.abs(tv.id) % streams.size]
     val genres = mapGenreIds(tv.genreIds, isMovie = false)
@@ -3760,7 +4117,7 @@ object MediaRepository {
     val detectedProvider = provider ?: existing?.provider
     val ratingVal = (tv.voteAverage ?: 8.0f).coerceIn(1.0f, 10.0f)
     val eps = existing?.episodes?.takeIf { it.isNotEmpty() }
-      ?: generateEpisodesForTv(tv.id, tv.name ?: tv.originalName ?: "Serie TV", backdrop, poster, seasons = 2)
+      ?: syntheticEpisodesIfEnabled(tv.id, tv.name ?: tv.originalName ?: "Serie TV", backdrop, poster, seasons = 2)
 
     return MediaItem(
       id = existing?.id ?: "tmdb_tv_${tv.id}",
@@ -3839,8 +4196,10 @@ object MediaRepository {
           // emissioni/ricomposizioni durante la sincronizzazione iniziale.
           val persistedIds = HashSet<String>()
 
-          // Persistenza progressiva: la UI (che legge dalla tabella Room) si aggiorna
-          // dopo ogni blocco invece di restare ferma per tutto il refresh.
+          // Persistenza progressiva a CHECKPOINT CONSOLIDATI: la UI (che legge dalla
+          // tabella Room) riceve pochi stati significativi invece di una scrittura per
+          // ogni blocco. Ogni checkpoint legge la tabella una sola volta e persiste il
+          // solo delta accumulato.
           suspend fun checkpoint(label: String) {
             val pendingIds = fetchedItemsMap.keys - persistedIds
             val total = mergeAndPersistCatalog(currentList, fetchedItemsMap, pendingIds)
@@ -3921,7 +4280,6 @@ object MediaRepository {
           } catch (e: Exception) {
             Log.w("MediaRepository", "Popular TV call failed: ${e.message}")
           }
-          checkpoint("popular")
 
           // 4. Top Rated Movies & TV
           try {
@@ -3951,10 +4309,12 @@ object MediaRepository {
           } catch (e: Exception) {
             Log.w("MediaRepository", "Top Rated TV call failed: ${e.message}")
           }
-          checkpoint("top_rated")
+          checkpoint("popular_top_rated")
 
           // 5. Cataloghi Provider per Serie TV: discover/tv con with_watch_providers
           //    + watch_region=IT e STESSI provider ID reali dei cataloghi Film.
+          //    Bootstrap: SOLO la prima pagina per provider/tipo. Le pagine successive
+          //    sono caricate on-demand da ProviderScreen (loadNextProviderPage).
           for ((pIds, pName) in TMDB_PROVIDERS) {
             crawlProviderCatalog(
               isTv = true,
@@ -3962,9 +4322,9 @@ object MediaRepository {
               providerTag = pName,
               apiKey = cleanKey,
               currentList = currentList,
-              fetchedItems = fetchedItemsMap
+              fetchedItems = fetchedItemsMap,
+              maxPages = INITIAL_PROVIDER_PAGES
             )
-            checkpoint("provider_tv_$pName")
           }
 
           // 6. Cataloghi Provider per Film: discover/movie con with_watch_providers + watch_region=IT
@@ -3975,10 +4335,14 @@ object MediaRepository {
               providerTag = pName,
               apiKey = cleanKey,
               currentList = currentList,
-              fetchedItems = fetchedItemsMap
+              fetchedItems = fetchedItemsMap,
+              maxPages = INITIAL_PROVIDER_PAGES
             )
-            checkpoint("provider_movie_$pName")
           }
+          // Un solo checkpoint per tutti i cataloghi provider: gli intermedi (uno per
+          // provider/tipo) ripetevano la scansione completa della tabella e la merge
+          // dell'intero catalogo senza che la UI ne avesse bisogno.
+          checkpoint("provider_catalogs")
 
           // 7. Genere Discover (Azione, Fantascienza, Dramma, Commedia)
           val genreQueries = listOf(
@@ -4031,10 +4395,13 @@ object MediaRepository {
   }
 
   /**
-   * Scarica l'intero catalogo di UN provider per UN tipo (Film o Serie TV) con
+   * Scarica il catalogo di UN provider per UN tipo (Film o Serie TV) con
    * paginazione indipendente: parte dalla pagina 1 e si ferma su
-   * `min(total_pages, MAX_PROVIDER_PAGES)` o su una pagina vuota.
-   * Non esiste più il limite fisso `for (pg in 1..2)`.
+   * `min(total_pages, [maxPages])` o su una pagina vuota.
+   *
+   * [maxPages] vale [INITIAL_PROVIDER_PAGES] nel bootstrap della Home (solo prima
+   * pagina) e [MAX_PROVIDER_PAGES] per un eventuale crawl completo. La ProviderScreen
+   * non usa questa funzione: pagina on-demand con [loadProviderCatalog].
    */
    private suspend fun crawlProviderCatalog(
      isTv: Boolean,
@@ -4042,12 +4409,14 @@ object MediaRepository {
      providerTag: String,
      apiKey: String,
      currentList: List<MediaItem>,
-     fetchedItems: MutableMap<String, MediaItem>
+     fetchedItems: MutableMap<String, MediaItem>,
+     maxPages: Int = MAX_PROVIDER_PAGES
    ) {
      val hbo = isHboProvider(providerTag)
+     val pageLimit = maxPages.coerceIn(1, MAX_PROVIDER_PAGES)
      var page = 1
      var totalPages = 0
-     while (page <= MAX_PROVIDER_PAGES && (page == 1 || page <= totalPages)) {
+     while (ProviderCatalogCrawlPolicy.shouldFetchPage(page, totalPages, pageLimit)) {
        val cacheKey = providerCacheKey(providerIds, isTv, page)
        val pageItems: List<MediaItem> = try {
          if (isTv) {
@@ -4128,7 +4497,7 @@ object MediaRepository {
     }
     Log.d(
       "MediaRepository",
-      "Catalogo $providerTag (${mediaTypeKey(isTv)}): ${page - 1} pagine scaricate (total_pages=$totalPages, max=$MAX_PROVIDER_PAGES)"
+      "Catalogo $providerTag (${mediaTypeKey(isTv)}): ${page - 1} pagine scaricate (total_pages=$totalPages, max=$pageLimit)"
     )
   }
 
@@ -4145,6 +4514,63 @@ object MediaRepository {
     fetchedItems: Map<String, MediaItem>,
     idsToPersist: Set<String>? = null
   ): Int {
+    val combinedList = mergeCatalogForCheckpoint(currentList, fetchedItems, initialMediaForMerge)
+
+    val db = database
+    if (db != null) {
+      try {
+        val dao = db.cachedMediaDao()
+        // Preserva SEMPRE preferiti, progressi ed episodio visto sui dati remoti.
+        // Lettura e scrittura sono nella STESSA transazione: uno stato utente
+        // modificato fra la lettura e l'upsert non può essere sovrascritto.
+        // La lettura resta sull'intero catalogo (serve lo stato utente di ogni
+        // riga), ma la SCRITTURA è limitata al delta del checkpoint.
+        db.withTransaction {
+          val existingById = dao.getAllCachedMedia().associateBy { it.id }
+          val toPersist = if (idsToPersist == null) {
+            combinedList
+          } else {
+            combinedList.filter { it.id in idsToPersist }
+          }
+          if (toPersist.isNotEmpty()) {
+            val preservedList = toPersist.map { item ->
+              existingById[item.id]?.preserveUserStateInto(item) ?: item
+            }
+            dao.insertOrUpdate(preservedList.map { it.toEntity() })
+          }
+        }
+        // Fallback solo se l'osservatore del Flow non fosse attivo
+        if (dbObserverJob?.isActive != true) {
+          _mediaList.value = mapEntitiesToUiState(dao.getAllCachedMedia())
+        }
+        return combinedList.size
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Salvataggio in Room fallito: ${e.message}")
+        _mediaList.value = combinedList
+        return combinedList.size
+      }
+    }
+    // Nessun database disponibile: fallback in-memory
+    _mediaList.value = combinedList
+    return combinedList.size
+  }
+
+  /**
+   * Merge PURO del catalogo per un checkpoint: nessun accesso a Room.
+   *
+   * Estratto dal salvataggio per verificare nei test che raggruppare i checkpoint
+   * non cambi il risultato finale (stessi titoli, stesso ordine, stessa
+   * deduplicazione) e che preferiti/progressi già noti non vengano persi.
+   *
+   * @param currentList catalogo già noto (con lo stato utente della riga Room).
+   * @param fetchedItems titoli accumulati dal refresh, per chiave canonica.
+   * @param initialItems catalogo seed di fallback per poster/backdrop.
+   */
+  internal fun mergeCatalogForCheckpoint(
+    currentList: List<MediaItem>,
+    fetchedItems: Map<String, MediaItem>,
+    initialItems: List<MediaItem>
+  ): List<MediaItem> {
     val finalMap = LinkedHashMap<String, MediaItem>()
     // Prima tutti i titoli appena fetchati (chiavi distinte movie/tv)
     fetchedItems.values.forEach { item ->
@@ -4152,7 +4578,7 @@ object MediaRepository {
     }
 
     // Poi sovrapponi/preserva quelli già noti: preferiti e progressi non si perdono mai
-    val initMap = getInitialMedia().associateBy { it.id }
+    val initMap = initialItems.associateBy { it.id }
     currentList.forEach { cur ->
       val existingKey = cur.tmdbId?.let { tmdbKey(it, cur.type == MediaType.SERIE_TV) } ?: cur.id
       val fetched = finalMap[existingKey] ?: finalMap[cur.id]
@@ -4181,44 +4607,21 @@ object MediaRepository {
 
     // Catalogo PERSISTENTE e senza limite artificiale: non si elimina più un titolo
     // solo perché manca il poster/backdrop, basta che abbia un titolo.
-    val combinedList = finalMap.values.filter { it.title.isNotBlank() }.sortedByDescending { it.rating }
-
-    val db = database
-    if (db != null) {
-      try {
-        val dao = db.cachedMediaDao()
-        // Preserva SEMPRE preferiti, progressi ed episodio visto sui dati remoti.
-        // La lettura resta sull'intero catalogo (serve lo stato utente di ogni
-        // riga), ma la SCRITTURA è limitata al delta del checkpoint.
-        val existingById = dao.getAllCachedMedia().associateBy { it.id }
-        val toPersist = if (idsToPersist == null) {
-          combinedList
-        } else {
-          combinedList.filter { it.id in idsToPersist }
-        }
-        if (toPersist.isNotEmpty()) {
-          val preservedList = toPersist.map { item ->
-            existingById[item.id]?.preserveUserStateInto(item) ?: item
-          }
-          dao.insertOrUpdate(preservedList.map { it.toEntity() })
-        }
-        // Fallback solo se l'osservatore del Flow non fosse attivo
-        if (dbObserverJob?.isActive != true) {
-          _mediaList.value = mapEntitiesToUiState(dao.getAllCachedMedia())
-        }
-        return combinedList.size
-      } catch (e: Exception) {
-        Log.w("MediaRepository", "Salvataggio in Room fallito: ${e.message}")
-        _mediaList.value = combinedList
-        return combinedList.size
-      }
-    }
-    // Nessun database disponibile: fallback in-memory
-    _mediaList.value = combinedList
-    return combinedList.size
+    return finalMap.values.filter { it.title.isNotBlank() }.sortedByDescending { it.rating }
   }
 
-  private fun getInitialMedia(): List<MediaItem> = listOf(
+  /**
+   * Catalogo iniziale effettivo per il client corrente.
+   *
+   * La TV conserva il seed storico; un client che imposta
+   * [StreamNovaConfig.current.includeDemoCatalog] a `false` (Mobile) parte vuoto e
+   * usa solo le sorgenti reali (Cinemeta/TMDB/addon).
+   */
+  private fun getInitialMedia(): List<MediaItem> =
+    if (StreamNovaConfig.current.includeDemoCatalog) demoCatalogItems() else emptyList()
+
+  /** Catalogo seed storico della TV. Non viene mai mostrato quando il seed è disattivato. */
+  private fun demoCatalogItems(): List<MediaItem> = listOf(
     MediaItem(
       id = "dune_2",
       tmdbId = 693134,
@@ -5463,3 +5866,24 @@ object MediaRepository {
   )
 }
 
+
+/**
+ * Regola pura di avanzamento del crawl dei cataloghi provider.
+ *
+ * Separa la POLICY (quante pagine chiedere) dall'esecuzione di rete: la Home
+ * carica solo la prima pagina per provider/tipo, mentre la ProviderScreen usa la
+ * paginazione on-demand di MediaRepository.loadProviderCatalog.
+ */
+internal object ProviderCatalogCrawlPolicy {
+
+  /**
+   * Vero se la pagina va richiesta con il limite corrente.
+   *
+   * La pagina 1 si chiede sempre (anche quando total_pages non è ancora noto,
+   * valore 0); le successive solo se TMDB dichiara di averle e il limite lo consente.
+   */
+  fun shouldFetchPage(page: Int, totalPages: Int, pageLimit: Int): Boolean {
+    if (page < 1 || pageLimit < 1 || page > pageLimit) return false
+    return page == 1 || page <= totalPages
+  }
+}
