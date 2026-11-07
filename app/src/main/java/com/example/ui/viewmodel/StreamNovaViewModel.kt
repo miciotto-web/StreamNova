@@ -28,13 +28,20 @@ import com.example.data.prefs.DecoderFallbackMode
 import com.example.data.prefs.InitialBufferOption
 import com.example.data.prefs.TargetBufferOption
 import com.example.data.prefs.AppSettingsRepository
+import com.example.data.prefs.ContinueWatchingLayout
+import com.example.data.prefs.ContinueWatchingPreferences
+import com.example.data.prefs.ContinueWatchingSort
 import com.example.data.prefs.PlaybackSettings
 import com.example.data.prefs.PreferredResolution
 import com.example.data.prefs.SettingsRepository
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
+import com.example.data.prefs.SubtitleOpacity
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
+import com.example.data.prefs.PersistentSubtitleRepository
+import com.example.data.prefs.PersistentSubtitleSelection
+import com.example.data.prefs.PersistentSubtitleStore
 import com.example.data.image.ImageCache
 import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
@@ -43,6 +50,7 @@ import com.example.data.repository.LastWorkingStreamRepository
 import com.example.data.repository.ProviderCoverage
 import com.example.data.repository.StremioCatalogRepository
 import com.example.data.repository.TmdbHomeCatalogProvider
+import com.example.data.repository.UnreleasedContentFilter
 import com.example.data.stremio.InstalledAddon
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.StremioCatalogEngine
@@ -54,6 +62,7 @@ import com.example.data.update.UpdateRepository
 import com.example.data.streaming.StreamManager
 import com.example.data.streaming.StreamResult
 import com.example.data.streaming.StreamSource
+import com.example.data.streaming.TorBoxSourceOrdering
 import com.example.data.streaming.diagnostics.StreamDiagnosticSinkFactory
 import com.example.data.opensubtitles.OpenSubtitlesConnectionCheck
 import com.example.data.opensubtitles.OpenSubtitlesConnectionVerifier
@@ -70,6 +79,7 @@ import java.io.File
 import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import com.example.ui.screens.player.NextEpisodePromptUtils
+import com.example.ui.screens.player.PlayerOnlineSubtitleFile
 import com.example.ui.screens.player.PlayerSourceFallback
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -232,17 +242,18 @@ private const val SAME_SOURCE_TAG = "NextEpisodeSameSource"
 
 /**
  * Timeout breve (4s) per il fast-path "stesso torrent di stagione": se il file
- * del nuovo episodio non si sblocca in tempo si passa alla risoluzione normale
- * (che termina comunque sul dialog di selezione, mai in un loop infinito).
+ * del nuovo episodio non si sblocca in tempo la STESSA fonte è considerata non
+ * disponibile. L'autoplay si ferma (stato terminale) e lascia la scelta manuale
+ * all'utente: non esiste alcun fallback automatico a una sorgente diversa.
  */
 internal const val SAME_SOURCE_TIMEOUT_MS = 4_000L
 
 /**
  * Timeout rigido (3.5s) imposto al fast-path bingewatching nel chiamante
  * ([StreamNovaViewModel.openStreamForMedia]): se la risoluzione dello stesso
- * torrent Debrid non termina entro questa finestra si prosegue IMMEDIATAMENTE
- * con la ricerca normale delle sorgenti. Non esiste alcun percorso che possa
- * restare sospeso oltre questo limite.
+ * torrent Debrid non termina entro questa finestra la fonte è considerata non
+ * disponibile e l'autoplay termina immediatamente. Non esiste alcun percorso che
+ * possa restare sospeso oltre questo limite né che prosegua con i provider.
  */
 internal const val NEXT_EPISODE_FAST_PATH_TIMEOUT_MS = 3_500L
 
@@ -687,8 +698,19 @@ sealed interface OnlineSubtitleDownloadState {
   data class Error(val error: OpenSubtitlesDownloadError) : OnlineSubtitleDownloadState
 }
 
-/** Sottocartella della cache app dedicata ai file sottotitolo scaricati da OpenSubtitles. */
-private const val ONLINE_SUBTITLES_CACHE_DIR = "opensubtitles"
+/** Sottocartella permanente (`filesDir`) dedicata ai sottotitoli OpenSubtitles selezionati. */
+private const val ONLINE_SUBTITLES_STORAGE_DIR = "online_subtitles"
+
+/**
+ * Attesa minima prima di ritentare una pagina Provider fallita.
+ *
+ * Senza questo intervallo il toggle dello spinner (footer della griglia aggiunto/
+ * rimosso) produce una nuova misura della LazyGrid che rilancia immediatamente la
+ * richiesta fallita, trasformando un errore di rete persistente in una raffica di
+ * richieste. Il cooldown NON dichiara il catalogo esaurito: al primo scroll
+ * successivo (o alla riapertura del provider) la pagina viene ritentata.
+ */
+private const val PROVIDER_PAGE_RETRY_COOLDOWN_MS = 2_000L
 
 class StreamNovaViewModel(
   /**
@@ -1031,21 +1053,43 @@ class StreamNovaViewModel(
   /** Downloader OpenSubtitles: iniettabile nei test (api/client/dispatcher fittizi). */
   internal var onlineSubtitleDownloader = OpenSubtitlesSubtitleDownloader(ioDispatcher = ioDispatcher)
 
+  /** Store delle selezioni persistenti: iniettabile nei test con un fake JVM. */
+  internal var persistentSubtitleStore: PersistentSubtitleStore = PersistentSubtitleRepository
+
   /**
-   * Directory cache dove salvare i file sottotitolo scaricati: risolta alla richiesta con
-   * il contesto collegato dall'UI ([attachContext] o fallback reflection). In errorne
-   * (contesto assente) il download fallisce in modo controllato.
+   * Directory **permanente** dove salvare i file sottotitolo selezionati
+   * (`filesDir/online_subtitles`). Non è la cache: i file restano disponibili anche
+   * dopo che il sistema svuota la cache dell'app, così il ripristino non richiede
+   * un nuovo download. Nei test viene sostituita con una TemporaryFolder.
    */
-  internal var onlineSubtitleCacheDirProvider: () -> File? = {
+  internal var onlineSubtitleStorageDirProvider: () -> File? = {
     val context = appContext ?: currentApplicationContext()
-    context?.let { File(it.cacheDir, ONLINE_SUBTITLES_CACHE_DIR) }
+    context?.let { File(it.filesDir, ONLINE_SUBTITLES_STORAGE_DIR).also { dir -> dir.mkdirs() } }
+      ?: PersistentSubtitleRepository.subtitlesDir()
   }
 
   private var onlineSubtitlesSearchJob: Job? = null
   private var onlineSubtitleDownloadJob: Job? = null
+  private var persistentSubtitleRestoreJob: Job? = null
 
   /** Ultimo sottotitolo online richiesto: alla base dell'azione "Riprova". */
   private var lastSelectedOnlineSubtitle: Subtitle? = null
+
+  /**
+   * True quando il download corrente è stato avviato dal ripristino automatico:
+   * un fallimento deve produrre l'avviso non bloccante e non un errore "manuale".
+   */
+  private var lastOnlineSubtitleDownloadWasRestore = false
+
+  /**
+   * Sottotitolo persistente pronto per essere allegato dal player.
+   *
+   * Il ViewModel non tocca direttamente ExoPlayer: emette il [Subtitle] con URL
+   * `file://` e PlayerScreen lo allega/attiva con lo stesso percorso usato per i
+   * download manuali. Lo stato viene azzerato dopo l'allegamento.
+   */
+  private val _restoredPersistentSubtitle = MutableStateFlow<Subtitle?>(null)
+  val restoredPersistentSubtitle: StateFlow<Subtitle?> = _restoredPersistentSubtitle.asStateFlow()
 
   // Stato della risoluzione dello stream con gestione rigida del timeout e lifecycle
   private val _streamResolutionState = MutableStateFlow<StreamResolutionState>(StreamResolutionState.Idle)
@@ -1058,6 +1102,22 @@ class StreamNovaViewModel(
    */
   private val _isSwitchingEpisode = MutableStateFlow(false)
   val isSwitchingEpisode: StateFlow<Boolean> = _isSwitchingEpisode.asStateFlow()
+
+  /**
+   * Stato esplicito dell'autoplay del prossimo episodio (ricerca stessa fonte Debrid →
+   * avvio riuscito oppure fallimento terminale). Il player usa questo stato per non
+   * mostrare popup/countdown durante la ricerca o dopo un fallimento: un risultato
+   * mancante non deve mai trasformarsi in un nuovo avanzamento episodio.
+   */
+  private val _nextEpisodeAutoplayState = MutableStateFlow(NextEpisodeAutoplayState.IDLE)
+  val nextEpisodeAutoplayState: StateFlow<NextEpisodeAutoplayState> =
+    _nextEpisodeAutoplayState.asStateFlow()
+
+  private fun setNextEpisodeAutoplayState(state: NextEpisodeAutoplayState, reason: String) {
+    if (_nextEpisodeAutoplayState.value == state) return
+    Log.i(TAG, "Autoplay prossimo episodio: ${_nextEpisodeAutoplayState.value} -> $state ($reason)")
+    _nextEpisodeAutoplayState.value = state
+  }
 
   private var streamJob: Job? = null
   /**
@@ -1137,6 +1197,15 @@ class StreamNovaViewModel(
     _streamResolutionState.value = StreamResolutionState.Idle
     _streamResult.value = StreamResult.Idle
     _isSwitchingEpisode.value = false
+    // Una ricerca della stessa fonte interrotta (BACK durante il caricamento, cambio
+    // modalità, reset) termina senza una sorgente: resta uno stato terminale, così il
+    // countdown non può ripartire sul clock dell'episodio precedente.
+    if (_nextEpisodeAutoplayState.value == NextEpisodeAutoplayState.SEARCHING_SAME_SOURCE) {
+      setNextEpisodeAutoplayState(
+        NextEpisodeAutoplayState.SOURCE_UNAVAILABLE,
+        "ricerca stessa fonte interrotta senza sorgente"
+      )
+    }
     // NOTA: _nextEpisode e playerSeasonEpisodes NON vengono azzerati qui:
     // resetStreamState viene invocato anche dall'onDispose di ExoPlayer durante la
     // ricreazione del player (cambio impostazioni), a sessione in corso. Il valore
@@ -1520,7 +1589,23 @@ class StreamNovaViewModel(
   private val _homeCatalogs = MutableStateFlow(
     StremioCatalogRepository.buildDefaultHomeCatalogs(MediaRepository.mediaList.value)
   )
-  val homeCatalogs: StateFlow<HomeCatalogs> = _homeCatalogs.asStateFlow()
+
+  /**
+   * Vista FILTRATA della Home esposta alla UI.
+   *
+   * `_homeCatalogs` resta la sorgente COMPLETA (paginazione, merge tra risoluzioni,
+   * memoria delle righe): il filtro "Nascondi contenuti non rilasciati" viene applicato
+   * solo qui, in un unico punto condiviso ([UnreleasedContentFilter]), così nessuna
+   * schermata deve replicare la regola. Con la preferenza OFF la vista coincide con la
+   * sorgente (stessa istanza, nessun costo).
+   */
+  private val _visibleHomeCatalogs = MutableStateFlow(
+    UnreleasedContentFilter.filterHomeCatalogs(
+      _homeCatalogs.value,
+      AppSettingsRepository.hideUnreleasedContent.value
+    )
+  )
+  val homeCatalogs: StateFlow<HomeCatalogs> = _visibleHomeCatalogs.asStateFlow()
 
   private val _stremioProviderMedia = MutableStateFlow<Map<String, List<MediaItem>>>(emptyMap())
   val stremioProviderMedia: StateFlow<Map<String, List<MediaItem>>> = _stremioProviderMedia.asStateFlow()
@@ -1634,7 +1719,7 @@ class StreamNovaViewModel(
         // condividono la cache dei cataloghi, e pubblicare qui i valori di un refresh
         // avviato prima invaliderebbe la raccolta dei target della categoria corrente.
         if (_isCategoryLoading.value) return@launch
-        _homeCatalogs.value = resolved
+        publishHomeCatalogs(resolved)
         resolvedHomeSourceSignature = signature
       } catch (e: CancellationException) {
         throw e
@@ -1652,21 +1737,36 @@ class StreamNovaViewModel(
   private fun publishHomeFallbackMedia(mediaList: List<MediaItem>) {
     val movies = mediaList.filter { it.type == MediaType.FILM }
     val series = mediaList.filter { it.type == MediaType.SERIE_TV }
-    _homeCatalogs.update { current ->
-      val moviesUseCache = !current.hasCustomCatalogMovies &&
-        !current.moviesFromDefaultCatalog &&
-        !current.moviesFromTmdbDefault
-      val seriesUseCache = !current.hasCustomCatalogSeries &&
-        !current.seriesFromDefaultCatalog &&
-        !current.seriesFromTmdbDefault
-      val nextMovies = if (moviesUseCache) movies else current.allMovies
-      val nextSeries = if (seriesUseCache) series else current.allSeries
-      if (nextMovies == current.allMovies && nextSeries == current.allSeries) {
-        current
-      } else {
-        current.copy(allMovies = nextMovies, allSeries = nextSeries)
-      }
-    }
+    val current = _homeCatalogs.value
+    val moviesUseCache = !current.hasCustomCatalogMovies &&
+      !current.moviesFromDefaultCatalog &&
+      !current.moviesFromTmdbDefault
+    val seriesUseCache = !current.hasCustomCatalogSeries &&
+      !current.seriesFromDefaultCatalog &&
+      !current.seriesFromTmdbDefault
+    val nextMovies = if (moviesUseCache) movies else current.allMovies
+    val nextSeries = if (seriesUseCache) series else current.allSeries
+    if (nextMovies == current.allMovies && nextSeries == current.allSeries) return
+    publishHomeCatalogs(current.copy(allMovies = nextMovies, allSeries = nextSeries))
+  }
+
+  /**
+   * Pubblica una risoluzione della Home e ricalcola SUBITO la vista filtrata.
+   *
+   * È l'unico punto di scrittura di `_homeCatalogs`: così un cambio della preferenza
+   * "Nascondi contenuti non rilasciati" (o un nuovo catalogo risolto) si riflette sulla
+   * Home senza riavviare l'app e senza rilanciare la risoluzione di rete.
+   */
+  internal fun publishHomeCatalogs(catalogs: HomeCatalogs) {
+    _homeCatalogs.value = catalogs
+    refreshVisibleHomeCatalogs()
+  }
+
+  private fun refreshVisibleHomeCatalogs() {
+    _visibleHomeCatalogs.value = UnreleasedContentFilter.filterHomeCatalogs(
+      _homeCatalogs.value,
+      AppSettingsRepository.hideUnreleasedContent.value
+    )
   }
 
   init {
@@ -1677,7 +1777,6 @@ class StreamNovaViewModel(
       // Osserva i cambiamenti della modalità del motore di streaming
       AppSettingsRepository.streamingEngineMode.collect { mode ->
         _streamingEngineMode.value = mode
-        fallbackFromUnavailableSection()
       }
     }
     viewModelScope.launch {
@@ -1688,6 +1787,13 @@ class StreamNovaViewModel(
     viewModelScope.launch {
       allMedia.collect { list ->
         refreshHomeCatalogs(list)
+      }
+    }
+    // La preferenza può arrivare anche dal caricamento iniziale del DataStore (dopo
+    // l'avvio): la vista della Home va ricalcolata senza attendere un nuovo refresh.
+    viewModelScope.launch {
+      AppSettingsRepository.hideUnreleasedContent.collect {
+        refreshVisibleHomeCatalogs()
       }
     }
     viewModelScope.launch {
@@ -1717,6 +1823,20 @@ class StreamNovaViewModel(
   fun ensureNextEpisodeBadges(items: List<MediaItem>) {
     if (items.isEmpty()) return
     viewModelScope.launch { MediaRepository.refreshNextEpisodes(items) }
+  }
+
+  /**
+   * Arricchisce in BACKGROUND le serie di «Continua a guardare» con la still
+   * (`still_path`) dell'episodio di ripresa, per la preferenza «Usa miniature episodi».
+   *
+   * Stesso principio del badge: le card compaiono subito e l'immagine arriva quando la
+   * stagione è disponibile (cache TMDB già usata da Dettaglio e player, nessuna richiesta
+   * duplicata). L'esito è applicato a `MediaRepository.mediaList`, quindi la riga Home si
+   * aggiorna da sola.
+   */
+  fun ensureEpisodeThumbnails(items: List<MediaItem>) {
+    if (items.isEmpty()) return
+    viewModelScope.launch { MediaRepository.refreshEpisodeThumbnails(items) }
   }
 
   fun refreshCatalog() {
@@ -1794,8 +1914,25 @@ class StreamNovaViewModel(
   fun setSubtitleBackground(background: SubtitleBackground) =
     SettingsRepository.setSubtitleBackground(background)
 
+  fun setSubtitleOpacity(opacity: SubtitleOpacity) =
+    SettingsRepository.setSubtitleOpacity(opacity)
+
   fun setSubtitlePosition(position: SubtitlePosition) =
     SettingsRepository.setSubtitlePosition(position)
+
+  // ── OVERLAY E AVVISI DI RIPRODUZIONE ───────────────────────────────
+
+  fun setLoadingOverlayEnabled(enabled: Boolean) =
+    SettingsRepository.setLoadingOverlayEnabled(enabled)
+
+  fun setLoadingStatusEnabled(enabled: Boolean) =
+    SettingsRepository.setLoadingStatusEnabled(enabled)
+
+  fun setPauseOverlayEnabled(enabled: Boolean) =
+    SettingsRepository.setPauseOverlayEnabled(enabled)
+
+  fun setParentalGuideEnabled(enabled: Boolean) =
+    SettingsRepository.setParentalGuideEnabled(enabled)
 
   // ── IMPOSTAZIONI AVANZATE RIPRODUZIONE ─────────────────────────────
 
@@ -1993,6 +2130,56 @@ class StreamNovaViewModel(
     val categoryId = activeSearchCategoryId ?: return
     reloadActiveCategory(categoryId)
   }
+
+  /**
+   * Switch "Nascondi contenuti non rilasciati" (sezione Home), persistito in
+   * [AppSettingsRepository] con default OFF.
+   *
+   * Il filtro è applicato dal data layer ([UnreleasedContentFilter]) alla vista della
+   * Home: aggiornando la preferenza, [homeCatalogs] riflette subito il nuovo stato,
+   * senza riavviare l'app e senza una nuova risoluzione dei cataloghi.
+   */
+  val hideUnreleasedContent: StateFlow<Boolean> = AppSettingsRepository.hideUnreleasedContent
+
+  fun setHideUnreleasedContent(enabled: Boolean) {
+    AppSettingsRepository.setHideUnreleasedContent(enabled)
+    // Aggiornamento SINCRONO della Home: non dipende dall'ordine del collettore
+    // asincrono della preferenza (che resta attivo per il load iniziale da disco).
+    refreshVisibleHomeCatalogs()
+  }
+
+  /**
+   * Preferenze della sezione Impostazioni «Continua a guardare», persistite in
+   * [AppSettingsRepository].
+   *
+   * La riga della Home le osserva direttamente: ogni modifica ricompone la riga subito,
+   * senza riavvio, senza una nuova risoluzione dei cataloghi e senza richieste di rete.
+   * Lo stato è già in memoria ([ContinueWatchingPreferences]), quindi non serve un
+   * collettore aggiuntivo qui.
+   */
+  val continueWatchingPreferences: StateFlow<ContinueWatchingPreferences> =
+    AppSettingsRepository.continueWatchingPreferences
+
+  fun setContinueWatchingShowRow(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingShowRow(enabled)
+
+  fun setContinueWatchingLayout(layout: ContinueWatchingLayout) =
+    AppSettingsRepository.setContinueWatchingLayout(layout)
+
+  fun setContinueWatchingEpisodeThumbnails(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingEpisodeThumbnails(enabled)
+
+  fun setContinueWatchingBlurUnwatched(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingBlurUnwatched(enabled)
+
+  fun setContinueWatchingNextEpisodeFromFurthest(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingNextEpisodeFromFurthest(enabled)
+
+  fun setContinueWatchingShowUnairedEpisodes(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingShowUnairedEpisodes(enabled)
+
+  fun setContinueWatchingSort(sort: ContinueWatchingSort) =
+    AppSettingsRepository.setContinueWatchingSort(sort)
 
   val parentalControlEnabled: StateFlow<Boolean> = AppSettingsRepository.parentalControlEnabled
   val parentalControlLevel: StateFlow<String> = AppSettingsRepository.parentalControlLevel
@@ -2915,11 +3102,13 @@ class StreamNovaViewModel(
             currentMoviePage++
             val more = TmdbHomeCatalogProvider.paginateMovies(currentMoviePage)
             if (more.isNotEmpty()) {
-              _homeCatalogs.update { current ->
-                current.copy(
-                  allMovies = StremioCatalogRepository.deduplicateCrossSource(current.allMovies + more)
+              publishHomeCatalogs(
+                _homeCatalogs.value.copy(
+                  allMovies = StremioCatalogRepository.deduplicateCrossSource(
+                    _homeCatalogs.value.allMovies + more
+                  )
                 )
-              }
+              )
             }
           }
           catalogs.isMoviesFromStremio -> {
@@ -2927,7 +3116,7 @@ class StreamNovaViewModel(
             val more = StremioCatalogRepository.paginateMovies(currentList.size)
             if (more.isNotEmpty()) {
               val combined = StremioCatalogRepository.deduplicateCrossSource(currentList + more)
-              _homeCatalogs.update { it.copy(allMovies = combined) }
+              publishHomeCatalogs(_homeCatalogs.value.copy(allMovies = combined))
             }
           }
           else -> {
@@ -2955,11 +3144,13 @@ class StreamNovaViewModel(
             currentTvPage++
             val more = TmdbHomeCatalogProvider.paginateSeries(currentTvPage)
             if (more.isNotEmpty()) {
-              _homeCatalogs.update { current ->
-                current.copy(
-                  allSeries = StremioCatalogRepository.deduplicateCrossSource(current.allSeries + more)
+              publishHomeCatalogs(
+                _homeCatalogs.value.copy(
+                  allSeries = StremioCatalogRepository.deduplicateCrossSource(
+                    _homeCatalogs.value.allSeries + more
+                  )
                 )
-              }
+              )
             }
           }
           catalogs.isSeriesFromStremio -> {
@@ -2967,7 +3158,7 @@ class StreamNovaViewModel(
             val more = StremioCatalogRepository.paginateSeries(currentList.size)
             if (more.isNotEmpty()) {
               val combined = StremioCatalogRepository.deduplicateCrossSource(currentList + more)
-              _homeCatalogs.update { it.copy(allSeries = combined) }
+              publishHomeCatalogs(_homeCatalogs.value.copy(allSeries = combined))
             }
           }
           else -> {
@@ -3007,21 +3198,6 @@ class StreamNovaViewModel(
     refreshHomeCatalogs(allMedia.value, force = true)
   }
 
-  /**
-   * Riporta la navigazione alla Home se la sezione corrente non è più offerta dalla sidebar.
-   *
-   * L'area "Addon" esiste solo in modalità Debrid TorBox: se la modalità passa a HTTP Web
-   * mentre la sezione è Addon (o se quella sezione viene ripristinata al termine di una
-   * riproduzione), restare lì mostrerebbe una schermata senza voce di menu corrispondente.
-   */
-  private fun fallbackFromUnavailableSection() {
-    if (_currentSection.value == SidebarSection.ADDON &&
-      !_streamingEngineMode.value.supportsAddonsSection
-    ) {
-      _currentSection.value = SidebarSection.HOME
-    }
-  }
-
   fun loadDetails(tmdbId: Int, isTv: Boolean, baseMedia: MediaItem? = null) {
     if (tmdbId <= 0) return
     // Cancella il fetch di dettaglio precedente: una risposta in ritardo per un media
@@ -3044,6 +3220,18 @@ class StreamNovaViewModel(
     selectSeasonJob = viewModelScope.launch {
       try {
         val season = MediaRepository.getSeasonDetails(seriesTmdbId, seasonNumber, fallbackSeries)
+        // Propaga le still degli episodi (still_path) alla Home/Continua a guardare:
+        // la still di rete prevale sul fallback generico e il progresso/durata locali
+        // rimangono intatti grazie al merge. L'id TMDB è passato esplicitamente: la scheda
+        // può essere IMDb/Stremio (senza `tmdbId`) e le gemelle TMDB devono ricevere le
+        // stesse still.
+        MediaRepository.updateEpisodesForMedia(
+          mediaId,
+          season.episodes.map { epItem ->
+            epItem.toEpisode(mediaId, MediaRepository.getEpisodeProgress(mediaId, epItem.seasonNumber, epItem.episodeNumber))
+          },
+          tmdbId = seriesTmdbId
+        )
         _seasonEpisodesUiState.value = SeasonEpisodesUiState.Success(seasonNumber, season, mediaId)
       } catch (e: Exception) {
         _seasonEpisodesUiState.value = SeasonEpisodesUiState.Error(
@@ -3450,6 +3638,17 @@ class StreamNovaViewModel(
     // Stream del nuovo episodio ormai disponibile: la transizione è conclusa.
     _isSwitchingEpisode.value = false
 
+    // Tentativo di ripristino del sottotitolo persistente per questo contenuto.
+    // Se disponibile, viene ripristinato automaticamente (file locale o re-download).
+    // Non bloccante: la lettura da disco avviene in background e non impedisce la
+    // riproduzione; PlayerScreen allega la traccia quando lo stato è pronto.
+    persistentSubtitleRestoreJob?.cancel()
+    _restoredPersistentSubtitle.value = null
+    _persistentSubtitleRestoreFailed.value = false
+    persistentSubtitleRestoreJob = viewModelScope.launch(ioDispatcher) {
+      tryRestorePersistentSubtitle(finalMedia, finalEpisode)
+    }
+
     // "Prossimo Episodio": risolve (o carica in background) l'episodio successivo
     // e lo espone a PlayerScreen per overlay e auto-advance.
     refreshNextEpisodeForPlayback(finalMedia, finalEpisode)
@@ -3641,7 +3840,9 @@ class StreamNovaViewModel(
      val current = _playbackState.value
     val media = current.media ?: return
 
-    if (_isSwitchingEpisode.value) {
+    if (_isSwitchingEpisode.value ||
+      _nextEpisodeAutoplayState.value == NextEpisodeAutoplayState.SEARCHING_SAME_SOURCE
+    ) {
       Log.i(
         TAG,
         "playNextEpisode ignorato: transizione a S${nextEpisode.seasonNumber}E${nextEpisode.episodeNumber} già in corso"
@@ -3743,7 +3944,44 @@ class StreamNovaViewModel(
       "Risoluzione stream per S${enrichedNext.season}E${enrichedNext.episode} - Id: ${enrichedNext.id}, SeriesId: ${enrichedMedia.id}, IMDb: ${enrichedMedia.imdbId}"
     )
 
+    // Stato esplicito PRIMA della risoluzione: il player sa che è in corso la ricerca
+    // della stessa fonte e non deve (ri)armare il countdown sul clock dell'episodio
+    // precedente. Solo la modalità Debrid con una fonte-torrent identificabile (infoHash)
+    // può finire nello stato terminale di fallimento: le altre modalità restano invariate.
+    val reusesSameDebridSource =
+      current.currentSource?.infoHash?.isNotBlank() == true &&
+        AppSettingsRepository.streamingEngineMode.value == StreamingEngineMode.DEBRID_TORBOX
+    setNextEpisodeAutoplayState(
+      if (reusesSameDebridSource) NextEpisodeAutoplayState.SEARCHING_SAME_SOURCE
+      else NextEpisodeAutoplayState.IDLE,
+      "avvio transizione S${enrichedNext.seasonNumber}E${enrichedNext.episodeNumber}"
+    )
+
     openStreamForMedia(enrichedMedia, enrichedNext, allowReuse = false, isNextEpisode = true)
+  }
+
+  /**
+   * Avanzamento **automatico** al prossimo episodio (countdown del popup o qualsiasi
+   * callback non richiesta esplicitamente dall'utente).
+   *
+   * È il funnello che rende il fallimento della stessa fonte uno stato TERMINALE:
+   * con una ricerca in corso o dopo un fallimento ([NextEpisodeAutoplayState.blocksAutomaticAdvance])
+   * la richiesta viene ignorata. Una risposta duplicata o tardiva del countdown non può
+   * quindi avviare un secondo episodio né saltare quello appena aperto. La transizione
+   * manuale (pulsante «Guarda ora», skip del telecomando) continua a passare da
+   * [playNextEpisode].
+   */
+  fun autoPlayNextEpisode(nextEpisode: Episode) {
+    val state = _nextEpisodeAutoplayState.value
+    if (state.blocksAutomaticAdvance) {
+      Log.i(
+        TAG,
+        "Autoplay ignorato: S${nextEpisode.seasonNumber}E${nextEpisode.episodeNumber} " +
+          "non avviato automaticamente (stato=$state)"
+      )
+      return
+    }
+    playNextEpisode(nextEpisode)
   }
 
   /**
@@ -3949,6 +4187,11 @@ class StreamNovaViewModel(
     val traceId = correlationId ?: newPlaybackTraceId()
     playbackTraceId = traceId
     Log.d(TAG, "openStreamForMedia START mediaId=${mediaItem.id} tmdbId=${mediaItem.tmdbId}")
+    // Una richiesta di riproduzione NON legata al "prossimo episodio" (né alla selezione
+    // manuale richiesta dopo un fallimento) chiude il ciclo di autoplay precedente.
+    if (!isNextEpisode && !manualSelection) {
+      setNextEpisodeAutoplayState(NextEpisodeAutoplayState.IDLE, "nuova richiesta di riproduzione")
+    }
     tracePlayback(
       traceId,
       "STREAM_REQUESTED",
@@ -4112,6 +4355,17 @@ class StreamNovaViewModel(
             _streamResolutionState.value = StreamResolutionState.Idle
             _streamResult.value = StreamResult.Idle
           } else {
+            // Selezione manuale richiesta dopo un fallimento dell'autoplay: senza
+            // identificatori non ci sono sorgenti da proporre, quindi resta attivo
+            // lo stato terminale (messaggio + scelta manuale), mai un errore muto.
+            if (manualSelection &&
+              _nextEpisodeAutoplayState.value == NextEpisodeAutoplayState.MANUAL_SELECTION_REQUIRED
+            ) {
+              setNextEpisodeAutoplayState(
+                NextEpisodeAutoplayState.SOURCE_UNAVAILABLE,
+                "selezione manuale impossibile: identificatori assenti"
+              )
+            }
             _streamResolutionState.value = StreamResolutionState.Error(message)
             _streamResult.value = StreamResult.Error(message)
           }
@@ -4165,20 +4419,46 @@ class StreamNovaViewModel(
       // direttamente, senza interrogare nuovamente gli addon.
       val pinnedSource = if (isNextEpisode) _playbackState.value.currentSource else null
       if (pinnedSource != null && season != null && epNumber != null &&
-        mode == StreamingEngineMode.DEBRID_TORBOX && pinnedSource.infoHash != null
+        mode == StreamingEngineMode.DEBRID_TORBOX && !pinnedSource.infoHash.isNullOrBlank()
       ) {
-        val pinnedHash = pinnedSource.infoHash
+        val pinnedHash = pinnedSource.infoHash!!
+        setNextEpisodeAutoplayState(
+          NextEpisodeAutoplayState.SEARCHING_SAME_SOURCE,
+          "risoluzione S${season}E${epNumber} dallo stesso torrent ${pinnedHash.take(8)}..."
+        )
         Log.d("NextEpisodeDebrid", "Tentativo fast-path torrent: $pinnedHash per S${season}E${epNumber}")
         // Timeout rigido e insuperabile (3.5s): se lo stesso torrent non risponde,
-        // non si resta MAI in sospeso. Fallthrough immediato alla ricerca normale.
-        val fastPathStream = withTimeoutOrNull(NEXT_EPISODE_FAST_PATH_TIMEOUT_MS) {
-          seasonPackEpisodeResolver(pinnedSource, season, epNumber)
+        // non si resta MAI in sospeso. QUALUNQUE errore del resolver (rete, parsing,
+        // timeout) viene trattato come "fonte non disponibile": nessuna eccezione può
+        // uscire dal job lasciando `isSwitchingEpisode` bloccato sullo spinner.
+        val fastPathStream = try {
+          withTimeoutOrNull(NEXT_EPISODE_FAST_PATH_TIMEOUT_MS) {
+            seasonPackEpisodeResolver(pinnedSource, season, epNumber)
+          }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          Log.w(
+            "NextEpisodeDebrid",
+            "Fast-path stessa fonte fallito con errore per S${season}E${epNumber}: ${e.message}",
+            e
+          )
+          null
         }
-        Log.d("NextEpisodeDebrid", "Esito fast-path: ${fastPathStream != null}")
-        val samePackSource = fastPathStream
-        if (samePackSource != null && !samePackSource.streamUrl.isNullOrBlank()) {
+        // "Sorgente trovata e valida": URL diretto riproducibile. Un risultato nullo,
+        // vuoto o non riproducibile NON deve mai avviare il player.
+        val samePackSource = fastPathStream?.takeIf { candidate ->
+          val url = candidate.streamUrl
+          !url.isNullOrBlank() && StreamManager.isPlayableDirectUrl(url)
+        }
+        Log.d("NextEpisodeDebrid", "Esito fast-path: ${samePackSource != null}")
+        if (samePackSource != null) {
           withContext(Dispatchers.Main) {
             if (currentJobGeneration != loadStreamGeneration) return@withContext
+            setNextEpisodeAutoplayState(
+              NextEpisodeAutoplayState.STARTED,
+              "sorgente valida per S${season}E${epNumber} trovata nello stesso torrent"
+            )
             Log.i(SAME_SOURCE_TAG, "Avvio diretto S$season E$epNumber dallo stesso torrent")
             _availableSources.value = listOf(samePackSource)
             _sourceCandidates.value = listOf(samePackSource)
@@ -4206,9 +4486,44 @@ class StreamNovaViewModel(
             openPlayer(resolvedMediaItem, effectiveEpisode, samePackSource)
           }
           return@launch
-        } else {
-          Log.d("NextEpisodeDebrid", "Fast-path fallito o timeout, procedo con ricerca normale")
         }
+
+        // CASO B — la STESSA fonte Debrid non è disponibile (null, vuoto, errore o
+        // timeout). Questo è uno stato TERMINALE del tentativo di autoplay:
+        //  - NON si interrogano i provider (una sorgente diversa non va avviata da sola);
+        //  - NON si avanza ad altri episodi e non si ripete la ricerca;
+        //  - il player mostra il messaggio e consente la scelta manuale della fonte.
+        // Il vecchio fallthrough alla ricerca normale era la causa del loop: a ogni
+        // fallimento l'episodio corrente era già avanzato, il popup si ri-armava sul
+        // clock dell'episodio precedente e il countdown faceva ripartire la transizione.
+        tracePlayback(
+          traceId,
+          "STREAM_UNAVAILABLE_SAME_SOURCE",
+          "series" to resolvedMediaItem.title,
+          "season" to season,
+          "episode" to epNumber,
+          "torrent" to "${pinnedHash.take(8)}...",
+          "outcome" to "autoplay-terminato"
+        )
+        withContext(Dispatchers.Main) {
+          // Risultato obsoleto (nuova ricerca/cancellazione nel frattempo): non si
+          // tocca lo stato di un tentativo che non è più quello corrente.
+          if (currentJobGeneration != loadStreamGeneration) return@withContext
+          setNextEpisodeAutoplayState(
+            NextEpisodeAutoplayState.SOURCE_UNAVAILABLE,
+            "nessuna sorgente dallo stesso torrent per S${season}E${epNumber}"
+          )
+          _availableSources.value = emptyList()
+          _sourceCandidates.value = emptyList()
+          _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
+          // Nessuna lista di sorgenti da mostrare: il dialog non va forzato (sarebbe
+          // invisibile). L'episodio resta in attesa della scelta manuale dell'utente.
+          _showSourceDialog.value = false
+          _streamResolutionState.value = StreamResolutionState.Idle
+          _streamResult.value = StreamResult.Idle
+          _isSwitchingEpisode.value = false
+        }
+        return@launch
       }
 
       val openSubtitlesDeferred = async(ioDispatcher) {
@@ -4298,10 +4613,17 @@ class StreamNovaViewModel(
 
         // Affinita' con la fonte dell'episodio corrente: stesso addon/provider e
         // firma di release piu' vicina in cima (anche davanti a qualita' grezza).
+        //
+        // L'ordinamento utente è applicato PRIMA dell'affinity: "Privilegia tracce
+        // italiane" e "Risoluzione preferita" devono guidare anche l'auto-pick, non
+        // solo la lista del selettore manuale. Senza questo passaggio una sorgente
+        // 4K inglese arrivata per prima scavalcava una sorgente italiana e il video
+        // partiva in inglese pur con la preferenza italiana attiva.
+        val userOrderedSources = TorBoxSourceOrdering.sort(finalSources, playbackSettings.value)
         val affinitySources = if (pinnedSource != null) {
-          rankBySameSourceAffinity(finalSources, pinnedSource)
+          rankBySameSourceAffinity(userOrderedSources, pinnedSource)
         } else {
-          finalSources
+          userOrderedSources
         }
 
         // Selezione manuale esplicita (pulsante «Seleziona fonte» della scheda):
@@ -4436,6 +4758,18 @@ class StreamNovaViewModel(
       withContext(Dispatchers.Main) {
         if (currentJobGeneration != loadStreamGeneration) return@withContext
         if (!hasOpenedPlayer && !_showSourceDialog.value) {
+          // Selezione manuale richiesta dopo un fallimento della stessa fonte ma
+          // conclusa senza sorgenti (lista vuota o nessuna riproducibile): si torna
+          // allo stato terminale, così il player continua a mostrare il messaggio e
+          // la scelta manuale invece di riarmare l'autoplay.
+          if (manualSelection &&
+            _nextEpisodeAutoplayState.value == NextEpisodeAutoplayState.MANUAL_SELECTION_REQUIRED
+          ) {
+            setNextEpisodeAutoplayState(
+              NextEpisodeAutoplayState.SOURCE_UNAVAILABLE,
+              "selezione manuale senza sorgenti disponibili"
+            )
+          }
           if (_availableSources.value.isNotEmpty() || isNextEpisode) {
             // Caso C (anche con zero flussi per il prossimo episodio): la sessione
             // resta in attesa di scelta manuale, mai in errore/schermata nera.
@@ -4476,6 +4810,17 @@ class StreamNovaViewModel(
    */
   fun openManualSourceSelection(media: MediaItem, episode: Episode? = null) {
     Log.i(TAG, "Selezione manuale sorgenti richiesta per '${media.title}' (episodio=${episode?.id ?: "nessuno"})")
+    // Dopo un fallimento dell'autoplay, la scelta manuale è l'unico percorso per
+    // riprendere: lo stato resta "selezione richiesta" finché l'utente non conferma
+    // una fonte (o chiude il selettore). Per un titolo diverso lo stato non cambia.
+    val failedAutoplayForThisMedia = _nextEpisodeAutoplayState.value.isFailure &&
+      _playbackState.value.media?.id == media.id
+    if (failedAutoplayForThisMedia) {
+      setNextEpisodeAutoplayState(
+        NextEpisodeAutoplayState.MANUAL_SELECTION_REQUIRED,
+        "selezione manuale richiesta dopo fallimento stessa fonte"
+      )
+    }
     openStreamForMedia(media, episode, manualSelection = true)
   }
 
@@ -4621,6 +4966,12 @@ class StreamNovaViewModel(
       // STESSA istanza di ExoPlayer (nessuna duplicazione, nessun avvio concorrente).
       _manualSourceSelectionToken.value = _manualSourceSelectionToken.value + 1
       openPlayer(media, episode, resolvedSource)
+      // La scelta manuale è autorevole: il flusso normale di riproduzione riprende,
+      // anche quando arriva dopo un fallimento della stessa fonte Debrid.
+      setNextEpisodeAutoplayState(
+        NextEpisodeAutoplayState.IDLE,
+        "fonte scelta manualmente per S${episode?.seasonNumber}E${episode?.episodeNumber}"
+      )
     }
     // Scelta applicata (o abbandonata): il fallback automatico torna disponibile.
     selectionJob.invokeOnCompletion { manualSourceSelectionInFlight = false }
@@ -4727,6 +5078,15 @@ class StreamNovaViewModel(
     _sourceCandidates.value = emptyList()
     _sourceDialogMedia.value = null
     _sourceDialogDismissedToken.value = _sourceDialogDismissedToken.value + 1
+    // Il selettore è stato chiuso senza scegliere una fonte: il tentativo di autoplay
+    // resta terminato (nessun countdown, nessuna ricerca automatica). L'utente potrà
+    // riaprire la scelta manuale dal messaggio nel player o dalla scheda.
+    if (_nextEpisodeAutoplayState.value == NextEpisodeAutoplayState.MANUAL_SELECTION_REQUIRED) {
+      setNextEpisodeAutoplayState(
+        NextEpisodeAutoplayState.SOURCE_UNAVAILABLE,
+        "selettore chiuso senza scelta"
+      )
+    }
   }
 
   fun closePlayer() {
@@ -4848,6 +5208,8 @@ class StreamNovaViewModel(
     currentlyUnlockedMediaId = null
     _showSourceDialog.value = false
     _sourceDialogMedia.value = null
+    // Sessione chiusa: anche il ciclo di autoplay del prossimo episodio è concluso.
+    setNextEpisodeAutoplayState(NextEpisodeAutoplayState.IDLE, "player chiuso")
     _playbackState.value = _playbackState.value.copy(
       streamUrl = null,
       streamHeaders = emptyMap(),
@@ -4874,8 +5236,6 @@ class StreamNovaViewModel(
     screenBeforePlayer = null
     sectionBeforePlayer = SidebarSection.HOME
     _currentSection.value = previousSection
-    // La sezione di partenza potrebbe non esistere più (es. Addon dopo un cambio modalità)
-    fallbackFromUnavailableSection()
     _screenState.value = origin
       ?: if (_selectedMedia.value != null) ScreenState.DETAIL else ScreenState.BROWSING
     // Destinazione del rientro: la provenienza della riproduzione decide dove si torna
@@ -4989,19 +5349,28 @@ fun backToBrowsing() {
     _screenState.value = ScreenState.BROWSING
   }
 
-/**
+  /**
    * Gestione gerarchica del ritorno da una scheda di dettaglio.
    * Se lo stack dei dettagli contiene più elementi, risale al media precedente
    * ripristinandone immediatamente lo stato senza mostrare schermate nere.
    * Se lo stack dei dettagli è esaurito, ritorna alla schermata precedente (Home/Provider)
    * e restituisce false.
+   *
+   * @param clearDetailUiState quando si esce DAVVERO dalla scheda (stack esaurito),
+   *        `false` conserva `selectedMedia` e la stagione caricata finché la destinazione
+   *        non è uscita dalla composizione. La transizione di uscita del NavHost tiene la
+   *        scheda composta per qualche frame: azzerare lo stato qui la faceva ridisegnare
+   *        con la lista episodi ricostruita dal catalogo (senza still) prima della Home,
+   *        cioè il flash segnalato. L'azzeramento avviene con [completeDetailExit].
+   *        Lo scambio fra due schede della catena continua invece a ricalcolare subito la
+   *        stagione della scheda precedente.
    */
-  fun popDetail(): Boolean {
+  fun popDetail(clearDetailUiState: Boolean = true): Boolean {
     resetStreamState()
     selectSeasonJob?.cancel()
     selectSeasonJob = null
-    _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
     if (detailMediaStack.size > 1) {
+      _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
       val closedMedia = detailMediaStack.removeLastOrNull()
       val previousMedia = detailMediaStack.last()
       // Al ritorno, il focus deve puntare alla card appena aperta e poi chiusa.
@@ -5027,28 +5396,46 @@ fun backToBrowsing() {
       }
       return true
     } else {
-      detailMediaStack.clear()
-      // La catena è terminata: non lasciare un target di focus pendente.
-      _chainRestoreMediaId.value = null
-      backFromDetail()
+      backFromDetail(clearDetailUiState = clearDetailUiState)
       return false
     }
   }
 
-  fun backFromDetail() {
+  /**
+   * @param clearDetailUiState `false` lascia intatti `selectedMedia` e la stagione
+   *        caricata: la scheda resta composta durante la transizione di uscita e deve
+   *        continuare a mostrare gli stessi episodi (still incluse) fino all'ultimo frame.
+   */
+  fun backFromDetail(clearDetailUiState: Boolean = true) {
     detailMediaStack.clear()
+    // La catena è terminata: non lasciare un target di focus pendente.
     _chainRestoreMediaId.value = null
     resetStreamState()
     selectSeasonJob?.cancel()
     selectSeasonJob = null
-    _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
-    _selectedMedia.value = null
+    if (clearDetailUiState) {
+      _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+      _selectedMedia.value = null
+    }
     if (_selectedProvider.value != null) {
       _screenState.value = ScreenState.PROVIDER
     } else {
       _screenState.value = ScreenState.BROWSING
       Log.d("BACK_TRACE", "STREAMNOVAVM: modifica _screenState a ${_screenState.value}")
     }
+  }
+
+  /**
+   * Azzera lo stato della scheda Dettaglio al termine della transizione di uscita, quando
+   * la destinazione non è più composta (vedi [popDetail] con `clearDetailUiState = false`).
+   *
+   * È idempotente e non fa nulla se il Dettaglio è ancora la schermata corrente: un
+   * rientro nella scheda prima del dispose non perde i dati appena caricati.
+   */
+  fun completeDetailExit() {
+    if (_screenState.value == ScreenState.DETAIL) return
+    _seasonEpisodesUiState.value = SeasonEpisodesUiState.Idle
+    _selectedMedia.value = null
   }
 
   // Paginazione Remota Cataloghi Provider (Netflix, Prime Video, Disney+, Apple TV+, HBO Max)
@@ -5071,17 +5458,33 @@ fun backToBrowsing() {
   private val _providerHasMorePages = MutableStateFlow<Map<Pair<Int, Boolean>, Boolean>>(emptyMap())
   val providerHasMorePages: StateFlow<Map<Pair<Int, Boolean>, Boolean>> = _providerHasMorePages.asStateFlow()
 
+  /**
+   * Stato "la sorgente Stremio ha altre pagine" per OGNI coppia (providerId, tipo).
+   *
+   * È esposto alla UI insieme a [providerHasMorePages]: il caricamento progressivo
+   * della griglia deve sapere se ESISTE ancora una sorgente da interrogare, senza
+   * usare soglie sul numero di card già a schermo (una prima pagina di 8 titoli
+   * esauriva la vecchia condizione `totalItems > 12` e non caricava mai la pagina 2).
+   */
+  private val _stremioProviderHasMorePages =
+    MutableStateFlow<Map<Pair<Int, Boolean>, Boolean>>(emptyMap())
+  val stremioProviderHasMorePages: StateFlow<Map<Pair<Int, Boolean>, Boolean>> =
+    _stremioProviderHasMorePages.asStateFlow()
+
   /** Ultima pagina caricata in sessione per coppia (providerId, tipo): 0 = nessuna. */
   private val providerPages = mutableMapOf<Pair<Int, Boolean>, Int>()
   private val loadingProviderKeys = mutableSetOf<Pair<Int, Boolean>>()
+
+  /** Cooldown anti-raffica della paginazione TMDB per coppia (provider, tipo). */
+  private val providerPageRetryAfter = mutableMapOf<Pair<Int, Boolean>, Long>()
+
+  /** Cooldown anti-raffica della paginazione Stremio per coppia (provider, tipo). */
+  private val stremioPageRetryAfter = mutableMapOf<Pair<Int, Boolean>, Long>()
 
   // ── Paginazione Stremio (`skip`) dei cataloghi provider ───────────────────────
   // Stati SEPARATI dalla paginazione TMDB: su una copertura PARTIAL le due
   // sorgenti devono potersi esaurire in modo indipendente (il catalogo Stremio può
   // terminare mentre TMDB ha ancora pagine, e viceversa).
-
-  /** true se la sorgente Stremio di UNA coppia (providerId, tipo) ha ancora pagine. */
-  private val stremioHasMorePages = mutableMapOf<Pair<Int, Boolean>, Boolean>()
 
   /** Coppie (providerId, tipo) con fetch Stremio `skip` in corso -> token anti duplicati. */
   private val stremioLoadingKeys = mutableMapOf<Pair<Int, Boolean>, Any>()
@@ -5111,7 +5514,40 @@ fun backToBrowsing() {
    * che risponde con esattamente una pagina piena (20 item) NON è esaurito.
    */
   fun hasMoreStremioProviderPages(providerId: Int, isTv: Boolean): Boolean =
-    stremioHasMorePages[Pair(providerId, isTv)] ?: true
+    _stremioProviderHasMorePages.value[Pair(providerId, isTv)] ?: true
+
+  /**
+   * true se per la coppia (provider, tipo) esiste ANCORA una sorgente paginabile:
+   * Stremio (solo con copertura attiva) oppure TMDB. È la condizione usata dal
+   * caricamento progressivo della UI.
+   */
+  fun providerCatalogHasMore(providerId: Int, isTv: Boolean): Boolean {
+    if (hasMoreProviderPages(providerId, isTv)) return true
+    val provider = _selectedProvider.value?.takeIf { it.tmdbProviderId == providerId }
+      ?: return false
+    val coverage = _stremioProviderStates.value[provider.id]?.coverage
+      ?: ProviderCoverage.NONE
+    return coverage != ProviderCoverage.NONE && hasMoreStremioProviderPages(providerId, isTv)
+  }
+
+  private fun setStremioProviderHasMore(providerId: Int, isTv: Boolean, hasMore: Boolean) {
+    val key = Pair(providerId, isTv)
+    _stremioProviderHasMorePages.update { it + (key to hasMore) }
+  }
+
+  /**
+   * Il catalogo dell'addon è terminato: se la copertura era FULL non può più
+   * rappresentare da solo l'intero catalogo del provider. Si degrada a PARTIAL,
+   * così la schermata unisce anche i titoli TMDB già caricati e la paginazione
+   * TMDB porta il catalogo fino all'ultimo risultato disponibile.
+   */
+  private fun markStremioCatalogExhausted(provider: StreamingProvider) {
+    _stremioProviderStates.update { states ->
+      val current = states[provider.id] ?: return@update states
+      if (current.coverage != ProviderCoverage.FULL) return@update states
+      states + (provider.id to current.copy(coverage = ProviderCoverage.PARTIAL))
+    }
+  }
 
   /** Reset della paginazione di UN provider (entrambi i tipi, indipendentemente dagli altri). */
   fun resetProviderPagination(providerId: Int) {
@@ -5119,8 +5555,10 @@ fun backToBrowsing() {
       val key = Pair(providerId, isTv)
       stremioPagingJobs.remove(key)?.cancel()
       stremioLoadingKeys.remove(key)
-      stremioHasMorePages.remove(key)
+      _stremioProviderHasMorePages.update { it - key }
       providerPages.remove(key)
+      providerPageRetryAfter.remove(key)
+      stremioPageRetryAfter.remove(key)
       _providerHasMorePages.update { it - key }
     }
     updateProviderLoadingState()
@@ -5135,8 +5573,10 @@ fun backToBrowsing() {
    *  - TMDB: paginazione nativa, usata come completamento quando la copertura è
    *    PARTIAL (o come fonte unica quando è NONE).
    *
-   * Cinemeta non è una sorgente provider: il suo manifest non contiene
-   * l'associazione titolo/provider necessaria per dichiarare la disponibilità.
+   * Con copertura FULL si usa Stremio finché consegna titoli nuovi. Quando il
+   * catalogo dell'addon termina, la copertura degrada a PARTIAL e TMDB completa:
+   * un catalogo addon più corto del catalogo reale del provider non può più
+   * bloccare la consultazione (era il caso dei provider con pochi titoli iniziali).
    */
   fun loadNextProviderPage(providerId: Int, isTv: Boolean) {
     val key = Pair(providerId, isTv)
@@ -5151,7 +5591,15 @@ fun backToBrowsing() {
     if (currentProvider != null && coverage != null && coverage != ProviderCoverage.NONE) {
       val provider = currentProvider
       val activeCoverage = coverage
-      if (hasMoreStremioProviderPages(providerId, isTv) && !stremioLoadingKeys.containsKey(key)) {
+      val stremioHasMore = hasMoreStremioProviderPages(providerId, isTv)
+      val stremioBlocked =
+        System.currentTimeMillis() < (stremioPageRetryAfter[key] ?: 0L)
+      if (!stremioHasMore && activeCoverage == ProviderCoverage.FULL) {
+        // Esaurito in una richiesta precedente: il catalogo TMDB completa quello
+        // dell'addon e la UI deve poterlo unire.
+        markStremioCatalogExhausted(provider)
+      }
+      if (stremioHasMore && !stremioBlocked && !stremioLoadingKeys.containsKey(key)) {
         val token = Any()
         stremioLoadingKeys[key] = token
         updateProviderLoadingState()
@@ -5195,20 +5643,42 @@ fun backToBrowsing() {
                 map + (provider.id to base.copy(
                   hasConfirmedBindings = true,
                   itemCount = newTotal,
-                  coverage = activeCoverage
+                  // Non si riporta a FULL una copertura già degradata a PARTIAL
+                  // (l'altro tipo può aver esaurito il catalogo dell'addon).
+                  coverage = if (base.coverage == ProviderCoverage.PARTIAL) {
+                    ProviderCoverage.PARTIAL
+                  } else {
+                    activeCoverage
+                  }
                 ))
               }
-              stremioHasMorePages[key] = true
+              setStremioProviderHasMore(providerId, isTv, true)
+              stremioPageRetryAfter.remove(key)
             } else {
               // Nessun titolo nuovo: pagina vuota oppure l'addon ignora `skip` e
               // riconsegna duplicati. È l'UNICO punto che ferma la paginazione:
               // una risposta piena (20 item) con titoli nuovi NON azzera hasMore.
-              stremioHasMorePages[key] = false
+              setStremioProviderHasMore(providerId, isTv, false)
+              if (activeCoverage == ProviderCoverage.FULL) {
+                // Catalogo addon più corto del catalogo provider: da qui in avanti
+                // il completamento (e la paginazione) è TMDB.
+                markStremioCatalogExhausted(provider)
+                loadNextProviderTmdbPage(providerId, isTv)
+              }
             }
           } catch (e: CancellationException) {
             throw e
           } catch (e: Exception) {
             Log.w(TAG, "Errore paginazione provider Stremio: ${e.message}")
+            // Anche un errore (addon temporaneamente irraggiungibile, risposta non
+            // valida) non può bloccare il catalogo del provider: la copertura degrada
+            // a PARTIAL e TMDB completa. Stremio resta ritentabile ai trigger
+            // successivi, così i suoi titoli non vengono persi quando torna online.
+            stremioPageRetryAfter[key] = System.currentTimeMillis() + PROVIDER_PAGE_RETRY_COOLDOWN_MS
+            if (activeCoverage == ProviderCoverage.FULL) {
+              markStremioCatalogExhausted(provider)
+              loadNextProviderTmdbPage(providerId, isTv)
+            }
           } finally {
             // Il token evita che il finally di un job annullato (riapertura del
             // provider) rilasci il lock della NUOVA richiesta partita dopo il reset.
@@ -5219,15 +5689,41 @@ fun backToBrowsing() {
           }
         }
         stremioPagingJobs[key] = job
+        // FULL: solo Stremio finché ha pagine. PARTIAL: nessun return anticipato,
+        // la paginazione TMDB prosegue sotto come completamento del catalogo.
+        if (activeCoverage == ProviderCoverage.FULL) return
+      } else if (activeCoverage == ProviderCoverage.FULL) {
+        if (stremioBlocked) {
+          // Errore recente della sorgente addon: non si rilancia subito la fetch
+          // (anti-raffica). Si degrada a PARTIAL e TMDB porta avanti il catalogo.
+          markStremioCatalogExhausted(provider)
+        } else {
+          // Fetch Stremio già in corso: si attende il suo esito. Se esaurisce,
+          // sarà il job a far partire la paginazione TMDB.
+          return
+        }
       }
-
-      // FULL: solo Stremio (return). PARTIAL: nessun return anticipato, la
-      // paginazione TMDB prosegue sotto come completamento del catalogo.
-      if (coverage == ProviderCoverage.FULL) return
     }
 
+    loadNextProviderTmdbPage(providerId, isTv)
+  }
+
+  /**
+   * Paginazione TMDB della coppia (provider, tipo), robusta agli errori.
+   *
+   * `providerPages` avanza SOLO dopo una risposta riuscita: una pagina fallita non
+   * viene saltata né marca il catalogo come esaurito, quindi il trigger successivo
+   * (scroll o riapertura della schermata) ritenta la STESSA pagina. La progressione
+   * persistita in Room viene scritta da [MediaRepository.loadProviderCatalog] con la
+   * stessa regola.
+   */
+  private fun loadNextProviderTmdbPage(providerId: Int, isTv: Boolean) {
+    val key = Pair(providerId, isTv)
     if (loadingProviderKeys.contains(key)) return
     if (!hasMoreProviderPages(providerId, isTv)) return
+    // Anti-raffica: una pagina fallita poco fa non viene richiesta di nuovo finché
+    // non è trascorso il cooldown. Il catalogo NON è dichiarato esaurito.
+    if (System.currentTimeMillis() < (providerPageRetryAfter[key] ?: 0L)) return
     loadingProviderKeys.add(key)
     updateProviderLoadingState()
 
@@ -5251,18 +5747,30 @@ fun backToBrowsing() {
         }
 
         MediaRepository.loadProviderCatalog(providerId, isTv, nextPage).collect { page ->
-          Log.d(
-            "PROVIDER_CATALOG",
-            "results provider=$providerId isTv=$isTv page=${page.page} -> " +
-              "${page.items.size} titoli (total_pages=${page.totalPages})"
-          )
-          providerPages[key] = page.page
-          _providerHasMorePages.update { it + (key to page.hasMore) }
-          if (_selectedProvider.value?.tmdbProviderId == providerId) {
-            currentProviderPage = page.page
+          if (page.requestSucceeded) {
+            providerPages[key] = page.page
+            providerPageRetryAfter.remove(key)
+            _providerHasMorePages.update { it + (key to page.hasMore) }
+            if (_selectedProvider.value?.tmdbProviderId == providerId) {
+              currentProviderPage = page.page
+            }
+          } else {
+            // Errore di rete/HTTP: la pagina NON esiste, quindi il cursore resta
+            // fermo e il catalogo NON viene dichiarato esaurito. Al prossimo trigger
+            // (dopo il cooldown) si ritenta la stessa pagina.
+            providerPageRetryAfter[key] =
+              System.currentTimeMillis() + PROVIDER_PAGE_RETRY_COOLDOWN_MS
+            _providerHasMorePages.update { it + (key to true) }
+            Log.w(
+              TAG,
+              "Pagina provider $providerId (isTv=$isTv, page=$nextPage) non riuscita: " +
+                "progressione invariata, nuova richiesta al prossimo trigger"
+            )
           }
         }
       } catch (e: Exception) {
+        providerPageRetryAfter[key] =
+          System.currentTimeMillis() + PROVIDER_PAGE_RETRY_COOLDOWN_MS
         Log.w(TAG, "Errore caricamento pagina provider $providerId (isTv=$isTv): ${e.message}")
       } finally {
         loadingProviderKeys.remove(key)
@@ -5389,8 +5897,18 @@ fun backToBrowsing() {
    /**
     * Carica i contenuti di una sottocategoria provider per Film o Serie TV.
     * Se l'addon attivo non possiede il catalogo del provider, esegue il fallback
-    * automatico su TMDB Discover (con logica HBO-specifica: network ID per serie,
-    * watch_region=US per film).
+    * automatico su TMDB Discover con la query canonica del provider
+    * ([MediaRepository.loadProviderCatalog] → `with_watch_providers` +
+    * `watch_region=IT`).
+    *
+    * Storicamente HBO seguiva un percorso dedicato (network ID 49|3186 per le
+    * serie, watch_region=US per i film): il catalogo risultava INCOMPLETO e
+    * divergente da quello della schermata Provider. Le serie "per network"
+    * escludono l'intera libreria Max presente in Italia (titoli non HBO Original
+    * come Friends o The Mentalist), mentre la regione US include titoli non
+    * disponibili da noi e omette quelli italiani. Oggi HBO non ha più
+    * eccezioni: usa la stessa query di tutti gli altri provider (`1899|384` in
+    * watch_region=IT, vedi [MediaRepository.providerTmdbQuery]).
     *
     * LIMITE CINEMETA: l'addon ufficiale non espone per titolo la disponibilità su
     * un provider. Usare i suoi cataloghi generici qui mostrerebbe contenuti non
@@ -5424,36 +5942,10 @@ fun backToBrowsing() {
              var tmdbItems = emptyList<MediaItem>()
              var tmdbHasMore = false
              if (tmdbProviderId > 0) {
-               val hboFallback = if (MediaRepository.isHboProvider(providerId)) {
-                 if (isTv) {
-                   // Serie TV HBO: usa network IDs (49|3186), senza watch_region
-                   val items = MediaRepository.discoverTvByNetwork(MediaRepository.HBO_NETWORK_IDS, page = 1)
-                   tmdbItems = items
-                   tmdbHasMore = items.size > 0
-                   true
-                 } else {
-                   // Film HBO: usa watch_region=US, provider IDs 384|1899|1825
-                   val items = MediaRepository.discoverMoviesByProvider(
-                     providerId = "384|1899|1825",
-                     isTv = false,
-                     page = 1,
-                     watchRegion = "US"
-                   )
-                   tmdbItems = items
-                   tmdbHasMore = items.size > 0
-                   true
-                 }
-               } else {
-                 false
-               }
-               if (!hboFallback) {
-                 MediaRepository.loadProviderCatalog(tmdbProviderId, isTv, page = 1).collect { tmdbPage ->
-                   tmdbItems = tmdbPage.items
-                   tmdbHasMore = tmdbPage.hasMore
-                   categoryProviderPages[key] = tmdbPage.page
-                 }
-               } else {
-                 categoryProviderPages[key] = 1
+               MediaRepository.loadProviderCatalog(tmdbProviderId, isTv, page = 1).collect { tmdbPage ->
+                 tmdbItems = tmdbPage.items
+                 tmdbHasMore = tmdbPage.hasMore
+                 categoryProviderPages[key] = tmdbPage.page
                }
              }
              val combined = StremioCatalogRepository.deduplicateCrossSource(stremioPage.items + tmdbItems)
@@ -5463,34 +5955,10 @@ fun backToBrowsing() {
          } else if (tmdbProviderId > 0) {
            // Fallback TMDB Discover (provider senza cataloghi negli addon)
            categoryProviderPages[key] = 1
-           val hboFallback = if (MediaRepository.isHboProvider(providerId)) {
-             if (isTv) {
-               // Serie TV HBO: usa network IDs (49|3186), senza watch_region
-               val items = MediaRepository.discoverTvByNetwork(MediaRepository.HBO_NETWORK_IDS, page = 1)
-               _categoryProviderMedia.update { it + (key to items) }
-               categoryProviderHasMore[key] = items.size > 0
-               true
-             } else {
-               // Film HBO: usa watch_region=US, provider IDs 384|1899|1825
-               val items = MediaRepository.discoverMoviesByProvider(
-                 providerId = "384|1899|1825",
-                 isTv = false,
-                 page = 1,
-                 watchRegion = "US"
-               )
-               _categoryProviderMedia.update { it + (key to items) }
-               categoryProviderHasMore[key] = items.size > 0
-               true
-             }
-           } else {
-             false
-           }
-           if (!hboFallback) {
-             MediaRepository.loadProviderCatalog(tmdbProviderId, isTv, page = 1).collect { tmdbPage ->
-               _categoryProviderMedia.update { it + (key to tmdbPage.items) }
-               categoryProviderHasMore[key] = tmdbPage.hasMore
-               categoryProviderPages[key] = tmdbPage.page
-             }
+           MediaRepository.loadProviderCatalog(tmdbProviderId, isTv, page = 1).collect { tmdbPage ->
+             _categoryProviderMedia.update { it + (key to tmdbPage.items) }
+             categoryProviderHasMore[key] = tmdbPage.hasMore
+             categoryProviderPages[key] = tmdbPage.page
            }
          }
        } catch (e: Exception) {
@@ -5534,50 +6002,14 @@ fun backToBrowsing() {
          // Se Stremio non ha consegnato nuovi elementi o se il catalogo e' supportato da TMDB Discover, pagina TMDB
          if (!gotMore && tmdbProviderId > 0) {
            val nextPage = (categoryProviderPages[key] ?: 1) + 1
-           val hboFallback = if (MediaRepository.isHboProvider(providerId)) {
-             if (isTv) {
-               // Serie TV HBO: usa network IDs (49|3186), senza watch_region
-               val items = MediaRepository.discoverTvByNetwork(MediaRepository.HBO_NETWORK_IDS, page = nextPage)
-               if (items.isNotEmpty()) {
-                 _categoryProviderMedia.update { map ->
-                   val current = map[key].orEmpty()
-                   val combined = StremioCatalogRepository.deduplicateCrossSource(current + items)
-                   map + (key to combined)
-                 }
-               }
-               categoryProviderHasMore[key] = items.size > 0
-               true
-             } else {
-               // Film HBO: usa watch_region=US, provider IDs 384|1899|1825
-               val items = MediaRepository.discoverMoviesByProvider(
-                 providerId = "384|1899|1825",
-                 isTv = false,
-                 page = nextPage,
-                 watchRegion = "US"
-               )
-               if (items.isNotEmpty()) {
-                 _categoryProviderMedia.update { map ->
-                   val current = map[key].orEmpty()
-                   val combined = StremioCatalogRepository.deduplicateCrossSource(current + items)
-                   map + (key to combined)
-                 }
-               }
-               categoryProviderHasMore[key] = items.size > 0
-               true
-             }
-           } else {
-             false
-           }
-           if (!hboFallback) {
-             MediaRepository.loadProviderCatalog(tmdbProviderId, isTv, nextPage).collect { tmdbPage ->
-               categoryProviderPages[key] = tmdbPage.page
-               categoryProviderHasMore[key] = tmdbPage.hasMore
-               if (tmdbPage.items.isNotEmpty()) {
-                 _categoryProviderMedia.update { map ->
-                   val current = map[key].orEmpty()
-                   val combined = StremioCatalogRepository.deduplicateCrossSource(current + tmdbPage.items)
-                   map + (key to combined)
-                 }
+           MediaRepository.loadProviderCatalog(tmdbProviderId, isTv, nextPage).collect { tmdbPage ->
+             categoryProviderPages[key] = tmdbPage.page
+             categoryProviderHasMore[key] = tmdbPage.hasMore
+             if (tmdbPage.items.isNotEmpty()) {
+               _categoryProviderMedia.update { map ->
+                 val current = map[key].orEmpty()
+                 val combined = StremioCatalogRepository.deduplicateCrossSource(current + tmdbPage.items)
+                 map + (key to combined)
                }
              }
            }
@@ -5839,22 +6271,88 @@ fun backToBrowsing() {
   }
 
   /**
-   * Selezione di un sottotitolo nella sezione "Sottotitoli Online": scarica il file sul
-   * disco (risolvendo `file_id` → URL temporaneo quando serve, gestendo ZIP/GZIP) e
-   * pubblica lo stato in [onlineSubtitleDownload]. PlayerScreen reagisce a [Ready]
-   * allegando il FILE LOCALE al player (mai gli URL temporanei remoti).
+   * Selezione manuale di un sottotitolo nella sezione "Sottotitoli Online": scarica il file
+   * nella directory **permanente** (risolvendo `file_id` → URL temporaneo quando serve,
+   * gestendo ZIP/GZIP) e pubblica lo stato in [onlineSubtitleDownload]. PlayerScreen
+   * reagisce a [Ready] allegando il FILE LOCALE al player (mai gli URL temporanei remoti).
    */
   fun selectOnlineSubtitle(subtitle: Subtitle) {
     if (subtitle.fileId == null && subtitle.url.isBlank()) return
     if (_onlineSubtitleDownload.value is OnlineSubtitleDownloadState.Downloading) return
     lastSelectedOnlineSubtitle = subtitle
-    performOnlineSubtitleDownload(subtitle)
+    lastOnlineSubtitleDownloadWasRestore = false
+    _persistentSubtitleRestoreFailed.value = false
+    performOnlineSubtitleDownload(subtitle, fromPersistentRestore = false)
   }
 
   /** Riprova il download dell'ultimo sottotitolo selezionato (feedback errore). */
   fun retryOnlineSubtitleDownload() {
     if (_onlineSubtitleDownload.value is OnlineSubtitleDownloadState.Downloading) return
-    lastSelectedOnlineSubtitle?.let { performOnlineSubtitleDownload(it) }
+    lastSelectedOnlineSubtitle?.let {
+      performOnlineSubtitleDownload(
+        it,
+        fromPersistentRestore = lastOnlineSubtitleDownloadWasRestore
+      )
+    }
+  }
+
+  /**
+   * Annulla un download in corso e riporta lo stato a [OnlineSubtitleDownloadState.Idle].
+   *
+   * Usato quando l'utente sceglie una traccia nativa o "Nessuno" mentre un download
+   * OpenSubtitles è in corso: il file non deve essere allegato (e la selezione non deve
+   * essere risalvata) dopo una scelta esplicita diversa.
+   */
+  fun cancelOnlineSubtitleSelection() {
+    onlineSubtitleDownloadJob?.cancel()
+    onlineSubtitleDownloadJob = null
+    lastSelectedOnlineSubtitle = null
+    lastOnlineSubtitleDownloadWasRestore = false
+    _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Idle
+  }
+
+  /**
+   * Rimuove l'associazione persistente OpenSubtitles del contenuto.
+   *
+   * Da chiamare quando l'utente seleziona una traccia nativa oppure "Nessuno":
+   * alla riapertura dello stesso contenuto non deve essere ripristinato il
+   * sottotitolo OpenSubtitles precedente.
+   */
+  fun clearPersistentSubtitleForContent(media: MediaItem, episode: Episode?) {
+    cancelOnlineSubtitleSelection()
+    persistentSubtitleStore.clearSelection(media, episode)
+    _restoredPersistentSubtitle.value = null
+    _persistentSubtitleRestoreFailed.value = false
+  }
+
+  /** Salva l'associazione tra contenuto e sottotitolo OpenSubtitles selezionato. */
+  fun persistOnlineSubtitleSelection(
+    media: MediaItem,
+    episode: Episode?,
+    subtitle: Subtitle,
+    localFile: File?
+  ) {
+    persistentSubtitleStore.saveSelection(
+      mediaItem = media,
+      episode = episode,
+      subtitle = subtitle,
+      localFile = localFile
+    )
+    _persistentSubtitleRestoreFailed.value = false
+  }
+
+  /** Selezione persistente salvata per il contenuto, se presente. */
+  fun savedPersistentSubtitle(media: MediaItem, episode: Episode?): PersistentSubtitleSelection? =
+    persistentSubtitleStore.getSelection(media, episode)
+
+  /** Consuma lo stato "sottotitolo persistente pronto": il player lo ha allegato. */
+  fun clearRestoredPersistentSubtitle() {
+    _restoredPersistentSubtitle.value = null
+  }
+
+  /** Segnala che il ripristino non è recuperabile (avviso non bloccante). */
+  fun markPersistentSubtitleRestoreFailed() {
+    _persistentSubtitleRestoreFailed.value = true
   }
 
   /** Azzeramento dello stato di download (usato al ritorno Ready applicato dal player). */
@@ -5863,20 +6361,27 @@ fun backToBrowsing() {
     _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Idle
   }
 
-  private fun performOnlineSubtitleDownload(subtitle: Subtitle) {
+  private fun performOnlineSubtitleDownload(
+    subtitle: Subtitle,
+    fromPersistentRestore: Boolean
+  ) {
     onlineSubtitleDownloadJob?.cancel()
+    lastOnlineSubtitleDownloadWasRestore = fromPersistentRestore
     _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Downloading
     onlineSubtitleDownloadJob = viewModelScope.launch(ioDispatcher) {
-      val cacheDir = onlineSubtitleCacheDirProvider()
-      if (cacheDir == null) {
-        Log.w("StreamNovaVM", "Cache directory non disponibile: download sottotitolo annullato")
+      val storageDir = onlineSubtitleStorageDirProvider()
+      if (storageDir == null) {
+        Log.w("StreamNovaVM", "Directory sottotitoli non disponibile: download annullato")
         _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Error(
           OpenSubtitlesDownloadError.INVALID_FILE
         )
+        if (fromPersistentRestore) {
+          _persistentSubtitleRestoreFailed.value = true
+        }
         return@launch
       }
       try {
-        val file = onlineSubtitleDownloader.download(subtitle, cacheDir)
+        val file = onlineSubtitleDownloader.download(subtitle, storageDir)
           .getOrThrow()
         // Il player riceve IL FILE LOCALE come traccia esterna: nessuna dipendenza da URL
         // temporanei dopo il download. Formato "file://" compatibile con Uri.parse del
@@ -5891,6 +6396,9 @@ fun backToBrowsing() {
         val mapped = mapOnlineSubtitleError(e)
         Log.w("StreamNovaVM", "Download sottotitolo fallito ($mapped): ${e.message}")
         _onlineSubtitleDownload.value = OnlineSubtitleDownloadState.Error(mapped)
+        if (fromPersistentRestore) {
+          _persistentSubtitleRestoreFailed.value = true
+        }
       }
     }
   }
@@ -5909,6 +6417,103 @@ fun backToBrowsing() {
       val updated = (current.subtitles + subtitle).distinctBy { it.id.ifBlank { it.url } }
       current.copy(subtitles = updated)
     }
+  }
+
+  /**
+   * Tentativo di ripristino del sottotitolo persistente per il contenuto specificato.
+   *
+   * Verifica se esiste una selezione salvata per il media/episodio e la ripristina:
+   * 1. Se il file locale è ancora disponibile e valido, lo espone in
+   *    [restoredPersistentSubtitle]: PlayerScreen lo allega con lo stesso percorso
+   *    usato per i download manuali.
+   * 2. Se il file non è più disponibile (o è corrotto) ma esiste il fileId
+   *    OpenSubtitles, tenta il re-download tramite il flusso [onlineSubtitleDownload].
+   * 3. Se nessuna delle due opzioni è disponibile, segnala [persistentSubtitleRestoreFailed]
+   *    senza selezionare automaticamente un'altra traccia.
+   *
+   * La selezione viene letta dal disco se la cache in memoria non è ancora popolata:
+   * il ripristino funziona quindi anche subito dopo un riavvio completo dell'app.
+   *
+   * @return true se il ripristino è stato avviato (file locale o re-download)
+   */
+  suspend fun tryRestorePersistentSubtitle(
+    media: MediaItem,
+    episode: Episode?
+  ): Boolean {
+    if (!isCurrentPlayback(media, episode)) return false
+    _persistentSubtitleRestoreFailed.value = false
+    _restoredPersistentSubtitle.value = null
+
+    val selection = persistentSubtitleStore.getSelectionAwait(media, episode) ?: return false
+    if (!isCurrentPlayback(media, episode)) return false
+
+    val localFile = persistentSubtitleStore.getLocalFile(selection)
+    if (localFile != null) {
+      val validity = PlayerOnlineSubtitleFile.validate(localFile)
+      if (validity == PlayerOnlineSubtitleFile.Validity.OK) {
+        _restoredPersistentSubtitle.value = persistentSubtitleStore.toSubtitle(selection)
+        Log.i(TAG, "Sottotitolo persistente pronto da file locale: ${localFile.absolutePath}")
+        return true
+      }
+      Log.w(
+        TAG,
+        "File sottotitolo persistente non valido ($validity): " +
+          "tento il recupero tramite fileId=${selection.fileId}"
+      )
+    }
+
+    if (selection.fileId > 0L) {
+      val subtitle = Subtitle(
+        id = selection.contentId,
+        url = "",
+        lang = selection.lang,
+        addonName = "OpenSubtitles",
+        label = selection.label,
+        fileId = selection.fileId
+      )
+      lastSelectedOnlineSubtitle = subtitle
+      lastOnlineSubtitleDownloadWasRestore = true
+      performOnlineSubtitleDownload(subtitle, fromPersistentRestore = true)
+      Log.i(
+        TAG,
+        "Sottotitolo persistente: file non disponibile, re-download avviato " +
+          "(fileId=${selection.fileId})"
+      )
+      return true
+    }
+
+    Log.w(TAG, "Sottotitolo persistente non ripristinabile: nessun fileId OpenSubtitles")
+    _persistentSubtitleRestoreFailed.value = true
+    return false
+  }
+
+  /** True se il media/episodio indicato è ancora la sessione di playback corrente. */
+  private fun isCurrentPlayback(media: MediaItem, episode: Episode?): Boolean {
+    val state = _playbackState.value
+    // Nessuna sessione pubblicata (es. test della logica di ripristino): non c'è
+    // uno stato precedente da invalidare.
+    val currentMedia = state.media ?: return true
+    if (currentMedia.id != media.id) return false
+    val current = state.currentEpisode
+    return if (episode == null) {
+      current == null
+    } else {
+      current != null &&
+        current.seasonNumber == episode.seasonNumber &&
+        current.episodeNumber == episode.episodeNumber
+    }
+  }
+
+  /**
+   * Notifica che il ripristino del sottotitolo persistente è fallito perché il
+   * contenuto non è più recuperabile. Questo stato può essere usato per mostrare
+   * un avviso non bloccante all'utente.
+   */
+  private val _persistentSubtitleRestoreFailed = MutableStateFlow(false)
+  val persistentSubtitleRestoreFailed: StateFlow<Boolean> = _persistentSubtitleRestoreFailed.asStateFlow()
+
+  fun clearPersistentSubtitleRestoreFailed() {
+    _persistentSubtitleRestoreFailed.value = false
   }
 
   // ===========================================================================

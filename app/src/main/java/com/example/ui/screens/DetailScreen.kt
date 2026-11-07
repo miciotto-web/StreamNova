@@ -116,6 +116,7 @@ import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
 import com.example.data.stremio.StremioCatalogMapper
+import com.example.data.util.DetailFactsMapper
 import com.example.ui.components.MediaActionBar
 import com.example.ui.components.MediaActionBarFocus
 import com.example.ui.components.ProviderBadge
@@ -153,6 +154,30 @@ private val DetailTitleShadow = TextStyle(
 enum class DetailTab(val titleRes: Int) {
   EPISODI(R.string.detail_tab_episodes),
   PRODUZIONE(R.string.detail_tab_production),
+  /**
+   * Scheda informativa con i metadati TMDB (stato, rilascio, durata, certificazione,
+   * paese). Per le serie TV usa solo i campi equivalenti realmente disponibili e
+   * un'etichetta neutra («Dettagli»), mai dati cinematografici travestiti.
+   */
+  DETTAGLI_FILM(R.string.detail_tab_movie_details),
+}
+
+/**
+ * Ordine delle schede della scheda Dettagli.
+ *
+ * Le schede preesistenti mantengono il loro ordine (Episodi solo per le serie, poi
+ * Produzione); «Dettagli Film» si aggiunge subito dopo Produzione, quindi le due
+ * sezioni restano adiacenti e raggiungibili con una sola pressione di D-pad.
+ */
+internal fun detailTabs(
+  isTvSeries: Boolean,
+  includeMovieDetails: Boolean = true
+): List<DetailTab> = buildList {
+  if (isTvSeries) add(DetailTab.EPISODI)
+  add(DetailTab.PRODUZIONE)
+  // I canali LIVE degli addon Stremio non hanno metadati TMDB: la scheda non viene
+  // aggiunta (le schede preesistenti restano invariate).
+  if (includeMovieDetails) add(DetailTab.DETTAGLI_FILM)
 }
 
 /**
@@ -298,11 +323,9 @@ fun DetailScreen(
 
 
   val isTvSeries = displayMedia.type == MediaType.SERIE_TV && !isLiveChannel
-  val tabs = if (isTvSeries) {
-    listOf(DetailTab.EPISODI, DetailTab.PRODUZIONE)
-  } else {
-    listOf(DetailTab.PRODUZIONE)
-  }
+  // «Dettagli Film» è sempre accanto a «Produzione»: l'ordine delle schede esistenti
+  // resta invariato (Episodi, Produzione) e la nuova scheda si aggiunge in coda.
+  val tabs = detailTabs(isTvSeries, includeMovieDetails = !isLiveChannel)
 
   // Tab selezionato PERSISTENTE nel backstack di Navigation (rememberSaveable):
   // tornando con Back da una scheda aperta dai Consigliati, la scheda originale rientra
@@ -1192,6 +1215,13 @@ fun DetailScreen(
         ) {
           tabs.forEachIndexed { index, tab ->
             val isSelected = selectedTab == index
+            // La scheda dei metadati è pensata per i film: per una serie TV mantiene
+            // la stessa posizione ma con l'etichetta neutra «Dettagli».
+            val tabTitleRes = if (tab == DetailTab.DETTAGLI_FILM && isTvSeries) {
+              R.string.detail_tab_series_details
+            } else {
+              tab.titleRes
+            }
             TvFocusableBox(
               shape = RoundedCornerShape(8.dp),
               onClick = { selectedTab = index }
@@ -1206,7 +1236,7 @@ fun DetailScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
               ) {
                 Text(
-                  text = stringResource(tab.titleRes),
+                  text = stringResource(tabTitleRes),
                   color = if (isSelected || isFocused) NovaCyanBright else NovaTextSecondary,
                   fontSize = 16.sp,
                   fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium
@@ -1540,6 +1570,16 @@ fun DetailScreen(
               onFocusRestored = onClearTargetCompany,
 
 
+              modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
+            )
+          }
+        }
+        DetailTab.DETTAGLI_FILM -> {
+          item {
+            MovieDetailsSection(
+              details = extendedDetails,
+              media = displayMedia,
+              isTvSeries = isTvSeries,
               modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
             )
           }
@@ -2086,6 +2126,148 @@ fun EpisodeRowItem(
       }
     }
   }
+}
+
+/**
+ * Scheda «Dettagli Film»: elenco etichetta/valore con separatore sottile, senza card
+ * né decorazioni aggiuntive rispetto al riferimento TV.
+ *
+ * Fonti dei dati (tutte TMDB, nessun valore fisso):
+ *  - stato → [ExtendedMediaDetails.status];
+ *  - anno di uscita/prima messa in onda → data ISO stretta del dettaglio o, in
+ *    caricamento, la data già nota del [MediaItem] (mai un anno di comodo);
+ *  - durata → [ExtendedMediaDetails.runtimeMinutes] (runtime del film o durata di un
+ *    episodio per le serie);
+ *  - certificazione → [ExtendedMediaDetails.certification] (grezza, es. `PG-13`);
+ *  - paese → [ExtendedMediaDetails.originCountry].
+ *
+ * Una riga senza dato non viene composta. Ogni riga è focalizzabile: il D-pad può
+ * scorrere l'elenco e la riga a fuoco ha un'evidenza discreta (bordo/sfondo ciano),
+ * necessaria per l'accessibilità TV.
+ */
+@Composable
+fun MovieDetailsSection(
+  details: ExtendedMediaDetails?,
+  media: MediaItem,
+  isTvSeries: Boolean,
+  modifier: Modifier = Modifier
+) {
+  val status = DetailFactsMapper.status(details?.status)
+  val statusLabel = status?.let { stringResource(it.labelRes()) }
+  val releaseYear = DetailFactsMapper.releaseYear(details?.releaseDate ?: media.releaseDate)
+  val duration = DetailFactsMapper.formatDuration(details?.runtimeMinutes)
+  val certification = details?.certification?.takeIf { it.isNotBlank() }
+  val originCountry = details?.originCountry?.takeIf { it.isNotBlank() }
+
+  val statusRow = statusLabel?.let { stringResource(R.string.detail_info_status) to it }
+  val releaseLabel = stringResource(
+    if (isTvSeries) R.string.detail_info_first_air else R.string.detail_info_release
+  )
+  val runtimeLabel = stringResource(
+    if (isTvSeries) R.string.detail_info_episode_runtime else R.string.detail_info_runtime
+  )
+  val certificationLabel = stringResource(R.string.detail_info_certification)
+  val originCountryLabel = stringResource(R.string.detail_info_origin_country)
+
+  val rows = listOfNotNull(
+    statusRow,
+    releaseYear?.let { releaseLabel to it.toString() },
+    duration?.let { runtimeLabel to it },
+    certification?.let { certificationLabel to it },
+    originCountry?.let { originCountryLabel to it }
+  )
+
+  Column(modifier = modifier.fillMaxWidth()) {
+    Text(
+      text = stringResource(
+        if (isTvSeries) R.string.detail_series_details_title else R.string.detail_movie_details_title
+      ),
+      color = NovaTextPrimary,
+      fontSize = 22.sp,
+      fontWeight = FontWeight.Bold,
+      letterSpacing = 0.2.sp
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+
+    if (rows.isEmpty()) {
+      Text(
+        text = stringResource(R.string.detail_info_empty),
+        color = NovaTextMuted,
+        fontSize = 14.sp,
+        modifier = Modifier.padding(vertical = 12.dp)
+      )
+    } else {
+      rows.forEachIndexed { index, (label, value) ->
+        MovieDetailFactRow(
+          label = label,
+          value = value,
+          showDivider = index < rows.lastIndex
+        )
+      }
+    }
+  }
+}
+
+/** Riga informativa focalizzabile della scheda «Dettagli Film». */
+@Composable
+private fun MovieDetailFactRow(
+  label: String,
+  value: String,
+  showDivider: Boolean
+) {
+  var isFocused by remember { mutableStateOf(false) }
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(6.dp))
+      .onFocusChanged { isFocused = it.isFocused }
+      .focusable()
+      .background(if (isFocused) NovaCyan.copy(alpha = 0.12f) else Color.Transparent)
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 10.dp, vertical = 14.dp),
+      verticalAlignment = Alignment.Top
+    ) {
+      Text(
+        text = label,
+        color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+        fontSize = 15.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.weight(0.28f)
+      )
+      Text(
+        text = value,
+        color = NovaTextPrimary,
+        fontSize = 15.sp,
+        lineHeight = 20.sp,
+        modifier = Modifier.weight(0.72f)
+      )
+    }
+    if (showDivider) {
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 10.dp)
+          .height(1.dp)
+          .background(Color.White.copy(alpha = 0.12f))
+      )
+    }
+  }
+}
+
+/** Etichetta localizzata dello stato TMDB normalizzato. */
+private fun DetailFactsMapper.TitleStatus.labelRes(): Int = when (this) {
+  DetailFactsMapper.TitleStatus.RELEASED -> R.string.detail_status_released
+  DetailFactsMapper.TitleStatus.POST_PRODUCTION -> R.string.detail_status_post_production
+  DetailFactsMapper.TitleStatus.IN_PRODUCTION -> R.string.detail_status_in_production
+  DetailFactsMapper.TitleStatus.PLANNED -> R.string.detail_status_planned
+  DetailFactsMapper.TitleStatus.CANCELED -> R.string.detail_status_canceled
+  DetailFactsMapper.TitleStatus.RUMORED -> R.string.detail_status_rumored
+  DetailFactsMapper.TitleStatus.RETURNING_SERIES -> R.string.detail_status_returning_series
+  DetailFactsMapper.TitleStatus.ENDED -> R.string.detail_status_ended
+  DetailFactsMapper.TitleStatus.PILOT -> R.string.detail_status_pilot
 }
 
 @Composable

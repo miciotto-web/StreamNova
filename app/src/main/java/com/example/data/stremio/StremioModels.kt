@@ -216,6 +216,12 @@ data class StremioManifest(
   val name: String? = null,
   val version: String? = null,
   val description: String? = null,
+  /**
+   * Logo ufficiale dichiarato dal manifest dell'addon (protocollo Stremio).
+   * È l'identità grafica dell'ADDON, distinta dal provider Debrid usato per
+   * sbloccare lo stream: viene mostrata nella card della sorgente.
+   */
+  val logo: String? = null,
   val resources: List<Any?>? = null,
   val types: List<String>? = null,
   val idPrefixes: List<String>? = null,

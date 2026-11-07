@@ -366,6 +366,8 @@ class StremioTorBoxTest {
     StremioStreamCandidate(
       addonName = "Torrentio",
       baseUrl = "https://torrentio.strem.fun",
+      addonId = "com.stremio.torrentio.addon",
+      addonLogo = "https://torrentio.strem.fun/images/logo_v1.png",
       item = StremioStreamItem(
         infoHash = "hash" + i.toString().padStart(2, '0'),
         fileIdx = i,
@@ -404,6 +406,15 @@ class StremioTorBoxTest {
     assertEquals(listOf("4K", "1080p", "720p"), sources.map { it.quality })
     assertTrue("streamUrl resta null, risolto on-demand", sources.all { it.streamUrl == null })
     assertTrue("tutti i risultati sono confermati in cache", sources.all { it.isCached })
+    // L'identità dell'ADDON (manifest id + logo) arriva alla card, distinta da TorBox.
+    assertTrue(
+      "l'addon di origine deve essere preservato",
+      sources.all { it.addonId == "com.stremio.torrentio.addon" }
+    )
+    assertTrue(
+      "il logo dell'addon di origine deve essere preservato",
+      sources.all { it.addonLogo == "https://torrentio.strem.fun/images/logo_v1.png" }
+    )
   }
 
   @Test

@@ -2,6 +2,7 @@ package com.example.data.api
 
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.util.ReleaseDateUtils
 
 /**
  * Mapper PURO dei DTO TMDB verso [MediaItem] per i cataloghi nativi della Home.
@@ -43,6 +44,7 @@ object TmdbCatalogMapper {
       posterUrl = TmdbApiClient.posterUrl(movie.posterPath, size = "w500"),
       type = MediaType.FILM,
       year = yearOf(movie.releaseDate),
+      releaseDate = ReleaseDateUtils.normalizeIsoDate(movie.releaseDate),
       rating = rating,
       genres = if (isTop10) (genres + TOP_10_TAG).distinct() else genres,
       isTop10 = isTop10,
@@ -64,6 +66,7 @@ object TmdbCatalogMapper {
       posterUrl = TmdbApiClient.posterUrl(tv.posterPath, size = "w500"),
       type = MediaType.SERIE_TV,
       year = yearOf(tv.firstAirDate),
+      releaseDate = ReleaseDateUtils.normalizeIsoDate(tv.firstAirDate),
       durationMinutes = 55,
       rating = rating,
       genres = if (isTop10) (genres + TOP_10_TAG).distinct() else genres,

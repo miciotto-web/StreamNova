@@ -608,10 +608,11 @@ class PlayNextEpisodeResolutionTest {
     assertEquals(2, viewModel.playbackState.value.currentEpisode?.episodeNumber)
     assertTrue(viewModel.streamResolutionState.value is StreamResolutionState.Success)
     assertEquals("cccccccccccccccccccccccccccccccccccccccc", viewModel.playbackState.value.currentSource?.infoHash)
+    assertEquals(NextEpisodeAutoplayState.STARTED, viewModel.nextEpisodeAutoplayState.value)
   }
 
   @Test
-  fun testNextEpisodeSameTorrentFallsBackToProvidersWhenFileUnavailable() = runTest(testDispatcher) {
+  fun testNextEpisodeSameTorrentUnavailableStopsAutoplayWithoutProviderQuery() = runTest(testDispatcher) {
     val ep1Torrent = StreamSource(
       streamUrl = "https://torbox.app/dl/s1e1.mkv",
       quality = "1080p",
@@ -653,7 +654,8 @@ class PlayNextEpisodeResolutionTest {
     AppSettingsRepository.setAutoplayEnabled(true)
 
     val viewModel = createViewModel(fakeProvider)
-    // Il torrent corrente NON contiene il file del nuovo episodio: si interrogano i provider.
+    // Il torrent corrente NON contiene il file del nuovo episodio: la stessa fonte
+    // Debrid non è disponibile.
     viewModel.seasonPackEpisodeResolver = { _, _, _ -> null }
     viewModel.openPlayer(seriesFixture(), currentEpisodeFixture(), ep1Torrent)
     advanceUntilIdle()
@@ -661,9 +663,16 @@ class PlayNextEpisodeResolutionTest {
     viewModel.playNextEpisode(nextEpisodeFixture())
     advanceUntilIdle()
 
-    assertTrue("Providers must be queried when the season pack has no matching file", fakeProvider.invocations == 1)
-    assertEquals("https://torbox.app/dl/s1e2-fallback.mkv", viewModel.playbackState.value.streamUrl)
-    assertTrue(viewModel.streamResolutionState.value is StreamResolutionState.Success)
+    // CASO B: l'autoplay si ferma. Nessuna sorgente diversa viene avviata
+    // automaticamente e i provider non vengono interrogati (niente nuovo ciclo/loop).
+    assertEquals("Nessuna ricerca provider quando la stessa fonte non è disponibile", 0, fakeProvider.invocations)
+    assertNull("Nessuno stream diverso avviato automaticamente", viewModel.playbackState.value.streamUrl)
+    assertEquals(2, viewModel.playbackState.value.currentEpisode?.episodeNumber)
+    assertEquals(NextEpisodeAutoplayState.SOURCE_UNAVAILABLE, viewModel.nextEpisodeAutoplayState.value)
+    assertFalse(viewModel.isSwitchingEpisode.value)
+    assertTrue(viewModel.streamResolutionState.value is StreamResolutionState.Idle)
+    assertFalse("Nessun dialog forzato senza sorgenti da mostrare", viewModel.showSourceDialog.value)
+    assertTrue(viewModel.availableSources.value.isEmpty())
   }
 
   // ── Anti-loop: una sola transizione attiva per volta ───────────────

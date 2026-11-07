@@ -184,6 +184,17 @@ data class TmdbProductionCompanyDto(
   @Json(name = "origin_country") val originCountry: String? = null
 )
 
+/**
+ * Paese di produzione dichiarato da TMDB (`production_countries`).
+ *
+ * Per i film e le serie è la fonte del nome leggibile del paese d'origine mostrato in
+ * «Dettagli Film»; `iso_3166_1` resta il codice usato per abbinarlo a `origin_country`.
+ */
+data class TmdbProductionCountryDto(
+  @Json(name = "iso_3166_1") val iso3166_1: String? = null,
+  val name: String? = null
+)
+
 data class TmdbCompanyDetailDto(
   val id: Int,
   val name: String,
@@ -249,6 +260,10 @@ data class TmdbMovieDetailDto(
   val similar: TmdbPaginatedResponse<TmdbMovieDto>? = null,
   @Json(name = "release_dates") val releaseDates: TmdbMovieReleaseDatesResponseDto? = null,
   @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList(),
+  /** Codici ISO dei paesi d'origine (`origin_country`, es. `["US"]`). */
+  @Json(name = "origin_country") val originCountry: List<String>? = emptyList(),
+  /** Paesi di produzione con nome leggibile (`production_countries`). */
+  @Json(name = "production_countries") val productionCountries: List<TmdbProductionCountryDto>? = emptyList(),
   val translations: TmdbTranslationsDto? = null
 )
 
@@ -286,6 +301,10 @@ data class TmdbTvDetailDto(
   val seasons: List<TmdbSeasonInfoDto>? = emptyList(),
   @Json(name = "content_ratings") val contentRatings: TmdbTvContentRatingsResponseDto? = null,
   @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList(),
+  /** Codici ISO dei paesi d'origine (`origin_country`, es. `["US"]`). */
+  @Json(name = "origin_country") val originCountry: List<String>? = emptyList(),
+  /** Paesi di produzione con nome leggibile (`production_countries`). */
+  @Json(name = "production_countries") val productionCountries: List<TmdbProductionCountryDto>? = emptyList(),
   val translations: TmdbTranslationsDto? = null
 )
 
@@ -567,15 +586,6 @@ interface TmdbApiService {
     @Query("first_air_date.gte") firstAirDateGte: String,
     @Query("first_air_date.lte") firstAirDateLte: String,
     @Query("sort_by") sortBy: String = "first_air_date.desc",
-    @Query("language") language: String = "it-IT",
-    @Query("page") page: Int = 1
-  ): TmdbPaginatedResponse<TmdbTvDto>
-
-  @GET("discover/tv")
-  suspend fun discoverTvByNetwork(
-    @Query("api_key") apiKey: String,
-    @Query("with_networks") networkId: String,
-    @Query("sort_by") sortBy: String = "popularity.desc",
     @Query("language") language: String = "it-IT",
     @Query("page") page: Int = 1
   ): TmdbPaginatedResponse<TmdbTvDto>

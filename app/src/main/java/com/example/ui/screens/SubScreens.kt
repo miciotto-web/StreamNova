@@ -2,10 +2,15 @@ package com.example.ui.screens
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -15,8 +20,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,43 +35,41 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Extension
-import androidx.compose.material.icons.filled.HdrOn
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Opacity
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
-import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Subtitles
-import androidx.compose.material.icons.filled.SyncAlt
 import androidx.compose.material.icons.filled.Translate
-import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wallpaper
@@ -105,6 +110,13 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -114,6 +126,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.snapshotFlow
 import androidx.annotation.StringRes
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.example.R
 import com.example.BuildConfig
@@ -128,6 +142,8 @@ import com.example.data.model.SearchCategoryFilter
 import com.example.data.model.SearchTypeFilter
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.BackBufferOption
+import com.example.data.prefs.ContinueWatchingLayout
+import com.example.data.prefs.ContinueWatchingSort
 import com.example.data.prefs.DecoderFallbackMode
 import com.example.data.prefs.InitialBufferOption
 import com.example.data.prefs.LastStreamCacheDuration
@@ -135,11 +151,13 @@ import com.example.data.prefs.PlaybackSettings
 import com.example.data.prefs.PreferredResolution
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
+import com.example.data.prefs.SubtitleOpacity
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.TargetBufferOption
 import com.example.data.update.UpdateCheckState
 import com.example.data.update.UpdateDownloadState
+import androidx.media3.common.MediaLibraryInfo
 import com.example.ui.components.ContinueWatchingCard
 import com.example.ui.components.FOCUS_ROW_ANY
 import com.example.ui.components.LocalClearLastFocusedMedia
@@ -161,6 +179,9 @@ import com.example.ui.components.TextInputDialog
 import com.example.ui.components.TvPinDialog
 import com.example.ui.components.SimklLoginController
 import com.example.ui.components.SimklLoginDialog
+import com.example.ui.screens.player.subtitleBackgroundLabel
+import com.example.ui.screens.player.subtitleOpacityLabel
+import com.example.ui.screens.player.subtitleSizeLabel
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCardBgFocused
@@ -194,6 +215,10 @@ enum class CategoryCatalogFilter(
   PRIME_VIDEO("prime_video", brandName = "Prime Video", tmdbProviderId = 119, providerId = "prime"),
   APPLE_TV("apple_tv", brandName = "Apple TV+", tmdbProviderId = 350, providerId = "apple"),
   PARAMOUNT_PLUS("paramount_plus", brandName = "Paramount+", tmdbProviderId = 531, providerId = "paramount"),
+  // NOW TV (Sky): provider TMDB 39 verificato su watch_region=IT (Film e Serie TV).
+  // providerId = "nowtv" coincide con ProviderConstants.NOW_TV.id: il ViewModel lo usa
+  // per l'associazione Stremio (alias "now"/"nowtv") e per il tag dei titoli.
+  NOW_TV("now_tv", brandName = "NOW TV", tmdbProviderId = 39, providerId = "nowtv"),
   ACTION("action", labelRes = R.string.filter_action),
   SCI_FI("sci_fi", labelRes = R.string.filter_sci_fi),
   DRAMA("drama", labelRes = R.string.filter_drama),
@@ -2210,6 +2235,11 @@ fun SettingsScreen(
   val streamingEngineMode = AppSettingsRepository.streamingEngineMode.collectAsState().value ?: StreamingEngineMode.HTTP_WEB
   val autoplayEnabled = viewModel?.autoplayEnabled?.collectAsState()?.value ?: false
   val tmdbGenreFallbackEnabled = viewModel?.tmdbGenreFallbackEnabled?.collectAsState()?.value ?: true
+  val hideUnreleasedContent = viewModel?.hideUnreleasedContent?.collectAsState()?.value
+    ?: AppSettingsRepository.hideUnreleasedContent.collectAsState().value
+  // Sezione «Continua a guardare»: stessa sorgente di verità della riga Home.
+  val continueWatchingPreferences = viewModel?.continueWatchingPreferences?.collectAsState()?.value
+    ?: AppSettingsRepository.continueWatchingPreferences.collectAsState().value
   // Contesto al ViewModel: i messaggi della sezione Ricerca sono risorse localizzate
   // risolte lì (fuori dalla composizione). Operazione idempotente, nessun leak.
   LaunchedEffect(viewModel) { viewModel?.attachContext(context) }
@@ -2230,6 +2260,7 @@ fun SettingsScreen(
   var showSubtitleLanguageDialog by remember { mutableStateOf(false) }
   var showSubtitleSizeDialog by remember { mutableStateOf(false) }
   var showSubtitleBackgroundDialog by remember { mutableStateOf(false) }
+  var showSubtitleOpacityDialog by remember { mutableStateOf(false) }
   var showSubtitlePositionDialog by remember { mutableStateOf(false) }
   var showAudioLanguageDialog by remember { mutableStateOf(false) }
   var showAppLanguageDialog by remember { mutableStateOf(false) }
@@ -2246,6 +2277,11 @@ fun SettingsScreen(
   var showDecoderFallbackDialog by remember { mutableStateOf(false) }
   var isClearingCache by remember { mutableStateOf(false) }
   var showUpdateResultDialog by remember { mutableStateOf(false) }
+  // Sezione «Continua a guardare»: aperta di default (come nelle immagini di
+  // riferimento); lo stato vive solo nella composizione, le preferenze interne sono
+  // persistite singolarmente.
+  var continueWatchingExpanded by remember { mutableStateOf(true) }
+  var showContinueWatchingSortDialog by remember { mutableStateOf(false) }
   val simklAccount by SimklRepository.accountState.collectAsState()
   val simklSyncResult by SimklRepository.lastSyncResult.collectAsState()
   val simklSyncing by SimklRepository.isSyncing.collectAsState()
@@ -2550,12 +2586,10 @@ fun SettingsScreen(
             )
 
             // Toggle "Usa TorBox Instant Debrid"
-            SettingsRow(
-              icon = Icons.Default.Bolt,
+            SettingsSwitchRow(
               title = stringResource(R.string.settings_use_torbox_instant),
-              value = if (torBoxEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-              valueColor = if (torBoxEnabled) NovaGreen else NovaTextMuted,
-              onClick = { viewModel?.setTorBoxInstantDebridEnabled(!torBoxEnabled) }
+              checked = torBoxEnabled,
+              onCheckedChange = { viewModel?.setTorBoxInstantDebridEnabled(it) }
             )
           } else {
             // Spiegazione per modalità HTTP
@@ -2571,26 +2605,89 @@ fun SettingsScreen(
         }
       }
 
+      // ── HOME ────────────────────────────────────────────────────────────
+      // Subito dopo Motore di Riproduzione e prima di Ricerca e cataloghi:
+      // l'opzione riguarda ciò che la Home mostra, non la riproduzione né la ricerca.
+      item {
+        SettingsSection(title = stringResource(R.string.settings_home_section)) {
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_hide_unreleased),
+            subtitle = stringResource(R.string.settings_hide_unreleased_desc),
+            checked = hideUnreleasedContent,
+            onCheckedChange = { viewModel?.setHideUnreleasedContent(it) }
+          )
+        }
+      }
+
+      // ── CONTINUA A GUARDARE ─────────────────────────────────────────────
+      // Sezione espandibile dedicata alla riga omonima della Home. Tutte le opzioni
+      // modificano la presentazione della riga (visibilità, layout, immagine,
+      // sfocatura, ripresa, episodi futuri, ordinamento) tramite un unico policy
+      // condiviso; qui vive solo la UI delle preferenze.
+      item {
+        SettingsExpandableSection(
+          title = stringResource(R.string.settings_cw_section_title),
+          subtitle = stringResource(R.string.settings_cw_section_desc),
+          expanded = continueWatchingExpanded,
+          expandedLabel = stringResource(R.string.settings_cw_expanded),
+          collapsedLabel = stringResource(R.string.settings_cw_collapsed),
+          onToggle = { continueWatchingExpanded = !continueWatchingExpanded }
+        ) {
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_show),
+            subtitle = stringResource(R.string.settings_cw_show_desc),
+            checked = continueWatchingPreferences.showRow,
+            onCheckedChange = { viewModel?.setContinueWatchingShowRow(it) }
+          )
+          SettingsContinueWatchingLayoutSelector(
+            title = stringResource(R.string.settings_cw_layout),
+            selected = continueWatchingPreferences.layout,
+            onSelect = { layout -> viewModel?.setContinueWatchingLayout(layout) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_episode_thumbnails),
+            subtitle = stringResource(R.string.settings_cw_episode_thumbnails_desc),
+            checked = continueWatchingPreferences.useEpisodeThumbnails,
+            onCheckedChange = { viewModel?.setContinueWatchingEpisodeThumbnails(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_blur_unwatched),
+            subtitle = stringResource(R.string.settings_cw_blur_unwatched_desc),
+            checked = continueWatchingPreferences.blurUnwatched,
+            onCheckedChange = { viewModel?.setContinueWatchingBlurUnwatched(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_next_from_furthest),
+            subtitle = stringResource(R.string.settings_cw_next_from_furthest_desc),
+            checked = continueWatchingPreferences.nextEpisodeFromFurthest,
+            onCheckedChange = { viewModel?.setContinueWatchingNextEpisodeFromFurthest(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_show_unaired),
+            subtitle = stringResource(R.string.settings_cw_show_unaired_desc),
+            checked = continueWatchingPreferences.showUnairedEpisodes,
+            onCheckedChange = { viewModel?.setContinueWatchingShowUnairedEpisodes(it) }
+          )
+          SettingsRow(
+            icon = Icons.AutoMirrored.Filled.Sort,
+            title = stringResource(R.string.settings_cw_sort),
+            value = continueWatchingSortLabel(continueWatchingPreferences.sort),
+            onClick = { showContinueWatchingSortDialog = true },
+            showChevron = true
+          )
+        }
+      }
+
       // ── RICERCA E CATALOGHI ─────────────────────────────────────────────
       // Lo switch più vicino alla sua area di effetto: la sezione Ricerca e i
-      // cataloghi. Riga D-pad focalizzabile come le altre (SettingsRow), descrizione
-      // esplicita sotto la riga per spiegare quando TMDB viene interrogato.
+      // cataloghi. La descrizione vive dentro la riga, sotto il titolo.
       item {
         SettingsSection(title = stringResource(R.string.settings_search_section)) {
-          SettingsRow(
-            icon = Icons.Default.Search,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_tmdb_genre_fallback),
-            value = if (tmdbGenreFallbackEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (tmdbGenreFallbackEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setTmdbGenreFallbackEnabled(!tmdbGenreFallbackEnabled) }
-          )
-          Text(
-            text = stringResource(R.string.settings_tmdb_genre_fallback_desc),
-            color = NovaTextSecondary,
-            fontSize = 12.sp,
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 16.dp, vertical = 8.dp)
+            subtitle = stringResource(R.string.settings_tmdb_genre_fallback_desc),
+            checked = tmdbGenreFallbackEnabled,
+            onCheckedChange = { viewModel?.setTmdbGenreFallbackEnabled(it) }
           )
         }
       }
@@ -2598,12 +2695,10 @@ fun SettingsScreen(
       // ── RIPRODUZIONE ────────────────────────────────────────────────────
       item {
         SettingsSection(title = stringResource(R.string.settings_sec_playback)) {
-          SettingsRow(
-            icon = Icons.Default.PlayArrow,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_autoplay),
-            value = if (autoplayEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (autoplayEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAutoplayEnabled(!autoplayEnabled) }
+            checked = autoplayEnabled,
+            onCheckedChange = { viewModel?.setAutoplayEnabled(it) }
           )
           SettingsRow(
             icon = Icons.Default.HighQuality,
@@ -2617,26 +2712,46 @@ fun SettingsScreen(
             value = audioLanguageLabel(playbackSettings.preferredAudioLanguage),
             onClick = { showAudioLanguageDialog = true }
           )
-          SettingsRow(
-            icon = Icons.Default.Language,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_prioritize_italian_audio),
-            value = if (playbackSettings.prioritizeItalianAudio) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.prioritizeItalianAudio) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setPrioritizeItalianAudio(!playbackSettings.prioritizeItalianAudio) }
+            subtitle = stringResource(R.string.settings_prioritize_italian_audio_desc),
+            checked = playbackSettings.prioritizeItalianAudio,
+            onCheckedChange = { viewModel?.setPrioritizeItalianAudio(it) }
           )
-          SettingsRow(
-            icon = Icons.Default.PlayArrow,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_autoplay_next_episode),
-            value = if (playbackSettings.autoPlayNextEpisodeEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.autoPlayNextEpisodeEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAutoPlayNextEpisode(!playbackSettings.autoPlayNextEpisodeEnabled) }
+            checked = playbackSettings.autoPlayNextEpisodeEnabled,
+            onCheckedChange = { viewModel?.setAutoPlayNextEpisode(it) }
           )
-          SettingsRow(
-            icon = Icons.Default.Replay,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_auto_resume),
-            value = if (playbackSettings.autoResume) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.autoResume) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAutoResume(!playbackSettings.autoResume) }
+            checked = playbackSettings.autoResume,
+            onCheckedChange = { viewModel?.setAutoResume(it) }
+          )
+          // Overlay e avvisi di riproduzione: quattro opzioni indipendenti tra loro.
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_loading_overlay),
+            subtitle = stringResource(R.string.settings_loading_overlay_desc),
+            checked = playbackSettings.loadingOverlayEnabled,
+            onCheckedChange = { viewModel?.setLoadingOverlayEnabled(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_loading_status),
+            subtitle = stringResource(R.string.settings_loading_status_desc),
+            checked = playbackSettings.loadingStatusEnabled,
+            onCheckedChange = { viewModel?.setLoadingStatusEnabled(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_pause_overlay),
+            subtitle = stringResource(R.string.settings_pause_overlay_desc),
+            checked = playbackSettings.pauseOverlayEnabled,
+            onCheckedChange = { viewModel?.setPauseOverlayEnabled(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_parental_guide),
+            subtitle = stringResource(R.string.settings_parental_guide_desc),
+            checked = playbackSettings.parentalGuideEnabled,
+            onCheckedChange = { viewModel?.setParentalGuideEnabled(it) }
           )
         }
       }
@@ -2644,20 +2759,11 @@ fun SettingsScreen(
       // ── SELEZIONE FLUSSO ────────────────────────────────────────────────
       item {
         SettingsSection(title = stringResource(R.string.settings_sec_stream_selection)) {
-          SettingsRow(
-            icon = Icons.Default.Restore,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_reuse_last_stream),
-            value = if (playbackSettings.reuseLastWorkingStreamEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.reuseLastWorkingStreamEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setReuseLastWorkingStreamEnabled(!playbackSettings.reuseLastWorkingStreamEnabled) }
-          )
-          Text(
-            text = stringResource(R.string.settings_reuse_last_stream_desc),
-            color = NovaTextSecondary,
-            fontSize = 12.sp,
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 16.dp, vertical = 4.dp)
+            subtitle = stringResource(R.string.settings_reuse_last_stream_desc),
+            checked = playbackSettings.reuseLastWorkingStreamEnabled,
+            onCheckedChange = { viewModel?.setReuseLastWorkingStreamEnabled(it) }
           )
           SettingsRow(
             icon = Icons.Default.Speed,
@@ -2671,12 +2777,10 @@ fun SettingsScreen(
       // ── SOTTOTITOLI ─────────────────────────────────────────────────────
       item {
         SettingsSection(title = stringResource(R.string.settings_sec_subtitles)) {
-          SettingsRow(
-            icon = Icons.Default.Subtitles,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_auto_subtitles),
-            value = if (playbackSettings.subtitlesEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.subtitlesEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setSubtitlesEnabled(!playbackSettings.subtitlesEnabled) }
+            checked = playbackSettings.subtitlesEnabled,
+            onCheckedChange = { viewModel?.setSubtitlesEnabled(it) }
           )
           SettingsRow(
             icon = Icons.Default.Translate,
@@ -2697,17 +2801,21 @@ fun SettingsScreen(
             onClick = { showSubtitleBackgroundDialog = true }
           )
           SettingsRow(
+            icon = Icons.Default.Opacity,
+            title = stringResource(R.string.settings_subtitle_opacity),
+            value = subtitleOpacityLabel(playbackSettings.subtitleOpacity),
+            onClick = { showSubtitleOpacityDialog = true }
+          )
+          SettingsRow(
             icon = Icons.Default.VerticalAlignBottom,
             title = stringResource(R.string.settings_subtitle_position),
             value = subtitlePositionLabel(playbackSettings.subtitlePosition),
             onClick = { showSubtitlePositionDialog = true }
           )
-          SettingsRow(
-            icon = Icons.Default.ClosedCaption,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_forced_subtitles),
-            value = if (playbackSettings.forcedSubtitlesEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.forcedSubtitlesEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setForcedSubtitlesEnabled(!playbackSettings.forcedSubtitlesEnabled) }
+            checked = playbackSettings.forcedSubtitlesEnabled,
+            onCheckedChange = { viewModel?.setForcedSubtitlesEnabled(it) }
           )
         }
       }
@@ -2804,21 +2912,17 @@ fun SettingsScreen(
           )
 
           // 4. Audio Passthrough
-          SettingsRow(
-            icon = Icons.AutoMirrored.Filled.VolumeUp,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_audio_passthrough),
-            value = if (playbackSettings.audioPassthroughEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.audioPassthroughEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAudioPassthroughEnabled(!playbackSettings.audioPassthroughEnabled) }
+            checked = playbackSettings.audioPassthroughEnabled,
+            onCheckedChange = { viewModel?.setAudioPassthroughEnabled(it) }
           )
 
           // 5. Audio Tunneling
-          SettingsRow(
-            icon = Icons.Default.SyncAlt,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_audio_tunneling),
-            value = if (playbackSettings.audioTunnelingEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.audioTunnelingEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAudioTunnelingEnabled(!playbackSettings.audioTunnelingEnabled) }
+            checked = playbackSettings.audioTunnelingEnabled,
+            onCheckedChange = { viewModel?.setAudioTunnelingEnabled(it) }
           )
 
           // 6. Decoder Fallback (FFmpeg)
@@ -2830,30 +2934,24 @@ fun SettingsScreen(
           )
 
           // 7. Auto Frame Rate Matching (AFR)
-          SettingsRow(
-            icon = Icons.Default.Tv,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_afr),
-            value = if (playbackSettings.autoFrameRateMatching) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.autoFrameRateMatching) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAutoFrameRateMatching(!playbackSettings.autoFrameRateMatching) }
+            checked = playbackSettings.autoFrameRateMatching,
+            onCheckedChange = { viewModel?.setAutoFrameRateMatching(it) }
           )
 
           // 8. Dolby Vision Fallback
-          SettingsRow(
-            icon = Icons.Default.HdrOn,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_dolby_vision_fallback),
-            value = if (playbackSettings.dolbyVisionFallbackEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.dolbyVisionFallbackEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setDolbyVisionFallbackEnabled(!playbackSettings.dolbyVisionFallbackEnabled) }
+            checked = playbackSettings.dolbyVisionFallbackEnabled,
+            onCheckedChange = { viewModel?.setDolbyVisionFallbackEnabled(it) }
           )
 
           // 9. Stats for Nerds / Debug Info Overlay
-          SettingsRow(
-            icon = Icons.Default.Assessment,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_stats_overlay),
-            value = if (playbackSettings.debugOverlayEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.debugOverlayEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setDebugOverlayEnabled(!playbackSettings.debugOverlayEnabled) }
+            checked = playbackSettings.debugOverlayEnabled,
+            onCheckedChange = { viewModel?.setDebugOverlayEnabled(it) }
           )
 
           // 10. Clear Cache
@@ -2876,6 +2974,99 @@ fun SettingsScreen(
               }
             }
           )
+        }
+      }
+
+      // ── INFORMAZIONI ─────────────────────────────────────────────────────
+      // Identità dell'app: logo ufficiale (invariato), nome e versione effettiva
+      // della build (BuildConfig.VERSION_NAME tramite APP_VERSION_DISPLAY). Il
+      // contenuto è di sola lettura: nessun nuovo target del D-pad, il focus
+      // scorre oltre come nelle altre sezioni delle Impostazioni.
+      item {
+        SettingsStaticSection(title = stringResource(R.string.settings_sec_info)) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Image(
+              painter = painterResource(R.drawable.streamnova_logo),
+              contentDescription = stringResource(R.string.app_name),
+              contentScale = ContentScale.FillWidth,
+              // Rapporto d'aspetto nativo dell'asset (1006x588): larghezza fissa,
+              // altezza derivata, qualità originale del logo preservata.
+              modifier = Modifier
+                .width(200.dp)
+                .aspectRatio(1006f / 588f)
+            )
+            Text(
+              text = stringResource(R.string.app_name),
+              color = NovaTextPrimary,
+              fontSize = 17.sp,
+              fontWeight = FontWeight.SemiBold
+            )
+            Text(
+              text = stringResource(R.string.settings_info_version, appVersion),
+              color = NovaTextSecondary,
+              fontSize = 14.sp
+            )
+          }
+        }
+      }
+
+      // ── RICONOSCIMENTI ───────────────────────────────────────────────────
+      // TMDB: logo ufficiale e testi di attribuzione esatti, in inglese in tutte
+      // le localizzazioni come richiede l'attribuzione stessa. ExoPlayer: la
+      // versione mostrata è quella realmente compilata negli AAR Media3 usati
+      // dal progetto (costante MediaLibraryInfo.VERSION, inlined a compile-time).
+      item {
+        SettingsStaticSection(title = stringResource(R.string.settings_sec_acknowledgements)) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Image(
+              painter = painterResource(R.drawable.ic_logo_tmdb),
+              contentDescription = "TMDB",
+              contentScale = ContentScale.FillWidth,
+              // Rapporto d'aspetto nativo dell'asset (144x104).
+              modifier = Modifier
+                .width(104.dp)
+                .aspectRatio(144f / 104f)
+            )
+            Text(
+              text = stringResource(R.string.settings_info_tmdb_attribution),
+              color = NovaTextSecondary,
+              fontSize = 14.sp,
+              lineHeight = 20.sp
+            )
+            Text(
+              text = stringResource(R.string.settings_info_tmdb_url),
+              color = NovaCyanBright,
+              fontSize = 13.sp
+            )
+            Text(
+              text = stringResource(R.string.settings_info_legal_disclaimer),
+              color = NovaTextSecondary,
+              fontSize = 14.sp,
+              lineHeight = 20.sp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+              text = "ExoPlayer",
+              color = NovaTextPrimary,
+              fontSize = 15.sp,
+              fontWeight = FontWeight.SemiBold
+            )
+            Text(
+              text = stringResource(R.string.settings_info_version, MediaLibraryInfo.VERSION),
+              color = NovaTextSecondary,
+              fontSize = 14.sp
+            )
+          }
         }
       }
     }
@@ -3024,6 +3215,21 @@ fun SettingsScreen(
     )
   }
 
+  if (showSubtitleOpacityDialog) {
+    val opacityOptions = SubtitleOpacity.entries
+    val opacityLabels = opacityOptions.map { subtitleOpacityLabel(it) }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_subtitle_opacity),
+      options = opacityLabels,
+      selectedIndex = opacityOptions.indexOf(playbackSettings.subtitleOpacity).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setSubtitleOpacity(opacityOptions[idx])
+        showSubtitleOpacityDialog = false
+      },
+      onDismiss = { showSubtitleOpacityDialog = false }
+    )
+  }
+
   if (showSubtitlePositionDialog) {
     val positionOptions = SubtitlePosition.entries
     val positionLabels = positionOptions.map { subtitlePositionLabel(it) }
@@ -3082,6 +3288,24 @@ fun SettingsScreen(
         showAppLanguageDialog = false
       },
       onDismiss = { showAppLanguageDialog = false }
+    )
+  }
+
+  if (showContinueWatchingSortDialog) {
+    // Selettore dell'ordinamento: stesse righe focusabili degli altri dialoghi
+    // (TrackSelectionDialog), valore corrente già evidenziato. Ogni voce presente
+    // nell'enum è implementata dal policy della riga.
+    val sortOptions = ContinueWatchingSort.entries
+    val sortLabels = sortOptions.map { continueWatchingSortLabel(it) }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_cw_sort),
+      options = sortLabels,
+      selectedIndex = sortOptions.indexOf(continueWatchingPreferences.sort).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setContinueWatchingSort(sortOptions[idx])
+        showContinueWatchingSortDialog = false
+      },
+      onDismiss = { showContinueWatchingSortDialog = false }
     )
   }
 
@@ -3322,14 +3546,6 @@ private fun preferredResolutionLabel(res: PreferredResolution): String = when (r
   PreferredResolution.HD_720P -> "720p HD"
 }
 
-@Composable
-private fun subtitleSizeLabel(size: SubtitleSize): String = when (size) {
-  SubtitleSize.SMALL -> stringResource(R.string.sub_size_small)
-  SubtitleSize.MEDIUM -> stringResource(R.string.sub_size_medium)
-  SubtitleSize.LARGE -> stringResource(R.string.sub_size_large)
-  SubtitleSize.VERY_LARGE -> stringResource(R.string.sub_size_very_large)
-}
-
 /** Etichetta della durata cache dell'ultimo flusso ("Riusa l'ultimo link"). */
 @Composable
 private fun lastStreamCacheDurationLabel(hours: Int): String {
@@ -3342,13 +3558,6 @@ private fun lastStreamCacheDurationLabel(hours: Int): String {
     LastStreamCacheDuration.THREE_DAYS -> stringResource(R.string.reuse_cache_3d)
     LastStreamCacheDuration.SEVEN_DAYS -> stringResource(R.string.reuse_cache_7d)
   }
-}
-
-@Composable
-private fun subtitleBackgroundLabel(bg: SubtitleBackground): String = when (bg) {
-  SubtitleBackground.NONE -> stringResource(R.string.sub_bg_none)
-  SubtitleBackground.BLACK -> stringResource(R.string.sub_bg_black)
-  SubtitleBackground.SEMI_TRANSPARENT -> stringResource(R.string.sub_bg_semi_transparent)
 }
 
 @Composable
@@ -3439,6 +3648,355 @@ fun SettingsSection(
 }
 
 /**
+ * Variante statica di [SettingsSection]: stessa intestazione e stessa card, ma la card
+ * è un UNICO target del D-pad.
+ *
+ * Serve per i contenuti di sola lettura a fine lista (Informazioni / Riconoscimenti):
+ * senza un nodo focalizzabile la ricerca del focus non trova nulla sotto l'ultima riga
+ * azionabile, la LazyColumn non scorre e i contenuti resterebbero per sempre fuori
+ * schermo con il solo telecomando. OK non aziona nulla: il target esiste solo per
+ * portare la card in vista (bringIntoView) e mostrarne i confini con il bordo ciano,
+ * coerente con l'evidenziazione delle altre righe.
+ */
+@Composable
+private fun SettingsStaticSection(
+  title: String,
+  content: @Composable () -> Unit
+) {
+  Column(modifier = Modifier.fillMaxWidth()) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Box(
+        modifier = Modifier
+          .width(4.dp)
+          .height(18.dp)
+          .background(
+            Brush.verticalGradient(listOf(NovaCyan, NovaCyanBright)),
+            RoundedCornerShape(2.dp)
+          )
+      )
+      Spacer(modifier = Modifier.width(10.dp))
+      Text(
+        text = title.uppercase(),
+        color = NovaTextPrimary,
+        fontSize = 15.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.sp
+      )
+    }
+    Spacer(modifier = Modifier.height(12.dp))
+    TvFocusableBox(
+      shape = RoundedCornerShape(14.dp),
+      focusedScale = 1f,
+      onClick = {},
+      modifier = Modifier.fillMaxWidth()
+    ) { isFocused ->
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(if (isFocused) NovaCardBgFocused else NovaCardBg)
+          .border(1.dp, NovaDivider, RoundedCornerShape(14.dp))
+          .padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+      ) {
+        content()
+      }
+    }
+  }
+}
+
+/**
+ * Sezione espandibile delle Impostazioni.
+ *
+ * L'intestazione è un unico target del D-pad (OK apre/chiude); le opzioni interne sono
+ * righe focusabili normali. Usa gli stessi colori/card/bordi di [SettingsSection]: la
+ * sezione resta nativa StreamNova, senza un tema separato.
+ */
+@Composable
+fun SettingsExpandableSection(
+  title: String,
+  subtitle: String,
+  expanded: Boolean,
+  expandedLabel: String,
+  collapsedLabel: String,
+  onToggle: () -> Unit,
+  modifier: Modifier = Modifier,
+  content: @Composable () -> Unit
+) {
+  val stateLabel = if (expanded) expandedLabel else collapsedLabel
+  Column(modifier = modifier.fillMaxWidth()) {
+    TvFocusableBox(
+      shape = RoundedCornerShape(12.dp),
+      focusedScale = 1.01f,
+      onClick = onToggle,
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag(SETTINGS_CW_SECTION_HEADER_TAG)
+        .semantics {
+          role = Role.Button
+          stateDescription = stateLabel
+        }
+    ) { isFocused ->
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(
+            if (isFocused) NovaCardBgFocused else NovaCardBg,
+            RoundedCornerShape(12.dp)
+          )
+          .border(
+            1.dp,
+            if (isFocused) Color.Transparent else NovaDivider,
+            RoundedCornerShape(12.dp)
+          )
+          .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = title,
+            color = NovaTextPrimary,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+          Spacer(modifier = Modifier.height(3.dp))
+          Text(
+            text = subtitle,
+            color = NovaTextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(
+          text = stateLabel,
+          color = if (isFocused) NovaCyanBright else NovaTextSecondary,
+          fontSize = 12.sp,
+          fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Icon(
+          imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+          contentDescription = null,
+          tint = if (isFocused) NovaCyanBright else NovaTextMuted,
+          modifier = Modifier.size(20.dp)
+        )
+      }
+    }
+    if (expanded) {
+      Spacer(modifier = Modifier.height(10.dp))
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(NovaCardBg.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+          .border(1.dp, NovaDivider, RoundedCornerShape(14.dp))
+          .padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+      ) {
+        content()
+      }
+    }
+  }
+}
+
+/** Tag semantico dell'intestazione della sezione «Continua a guardare» (test UI). */
+internal const val SETTINGS_CW_SECTION_HEADER_TAG = "settings_cw_section_header"
+
+/** Tag semantico di una card del selettore di layout (Scheda/Larga/Locandina). */
+internal fun settingsCwLayoutOptionTestTag(layout: ContinueWatchingLayout): String =
+  "settings_cw_layout_option_${layout.name.lowercase()}"
+
+/**
+ * Selettore visuale del layout della riga «Continua a guardare»: tre card focusabili con
+ * anteprima schematica, bordo di selezione e segno di spunta negli stessi colori ufficiali
+ * delle altre Impostazioni. L'intera card è un unico target del D-pad.
+ */
+@Composable
+private fun SettingsContinueWatchingLayoutSelector(
+  title: String,
+  selected: ContinueWatchingLayout,
+  onSelect: (ContinueWatchingLayout) -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val selectedLabel = stringResource(R.string.settings_cw_layout_selected)
+  Column(
+    modifier = modifier
+      .fillMaxWidth()
+      .padding(horizontal = 8.dp, vertical = 4.dp)
+  ) {
+    Text(
+      text = title,
+      color = NovaTextPrimary,
+      fontSize = 15.sp,
+      fontWeight = FontWeight.SemiBold,
+      modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+    )
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+      ContinueWatchingLayout.entries.forEach { layout ->
+        val isSelected = layout == selected
+        val label = continueWatchingLayoutLabel(layout)
+        TvFocusableBox(
+          shape = RoundedCornerShape(12.dp),
+          focusedScale = 1.02f,
+          focusedBorderColor = NovaCyanBright,
+          unfocusedBorderColor = if (isSelected) NovaCyan else NovaDivider,
+          borderWidth = if (isSelected) 2.dp else 1.dp,
+          onClick = { onSelect(layout) },
+          modifier = Modifier
+            .weight(1f)
+            .testTag(settingsCwLayoutOptionTestTag(layout))
+            .semantics {
+              role = Role.RadioButton
+              this.selected = isSelected
+              if (isSelected) stateDescription = selectedLabel
+            }
+        ) { isFocused ->
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .background(
+                if (isFocused) NovaCardBgFocused else NovaCardBg.copy(alpha = 0.75f),
+                RoundedCornerShape(12.dp)
+              )
+              .padding(horizontal = 10.dp, vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+          ) {
+            ContinueWatchingLayoutPreview(layout = layout, highlighted = isSelected)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              if (isSelected) {
+                Icon(
+                  imageVector = Icons.Default.Check,
+                  contentDescription = null,
+                  tint = NovaCyanBright,
+                  modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+              }
+              Text(
+                text = label,
+                color = if (isSelected) NovaCyanBright else NovaTextSecondary,
+                fontSize = 12.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Anteprima schematica del layout, disegnata con la palette ufficiale (nessuna immagine
+ * o colore preso dai riferimenti): mostra solo la disposizione di immagine e testi.
+ */
+@Composable
+private fun ContinueWatchingLayoutPreview(
+  layout: ContinueWatchingLayout,
+  highlighted: Boolean
+) {
+  val accent = if (highlighted) NovaCyanBright else NovaTextMuted
+  val block = NovaTextMuted.copy(alpha = 0.55f)
+  val shape = RoundedCornerShape(5.dp)
+  val base = Modifier
+    .background(NovaCardBgFocused, shape)
+    .border(1.dp, accent.copy(alpha = 0.55f), shape)
+
+  when (layout) {
+    ContinueWatchingLayout.CARD -> Column(
+      modifier = Modifier
+        .width(78.dp)
+        .height(46.dp)
+        .then(base)
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .weight(1f)
+          .background(block)
+      )
+      Column(modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
+        Box(modifier = Modifier.width(42.dp).height(3.dp).background(accent, RoundedCornerShape(2.dp)))
+        Spacer(modifier = Modifier.height(3.dp))
+        Box(modifier = Modifier.width(30.dp).height(2.dp).background(NovaTextMuted, RoundedCornerShape(2.dp)))
+      }
+    }
+
+    ContinueWatchingLayout.WIDE -> Row(
+      modifier = Modifier
+        .width(96.dp)
+        .height(46.dp)
+        .then(base)
+    ) {
+      Box(
+        modifier = Modifier
+          .width(30.dp)
+          .fillMaxHeight()
+          .background(block)
+      )
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxHeight()
+          .padding(horizontal = 6.dp, vertical = 7.dp)
+      ) {
+        Box(modifier = Modifier.width(44.dp).height(3.dp).background(accent, RoundedCornerShape(2.dp)))
+        Spacer(modifier = Modifier.height(4.dp))
+        Box(modifier = Modifier.fillMaxWidth(0.8f).height(2.dp).background(NovaTextMuted, RoundedCornerShape(2.dp)))
+        Spacer(modifier = Modifier.height(3.dp))
+        Box(modifier = Modifier.fillMaxWidth(0.6f).height(2.dp).background(NovaTextMuted, RoundedCornerShape(2.dp)))
+      }
+    }
+
+    ContinueWatchingLayout.POSTER -> Box(
+      modifier = Modifier
+        .width(32.dp)
+        .height(48.dp)
+        .then(base)
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(block)
+      )
+      Column(
+        modifier = Modifier
+          .align(Alignment.BottomStart)
+          .padding(horizontal = 4.dp, vertical = 4.dp)
+      ) {
+        Box(modifier = Modifier.width(20.dp).height(2.dp).background(accent, RoundedCornerShape(1.dp)))
+        Spacer(modifier = Modifier.height(3.dp))
+        Box(modifier = Modifier.width(16.dp).height(2.dp).background(NovaTextMuted, RoundedCornerShape(1.dp)))
+      }
+    }
+  }
+}
+
+/** Etichetta localizzata di un layout della riga «Continua a guardare». */
+@Composable
+private fun continueWatchingLayoutLabel(layout: ContinueWatchingLayout): String = when (layout) {
+  ContinueWatchingLayout.CARD -> stringResource(R.string.settings_cw_layout_card)
+  ContinueWatchingLayout.WIDE -> stringResource(R.string.settings_cw_layout_wide)
+  ContinueWatchingLayout.POSTER -> stringResource(R.string.settings_cw_layout_poster)
+}
+
+/** Etichetta localizzata dell'ordinamento della riga «Continua a guardare». */
+@Composable
+private fun continueWatchingSortLabel(sort: ContinueWatchingSort): String = when (sort) {
+  ContinueWatchingSort.DEFAULT -> stringResource(R.string.settings_cw_sort_default)
+  ContinueWatchingSort.TITLE -> stringResource(R.string.settings_cw_sort_title)
+  ContinueWatchingSort.RATING -> stringResource(R.string.settings_cw_sort_rating)
+}
+
+/**
  * Riga di impostazione navigabile con D-pad.
  *
  * @param value valore reale mostrato a destra (es. versione app). Resta null per
@@ -3453,6 +4011,11 @@ fun SettingsRow(
   value: String? = null,
   valueColor: Color = NovaCyanBright,
   onClick: (() -> Unit)? = null,
+  /**
+   * Mostra la freccia di accesso a destra quando la riga apre un selettore/dialog.
+   * Default `false`: le righe esistenti mantengono esattamente l'aspetto di prima.
+   */
+  showChevron: Boolean = false,
   modifier: Modifier = Modifier
 ) {
   TvFocusableBox(
@@ -3499,6 +4062,161 @@ fun SettingsRow(
           maxLines = 1
         )
       }
+      if (showChevron && onClick != null) {
+        Spacer(modifier = Modifier.width(4.dp))
+        Icon(
+          imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+          contentDescription = null,
+          tint = if (isFocused) NovaCyanBright else NovaTextMuted,
+          modifier = Modifier.size(20.dp)
+        )
+      }
     }
+  }
+}
+
+/** Dimensioni dello switch comune: un solo punto di verità per tutte le Impostazioni. */
+private val SettingsSwitchTrackWidth = 46.dp
+private val SettingsSwitchTrackHeight = 26.dp
+private val SettingsSwitchKnobSize = 20.dp
+private val SettingsSwitchKnobInset = 3.dp
+
+/**
+ * Riga delle Impostazioni per un'opzione ON/OFF.
+ *
+ * Tutte le impostazioni booleane usano questo componente: titolo (e, quando prevista,
+ * descrizione) a sinistra, switch a destra. L'intera riga è un unico target del D-pad:
+ * il tasto OK alterna il valore una sola volta, senza un secondo click sullo switch.
+ * Lo switch è solo la rappresentazione grafica dello stato e non è un secondo nodo
+ * focalizzabile: la navigazione resta identica a quella delle altre righe.
+ */
+@Composable
+fun SettingsSwitchRow(
+  title: String,
+  checked: Boolean,
+  onCheckedChange: (Boolean) -> Unit,
+  subtitle: String? = null,
+  modifier: Modifier = Modifier
+) {
+  val stateOn = stringResource(R.string.settings_value_on)
+  val stateOff = stringResource(R.string.settings_value_off)
+  TvFocusableBox(
+    shape = RoundedCornerShape(12.dp),
+    focusedScale = 1.015f,
+    onClick = { onCheckedChange(!checked) },
+    modifier = modifier
+      .fillMaxWidth()
+      .padding(horizontal = 8.dp)
+      .semantics {
+        role = Role.Switch
+        stateDescription = if (checked) stateOn else stateOff
+        onClick(label = title) {
+          onCheckedChange(!checked)
+          true
+        }
+      }
+  ) { isFocused ->
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .background(
+          if (isFocused) NovaCardBgFocused else NovaCardBgFocused.copy(alpha = 0.55f),
+          RoundedCornerShape(12.dp)
+        )
+        .border(
+          1.dp,
+          if (isFocused) Color.Transparent else NovaDivider,
+          RoundedCornerShape(12.dp)
+        )
+        .padding(horizontal = 16.dp, vertical = 13.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = title,
+          color = NovaTextPrimary,
+          fontSize = 15.sp,
+          fontWeight = FontWeight.SemiBold,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+        if (!subtitle.isNullOrBlank()) {
+          Spacer(modifier = Modifier.height(3.dp))
+          Text(
+            text = subtitle,
+            color = NovaTextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+      }
+      Spacer(modifier = Modifier.width(16.dp))
+      SettingsSwitchIndicator(
+        checked = checked,
+        isFocused = isFocused
+      )
+    }
+  }
+}
+
+/**
+ * Switch grafico condiviso: pillola scura con knob a sinistra da spenta, pillola ciano
+ * con knob a destra da accesa. Il focus del D-pad aggiunge un bordo ciano alla pillola,
+ * coerente con il bordo della riga.
+ */
+@Composable
+private fun SettingsSwitchIndicator(
+  checked: Boolean,
+  isFocused: Boolean,
+  modifier: Modifier = Modifier
+) {
+  val knobOffset by animateDpAsState(
+    targetValue = if (checked) {
+      SettingsSwitchTrackWidth - SettingsSwitchKnobSize - SettingsSwitchKnobInset * 2
+    } else {
+      0.dp
+    },
+    animationSpec = tween(durationMillis = 160),
+    label = "SettingsSwitchKnobOffset"
+  )
+  val trackColor by animateColorAsState(
+    targetValue = when {
+      checked && isFocused -> NovaCyanBright
+      checked -> NovaCyan
+      isFocused -> NovaTextMuted.copy(alpha = 0.55f)
+      else -> NovaTextMuted.copy(alpha = 0.38f)
+    },
+    animationSpec = tween(durationMillis = 160),
+    label = "SettingsSwitchTrackColor"
+  )
+  val knobColor by animateColorAsState(
+    targetValue = if (checked) Color.White else NovaTextSecondary,
+    animationSpec = tween(durationMillis = 160),
+    label = "SettingsSwitchKnobColor"
+  )
+
+  Box(
+    modifier = modifier
+      .width(SettingsSwitchTrackWidth)
+      .height(SettingsSwitchTrackHeight)
+      .background(trackColor, RoundedCornerShape(50))
+      .then(
+        if (isFocused) {
+          Modifier.border(1.5.dp, NovaCyanBright, RoundedCornerShape(50))
+        } else {
+          Modifier
+        }
+      )
+      .padding(SettingsSwitchKnobInset),
+    contentAlignment = Alignment.CenterStart
+  ) {
+    Box(
+      modifier = Modifier
+        .offset(x = knobOffset)
+        .size(SettingsSwitchKnobSize)
+        .background(knobColor, CircleShape)
+    )
   }
 }

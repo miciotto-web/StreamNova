@@ -43,8 +43,13 @@ enum class LastStreamCacheDuration(val label: String, val hours: Int) {
  * Dimensione del testo dei sottotitoli. [textSizeFraction] è la frazione dell'altezza
  * della vista video (PlayerView) usata da Media3 come dimensione del testo:
  * 0.0533f coincide con il default di Media3 (SubtitleView.DEFAULT_TEXT_SIZE_FRACTION).
+ *
+ * I cinque livelli sono ordinati dal più piccolo al più grande. I nomi storici
+ * (SMALL..VERY_LARGE) restano invariati perché sono persistiti su DataStore per nome:
+ * rinominarli farebbe perdere la scelta dell'utente dopo un aggiornamento.
  */
 enum class SubtitleSize(val label: String, val textSizeFraction: Float) {
+  EXTRA_SMALL("Piccolissima", 0.030f),
   SMALL("Piccola", 0.038f),
   MEDIUM("Media", 0.0533f),
   LARGE("Grande", 0.075f),
@@ -52,14 +57,92 @@ enum class SubtitleSize(val label: String, val textSizeFraction: Float) {
 }
 
 /**
- * Sfondo del testo dei sottotitoli nel player. [backgroundColor] è il colore ARGB
- * applicato via SubtitleView.setStyle(CaptionStyleCompat) di Media3: con alpha 0
- * (Nessuno) SubtitlePainter non disegna alcun background dietro il testo.
+ * Sfondo del testo dei sottotitoli nel player.
+ *
+ * [backgroundColor] è il colore ARGB del riquadro dietro al testo, applicato via
+ * SubtitleView.setStyle(CaptionStyleCompat) di Media3; l'alpha definitivo viene
+ * calcolato in fase di applicazione moltiplicandolo per [SubtitleOpacity].
+ * [textColor] mantiene leggibile il testo: bianco su sfondi scuri/assenti, nero su
+ * sfondo bianco.
+ *
+ * NONE resta il caso "nessun riquadro": alpha 0, SubtitlePainter non disegna nulla.
  */
-enum class SubtitleBackground(val label: String, val backgroundColor: Int) {
-  NONE("Nessuno", 0x00000000),
-  BLACK("Nero", 0xFF000000.toInt()),
-  SEMI_TRANSPARENT("Nero semi-trasparente", 0x80000000.toInt())
+enum class SubtitleBackground(
+  val label: String,
+  val backgroundColor: Int,
+  val textColor: Int
+) {
+  NONE("Nessuno", 0x00000000, 0xFFFFFFFF.toInt()),
+  BLACK("Nero", 0xFF000000.toInt(), 0xFFFFFFFF.toInt()),
+  WHITE("Bianco", 0xFFFFFFFF.toInt(), 0xFF000000.toInt()),
+  BLUE("Blu", 0xFF0D47A1.toInt(), 0xFFFFFFFF.toInt())
+}
+
+/**
+ * Opacità del riquadro di sfondo dei sottotitoli (25%..100%).
+ *
+ * [percent] è il valore mostrato all'utente; [alpha] è il corrispondente canale alpha
+ * ARGB applicato al colore di [SubtitleBackground]. Il testo resta sempre pienamente
+ * opaco: l'opacità regola solo lo sfondo, così i sottotitoli non perdono leggibilità.
+ */
+enum class SubtitleOpacity(val label: String, val percent: Int) {
+  FULL("100%", 100),
+  SEVENTY_FIVE("75%", 75),
+  FIFTY("50%", 50),
+  TWENTY_FIVE("25%", 25);
+
+  /** Canale alpha ARGB (0..255) corrispondente alla percentuale (arrotondato). */
+  val alpha: Int get() = (255 * percent + 50) / 100
+}
+
+/**
+ * Colore ARGB effettivo del riquadro, con l'opacità scelta applicata al colore base.
+ *
+ * NONE resta sempre completamente trasparente (alpha 0) qualunque sia l'opacità: è il
+ * caso "nessun riquadro" e non deve trasformarsi in un box nero al 100%.
+ * Il testo non è interessato: [SubtitleBackground.textColor] resta opaco.
+ */
+fun SubtitleBackground.withOpacity(opacity: SubtitleOpacity): Int =
+  if (this == SubtitleBackground.NONE) {
+    0
+  } else {
+    (backgroundColor and 0x00FFFFFF) or (opacity.alpha shl 24)
+  }
+
+/**
+ * Risolve le preferenze di aspetto dei sottotitoli lette da DataStore, applicando la
+ * migrazione dal vecchio modello (tre sfondi, nessuna opacità).
+ *
+ * Regole di migrazione, necessarie per non cambiare l'aspetto già scelto:
+ * - "SEMI_TRANSPARENT" (vecchio default) → nero con opacità 50%;
+ * - nessun valore salvato → nero al 50% (identico al vecchio default);
+ * - "BLACK" o "NONE" salvati esplicitamente → opacità 100%;
+ * - valori nuovi (WHITE/BLUE) → opacità 100% se manca la chiave.
+ *
+ * Se la chiave dell'opacità esiste già, ha sempre la precedenza sulla migrazione.
+ */
+internal fun resolveSubtitleAppearance(
+  storedBackground: String?,
+  storedOpacity: String?
+): Pair<SubtitleBackground, SubtitleOpacity> {
+  val background = when (storedBackground) {
+    SubtitleBackground.NONE.name -> SubtitleBackground.NONE
+    SubtitleBackground.WHITE.name -> SubtitleBackground.WHITE
+    SubtitleBackground.BLUE.name -> SubtitleBackground.BLUE
+    // "SEMI_TRANSPARENT" è il nome storico del nero traslucido, oggi rappresentato
+    // da nero + opacità 50%.
+    else -> SubtitleBackground.BLACK
+  }
+  val opacity = storedOpacity
+    ?.let { name -> SubtitleOpacity.entries.firstOrNull { it.name == name } }
+    ?: when (storedBackground) {
+      SubtitleBackground.BLACK.name,
+      SubtitleBackground.NONE.name,
+      SubtitleBackground.WHITE.name,
+      SubtitleBackground.BLUE.name -> SubtitleOpacity.FULL
+      else -> SubtitleOpacity.FIFTY
+    }
+  return background to opacity
 }
 
 /**
@@ -134,10 +217,36 @@ data class PlaybackSettings(
   val preferredSubtitleLanguage: String = "it",
   /** Dimensione del testo dei sottotitoli nel player (default MEDIUM). */
   val subtitleSize: SubtitleSize = SubtitleSize.MEDIUM,
-  /** Sfondo dietro il testo dei sottotitoli nel player (default SEMI_TRANSPARENT). */
-  val subtitleBackground: SubtitleBackground = SubtitleBackground.SEMI_TRANSPARENT,
+  /** Sfondo dietro il testo dei sottotitoli nel player (default BLACK). */
+  val subtitleBackground: SubtitleBackground = SubtitleBackground.BLACK,
+  /** Opacità del riquadro di sfondo (default 50%: stesso aspetto del vecchio default). */
+  val subtitleOpacity: SubtitleOpacity = SubtitleOpacity.FIFTY,
   /** Posizione verticale dei sottotitoli nel player (default BOTTOM). */
   val subtitlePosition: SubtitlePosition = SubtitlePosition.BOTTOM,
+
+  // ── OVERLAY E AVVISI DI RIPRODUZIONE ────────────────────────────────
+  /**
+   * Mostra la schermata di caricamento cinematografica (poster + logo) durante l'avvio
+   * Debrid (default ON). OFF = comportamento alternativo già previsto: indicatore
+   * compatto con spinner e stato di caricamento.
+   */
+  val loadingOverlayEnabled: Boolean = true,
+  /**
+   * Mostra lo stato REALE del caricamento durante avvio e preparazione (default ON):
+   * fasi derivate solo dagli eventi di ExoPlayer e del resolver delle sorgenti,
+   * nessuna percentuale o tempo simulato.
+   */
+  val loadingStatusEnabled: Boolean = true,
+  /**
+   * Overlay informativo in pausa (default OFF): dopo 5 secondi di pausa mostra poster,
+   * logo, titolo, stagione/episodio e sinossi. Nascondo immediato alla ripresa.
+   */
+  val pauseOverlayEnabled: Boolean = false,
+  /**
+   * Avvisi sui contenuti / Parental Guide (default OFF): all'avvio di un contenuto
+   * mostra per una breve durata volgarità, violenza, paura e alcol/droghe (dati Tiffara).
+   */
+  val parentalGuideEnabled: Boolean = false,
 
   // ── IMPOSTAZIONI AVANZATE ───────────────────────────────────────────
   val targetBuffer: TargetBufferOption = TargetBufferOption.DEFAULT,
@@ -176,7 +285,14 @@ object SettingsRepository {
   private val KEY_PREFERRED_SUBTITLE_LANGUAGE = stringPreferencesKey("preferred_subtitle_language")
   private val KEY_SUBTITLE_SIZE = stringPreferencesKey("subtitle_size")
   private val KEY_SUBTITLE_BACKGROUND = stringPreferencesKey("subtitle_background")
+  private val KEY_SUBTITLE_OPACITY = stringPreferencesKey("subtitle_opacity")
   private val KEY_SUBTITLE_POSITION = stringPreferencesKey("subtitle_position")
+
+  // Overlay e avvisi di riproduzione
+  private val KEY_LOADING_OVERLAY_ENABLED = booleanPreferencesKey("loading_overlay_enabled")
+  private val KEY_LOADING_STATUS_ENABLED = booleanPreferencesKey("loading_status_enabled")
+  private val KEY_PAUSE_OVERLAY_ENABLED = booleanPreferencesKey("pause_overlay_enabled")
+  private val KEY_PARENTAL_GUIDE_ENABLED = booleanPreferencesKey("parental_guide_enabled")
 
   // Avanzate
   private val KEY_TARGET_BUFFER = stringPreferencesKey("adv_target_buffer")
@@ -196,12 +312,49 @@ object SettingsRepository {
 
   private var dataStore: DataStore<Preferences>? = null
 
+  /**
+   * Migrazione una-tantum dell'aspetto sottotitoli.
+   *
+   * Il vecchio modello salvava solo lo sfondo (con "Nero semi-trasparente" come default);
+   * il nuovo separa colore e opacità. Se l'opacità non è ancora persistita, il valore
+   * derivato da [resolveSubtitleAppearance] viene scritto al primo caricamento: così una
+   * successiva scelta di sfondo non può più cambiare implicitamente anche l'opacità
+   * (il valore derivato dipende dallo sfondo storico finché la chiave manca).
+   */
+  private var subtitleAppearanceMigrated = false
+
   fun init(context: Context) {
     if (dataStore != null) return
     val store = context.applicationContext.settingsDataStore
     dataStore = store
     scope.launch {
       store.data.collect { prefs ->
+        // Aspetto dei sottotitoli: la coppia sfondo/opacità viene risolta insieme per
+        // applicare la migrazione dal vecchio "Nero semi-trasparente" (vedi
+        // [resolveSubtitleAppearance]) senza alterare l'aspetto già scelto.
+        val storedBackground = prefs[KEY_SUBTITLE_BACKGROUND]
+        val storedOpacity = prefs[KEY_SUBTITLE_OPACITY]
+        val (subtitleBackground, subtitleOpacity) = resolveSubtitleAppearance(
+          storedBackground = storedBackground,
+          storedOpacity = storedOpacity
+        )
+        if (!subtitleAppearanceMigrated) {
+          subtitleAppearanceMigrated = true
+          // Persistenza una-tantum della migrazione: da qui in poi le due chiavi sono
+          // indipendenti e cambiare sfondo non tocca l'opacità (e viceversa).
+          if (storedBackground == null || storedOpacity == null) {
+            scope.launch {
+              dataStore?.edit { prefsToWrite ->
+                if (prefsToWrite[KEY_SUBTITLE_BACKGROUND] == null) {
+                  prefsToWrite[KEY_SUBTITLE_BACKGROUND] = subtitleBackground.name
+                }
+                if (prefsToWrite[KEY_SUBTITLE_OPACITY] == null) {
+                  prefsToWrite[KEY_SUBTITLE_OPACITY] = subtitleOpacity.name
+                }
+              }
+            }
+          }
+        }
         _settings.value = PlaybackSettings(
           preferredResolution = prefs[KEY_PREFERRED_RESOLUTION]
             ?.let { name -> PreferredResolution.entries.firstOrNull { it.name == name } }
@@ -218,12 +371,17 @@ object SettingsRepository {
           subtitleSize = prefs[KEY_SUBTITLE_SIZE]
             ?.let { name -> SubtitleSize.entries.firstOrNull { it.name == name } }
             ?: SubtitleSize.MEDIUM,
-          subtitleBackground = prefs[KEY_SUBTITLE_BACKGROUND]
-            ?.let { name -> SubtitleBackground.entries.firstOrNull { it.name == name } }
-            ?: SubtitleBackground.SEMI_TRANSPARENT,
+          subtitleBackground = subtitleBackground,
+          subtitleOpacity = subtitleOpacity,
           subtitlePosition = prefs[KEY_SUBTITLE_POSITION]
             ?.let { name -> SubtitlePosition.entries.firstOrNull { it.name == name } }
             ?: SubtitlePosition.BOTTOM,
+
+          // Overlay e avvisi di riproduzione
+          loadingOverlayEnabled = prefs[KEY_LOADING_OVERLAY_ENABLED] ?: true,
+          loadingStatusEnabled = prefs[KEY_LOADING_STATUS_ENABLED] ?: true,
+          pauseOverlayEnabled = prefs[KEY_PAUSE_OVERLAY_ENABLED] ?: false,
+          parentalGuideEnabled = prefs[KEY_PARENTAL_GUIDE_ENABLED] ?: false,
 
           // Avanzate
           targetBuffer = prefs[KEY_TARGET_BUFFER]
@@ -296,8 +454,28 @@ object SettingsRepository {
     scope.launch { dataStore?.edit { it[KEY_SUBTITLE_BACKGROUND] = value.name } }
   }
 
+  fun setSubtitleOpacity(value: SubtitleOpacity) {
+    scope.launch { dataStore?.edit { it[KEY_SUBTITLE_OPACITY] = value.name } }
+  }
+
   fun setSubtitlePosition(value: SubtitlePosition) {
     scope.launch { dataStore?.edit { it[KEY_SUBTITLE_POSITION] = value.name } }
+  }
+
+  fun setLoadingOverlayEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_LOADING_OVERLAY_ENABLED] = value } }
+  }
+
+  fun setLoadingStatusEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_LOADING_STATUS_ENABLED] = value } }
+  }
+
+  fun setPauseOverlayEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_PAUSE_OVERLAY_ENABLED] = value } }
+  }
+
+  fun setParentalGuideEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_PARENTAL_GUIDE_ENABLED] = value } }
   }
 
   fun setTargetBuffer(value: TargetBufferOption) {

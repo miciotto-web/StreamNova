@@ -197,9 +197,12 @@ open class TorBoxStreamProvider(
       val details = candidate.sizeAndPeers
       val codec = candidate.codec
       val releaseType = candidate.releaseType
-      // Rilevazione "italiano" invariata (resta sulla riga dello stream): così
-      // ordinamento e selezione non cambiano.
-      val isItalian = StreamSource.isItalianSource(addonNameFromStream)
+      // Rilevazione "italiano": la prima riga dello stream spesso non contiene
+      // il nome release (dove sono indicati ITA/MULTI), quindi va inclusa anche
+      // la releaseTitle. Stessa regola già usata per le sorgenti dirette.
+      val isItalian = StreamSource.isItalianSource(
+        listOfNotNull(addonNameFromStream, releaseTitle).joinToString(" ")
+      )
       // Sottotitoli dichiarati dallo stream (`stream.subtitles[]`): gia' allineati alla
       // release riprodotta, quindi hanno precedenza. Il bridge non esegue alcuna
       // richiesta di rete, quindi qui non viene introdotto alcun lavoro di rete.
@@ -223,6 +226,11 @@ open class TorBoxStreamProvider(
           isProgressive = true,
           isItalian = isItalian,
           addonName = providerName,
+          // Identità dell'ADDON di origine (manifest id + logo ufficiale), distinta
+          // dal servizio Debrid che sbloccherà il torrent: la card usa questi campi
+          // per mostrare il logo corretto.
+          addonId = candidate.addonId?.trim()?.takeIf { it.isNotBlank() },
+          addonLogo = candidate.addonLogo?.trim()?.takeIf { it.isNotBlank() },
           // Identità dell'installazione (baseUrl con configurazione): attribuisce
           // la sorgente alla configurazione corretta e la rende distinta nella
           // deduplica di StreamManager anche quando un'altra installazione

@@ -95,7 +95,7 @@ class OnlineSubtitleSelectionTest {
   fun selezioneConFileIdScaricaFileLocaleEPubblicaReady() = runTest {
     val dispatcher = StandardTestDispatcher(testScheduler)
     val viewModel = StreamNovaViewModel(ioDispatcher = dispatcher)
-    viewModel.onlineSubtitleCacheDirProvider = { tempFolder.root }
+    viewModel.onlineSubtitleStorageDirProvider = { tempFolder.root }
     val api = FakeOpenSubtitlesApi()
     viewModel.onlineSubtitleDownloader = fixedDownloader(api, srtPayload, dispatcher)
 
@@ -126,7 +126,7 @@ class OnlineSubtitleSelectionTest {
   fun selezioneDiErroreDiReteEsponeErroreERiprovaFunziona() = runTest {
     val dispatcher = StandardTestDispatcher(testScheduler)
     val viewModel = StreamNovaViewModel(ioDispatcher = dispatcher)
-    viewModel.onlineSubtitleCacheDirProvider = { tempFolder.root }
+    viewModel.onlineSubtitleStorageDirProvider = { tempFolder.root }
     val api = FakeOpenSubtitlesApi()
     viewModel.onlineSubtitleDownloader = failingDownloader(api, IOException("rete offline"), dispatcher)
 
@@ -151,7 +151,7 @@ class OnlineSubtitleSelectionTest {
   fun selezioneConTimeoutEsponeErroreTimeout() = runTest {
     val dispatcher = StandardTestDispatcher(testScheduler)
     val viewModel = StreamNovaViewModel(ioDispatcher = dispatcher)
-    viewModel.onlineSubtitleCacheDirProvider = { tempFolder.root }
+    viewModel.onlineSubtitleStorageDirProvider = { tempFolder.root }
     viewModel.onlineSubtitleDownloader =
       failingDownloader(FakeOpenSubtitlesApi(), SocketTimeoutException("troppo lento"), dispatcher)
     viewModel.selectOnlineSubtitle(subtitle())
@@ -168,7 +168,7 @@ class OnlineSubtitleSelectionTest {
     val dispatcher = StandardTestDispatcher(testScheduler)
     val viewModel = StreamNovaViewModel(ioDispatcher = dispatcher)
     val cacheDir = tempFolder.newFolder("cache")
-    viewModel.onlineSubtitleCacheDirProvider = { cacheDir }
+    viewModel.onlineSubtitleStorageDirProvider = { cacheDir }
     viewModel.onlineSubtitleDownloader =
       fixedDownloader(FakeOpenSubtitlesApi(link = null), srtPayload, dispatcher)
 
@@ -187,7 +187,7 @@ class OnlineSubtitleSelectionTest {
   fun selezioneSenzaFileIdESenzaUrlNonAvviaIlDownload() = runTest {
     val dispatcher = StandardTestDispatcher(testScheduler)
     val viewModel = StreamNovaViewModel(ioDispatcher = dispatcher)
-    viewModel.onlineSubtitleCacheDirProvider = { tempFolder.root }
+    viewModel.onlineSubtitleStorageDirProvider = { tempFolder.root }
     var fetchCalls = 0
     val downloader = object : OpenSubtitlesSubtitleDownloader() {
       override suspend fun fetchBytes(url: String): ByteArray {
@@ -208,7 +208,7 @@ class OnlineSubtitleSelectionTest {
   fun nuovoCaricamentoDellaSezioneAzzeraLoStatoDiDownload() = runTest {
     val dispatcher = StandardTestDispatcher(testScheduler)
     val viewModel = StreamNovaViewModel(ioDispatcher = dispatcher)
-    viewModel.onlineSubtitleCacheDirProvider = { tempFolder.root }
+    viewModel.onlineSubtitleStorageDirProvider = { tempFolder.root }
     viewModel.onlineSubtitleDownloader = fixedDownloader(FakeOpenSubtitlesApi(), srtPayload, dispatcher)
     viewModel.openSubtitlesProvider = object : com.example.data.opensubtitles.OpenSubtitlesSubtitleProvider() {
       override suspend fun fetchSubtitles(

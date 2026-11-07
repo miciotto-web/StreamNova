@@ -21,6 +21,10 @@ enum class CacheState { Cached, NotCached, Unknown }
  * su richiesta (on-demand) al momento della selezione.
  *
  * @param addonName nome dell'addon Stremio di origine (es. "IlCorsaroViola IT").
+ * @param addonId identità del manifest dell'addon di origine (es.
+ *        "community.ilcorsaroviola.ita"). Distinta dal provider Debrid.
+ * @param addonLogo logo ufficiale dichiarato dal manifest dell'addon. Identità
+ *        grafica dell'ADDON: non va mai sostituita con il logo del provider Debrid.
  * @param instantTag tag istantanea (es. "1080p TB Instant").
  * @param releaseTitle nome del file rilascio (es. "See.S01E01.1080p.ITA-ENG.mkv").
  * @param details dettagli size/peer (es. "2.18 GB | 👤 474").
@@ -45,6 +49,8 @@ data class StreamSource(
   val isProgressive: Boolean? = null,
   val isItalian: Boolean = false,
   val addonName: String? = null,
+  val addonId: String? = null,
+  val addonLogo: String? = null,
   val instantTag: String? = null,
   val releaseTitle: String? = null,
   val details: String? = null,
@@ -107,11 +113,20 @@ data class StreamSource(
     get() = streamUrl ?: ""
 
   companion object {
-    private val ITALIAN_KEYWORDS = listOf("ita", "italian", "italiano", "ilcorsaroviola", "corsaro")
+    private val ITALIAN_KEYWORDS = listOf("italian", "italiano", "ilcorsaroviola", "corsaro")
+
+    /**
+     * "ITA" deve essere un token isolato: un semplice `contains("ita")` marcava
+     * come italiane release non italiane contenenti la sequenza, es. "Digital"
+     * (d-i-g-i-t-a-l). I confini escludono lettere/numeri adiacenti ma accettano
+     * i separatori usati nei nomi release ("ITA-ENG", "ITA.5.1", "ITA 1080p").
+     */
+    private val ITALIAN_SHORT_TOKEN = Regex("(?<![a-z0-9])ita(?![a-z0-9])")
 
     fun isItalianSource(serverName: String): Boolean {
       val lower = serverName.lowercase()
-      return ITALIAN_KEYWORDS.any { lower.contains(it) }
+      return ITALIAN_KEYWORDS.any { lower.contains(it) } ||
+        ITALIAN_SHORT_TOKEN.containsMatchIn(lower)
     }
 
     /** Token lingua audio riconosciuti nei nomi release (word-boundary, case-insensitive). */

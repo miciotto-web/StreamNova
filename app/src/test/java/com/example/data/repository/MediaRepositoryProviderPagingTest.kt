@@ -26,7 +26,8 @@ import org.robolectric.annotation.Config
  * Bootstrap provider vs paginazione on-demand, con TMDB servito da un HTTP locale.
  *
  * Verifica misurable:
- * - il refresh iniziale chiede UNA sola pagina per provider/tipo (14 richieste totali);
+ * - il refresh iniziale chiede UNA sola pagina per provider/tipo (16 richieste totali:
+ *   8 provider x Film + Serie TV);
  * - le pagine successive partono SOLO quando [MediaRepository.loadProviderCatalog]
  *   viene invocato, cioè quando la ProviderScreen ne ha bisogno;
  * - una seconda richiesta della stessa pagina non produce traffico (cache Room);
@@ -72,8 +73,8 @@ class MediaRepositoryProviderPagingTest {
       val movieProviderRequests = server.providerMovieRequests()
       val tvProviderRequests = server.providerTvRequests()
 
-      assertEquals("una richiesta Film per ciascun provider", 7, movieProviderRequests.size)
-      assertEquals("una richiesta Serie TV per ciascun provider", 7, tvProviderRequests.size)
+      assertEquals("una richiesta Film per ciascun provider", 8, movieProviderRequests.size)
+      assertEquals("una richiesta Serie TV per ciascun provider", 8, tvProviderRequests.size)
       assertTrue(
         "il bootstrap non deve chiedere pagine successive: ${movieProviderRequests.map { it.page }}",
         (movieProviderRequests + tvProviderRequests).all { it.page == 1 }

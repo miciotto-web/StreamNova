@@ -79,16 +79,16 @@ class StreamNovaDatabaseMigrationTest {
   }
 
   @Test
-  fun databaseVersionIs9() {
-    // Room applica `version = 9` al database creato: è la versione che la migrazione
-    // esplicita 8->9 deve raggiungere.
+  fun databaseVersionIsCurrent() {
+    // Room applica `version = 10` al database creato: la catena di migrazioni esplicite
+    // (8->9 per l'identità Debrid, 9->10 per la provenienza SIMKL) deve raggiungerla.
     val roomDb = Room.inMemoryDatabaseBuilder(context, StreamNovaDatabase::class.java)
       .allowMainThreadQueries()
       .build()
     try {
       assertEquals(
-        "La migrazione esplicita 8->9 richiede la versione 9",
-        9,
+        "Le migrazioni esplicite devono portare il database alla versione corrente",
+        10,
         roomDb.openHelper.readableDatabase.version
       )
     } finally {

@@ -17,5 +17,10 @@ data class EpisodeProgressEntity(
   val episodeNumber: Int,
   val progressMs: Long = 0L,
   val durationMs: Long = 0L,
-  val updatedAt: Long = System.currentTimeMillis()
+  val updatedAt: Long = System.currentTimeMillis(),
+  /**
+   * Provenienza della posizione (`MEDIA_SOURCE_SIMKL` = adottata dalla sincronizzazione):
+   * `null` = scritta dal locale (player o dati storici), MAI rimossa dal logout SIMKL.
+   */
+  val source: String? = null
 )

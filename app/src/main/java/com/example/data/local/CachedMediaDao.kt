@@ -27,6 +27,10 @@ interface CachedMediaDao {
   @Query("UPDATE cached_media_items SET isFavorite = :isFavorite WHERE id = :id")
   suspend fun updateFavorite(id: String, isFavorite: Boolean)
 
+  /** Preferito CON provenienza: chi ha scritto lo stato per ultimo ne resta proprietario. */
+  @Query("UPDATE cached_media_items SET isFavorite = :isFavorite, favoriteSource = :favoriteSource WHERE id = :id")
+  suspend fun updateFavoriteWithSource(id: String, isFavorite: Boolean, favoriteSource: String?)
+
   @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs WHERE id = :id")
   suspend fun updateProgress(id: String, progressMs: Long)
 
@@ -46,6 +50,10 @@ interface CachedMediaDao {
   @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, totalDurationMs = :totalDurationMs, lastWatchedAt = :lastWatchedAt WHERE id = :id")
   suspend fun updateProgressWithDuration(id: String, progressMs: Long, totalDurationMs: Long, lastWatchedAt: Long)
 
+  /** Posizione del film CON provenienza (ultimo scrittore possessore). */
+  @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, totalDurationMs = :totalDurationMs, lastWatchedAt = :lastWatchedAt, progressSource = :progressSource WHERE id = :id")
+  suspend fun updateProgressWithDurationAndSource(id: String, progressMs: Long, totalDurationMs: Long, lastWatchedAt: Long, progressSource: String?)
+
   @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, lastWatchedSeason = :season, lastWatchedEpisode = :episode, lastWatchedAt = :lastWatchedAt WHERE id = :id")
   suspend fun updateTvProgressWithTimestamp(id: String, progressMs: Long, season: Int, episode: Int, lastWatchedAt: Long)
 
@@ -56,6 +64,10 @@ interface CachedMediaDao {
    */
   @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, totalDurationMs = :totalDurationMs, lastWatchedSeason = :season, lastWatchedEpisode = :episode, lastWatchedAt = :lastWatchedAt WHERE id = :id")
   suspend fun updateTvProgressWithDuration(id: String, progressMs: Long, totalDurationMs: Long, season: Int, episode: Int, lastWatchedAt: Long)
+
+  /** Posizione dell'episodio corrente CON provenienza (ultimo scrittore possessore). */
+  @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs, totalDurationMs = :totalDurationMs, lastWatchedSeason = :season, lastWatchedEpisode = :episode, lastWatchedAt = :lastWatchedAt, progressSource = :progressSource WHERE id = :id")
+  suspend fun updateTvProgressWithDurationAndSource(id: String, progressMs: Long, totalDurationMs: Long, season: Int, episode: Int, lastWatchedAt: Long, progressSource: String?)
 
   /**
    * Azzera la posizione della card senza toccare stagione/episodio visti né la durata

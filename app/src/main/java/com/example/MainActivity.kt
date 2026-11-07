@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -642,9 +643,8 @@ fun StreamNovaApp(
               },
               isSidebarExpanded = isSidebarExpanded,
               onCollapseRequest = { isSidebarExpanded = false },
-              // La voce "Addon" compare nella sidebar solo in modalità Debrid TorBox:
-              // in Web Streaming (HTTP) gli addon non alimentano la risoluzione sorgenti.
-              showAddons = streamingEngineMode.supportsAddonsSection,
+              // La voce "Addon" è sempre presente nella sidebar, in ogni modalità del motore.
+              showAddons = true,
               modifier = Modifier
                 .align(Alignment.CenterStart)
                 .focusRequester(sidebarFocusRequester)
@@ -708,6 +708,22 @@ fun StreamNovaApp(
         // resta quella corrente e non c'è alcun pop da eseguire.
         val playerClosedToken by viewModel.playerClosedToken.collectAsState()
 
+        // Uscita DAL Dettaglio verso la destinazione sottostante (Home/Provider): lo stato
+        // della scheda viene azzerato solo quando la destinazione ha davvero lasciato la
+        // composizione. Durante la transizione di uscita del NavHost la scheda resta
+        // composta: azzerare `selectedMedia`/la stagione subito la faceva ridisegnare con
+        // la lista episodi ricostruita dal catalogo (senza still TMDB) per una frazione di
+        // secondo, prima che la Home diventasse visibile (flash segnalato).
+        // Il flag è per destinazione (`backStackEntry.id`): una ricreazione della
+        // composizione (es. Activity ricreata) non azzera nulla, perché nessun BACK è in
+        // corso; solo il ritorno richiesto dall'utente lo fa.
+        var detailExitPending by remember(backStackEntry.id) { mutableStateOf(false) }
+        DisposableEffect(backStackEntry.id) {
+          onDispose {
+            if (detailExitPending) viewModel.completeDetailExit()
+          }
+        }
+
                 // (2) Back dal Dettaglio: popBackStack verso la schermata precedente.
         // Se lo stack contiene più dettagli, risale alla scheda precedente
         // ripristinandone stato e metadati. Solo quando lo stack è esaurito si torna a Home/Provider.
@@ -717,8 +733,11 @@ fun StreamNovaApp(
             "BackHandler Dettaglio: screenState=$screenState route=${navController.currentDestination?.route} " +
               "playerClosedToken=${viewModel.playerClosedToken.value}"
           )
-          val hasPreviousDetail = viewModel.popDetail()
+          // Lo stato UI resta intatto finché la scheda è composta: nessun frame con la
+          // lista episodi priva delle still. L'azzeramento è differito al dispose (sopra).
+          val hasPreviousDetail = viewModel.popDetail(clearDetailUiState = false)
           if (!hasPreviousDetail) {
+            detailExitPending = true
             pendingContentFocusRestore = true
           }
           navController.popBackStack()
@@ -755,8 +774,12 @@ fun StreamNovaApp(
             media = currentMedia,
             allMedia = allMedia,
             onBackClick = {
-              val hasPreviousDetail = viewModel.popDetail()
+              // Stessa uscita del tasto BACK: stato conservato fino al dispose della
+              // destinazione, così la scheda non si ridisegna senza still durante la
+              // transizione verso la Home.
+              val hasPreviousDetail = viewModel.popDetail(clearDetailUiState = false)
               if (!hasPreviousDetail) {
+                detailExitPending = true
                 pendingContentFocusRestore = true
               }
               navController.popBackStack()
@@ -953,14 +976,9 @@ targetCompanyId = lastFocusedCompanyId,
     val showSourceDialog by viewModel.showSourceDialog.collectAsState()
     val availableSources by viewModel.availableSources.collectAsState()
     val sourceDialogMedia by viewModel.sourceDialogMedia.collectAsState()
-    if (showSourceDialog && availableSources.isNotEmpty() && sourceDialogMedia != null) {
-      TorBoxSourceSelectionScreen(
-        sources = availableSources,
-        target = sourceDialogMedia,
-        onSelect = { source -> viewModel.selectSource(source) },
-        onDismiss = { viewModel.dismissSourceDialog() }
-      )
-    }
+    // Preferenze di riproduzione: guidano l'ordinamento della lista sorgenti
+    // ("Privilegia tracce italiane", "Risoluzione preferita").
+    val playbackSettings by viewModel.playbackSettings.collectAsState()
 
     val showParentalPinDialog by viewModel.showParentalPinDialog.collectAsState()
     val parentalPinErrorResId by viewModel.parentalPinErrorResId.collectAsState()
@@ -1005,6 +1023,20 @@ targetCompanyId = lastFocusedCompanyId,
     // Player Screen overlay when media playback is requested
     if (screenState == ScreenState.PLAYER) {
       PlayerScreen(viewModel = viewModel)
+    }
+
+    // Scelta MANUALE delle sorgenti: composta DOPO il player. Deve restare sopra
+    // l'overlay di riproduzione quando viene aperta dal player (es. dopo un fallimento
+    // dell'autoplay del prossimo episodio: "Nessuna fonte disponibile… Seleziona una
+    // fonte manualmente"). Prima era sotto il player e quindi invisibile in quel caso.
+    if (showSourceDialog && availableSources.isNotEmpty() && sourceDialogMedia != null) {
+      TorBoxSourceSelectionScreen(
+        sources = availableSources,
+        target = sourceDialogMedia,
+        settings = playbackSettings,
+        onSelect = { source -> viewModel.selectSource(source) },
+        onDismiss = { viewModel.dismissSourceDialog() }
+      )
     }
 
     // Trailer interno (YouTube embedded): sopra ogni schermata, mai Intent esterno.

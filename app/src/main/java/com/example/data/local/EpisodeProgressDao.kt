@@ -22,4 +22,8 @@ interface EpisodeProgressDao {
 
   @Query("DELETE FROM episode_progress WHERE mediaId = :mediaId")
   suspend fun clearProgressForMedia(mediaId: String)
+
+  /** Cancella le righe di UNA sola provenienza (es. `MEDIA_SOURCE_SIMKL`): le locali restano. */
+  @Query("DELETE FROM episode_progress WHERE source = :source")
+  suspend fun clearProgressForSource(source: String)
 }

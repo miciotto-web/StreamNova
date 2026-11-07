@@ -164,7 +164,8 @@ object ProviderCatalogResolvers {
  *    ([systemDefaultBinding]) non viene più costruito: resta solo per compatibilità.
  * 3. Il confronto è su **confine di token** (mai sottostringa grezza: "max" non
  *    matcha "maxwell", "apple" non matcha "pineapple") e copre i token ESATTI di
- *    ogni piattaforma (`prime` / `amazon`, `paramount`, `crunchyroll`, `disney`,
+ *    ogni piattaforma (`prime` / `amazon`, `paramount`, `now` / `nowtv`,
+ *    `crunchyroll`, `disney`,
  *    `apple`, `hbo` / `max`, `netflix`) oltre alle varianti dichiarate dai
  *    provider: `amazon prime` / `prime video`, `paramount+` / `paramount plus`,
  *    ecc. Un catalogo NON viene scartato se non dichiara gli extra `genre` /
@@ -197,11 +198,13 @@ object ProviderCatalogSourcePolicy {
   /**
    * Token ESATTI che identificano una piattaforma nell'ID o nel nome del catalogo
    * (manifest Xperience / Easy Catalog: `streaming_prime_movies`,
-   * `tmdb.movie.amazon`, `snoak_paramount_top10_movies`, `streaming_crunchyroll_movies`, ...).
+   * `tmdb.movie.amazon`, `snoak_paramount_top10_movies`, `streaming_now_movies`,
+   * `streaming_crunchyroll_movies`, ...).
    */
   private val CATALOG_ID_TOKENS: Map<String, Set<String>> = mapOf(
     "prime" to setOf("prime", "amazon"),
     "paramount" to setOf("paramount"),
+    "nowtv" to setOf("now", "nowtv"),
     CRUNCHYROLL_ID to setOf(CRUNCHYROLL_ID),
     "disney" to setOf("disney"),
     "apple" to setOf("apple"),
@@ -254,7 +257,7 @@ object ProviderCatalogSourcePolicy {
    *
    * Il target appartiene al provider quando l'ID del catalogo o il nome del
    * catalogo contiene uno dei token esatti del provider in [CATALOG_ID_TOKENS]
-   * (`prime` / `amazon`, `paramount`, `crunchyroll`, `disney`, `apple`,
+   * (`prime` / `amazon`, `paramount`, `now` / `nowtv`, `crunchyroll`, `disney`, `apple`,
    * `hbo` / `max`, `netflix`) oppure uno degli alias dichiarati, il nome
    * dell'addon o un'opzione dichiarata per `genre` / `provider` / `platform`.
    *

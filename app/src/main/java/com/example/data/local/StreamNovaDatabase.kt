@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     EpisodeProgressEntity::class,
     LastWorkingStreamEntity::class
   ],
-  version = 9,
+  version = 10,
   exportSchema = false
 )
 abstract class StreamNovaDatabase : RoomDatabase() {
@@ -146,6 +146,28 @@ abstract class StreamNovaDatabase : RoomDatabase() {
       }
     }
 
+    /**
+     * v9 -> v10: colonne di PROVENIENZA per preferiti, progressi e schede importate
+     * (`favoriteSource`, `progressSource`, `importedFromSimkl` in `cached_media_items`;
+     * `source` in `episode_progress`). `NULL`/`0` = dato locale, `"simkl"` = adottato
+     * dalla sincronizzazione SIMKL: è la base della pulizia al logout, che rimuove SOLO
+     * i dati di provenienza SIMKL e PRESERVA tutti quelli locali.
+     *
+     * I record storici (scritti prima della migrazione) nascono `NULL`/`0`, cioè di
+     * proprietà LOCALE: la loro provenienza reale non è ricostruibile dal database v9,
+     * quindi vengono conservati (mai cancellati indiscriminatamente) — al primo logout
+     * un preferito/progresso importato da SIMKL in una versione precedente può restare
+     * visibile; la rimozione manuale dalla UI resta disponibile e sicura.
+     */
+    internal val MIGRATION_9_10 = object : Migration(9, 10) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN favoriteSource TEXT")
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN progressSource TEXT")
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN importedFromSimkl INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE episode_progress ADD COLUMN source TEXT")
+      }
+    }
+
     @Volatile
     private var INSTANCE: StreamNovaDatabase? = null
 
@@ -157,7 +179,7 @@ abstract class StreamNovaDatabase : RoomDatabase() {
           "streamnova_database.db"
         )
           .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
-          .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+          .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
           .build()
           .also { INSTANCE = it }
       }

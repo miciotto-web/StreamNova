@@ -130,6 +130,20 @@ object ProviderConstants {
     aliases = setOf("paramount", "paramount+", "paramount plus")
   )
 
+  /** NOW TV (Sky): provider TMDB 39 verificato su `watch_region=IT` (Film e Serie TV). */
+  val NOW_TV = StreamingProvider(
+    id = "nowtv",
+    name = "NOW TV",
+    tmdbProviderId = 39,
+    tag = "NOW ORIGINALS",
+    primaryColor = Color(0xFF067E86),
+    secondaryColor = Color(0xFF072326),
+    accentColor = Color(0xFF328288),
+    logoUrl = "https://image.tmdb.org/t/p/w500/oFAnvlaEW2KT6J7XM0DXjlWqKu9.png",
+    logoResId = R.drawable.logo_provider_nowtv,
+    aliases = setOf("now", "now tv", "nowtv")
+  )
+
   val CRUNCHYROLL = StreamingProvider(
     id = "crunchyroll",
     name = "Crunchyroll",
@@ -141,7 +155,7 @@ object ProviderConstants {
     aliases = setOf("crunchyroll")
   )
 
-  val ALL = listOf(NETFLIX, HBO, DISNEY, PRIME_VIDEO, APPLE_TV, PARAMOUNT_PLUS, CRUNCHYROLL)
+  val ALL = listOf(NETFLIX, HBO, DISNEY, PRIME_VIDEO, APPLE_TV, PARAMOUNT_PLUS, NOW_TV, CRUNCHYROLL)
 }
 
 /**

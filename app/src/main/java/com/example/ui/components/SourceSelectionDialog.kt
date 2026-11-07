@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -9,11 +10,13 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,12 +26,14 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
@@ -49,39 +54,46 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.Episode
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.prefs.PlaybackSettings
 import com.example.data.streaming.CacheState
 import com.example.data.streaming.StreamSource
 import com.example.data.streaming.TorBoxSourceOrdering
 import com.example.ui.theme.NovaBackground
-import com.example.ui.theme.NovaCardBgFocused
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
 import com.example.ui.theme.NovaDivider
 import com.example.ui.theme.NovaGold
 import com.example.ui.theme.NovaGreen
-import com.example.ui.theme.NovaOrange
-import com.example.ui.theme.NovaSurface
 import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
@@ -117,6 +129,7 @@ import kotlinx.coroutines.delay
 fun TorBoxSourceSelectionScreen(
   sources: List<StreamSource>,
   target: com.example.ui.viewmodel.SourceDialogTarget?,
+  settings: PlaybackSettings = PlaybackSettings(),
   onSelect: (StreamSource) -> Unit,
   onDismiss: () -> Unit,
   modifier: Modifier = Modifier,
@@ -125,6 +138,7 @@ fun TorBoxSourceSelectionScreen(
     sources = sources,
     media = target?.media,
     episode = target?.episode,
+    settings = settings,
     onSelect = onSelect,
     onDismiss = onDismiss,
     modifier = modifier
@@ -137,12 +151,15 @@ fun TorBoxSourceSelectionScreen(
   sources: List<StreamSource>,
   media: MediaItem?,
   episode: Episode? = null,
+  settings: PlaybackSettings = PlaybackSettings(),
   onSelect: (StreamSource) -> Unit,
   onDismiss: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  // Ordinamento deterministico gia' esistente: applicato prima di mostrare la lista.
-  val ordered = remember(sources) { TorBoxSourceOrdering.sort(sources) }
+  // Ordinamento deterministico applicato prima di mostrare la lista. Le preferenze
+  // dell'utente ("Privilegia tracce italiane" e "Risoluzione preferita") guidano
+  // l'ordine: prima venivano ignorate perché il sort usava solo i valori di default.
+  val ordered = remember(sources, settings) { TorBoxSourceOrdering.sort(sources, settings) }
 
   // Provider dedotti SOLO dai dati gia' presenti nello StreamSource (nessuna nuova
   // discovery): l'ordine rispetta la prima comparsa nella lista ordinata.
@@ -298,7 +315,7 @@ fun TorBoxSourceSelectionScreen(
             items = filtered,
             key = { index, source -> sourceKey(source, index) }
           ) { index, source ->
-            TorBoxSourceCard(
+            DebridSourceCard(
               source = source,
               onClick = { onSelect(source) },
               onFocus = { if (it) focusedStreamIndex = index },
@@ -673,21 +690,59 @@ private fun ProviderFilterChip(
   }
 }
 
+/**
+ * Card di una sorgente Debrid, fedele al riferimento grafico approvato.
+ *
+ * Struttura:
+ *  - colonna sinistra: tag istantanea, nome completo del file, dimensione, riga
+ *    lingue/peer/stato cache, riga tecnica (risoluzione/audio/tipo) e fila di
+ *    loghi tecnici con la dimensione in evidenza;
+ *  - colonna destra: logo dell'ADDON di origine (manifest `logo` o asset ufficiale,
+ *    con iniziali come fallback neutro), nome + indicatore torrent/lingua e, in
+ *    subordine, il servizio Debrid usato per lo sblocco.
+ *
+ * È SOLO presentazione: i dati mancanti vengono omessi (o mostrati come "N/A" dove
+ * il riferimento lo prevede), nessun metadato viene inventato. Focus, pressione OK
+ * e click restano quelli di [TvFocusableBox].
+ *
+ * Componente CONDIVISO fra la lista pre-playback ([TorBoxSourceSelectionScreen]) e
+ * il selettore interno al player: le due finestre mostrano quindi gli stessi
+ * metadati e lo stesso layout, senza una seconda implementazione visuale.
+ *
+ * @param isCurrent `true` per la sorgente in riproduzione: aggiunge il badge
+ *   "In riproduzione", il bordo ciano e un fondo leggermente distinto. Nel
+ *   pre-playback resta `false` (nessuna riga è "in riproduzione").
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TorBoxSourceCard(
+internal fun DebridSourceCard(
   source: StreamSource,
   onClick: () -> Unit,
   onFocus: (Boolean) -> Unit,
   modifier: Modifier = Modifier,
+  isCurrent: Boolean = false,
 ) {
-  val shape = RoundedCornerShape(14.dp)
+  val shape = RoundedCornerShape(12.dp)
+  val meta = DebridSourceCardPresentation
+  val sizeLabel = meta.sizeLabel(source, decimals = 2)
+  val shortSizeLabel = meta.sizeLabel(source, decimals = 1)
+  val audioCodes = meta.audioLanguageCodes(source)
+  val subtitleCodes = meta.subtitleLanguageCodes(source)
+  val peers = meta.peersLabel(source)
+  // Identità dell'ADDON (nome + logo) e provider Debrid sono dati distinti:
+  // il logo del servizio Debrid non occupa mai il posto del logo dell'addon.
+  val addon = meta.addonIdentityOf(source)
+  val provider = meta.providerOf(source)
+
   TvFocusableBox(
     shape = shape,
-    // Punto 2 – Feedback focus 10-foot UI: zoom 1.03x fluido (animateFloatAsState
-    // interno a TvFocusableBox) + bordo luminescente e ombra già gestiti dal wrapper.
+    // Feedback focus 10-foot UI invariato: zoom 1.03x fluido (animateFloatAsState
+    // interno al wrapper) + bordo ciano luminescente del sistema focus esistente.
     focusedScale = 1.03f,
     borderWidth = 2.5.dp,
+    // La sorgente in riproduzione resta riconoscibile anche senza focus: il bordo
+    // ciano è lo stesso indicatore di selezione usato dal resto del player.
+    unfocusedBorderColor = if (isCurrent) NovaCyan.copy(alpha = 0.7f) else Color.Transparent,
     onClick = onClick,
     modifier = modifier
       .fillMaxWidth()
@@ -695,268 +750,743 @@ private fun TorBoxSourceCard(
       // Tap touch: seleziona senza alterare il sistema di focus TV.
       .pointerInput(Unit) { detectTapGestures { onClick() } }
   ) { isFocused ->
-    Row(
+    Column(
       modifier = Modifier
         .fillMaxWidth()
-        .background(if (isFocused) NovaCardBgFocused else NovaSurfaceVariant, shape)
-        // Bordo perimetrale interno più marcato quando focalizzato (inequivocabile da lontano).
-        .border(if (isFocused) 2.dp else 1.dp, if (isFocused) NovaCyanBright else NovaDivider, shape)
-        .padding(horizontal = 16.dp, vertical = 14.dp),
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      Column(modifier = Modifier.weight(1f)) {
-        // Riga badge (in alto): risoluzione, cache, HDR, codec, tipo rilascio, IT.
-        FlowRow(
-          horizontalArrangement = Arrangement.spacedBy(6.dp),
-          verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-          ResolutionBadge(source)
-          CacheBadge(source.cacheState)
-          TorBoxSourceOrdering.hdrLabel(source)?.let { HdrBadge(it) }
-          source.codec?.takeIf { it.isNotBlank() }?.let { CodecBadge(it) }
-          source.releaseType?.takeIf { it.isNotBlank() }?.let { ReleaseTypeBadge(it) }
-          if (source.isItalian) ItalianBadge()
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Nome file ben visibile, troncato su due righe senza deformare la card.
-        Text(
-          text = source.releaseTitle?.takeIf { it.isNotBlank() } ?: source.serverName,
-          color = NovaTextPrimary,
-          fontSize = 16.sp,
-          fontWeight = FontWeight.SemiBold,
-          maxLines = 2,
-          overflow = TextOverflow.Ellipsis
+        .background(
+          when {
+            isFocused -> DebridCardBackgroundFocused
+            isCurrent -> DebridCardBackgroundCurrent
+            else -> DebridCardBackground
+          },
+          shape
         )
-
-        val sizeLabel = formatSize(TorBoxSourceOrdering.sizeBytesOf(source).takeIf { it > 0L })
-        val extraDetails = remainingDetails(source.details)
-        // Il nome dell'addon NON ripete qui: è già mostrato dal badge provider
-        // sulla destra ([SourceProviderLogo] / [providerLabelOf]). La riga resta
-        // dedicata a dimensione e dettagli residui (peer, ecc.).
-        if (sizeLabel != null || extraDetails != null) {
-          Spacer(modifier = Modifier.height(8.dp))
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-          ) {
-            sizeLabel?.let { MetaPill(it) }
-            extraDetails?.let { MetaText(it) }
-          }
-        }
-
-        val audio = source.detectedAudioLanguages
-        if (audio.isNotEmpty()) {
-          Spacer(modifier = Modifier.height(6.dp))
-          MetaRow(
-            label = stringResource(R.string.torbox_source_audio),
-            value = audio.joinToString(" \u00b7 ")
+        .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+      // 0) Sorgente in riproduzione: indicatore conservato dal selettore del player.
+      if (isCurrent) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Box(
+            modifier = Modifier
+              .size(8.dp)
+              .background(NovaGreen, RoundedCornerShape(50))
+          )
+          Text(
+            text = stringResource(R.string.player_source_selector_current),
+            color = NovaGreen,
+            fontSize = 11.sp,
+            lineHeight = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+          )
+          Spacer(modifier = Modifier.weight(1f))
+          Icon(
+            imageVector = Icons.Default.CheckCircle,
+            contentDescription = stringResource(R.string.player_cd_selected),
+            tint = NovaCyanBright,
+            modifier = Modifier.size(16.dp)
           )
         }
-
-        val subtitleLanguages = source.subtitles
-          .map { it.getDisplayLanguage() }
-          .filter { it.isNotBlank() }
-          .distinct()
-        if (subtitleLanguages.isNotEmpty()) {
-          Spacer(modifier = Modifier.height(4.dp))
-          MetaRow(
-            label = stringResource(R.string.torbox_source_subtitles),
-            value = subtitleLanguages.joinToString(" \u00b7 ")
-          )
-        }
+        Spacer(modifier = Modifier.height(8.dp))
       }
 
-      Spacer(modifier = Modifier.width(16.dp))
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+          // 1) Tag istantanea ("2160p TB Instant"): dato reale dell'addon.
+          Text(
+            text = meta.headline(source),
+            color = DebridTitleColor,
+            fontSize = 15.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
 
-      // Logo del provider sulla destra, ricavato dai dati gia' presenti (addonName).
-      SourceProviderLogo(name = providerLabelOf(source))
+          Spacer(modifier = Modifier.height(4.dp))
+
+          // 2) Nome completo del file, riga singola con ellissi solo se necessaria.
+          SourceMetaRow(firstIcon = "📄") {
+            Text(
+              text = meta.fileName(source),
+              color = DebridFileColor,
+              fontSize = 13.sp,
+              lineHeight = 16.sp,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+
+          // 3) Dimensione del file (solo se il metadato esiste).
+          if (sizeLabel != null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            SourceMetaRow(firstIcon = "💾") {
+              Text(
+                text = sizeLabel,
+                color = DebridMetaColor,
+                fontSize = 12.sp,
+                lineHeight = 15.sp,
+                maxLines = 1
+              )
+            }
+          }
+
+          // 4) Lingue audio/sottotitoli, peer e stato cache.
+          Spacer(modifier = Modifier.height(5.dp))
+          SourceLanguageRow(
+            audioCodes = audioCodes,
+            subtitleCodes = subtitleCodes,
+            peers = peers,
+            cacheState = source.cacheState
+          )
+
+          // 5) Riga tecnica: risoluzione, formato audio, tipo di rilascio.
+          Spacer(modifier = Modifier.height(5.dp))
+          SourceTechnicalRow(
+            resolution = meta.resolutionLabel(source),
+            audioFormat = meta.audioFormatLabel(source),
+            releaseType = meta.releaseTypeLabel(source)
+          )
+        }
+
+        Spacer(modifier = Modifier.width(14.dp))
+
+        SourceIdentityColumn(
+          identity = addon,
+          isTorrentSource = !source.infoHash.isNullOrBlank(),
+          languageTag = audioCodes.firstOrNull(),
+          provider = provider
+        )
+      }
+
+      Spacer(modifier = Modifier.height(10.dp))
+
+      // 6) Loghi tecnici + badge dimensione, come nel riferimento grafico.
+      SourceTechnicalBadges(source = source, sizeLabel = shortSizeLabel ?: sizeLabel)
     }
   }
 }
 
 /**
- * Logo del provider dello stream. Non esistendo asset dedicati per gli addon,
- * viene rappresentato in modo deterministico dalle iniziali del provider con la
- * palette StreamNova (nessun asset duplicato, nessun nuovo sistema provider).
+ * Riga informativa della card: icona (emoji del riferimento) in una colonna fissa
+ * da 18dp, così tutte le righe restano allineate anche quando un valore manca.
  */
 @Composable
-private fun SourceProviderLogo(name: String, modifier: Modifier = Modifier, size: Dp = 44.dp) {
+private fun SourceMetaRow(
+  firstIcon: String,
+  content: @Composable RowScope.() -> Unit
+) {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    modifier = Modifier.fillMaxWidth()
+  ) {
+    Box(modifier = Modifier.width(18.dp), contentAlignment = Alignment.CenterStart) {
+      Text(text = firstIcon, fontSize = 12.sp, lineHeight = 15.sp)
+    }
+    Spacer(modifier = Modifier.width(6.dp))
+    content()
+  }
+}
+
+/** Riga lingue/peer/stato cache (🌍 IT 🌐 | 👤 382 | ⏰). */
+@Composable
+private fun SourceLanguageRow(
+  audioCodes: List<String>,
+  subtitleCodes: List<String>,
+  peers: String?,
+  cacheState: CacheState
+) {
+  val audioLabel = audioCodes.takeIf { it.isNotEmpty() }
+    ?.joinToString(" \u00b7 ")
+    ?: DebridSourceCardPresentation.UNKNOWN_VALUE
+
+  SourceMetaRow(firstIcon = "🌍") {
+    Row(
+      modifier = Modifier.weight(1f),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+      Text(
+        text = audioLabel,
+        color = DebridMetaColor,
+        fontSize = 12.sp,
+        lineHeight = 15.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f, fill = false)
+      )
+
+      Text(text = "🌐", fontSize = 12.sp, lineHeight = 15.sp)
+      if (subtitleCodes.isNotEmpty()) {
+        Text(
+          text = subtitleCodes.joinToString(" \u00b7 "),
+          color = DebridMetaColor,
+          fontSize = 12.sp,
+          lineHeight = 15.sp,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.weight(1f, fill = false)
+        )
+      }
+
+      if (peers != null) {
+        MetaSeparator()
+        Text(text = "👤", fontSize = 12.sp, lineHeight = 15.sp)
+        Text(
+          text = peers,
+          color = DebridMetaColor,
+          fontSize = 12.sp,
+          lineHeight = 15.sp,
+          maxLines = 1
+        )
+      }
+
+      val cacheIcon = cacheIconOf(cacheState)
+      if (cacheIcon != null) {
+        MetaSeparator()
+        Text(text = cacheIcon, fontSize = 12.sp, lineHeight = 15.sp)
+      }
+    }
+  }
+}
+
+/** Riga tecnica (🎬 2160p | 🔊 DDP5.1 | 🏷️ WEB-DL). */
+@Composable
+private fun SourceTechnicalRow(
+  resolution: String,
+  audioFormat: String?,
+  releaseType: String?
+) {
+  SourceMetaRow(firstIcon = "🎬") {
+    Row(
+      modifier = Modifier.weight(1f),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+      Text(
+        text = resolution,
+        color = DebridMetaColor,
+        fontSize = 12.sp,
+        lineHeight = 15.sp,
+        maxLines = 1
+      )
+
+      MetaSeparator()
+      Text(text = "🔊", fontSize = 12.sp, lineHeight = 15.sp)
+      if (audioFormat != null) {
+        Text(
+          text = audioFormat,
+          color = DebridMetaColor,
+          fontSize = 12.sp,
+          lineHeight = 15.sp,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.weight(1f, fill = false)
+        )
+      }
+
+      MetaSeparator()
+      Text(text = "🏷️", fontSize = 12.sp, lineHeight = 15.sp)
+      Text(
+        text = releaseType ?: DebridSourceCardPresentation.UNKNOWN_VALUE,
+        color = DebridMetaColor,
+        fontSize = 12.sp,
+        lineHeight = 15.sp,
+        maxLines = 1
+      )
+    }
+  }
+}
+
+@Composable
+private fun MetaSeparator() {
+  Text(
+    text = "|",
+    color = DebridSeparatorColor,
+    fontSize = 12.sp,
+    lineHeight = 15.sp,
+    maxLines = 1
+  )
+}
+
+/** Icona stato cache: istantanea (cached), in coda, oppure nessuna se sconosciuto. */
+private fun cacheIconOf(state: CacheState): String? = when (state) {
+  CacheState.Cached -> "⏰"
+  CacheState.NotCached -> "⏳"
+  CacheState.Unknown -> null
+}
+
+/**
+ * Colonna destra della card: identità dell'ADDON di origine (logo + nome +
+ * indicatore torrent/lingua) e, separato e in subordine, il servizio Debrid.
+ *
+ * Il logo mostrato in alto è sempre quello dell'addon: il provider Debrid non
+ * viene mai usato come sostituto quando il logo dell'addon non è disponibile.
+ */
+@Composable
+private fun SourceIdentityColumn(
+  identity: AddonIdentity,
+  isTorrentSource: Boolean,
+  languageTag: String?,
+  provider: DebridProvider?
+) {
   Column(
-    modifier = modifier.width(78.dp),
+    modifier = Modifier.width(132.dp),
     horizontalAlignment = Alignment.CenterHorizontally
   ) {
+    AddonLogoAvatar(identity)
+
+    Spacer(modifier = Modifier.height(5.dp))
+
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+      Text(
+        text = identity.name,
+        color = DebridMetaColor,
+        fontSize = 11.sp,
+        lineHeight = 13.sp,
+        fontWeight = FontWeight.Medium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f, fill = false)
+      )
+      if (isTorrentSource) {
+        Text(text = "🧲", fontSize = 10.sp, lineHeight = 12.sp)
+      }
+      if (languageTag != null) {
+        Text(
+          text = languageTag,
+          color = DebridLanguageColor,
+          fontSize = 9.sp,
+          lineHeight = 11.sp,
+          fontWeight = FontWeight.Bold,
+          letterSpacing = 0.5.sp,
+          maxLines = 1
+        )
+      }
+    }
+
+    if (provider != null) {
+      Spacer(modifier = Modifier.height(4.dp))
+      DebridServiceLabel(provider = provider)
+    }
+  }
+}
+
+/**
+ * Logo dell'addon di origine nella posizione identitaria della card.
+ *
+ * Ordine: logo ufficiale del manifest → asset ufficiale incluso nell'app per gli
+ * addon riconosciuti → iniziali (fallback neutro). Se il logo remoto non si carica,
+ * si ricade sull'asset locale o sulle iniziali: mai su un logo di altro provider.
+ */
+@Composable
+private fun AddonLogoAvatar(identity: AddonIdentity) {
+  Box(
+    modifier = Modifier
+      .size(32.dp)
+      .clip(RoundedCornerShape(50))
+      .background(DebridAvatarBackground)
+      .border(1.dp, DebridAvatarBorder, RoundedCornerShape(50)),
+    contentAlignment = Alignment.Center
+  ) {
+    val logoUrl = identity.logoUrl
+    if (logoUrl != null) {
+      SubcomposeAsyncImage(
+        model = ImageRequest.Builder(LocalContext.current)
+          .data(logoUrl)
+          .crossfade(true)
+          .build(),
+        contentDescription = identity.name,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier
+          .matchParentSize()
+          .padding(1.dp),
+        loading = { AddonInitials(name = identity.name) },
+        error = { BundledAddonLogo(identity) }
+      )
+    } else {
+      BundledAddonLogo(identity)
+    }
+  }
+}
+
+/** Asset locale dell'addon riconosciuto, oppure iniziali come fallback neutro. */
+@Composable
+private fun BoxScope.BundledAddonLogo(identity: AddonIdentity) {
+  val logoResId = identity.logoResId
+  if (logoResId != null) {
+    Image(
+      painter = painterResource(id = logoResId),
+      contentDescription = identity.name,
+      contentScale = ContentScale.Fit,
+      modifier = Modifier
+        .matchParentSize()
+        .padding(1.dp)
+    )
+  } else {
+    AddonInitials(name = identity.name)
+  }
+}
+
+@Composable
+private fun AddonInitials(name: String) {
+  Text(
+    text = DebridSourceCardPresentation.initials(name),
+    color = DebridTitleColor,
+    fontSize = 13.sp,
+    lineHeight = 16.sp,
+    fontWeight = FontWeight.Black,
+    maxLines = 1
+  )
+}
+
+/**
+ * Servizio Debrid usato per sbloccare la sorgente. È un metadato SECONDARIO:
+ * resta sotto il nome dell'addon, con icona ridotta e prefisso esplicito, così
+ * non può essere confuso con il logo dell'addon.
+ */
+@Composable
+private fun DebridServiceLabel(provider: DebridProvider) {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(4.dp)
+  ) {
+    Image(
+      painter = painterResource(id = provider.logoResId),
+      contentDescription = null,
+      contentScale = ContentScale.Fit,
+      modifier = Modifier
+        .height(12.dp)
+        .widthIn(max = 14.dp)
+    )
+    Text(
+      text = stringResource(R.string.source_card_debrid_via, provider.label),
+      color = DebridMetaColor.copy(alpha = 0.75f),
+      fontSize = 9.sp,
+      lineHeight = 11.sp,
+      fontWeight = FontWeight.Medium,
+      letterSpacing = 0.2.sp,
+      maxLines = 1
+    )
+  }
+}
+
+/**
+ * Fila dei loghi tecnici, nello stesso ordine del riferimento: WEB-DL, 4K,
+ * Dolby Vision, HDR10(+), HEVC, Dolby Atmos, Dolby Digital Plus, DIMENSIONE.
+ *
+ * Ogni logo compare SOLO se il metadato reale della sorgente lo dichiara; la fila
+ * usa [FlowRow] per non andare in overflow sulle card più strette.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SourceTechnicalBadges(source: StreamSource, sizeLabel: String?) {
+  val meta = DebridSourceCardPresentation
+  val hdrBadges = meta.hdrBadges(source)
+
+  FlowRow(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(16.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp)
+  ) {
+    if (meta.hasWebDl(source)) TechBadgeSlot { WebDlLogo() }
+    if (meta.isUltraHd(source)) TechBadgeSlot { UltraHdLogo() }
+    hdrBadges.forEach { badge ->
+      TechBadgeSlot {
+        when (badge) {
+          HdrBadgeLabel.DOLBY_VISION -> DolbyLogo(label = "VISION")
+          HdrBadgeLabel.HDR10_PLUS,
+          HdrBadgeLabel.HDR10,
+          HdrBadgeLabel.HDR -> HdrTextLogo(text = badge.text)
+        }
+      }
+    }
+    if (meta.isHevc(source)) TechBadgeSlot { HevcLogo() }
+    if (meta.hasDolbyAtmos(source)) TechBadgeSlot { DolbyLogo(label = "ATMOS") }
+    if (meta.hasDolbyDigitalPlus(source)) TechBadgeSlot { DolbyDigitalPlusLogo() }
+    if (sizeLabel != null) TechBadgeSlot { SizeBadge(value = sizeLabel) }
+  }
+}
+
+/**
+ * Slot a altezza fissa della fila loghi: mantiene tutti i marchi allineati sul
+ * centro anche quando hanno altezze diverse (nessuna deformazione, nessun salto).
+ */
+@Composable
+private fun TechBadgeSlot(content: @Composable () -> Unit) {
+  Box(
+    modifier = Modifier.height(20.dp),
+    contentAlignment = Alignment.CenterStart
+  ) {
+    content()
+  }
+}
+
+/** Logo "WEB-DL": nuvola con freccia in blu + wordmark, come nel riferimento. */
+@Composable
+private fun WebDlLogo() {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(4.dp)
+  ) {
+    Canvas(modifier = Modifier.size(width = 16.dp, height = 13.dp)) {
+      val w = size.width
+      val h = size.height
+      val stroke = Stroke(
+        width = h * 0.14f,
+        cap = StrokeCap.Round,
+        join = StrokeJoin.Round
+      )
+      val cloud = Path().apply {
+        moveTo(w * 0.16f, h * 0.82f)
+        cubicTo(w * 0.02f, h * 0.82f, w * 0.00f, h * 0.58f, w * 0.13f, h * 0.52f)
+        cubicTo(w * 0.09f, h * 0.25f, w * 0.31f, h * 0.10f, w * 0.44f, h * 0.25f)
+        cubicTo(w * 0.51f, h * 0.01f, w * 0.81f, h * 0.04f, w * 0.83f, h * 0.27f)
+        cubicTo(w * 1.01f, h * 0.25f, w * 1.04f, h * 0.63f, w * 0.86f, h * 0.72f)
+        lineTo(w * 0.16f, h * 0.82f)
+        close()
+      }
+      drawPath(path = cloud, color = WebDlBlue, style = stroke)
+      // Freccia di download al centro della nuvola.
+      drawLine(
+        color = WebDlBlue,
+        start = Offset(w * 0.50f, h * 0.34f),
+        end = Offset(w * 0.50f, h * 0.64f),
+        strokeWidth = h * 0.13f,
+        cap = StrokeCap.Round
+      )
+      drawLine(
+        color = WebDlBlue,
+        start = Offset(w * 0.39f, h * 0.53f),
+        end = Offset(w * 0.50f, h * 0.65f),
+        strokeWidth = h * 0.13f,
+        cap = StrokeCap.Round
+      )
+      drawLine(
+        color = WebDlBlue,
+        start = Offset(w * 0.61f, h * 0.53f),
+        end = Offset(w * 0.50f, h * 0.65f),
+        strokeWidth = h * 0.13f,
+        cap = StrokeCap.Round
+      )
+    }
+    Text(
+      text = "WEB-DL",
+      color = WebDlBlue,
+      fontSize = 11.sp,
+      lineHeight = 13.sp,
+      fontWeight = FontWeight.Black,
+      letterSpacing = 0.2.sp,
+      maxLines = 1
+    )
+  }
+}
+
+/** Logo "4K ULTRA HD": riquadro nero, "4K" oro e banda inferiore oro. */
+@Composable
+private fun UltraHdLogo() {
+  Column(
+    modifier = Modifier
+      // Larghezza fissa: il FlowRow non deve allargare il marchio a tutta la riga.
+      .width(30.dp)
+      .background(Color.Black, RoundedCornerShape(2.dp))
+      .border(0.5.dp, UltraHdGold.copy(alpha = 0.65f), RoundedCornerShape(2.dp)),
+    horizontalAlignment = Alignment.CenterHorizontally
+  ) {
+    Text(
+      text = "4K",
+      color = UltraHdGold,
+      fontSize = 11.sp,
+      lineHeight = 13.sp,
+      fontWeight = FontWeight.Black,
+      maxLines = 1,
+      modifier = Modifier.padding(horizontal = 5.dp)
+    )
     Box(
       modifier = Modifier
-        .size(size)
-        .clip(RoundedCornerShape(12.dp))
-        .background(NovaSurface)
-        .border(1.dp, NovaCyan.copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
+        .fillMaxWidth()
+        .background(UltraHdGold),
       contentAlignment = Alignment.Center
     ) {
       Text(
-        text = providerInitials(name),
-        color = NovaCyanBright,
-        fontSize = (size.value * 0.4f).sp,
-        fontWeight = FontWeight.Black
+        text = "ULTRA HD",
+        color = Color.Black,
+        fontSize = 4.sp,
+        lineHeight = 5.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.3.sp,
+        maxLines = 1,
+        modifier = Modifier.padding(vertical = 0.5.dp)
       )
     }
-    Spacer(modifier = Modifier.height(6.dp))
-    Text(
-      text = name,
-      color = NovaTextSecondary,
-      fontSize = 10.sp,
-      fontWeight = FontWeight.SemiBold,
-      maxLines = 2,
-      overflow = TextOverflow.Ellipsis,
-      textAlign = TextAlign.Center
-    )
   }
 }
 
+/** Logo Dolby (Vision / Atmos): simbolo "DD" + wordmark su due righe. */
 @Composable
-private fun MetaPill(text: String) {
-  Box(
-    modifier = Modifier
-      .background(NovaSurface, RoundedCornerShape(6.dp))
-      .border(1.dp, NovaDivider, RoundedCornerShape(6.dp))
-      .padding(horizontal = 8.dp, vertical = 3.dp)
+private fun DolbyLogo(label: String) {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(3.dp)
   ) {
-    Text(
-      text = text,
-      color = NovaTextPrimary,
-      fontSize = 12.sp,
-      fontWeight = FontWeight.SemiBold
-    )
+    DolbyMark(modifier = Modifier.size(width = 13.dp, height = 9.dp))
+    Column {
+      Text(
+        text = "Dolby",
+        color = DolbyWhite,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Bold,
+        lineHeight = 9.sp,
+        maxLines = 1
+      )
+      Text(
+        text = label,
+        color = DolbyWhite.copy(alpha = 0.85f),
+        fontSize = 4.5.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 0.9.sp,
+        lineHeight = 5.sp,
+        maxLines = 1
+      )
+    }
   }
 }
 
+/** Logo "Dolby Digital Plus": simbolo "DD" in riquadro + wordmark su due righe. */
 @Composable
-private fun MetaText(text: String) {
+private fun DolbyDigitalPlusLogo() {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(3.dp)
+  ) {
+    DolbyMark(modifier = Modifier.size(width = 13.dp, height = 13.dp), boxed = true)
+    Column {
+      Text(
+        text = "DOLBY",
+        color = DolbyWhite,
+        fontSize = 8.sp,
+        fontWeight = FontWeight.Bold,
+        lineHeight = 8.sp,
+        maxLines = 1
+      )
+      Text(
+        text = "DIGITAL PLUS",
+        color = DolbyWhite.copy(alpha = 0.85f),
+        fontSize = 4.5.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 0.4.sp,
+        lineHeight = 5.sp,
+        maxLines = 1
+      )
+    }
+  }
+}
+
+/**
+ * Simbolo Dolby: due semicerchi affacciati (eventualmente dentro il riquadro
+ * arrotondato della variante Digital Plus). Disegnato in Compose, senza asset.
+ */
+@Composable
+private fun DolbyMark(modifier: Modifier = Modifier, boxed: Boolean = false) {
+  Canvas(modifier = modifier) {
+    val w = size.width
+    val h = size.height
+    val pad = if (boxed) h * 0.16f else 0f
+    if (boxed) {
+      drawRoundRect(
+        color = DolbyWhite,
+        topLeft = Offset(0f, 0f),
+        size = Size(w, h),
+        cornerRadius = CornerRadius(h * 0.22f),
+        style = Stroke(width = h * 0.10f)
+      )
+    }
+
+    val innerW = w - pad * 2f
+    val innerH = h - pad * 2f
+    val gap = innerW * 0.08f
+    val radius = (innerW - gap) / 4f
+    val leftRect = Rect(Offset(pad, pad), Size(radius * 2f, innerH))
+    val rightRect = Rect(Offset(pad + radius * 2f + gap, pad), Size(radius * 2f, innerH))
+
+    val leftPath = Path().apply {
+      moveTo(pad, pad)
+      lineTo(pad + radius, pad)
+      arcTo(leftRect, startAngleDegrees = -90f, sweepAngleDegrees = 180f, forceMoveTo = false)
+      lineTo(pad, pad + innerH)
+      close()
+    }
+    val rightPath = Path().apply {
+      moveTo(pad + innerW, pad + innerH)
+      lineTo(pad + radius * 3f + gap, pad + innerH)
+      arcTo(rightRect, startAngleDegrees = 90f, sweepAngleDegrees = 180f, forceMoveTo = false)
+      lineTo(pad + innerW, pad)
+      close()
+    }
+
+    drawPath(path = leftPath, color = DolbyWhite)
+    drawPath(path = rightPath, color = DolbyWhite)
+  }
+}
+
+/** Wordmark HDR10 / HDR10+ / HDR. */
+@Composable
+private fun HdrTextLogo(text: String) {
   Text(
     text = text,
-    color = NovaTextSecondary,
+    color = DolbyWhite,
     fontSize = 12.sp,
-    maxLines = 1,
-    overflow = TextOverflow.Ellipsis
+    lineHeight = 15.sp,
+    fontWeight = FontWeight.Black,
+    letterSpacing = 0.4.sp,
+    maxLines = 1
   )
 }
 
+/** Logo HEVC: wordmark verde corsivo. */
 @Composable
-private fun MetaRow(label: String, value: String) {
+private fun HevcLogo() {
+  Text(
+    text = "HEVC",
+    color = HevcGreen,
+    fontSize = 12.sp,
+    lineHeight = 15.sp,
+    fontWeight = FontWeight.Black,
+    fontStyle = FontStyle.Italic,
+    letterSpacing = 0.4.sp,
+    maxLines = 1
+  )
+}
+
+/** Badge finale "DIMENSIONE 23.8 GB", come nel riferimento. */
+@Composable
+private fun SizeBadge(value: String) {
   Row(
     verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(8.dp)
+    horizontalArrangement = Arrangement.spacedBy(5.dp)
   ) {
     Text(
-      text = label,
-      color = NovaCyan,
-      fontSize = 11.sp,
-      fontWeight = FontWeight.Bold
+      text = stringResource(R.string.source_card_size_label).uppercase(),
+      color = DebridTitleColor,
+      fontSize = 9.sp,
+      lineHeight = 11.sp,
+      fontWeight = FontWeight.Black,
+      letterSpacing = 0.8.sp,
+      maxLines = 1
     )
     Text(
       text = value,
-      color = NovaTextSecondary,
-      fontSize = 13.sp,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis
-    )
-  }
-}
-
-@Composable
-private fun ResolutionBadge(source: StreamSource) {
-  val resolution = source.resolution
-  val height = TorBoxSourceOrdering.resolutionHeight(source)
-  val (background, foreground) = when {
-    height >= 2160 -> NovaCyan.copy(alpha = 0.25f) to NovaCyanBright
-    height >= 1080 -> NovaCyan.copy(alpha = 0.18f) to NovaCyan
-    else -> NovaSurfaceVariant to NovaTextSecondary
-  }
-  Badge(text = resolution, background = background, foreground = foreground, fontSize = 13.sp)
-}
-
-@Composable
-private fun CacheBadge(state: CacheState) {
-  when (state) {
-    CacheState.Cached -> Badge(
-      text = stringResource(R.string.torbox_source_cached),
-      background = NovaGreen.copy(alpha = 0.18f),
-      foreground = NovaGreen
-    )
-    CacheState.NotCached -> Badge(
-      text = stringResource(R.string.torbox_source_not_cached),
-      background = NovaOrange.copy(alpha = 0.18f),
-      foreground = NovaOrange
-    )
-    CacheState.Unknown -> Badge(
-      text = stringResource(R.string.torbox_source_unknown),
-      background = NovaSurface,
-      foreground = NovaTextMuted
-    )
-  }
-}
-
-@Composable
-private fun HdrBadge(label: String) {
-  Badge(
-    text = label,
-    background = NovaGold.copy(alpha = 0.2f),
-    foreground = NovaGold
-  )
-}
-
-@Composable
-private fun CodecBadge(codec: String) {
-  val isHevc = codec.contains("HEVC", ignoreCase = true) ||
-    codec.contains("x265", ignoreCase = true) ||
-    codec.contains("AV1", ignoreCase = true) ||
-    codec.contains("hvc1", ignoreCase = true)
-  Badge(
-    text = codec,
-    background = if (isHevc) NovaOrange.copy(alpha = 0.2f) else NovaSurface,
-    foreground = if (isHevc) NovaOrange else NovaTextSecondary
-  )
-}
-
-@Composable
-private fun ReleaseTypeBadge(type: String) {
-  val (background, foreground) = when {
-    type.contains("WEB", ignoreCase = true) -> NovaGreen.copy(alpha = 0.2f) to NovaGreen
-    type.contains("Blu", ignoreCase = true) -> NovaOrange.copy(alpha = 0.2f) to NovaOrange
-    type.contains("HDR", ignoreCase = true) -> NovaGold.copy(alpha = 0.2f) to NovaGold
-    else -> NovaSurface to NovaTextSecondary
-  }
-  Badge(text = type, background = background, foreground = foreground)
-}
-
-@Composable
-private fun ItalianBadge() {
-  Badge(
-    text = "\ud83c\uddee\ud83c\uddf9 IT",
-    background = NovaGreen.copy(alpha = 0.2f),
-    foreground = NovaGreen
-  )
-}
-
-@Composable
-private fun Badge(
-  text: String,
-  background: Color,
-  foreground: Color,
-  fontSize: androidx.compose.ui.unit.TextUnit = 11.sp
-) {
-  Box(
-    modifier = Modifier
-      .background(background, RoundedCornerShape(4.dp))
-      .padding(horizontal = 7.dp, vertical = 3.dp)
-  ) {
-    Text(
-      text = text,
-      color = foreground,
-      fontSize = fontSize,
-      fontWeight = FontWeight.Bold,
+      color = DebridTitleColor,
+      fontSize = 11.sp,
+      lineHeight = 13.sp,
+      fontWeight = FontWeight.Black,
       maxLines = 1
     )
   }
@@ -971,18 +1501,6 @@ internal fun providerLabelOf(source: StreamSource): String {
 
 /** Chiave normalizzata del provider, usata solo per deduplicare il filtro in UI. */
 private fun providerKeyOf(source: StreamSource): String = providerLabelOf(source).lowercase()
-
-/** Iniziali del provider (max 2) usate come "logo" testuale deterministico. */
-private fun providerInitials(name: String): String {
-  val words = name
-    .replace(Regex("[^\\p{L}\\p{N} ]"), " ")
-    .trim()
-    .split(Regex("\\s+"))
-    .filter { it.isNotBlank() }
-  if (words.isEmpty()) return "?"
-  if (words.size == 1) return words[0].take(2).uppercase()
-  return (words[0].first().toString() + words[1].first().toString()).uppercase()
-}
 
 /**
  * Chiave stabile per gli item della lista (evita ricreazioni del nodo focusabile).
@@ -999,32 +1517,22 @@ private fun sourceKey(source: StreamSource, index: Int): String = buildString {
   else append("src_$index")
 }
 
-/** Formatta una dimensione in byte ("2.18 GB"); null se assente/zero. */
-private fun formatSize(bytes: Long?): String? {
-  if (bytes == null || bytes <= 0L) return null
-  val units = listOf("B", "KB", "MB", "GB", "TB")
-  var value = bytes.toDouble()
-  var index = 0
-  while (value >= 1024.0 && index < units.lastIndex) {
-    value /= 1024.0
-    index++
-  }
-  return if (index == 0) "$bytes B"
-  else String.format(java.util.Locale.US, "%.2f %s", value, units[index])
-}
-
-/** Rimuove la dimensione da details, lasciando eventuali peer/extra utili. */
-private fun remainingDetails(details: String?): String? {
-  if (details.isNullOrBlank()) return null
-  val cleaned = SIZE_TOKEN
-    .replace(details, " ")
-    .replace("|", " ")
-    .replace(Regex("\\s+"), " ")
-    .trim()
-    .trim('\u00b7', '-', '\u2022')
-    .trim()
-  return cleaned.takeIf { it.isNotBlank() }
-}
-
-private val SIZE_TOKEN =
-  Regex("(\\d+(?:[.,]\\d+)?)\\s*(TB|TiB|GB|GiB|MB|MiB|KB|KiB|B)\\b", RegexOption.IGNORE_CASE)
+// ── Palette della card Debrid ────────────────────────────────────────────────
+// Toni caldi e neutri del riferimento grafico: la card Debrid resta volutamente
+// distinta dalla palette ciano/navy usata dal resto dell'app, mentre il bordo e lo
+// zoom del focus restano quelli del sistema focus TV esistente (TvFocusableBox).
+private val DebridCardBackground = Color(0xFF211E1C)
+private val DebridCardBackgroundFocused = Color(0xFF2B2623)
+/** Fondo della sorgente in riproduzione: stesso tono caldo con una punta di ciano. */
+private val DebridCardBackgroundCurrent = Color(0xFF1F2729)
+private val DebridTitleColor = Color(0xFFF2F0EE)
+private val DebridFileColor = Color(0xFFC3BFBB)
+private val DebridMetaColor = Color(0xFFB0ACA7)
+private val DebridSeparatorColor = Color(0xFF6F6A65)
+private val DebridLanguageColor = Color(0xFF9E9994)
+private val DebridAvatarBackground = Color(0xFF3A332F)
+private val DebridAvatarBorder = Color(0x33FFFFFF)
+private val WebDlBlue = Color(0xFF2D9CDB)
+private val UltraHdGold = Color(0xFFF2B90C)
+private val HevcGreen = Color(0xFF3DDC5A)
+private val DolbyWhite = Color(0xFFEDEBE9)

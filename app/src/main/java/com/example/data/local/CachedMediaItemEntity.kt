@@ -1,7 +1,17 @@
 package com.example.data.local
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+
+/**
+ * Provenienza di un dato utente (preferito, progresso, scheda importata): `null` significa
+ * scritto in LOCALE (player, azione dell'utente, dati storici), `"simkl"` significa
+ * adottato dalla sincronizzazione SIMKL. È la base della regola "ultimo scrittore
+ * possessore": la disconnessione da SIMKL rimuove solo ciò che la sync ha scritto per
+ * ultimo, lasciando intatti i dati locali e quelli di altri servizi.
+ */
+const val MEDIA_SOURCE_SIMKL = "simkl"
 
 /**
  * Room Entity persisting TMDB Media items.
@@ -41,5 +51,23 @@ data class CachedMediaItemEntity(
   /** Timestamp dell'ultima visione: usato per ordinare "Continua a guardare". */
   val lastWatchedAt: Long? = null,
   val ageRating: Int? = null,
+  /**
+   * Provenienza dello stato "preferito" (`MEDIA_SOURCE_SIMKL` quando è la watchlist SIMKL
+   * a portarlo nei Preferiti): `null` = preferito locale o storico, MAI rimosso dal logout.
+   * Nessun DEFAULT dichiarato: la migrazione aggiunge la colonna TEXT senza default
+   * (coerenza richiesta dalla validazione schema Room dopo la migrazione).
+   */
+  val favoriteSource: String? = null,
+  /**
+   * Provenienza del progresso corrente della scheda: `null` = scritto dal locale (player o
+   * dati storici), `MEDIA_SOURCE_SIMKL` = ultima posizione adottata dalla sincronizzazione.
+   */
+  val progressSource: String? = null,
+  /**
+   * true se la scheda è stata CREATA dall'importazione SIMKL (watchlist o punto di
+   * ripresa): al logout una scheda sim può essere eliminata, ma solo se non ha acquisito
+   * alcun stato locale (preferito o progresso scritti dall'utente/player).
+   */
+  @ColumnInfo(defaultValue = "0") val importedFromSimkl: Boolean = false,
   val cachedAt: Long = System.currentTimeMillis()
 )

@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.os.Build
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -39,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
@@ -78,6 +81,7 @@ import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.model.WatchProgress
+import com.example.data.prefs.ContinueWatchingLayout
 import com.example.data.stremio.StremioCatalogMapper
 import com.example.ui.util.NextEpisodeBadgeRules
 import com.example.ui.theme.NovaCardBg
@@ -320,8 +324,15 @@ fun PosterRatingBadge(
 const val NEXT_EPISODE_BADGE_TEST_TAG = "cw_next_episode_badge"
 
 /**
- * Continua a guardare - Full-bleed 16:9 card con overlay testi e progresso
- * Design: immagine occupa tutta la card, testi sovrapposti in basso a sinistra
+ * Continua a guardare - card con immagine, testi sovrapposti e barra di progresso.
+ *
+ * Il layout è scelto nelle Impostazioni («Continua a guardare»):
+ *  - [ContinueWatchingLayout.CARD]  → 16:9 full-bleed 280x158 (storico);
+ *  - [ContinueWatchingLayout.WIDE]  → card orizzontale 380x158, immagine a sinistra;
+ *  - [ContinueWatchingLayout.POSTER] → locandina 2:3 180x270.
+ *
+ * L'immagine arriva dal policy della Home ([artworkUrl]): miniatura dell'episodio,
+ * backdrop o locandina. [blurArtwork] è già deciso dal policy (solo episodi non visti).
  */
 @Composable
 fun ContinueWatchingCard(
@@ -331,8 +342,21 @@ fun ContinueWatchingCard(
   modifier: Modifier = Modifier,
   focusRequester: FocusRequester? = null,
   rowKey: String? = null,
-  isRestoreTarget: Boolean = false
+  isRestoreTarget: Boolean = false,
+  layout: ContinueWatchingLayout = ContinueWatchingLayout.CARD,
+  artworkUrl: String? = null,
+  blurArtwork: Boolean = false
 ) {
+  val cardWidth = when (layout) {
+    ContinueWatchingLayout.CARD -> 280.dp
+    ContinueWatchingLayout.WIDE -> 380.dp
+    ContinueWatchingLayout.POSTER -> 180.dp
+  }
+  val cardHeight = when (layout) {
+    ContinueWatchingLayout.CARD,
+    ContinueWatchingLayout.WIDE -> 158.dp
+    ContinueWatchingLayout.POSTER -> 270.dp
+  }
   val fallbackRes = (media.backdropRes ?: media.posterRes)?.takeIf { it != R.drawable.banner_dune }
   val targetMediaId = LocalLastFocusedMediaId.current
   val pendingRestoreId = targetMediaId
@@ -377,8 +401,8 @@ fun ContinueWatchingCard(
 
     TvFocusableBox(
     modifier = modifier
-      .width(280.dp)
-      .height(158.dp)
+      .width(cardWidth)
+      .height(cardHeight)
       .focusProperties {
         canFocus = !isRestoringActive || (media.id == pendingRestoreId && (rowKey == null || isRestoreTarget))
       }
@@ -398,19 +422,20 @@ fun ContinueWatchingCard(
     onClick = onClick,
     onLongPress = onLongPress
   ) { isFocused ->
-    Box(
+    when (layout) {
+      ContinueWatchingLayout.CARD -> Box(
       modifier = Modifier
         .fillMaxSize()
         .clip(RoundedCornerShape(14.dp))
+        .testTag(continueWatchingLayoutTestTag(ContinueWatchingLayout.CARD))
     ) {
       // Immagine full-bleed 16:9
-      CardMediaImage(
-        primaryUrl = media.backdropUrl,
-        secondaryUrl = media.posterUrl,
+      ContinueWatchingArtwork(
+        media = media,
+        artworkUrl = artworkUrl,
+        blurArtwork = blurArtwork,
         fallbackRes = fallbackRes,
-        contentDescription = media.title,
-        modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.Crop
+        modifier = Modifier.fillMaxSize()
       )
 
       // Gradiente inferiore per i testi
@@ -585,6 +610,371 @@ fun ContinueWatchingCard(
         )
       }
     }
+
+      ContinueWatchingLayout.WIDE -> ContinueWatchingWideLayout(
+        media = media,
+        artworkUrl = artworkUrl,
+        blurArtwork = blurArtwork,
+        fallbackRes = fallbackRes
+      )
+
+      ContinueWatchingLayout.POSTER -> ContinueWatchingPosterLayout(
+        media = media,
+        artworkUrl = artworkUrl,
+        blurArtwork = blurArtwork,
+        fallbackRes = fallbackRes
+      )
+    }
+  }
+}
+
+/** Tag semantico del layout attivo della card (verifiche di regressione UI). */
+fun continueWatchingLayoutTestTag(layout: ContinueWatchingLayout): String =
+  "cw_layout_${layout.name.lowercase()}"
+
+/**
+ * Immagine della card: URL deciso dal policy, con la stessa catena di fallback di
+ * [CardMediaImage]. La sfocatura anti-spoiler è applicata solo all'immagine (non ai
+ * testi), così titolo e avanzamento restano leggibili.
+ */
+@Composable
+private fun ContinueWatchingArtwork(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean,
+  @DrawableRes fallbackRes: Int?,
+  modifier: Modifier = Modifier
+) {
+  // `Modifier.blur` usa RenderEffect e su API < 31 non ha effetto: in quel caso si
+  // applica una velatura scura equivalente, così la protezione anti-spoiler resta
+  // attiva anche sui TV box con Android 8-11.
+  val canBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+  Box(modifier = modifier) {
+    CardMediaImage(
+      primaryUrl = artworkUrl ?: media.backdropUrl,
+      secondaryUrl = media.posterUrl,
+      fallbackRes = fallbackRes,
+      contentDescription = media.title,
+      modifier = Modifier
+        .fillMaxSize()
+        .then(if (blurArtwork && canBlur) Modifier.blur(16.dp) else Modifier),
+      contentScale = ContentScale.Crop
+    )
+    if (blurArtwork && !canBlur) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(Color.Black.copy(alpha = 0.62f))
+      )
+    }
+  }
+}
+
+/** Badge «Xm rimanenti» condiviso dai tre layout. */
+@Composable
+private fun ContinueWatchingRemainingBadge(
+  media: MediaItem,
+  modifier: Modifier = Modifier
+) {
+  val remainingMins = if (media.currentProgressMs > 0) {
+    WatchProgress.remainingMinutes(
+      totalDurationMs = media.totalDurationMs,
+      resumePositionMs = media.currentProgressMs,
+      runtimeMinutes = media.durationMinutes
+    )?.takeIf { it > 0 }
+  } else null
+  if (remainingMins == null) return
+  Box(
+    modifier = modifier
+      .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(6.dp))
+      .padding(horizontal = 8.dp, vertical = 4.dp)
+  ) {
+    Text(
+      text = stringResource(R.string.badge_minutes_remaining, remainingMins),
+      color = Color.White,
+      fontSize = 11.sp,
+      fontWeight = FontWeight.Medium
+    )
+  }
+}
+
+/**
+ * Badge «Prossima puntata»: SOLO da dati TMDB completi e verificabili (serie in onda con
+ * `next_episode_to_air` valido e non trascorso, nella STESSA stagione salvata in ripresa).
+ * Le regole vivono in un unico punto ([NextEpisodeBadgeRules]).
+ */
+@Composable
+private fun ContinueWatchingNextEpisodeBadge(
+  media: MediaItem,
+  modifier: Modifier = Modifier
+) {
+  val nextEpisodeBadge = remember(media.tvStatus, media.nextEpisode, media.lastWatchedSeason) {
+    NextEpisodeBadgeRules.resolve(media)
+  } ?: return
+  val badgeShape = RoundedCornerShape(6.dp)
+  Column(
+    modifier = modifier
+      .clip(badgeShape)
+      .background(Color.Black.copy(alpha = 0.66f))
+      .border(1.dp, NovaCyan.copy(alpha = 0.18f), badgeShape)
+      .padding(horizontal = 4.dp, vertical = 1.dp)
+      .testTag(NEXT_EPISODE_BADGE_TEST_TAG)
+  ) {
+    Text(
+      text = stringResource(R.string.cw_next_episode_label),
+      color = NovaCyanBright.copy(alpha = 0.90f),
+      fontSize = 8.sp,
+      fontWeight = FontWeight.Medium,
+      maxLines = 1,
+      softWrap = false
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Text(
+        text = nextEpisodeBadge.airDateText,
+        color = Color.White,
+        fontSize = 10.5.sp,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        softWrap = false
+      )
+      Spacer(modifier = Modifier.width(2.dp))
+      Text(
+        text = nextEpisodeBadge.seasonEpisodeText,
+        color = Color.White.copy(alpha = 0.72f),
+        fontSize = 7.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        softWrap = false
+      )
+    }
+  }
+}
+
+/** Barra di progresso sottile condivisa dai tre layout. */
+@Composable
+private fun ContinueWatchingProgressBar(
+  media: MediaItem,
+  modifier: Modifier = Modifier
+) {
+  Box(
+    modifier = modifier
+      .height(3.dp)
+      .clip(RoundedCornerShape(2.dp))
+      .background(Color(0x55000000))
+  ) {
+    LinearProgressIndicator(
+      progress = { media.progressFraction },
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(3.dp),
+      color = NovaCyan,
+      trackColor = Color(0x3300A3FF)
+    )
+  }
+}
+
+/** Etichetta «S1 E2» (serie) oppure anno (film). */
+private fun continueWatchingEpisodeLabel(media: MediaItem): String =
+  if (media.type == MediaType.SERIE_TV && media.lastWatchedEpisode != null) {
+    "S${media.lastWatchedSeason ?: 1} E${media.lastWatchedEpisode}"
+  } else {
+    media.displayYear
+  }
+
+/**
+ * Layout «Larga»: immagine a sinistra, pannello testi a destra. Il focus resta quello
+ * della card intera (nessun secondo target D-pad).
+ */
+@Composable
+private fun ContinueWatchingWideLayout(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean,
+  @DrawableRes fallbackRes: Int?
+) {
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .clip(RoundedCornerShape(14.dp))
+      .background(NovaCardBg)
+      .testTag(continueWatchingLayoutTestTag(ContinueWatchingLayout.WIDE))
+  ) {
+    Row(modifier = Modifier.fillMaxSize()) {
+      Box(modifier = Modifier.width(148.dp).fillMaxHeight()) {
+        ContinueWatchingArtwork(
+          media = media,
+          artworkUrl = artworkUrl,
+          blurArtwork = blurArtwork,
+          fallbackRes = fallbackRes,
+          modifier = Modifier.fillMaxSize()
+        )
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(
+              Brush.horizontalGradient(
+                listOf(Color.Transparent, NovaCardBg.copy(alpha = 0.85f))
+              )
+            )
+        )
+        // I badge restano sopra l'immagine: il pannello testi a destra non viene coperto.
+        ContinueWatchingNextEpisodeBadge(
+          media = media,
+          modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+        )
+        ContinueWatchingRemainingBadge(
+          media = media,
+          modifier = Modifier.align(Alignment.BottomStart).padding(8.dp)
+        )
+      }
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxHeight()
+          .padding(start = 14.dp, top = 14.dp, end = 14.dp, bottom = 18.dp)
+      ) {
+        val label = continueWatchingEpisodeLabel(media)
+        if (label.isNotEmpty()) {
+          Text(
+            text = label,
+            color = NovaCyanBright.copy(alpha = 0.9f),
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+          )
+        }
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(
+          text = media.title,
+          color = NovaTextPrimary,
+          fontSize = 16.sp,
+          fontWeight = FontWeight.Bold,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+        val episodeTitle = remember(media, media.lastWatchedSeason, media.lastWatchedEpisode) {
+          media.episodes.find { ep ->
+            ep.seasonNumber == media.lastWatchedSeason && ep.episodeNumber == media.lastWatchedEpisode
+          }?.title
+        }
+        if (episodeTitle != null) {
+          Spacer(modifier = Modifier.height(3.dp))
+          Text(
+            text = episodeTitle,
+            color = NovaTextSecondary,
+            fontSize = 11.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+        Spacer(modifier = Modifier.weight(1f))
+      }
+    }
+    ContinueWatchingProgressBar(
+      media = media,
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .fillMaxWidth()
+        .padding(start = 148.dp, end = 14.dp, bottom = 8.dp)
+    )
+  }
+}
+
+/**
+ * Layout «Locandina»: poster 2:3 con testi sovrapposti in basso, stessa identità visiva
+ * della card 16:9 ma nel formato verticale.
+ */
+@Composable
+private fun ContinueWatchingPosterLayout(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean,
+  @DrawableRes fallbackRes: Int?
+) {
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .clip(RoundedCornerShape(14.dp))
+      .testTag(continueWatchingLayoutTestTag(ContinueWatchingLayout.POSTER))
+  ) {
+    ContinueWatchingArtwork(
+      media = media,
+      artworkUrl = artworkUrl,
+      blurArtwork = blurArtwork,
+      fallbackRes = fallbackRes,
+      modifier = Modifier.fillMaxSize()
+    )
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(
+          Brush.verticalGradient(
+            colors = listOf(
+              Color.Transparent,
+              Color.Transparent,
+              Color.Black.copy(alpha = 0.72f),
+              Color.Black.copy(alpha = 0.96f)
+            )
+          )
+        )
+    )
+    // Nella locandina (180 dp) i due badge non stanno affiancati: si impilano in alto
+    // a sinistra, senza coprire titolo e barra di progresso in basso.
+    Column(
+      modifier = Modifier
+        .align(Alignment.TopStart)
+        .padding(8.dp),
+      verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+      ContinueWatchingNextEpisodeBadge(media = media)
+      ContinueWatchingRemainingBadge(media = media)
+    }
+    Column(
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .fillMaxWidth()
+        .padding(start = 12.dp, end = 12.dp, bottom = 18.dp)
+    ) {
+      val label = continueWatchingEpisodeLabel(media)
+      if (label.isNotEmpty()) {
+        Text(
+          text = label,
+          color = Color.White.copy(alpha = 0.9f),
+          fontSize = 10.sp,
+          fontWeight = FontWeight.SemiBold,
+          maxLines = 1
+        )
+      }
+      Text(
+        text = media.title,
+        color = Color.White,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Bold,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+      )
+      val episodeTitle = remember(media, media.lastWatchedSeason, media.lastWatchedEpisode) {
+        media.episodes.find { ep ->
+          ep.seasonNumber == media.lastWatchedSeason && ep.episodeNumber == media.lastWatchedEpisode
+        }?.title
+      }
+      if (episodeTitle != null) {
+        Text(
+          text = episodeTitle,
+          color = Color.White.copy(alpha = 0.75f),
+          fontSize = 10.sp,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+    }
+    ContinueWatchingProgressBar(
+      media = media,
+      modifier = Modifier
+        .align(Alignment.BottomCenter)
+        .fillMaxWidth()
+        .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
+    )
   }
 }
 

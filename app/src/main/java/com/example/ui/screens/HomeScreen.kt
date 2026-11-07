@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -51,9 +52,12 @@ import com.example.R
 import com.example.HOME_CONTENT_ANCHOR_ROW
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.prefs.ContinueWatchingLayout
+import com.example.data.prefs.ContinueWatchingPreferences
 import com.example.data.repository.CatalogSourceOrigin
+import com.example.data.repository.ContinueWatchingRowPolicy
 import com.example.data.repository.HomeCatalogs
-import com.example.data.repository.MediaIdentity
+import com.example.data.repository.MediaRepository
 import com.example.data.repository.StremioCatalogRepository
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -117,9 +121,11 @@ fun HomeScreen(
   modifier: Modifier = Modifier
 ) {
   val currentSection by viewModel.currentSection.collectAsState()
-  val streamingEngineMode by viewModel.streamingEngineMode.collectAsState()
   val allMedia by viewModel.allMedia.collectAsState()
   val homeCatalogs by viewModel.homeCatalogs.collectAsState()
+  // Preferenze della sezione Impostazioni «Continua a guardare»: la riga le osserva e si
+  // aggiorna subito, senza riavvio e senza richieste di rete.
+  val continueWatchingPreferences by viewModel.continueWatchingPreferences.collectAsState()
   val handleMediaClick: (MediaItem) -> Unit = onMediaClick ?: { viewModel.openDetail(it) }
 
   val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
@@ -131,17 +137,6 @@ fun HomeScreen(
   val lastFocusedProviderId by viewModel.lastFocusedProviderId.collectAsState()
   val focusRestoreToken by viewModel.focusRestoreToken.collectAsState()
 
-  // La sidebar offre la sezione "Addon" solo in modalità Debrid TorBox: se il cambio di
-  // modalità l'ha resa non più raggiungibile mentre era aperta, il contenuto ricade sulla
-  // Home invece di mostrare una schermata che l'utente non può più richiamare dal menu.
-  val activeSection = if (currentSection == SidebarSection.ADDON &&
-    !streamingEngineMode.supportsAddonsSection
-  ) {
-    SidebarSection.HOME
-  } else {
-    currentSection
-  }
-
   CompositionLocalProvider(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
     LocalLastFocusedTarget provides lastFocusedTarget,
@@ -151,7 +146,7 @@ fun HomeScreen(
     LocalLastFocusedProviderId provides lastFocusedProviderId,
     LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() }
   ) {
-    when (activeSection) {
+    when (currentSection) {
     SidebarSection.HOME -> {
       // La Home riceve il target SOLO quando è una RICHIESTA di ripristino (BACK dal
       // Dettaglio o ritorno dal Player). La sola provenienza salvata al click non deve
@@ -177,6 +172,7 @@ fun HomeScreen(
           onRemoveFromContinueWatching = { viewModel.removeFromContinueWatching(it) },
           onProviderClick = onProviderClick,
           viewModel = viewModel,
+          continueWatchingPreferences = continueWatchingPreferences,
           modifier = modifier
         )
       }
@@ -1363,15 +1359,26 @@ fun HomeMainBrowsingContent(
   onRemoveFromContinueWatching: (String) -> Unit,
   onProviderClick: (StreamingProvider) -> Unit = {},
   viewModel: StreamNovaViewModel? = null,
+  /**
+   * Preferenze della sezione Impostazioni «Continua a guardare». Il default coincide con
+   * il comportamento storico, così harness e anteprime che non le passano non cambiano.
+   */
+  continueWatchingPreferences: ContinueWatchingPreferences = ContinueWatchingPreferences(),
   modifier: Modifier = Modifier
 ) {
-  // Liste dinamiche dai dati reali TMDB sincronizzati nel repository.
-  // Una card per TITOLO: quando il catalogo contiene due schede dello stesso contenuto (una
-  // con id TMDB, una con id IMDb/Stremio) vince quella con il progresso più recente, così la
-  // riga non mostra due volte lo stesso film (vedi `MediaIdentity`).
-  val continueWatching = remember(allMedia) {
-    MediaIdentity.dedupeByProgress(allMedia)
-      .sortedByDescending { it.lastWatchedAt ?: 0L }
+  // Lista della riga costruita in UN SOLO punto ([ContinueWatchingRowPolicy]): una card
+  // per TITOLO, punto di ripresa scelto dalla preferenza, immagine/sfocatura e ordinamento.
+  // [continueWatching] resta la lista di [MediaItem] usata dal protocollo di focus e dalla
+  // rimozione: gli id sono gli stessi, cambia solo stagione/episodio della ripresa.
+  val continueWatchingRow = remember(allMedia, continueWatchingPreferences) {
+    ContinueWatchingRowPolicy.build(
+      items = allMedia,
+      preferences = continueWatchingPreferences,
+      furthestWatched = { mediaId -> MediaRepository.furthestWatchedEpisode(mediaId) }
+    )
+  }
+  val continueWatching = remember(continueWatchingRow) {
+    continueWatchingRow.map { it.media }
   }
 
   // Badge "Prossima puntata": arricchimento in background, mai bloccante. La chiave sono
@@ -1380,6 +1387,28 @@ fun HomeMainBrowsingContent(
   val continueWatchingIds = remember(continueWatching) { continueWatching.map { it.id } }
   LaunchedEffect(continueWatchingIds) {
     viewModel?.ensureNextEpisodeBadges(continueWatching)
+  }
+
+  // Miniature degli episodi: recupero in background SOLO con la preferenza attiva e solo
+  // quando cambia la coppia (titolo, stagione, episodio) di ripresa. Le ri-emissioni della
+  // lista per progressi o refresh non rilanciano nulla; la cache TMDB della stagione evita
+  // richieste duplicate con Dettaglio e player.
+  val episodeThumbnailTargets = remember(
+    continueWatching,
+    continueWatchingPreferences.useEpisodeThumbnails
+  ) {
+    if (!continueWatchingPreferences.useEpisodeThumbnails) {
+      emptyList()
+    } else {
+      continueWatching
+        .filter { it.type == MediaType.SERIE_TV }
+        .map { "${it.id}:${it.lastWatchedSeason}:${it.lastWatchedEpisode}" }
+    }
+  }
+  LaunchedEffect(episodeThumbnailTargets) {
+    if (continueWatchingPreferences.useEpisodeThumbnails) {
+      viewModel?.ensureEpisodeThumbnails(continueWatching)
+    }
   }
   var contextMenuMedia by remember { mutableStateOf<MediaItem?>(null) }
 
@@ -2256,29 +2285,43 @@ fun HomeMainBrowsingContent(
       }
     }
 
-    // 2. "Continua a guardare" (se ci sono titoli iniziati)
-    if (continueWatching.isNotEmpty()) {
+    // 2. "Continua a guardare" (se ci sono titoli iniziati e la riga è visibile)
+    if (continueWatchingPreferences.showRow && continueWatchingRow.isNotEmpty()) {
       item(key = "section_continue_watching") {
         CarouselHeader(
           title = stringResource(R.string.home_section_continue_watching),
-          badge = stringResource(R.string.home_badge_in_progress, continueWatching.size)
+          badge = stringResource(R.string.home_badge_in_progress, continueWatchingRow.size)
         )
         TvFocusRow {
           AnchoredHomeMediaRow(
             coordinator = coordinator,
             rowKey = "section_continue_watching",
             rowState = getRowState("section_continue_watching"),
-            itemCount = continueWatching.size,
+            itemCount = continueWatchingRow.size,
             restoreIndex = restoreColumnOf("section_continue_watching"),
-            frame = AnchoredCardFrame.WholeItem(280.dp),
+            // La geometria del riquadro segue il layout scelto (Scheda/Larga/Locandina):
+            // la card disegna esattamente la stessa larghezza/altezza.
+            frame = when (continueWatchingPreferences.layout) {
+              ContinueWatchingLayout.CARD -> AnchoredCardFrame.WholeItem(280.dp)
+              ContinueWatchingLayout.WIDE -> AnchoredCardFrame.WholeItem(380.dp)
+              ContinueWatchingLayout.POSTER -> AnchoredCardFrame.Poster(180.dp)
+            },
             frameStyle = AnchoredFrameStyle.GradientBorder,
             focusedScale = 1.05f,
             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 8.dp),
             modifier = rowGroupModifier("section_continue_watching")
           ) {
-            itemsIndexed(continueWatching, key = { _, it -> "cw_${it.id}" }, contentType = { _, _ -> "continue_watching" }) { index, item ->
+            itemsIndexed(
+              continueWatchingRow,
+              key = { _, row -> "cw_${row.media.id}" },
+              contentType = { _, _ -> "continue_watching" }
+            ) { index, row ->
+              val item = row.media
               ContinueWatchingCard(
                 media = item,
+                layout = continueWatchingPreferences.layout,
+                artworkUrl = row.artworkUrl,
+                blurArtwork = row.blurArtwork,
                 onClick = {
                   Log.d("HomeScreen", "ContinueWatchingCard onClick (resume playback) called for ${item.title}")
                   handleRowPlayClick("section_continue_watching", item)
@@ -2295,7 +2338,9 @@ fun HomeMainBrowsingContent(
                     contextMenuMedia = item
                   }
                 },
-                modifier = Modifier.rowFocusProperties(coordinator, "section_continue_watching", index),
+                modifier = Modifier
+                  .rowFocusProperties(coordinator, "section_continue_watching", index)
+                  .testTag("cw_card_${item.id}"),
                 focusRequester = coordinator.getRequester("section_continue_watching", index),
                 rowKey = "section_continue_watching",
                 isRestoreTarget = (restoreMediaId == item.id && (restoreRowKey == null || restoreRowKey == "section_continue_watching"))

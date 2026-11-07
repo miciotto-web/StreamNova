@@ -98,6 +98,27 @@ object SimklRepository {
   private val accountMutable = MutableStateFlow(SimklAccountState())
   val accountState: StateFlow<SimklAccountState> = accountMutable.asStateFlow()
 
+  /**
+   * Epoca della sessione SIMKL: incrementa a OGNI disconnessione. La sincronizzazione
+   * cattura l'epoca all'ingresso e la riverifica (dentro [withSessionGate]) prima di ogni
+   * scrittura: una sync avviata prima del logout che riprende DOPO la disconnessione trova
+   * l'epoca cambiata e si abortisce senza pubblicare nulla. "La disconnessione ha sempre
+   * la precedenza su una sincronizzazione precedente."
+   */
+  private val sessionEpoch = AtomicInteger(0)
+
+  fun currentSessionEpoch(): Int = sessionEpoch.get()
+
+  /**
+   * Gate che serializza le scritture della sincronizzazione con la pulizia del logout:
+   * la sync verifica l'epoca e scrive DENTRO il gate, il logout azzera l'epoca e pulisce
+   * DENTRO il gate. Ogni scrittura di una sync finisce quindi o interamente PRIMA della
+   * pulizia (e ne viene rimossa) o dopo un controllo di epoca fallito (e non avviene).
+   */
+  private val sessionGate = Mutex()
+
+  suspend fun <T> withSessionGate(block: suspend () -> T): T = sessionGate.withLock { block() }
+
   private val lastSyncMutable = MutableStateFlow<SimklSyncResult?>(null)
   val lastSyncResult: StateFlow<SimklSyncResult?> = lastSyncMutable.asStateFlow()
 
@@ -341,32 +362,60 @@ object SimklRepository {
   /**
    * Scollega l'account. Con AUTH V2 revoca il grant sul server (best-effort: `200` non
    * prova che la revoca sia avvenuta) e in ogni caso cancella SOLO le credenziali e i
-   * metadati di sincronizzazione. I progressi di visione locali non vengono toccati.
+   * metadati di sincronizzazione. Nessun dato dell'account remoto SIMKL viene cancellato:
+   * la revoca invalida soltanto il grant di QUESTA app.
+   *
+   * Oltre alle credenziali, vengono rimossi dal catalogo locale i dati che la
+   * sincronizzazione aveva copiato (preferiti e progressi di provenienza SIMKL — vedi
+   * [MediaRepository.purgeSimklData]): i dati LOCALI restano intatti.
+   *
+   * Ordine delle operazioni:
+   *  1. l'epoca di sessione cambia SUBITO (una sync in corso abortisce al prossimo
+   *     controllo, prima di qualunque nuova scrittura);
+   *  2. pulizia di credenziali, metadati e dati importati, dentro [withSessionGate]:
+   *     nessun salvataggio terminale di una sync in corso può ricreare chiavi nel
+   *     datastore appena svuotato;
+   *  3. la revoca di rete arriva PER ULTIMA, best-effort: la disconnessione non deve
+   *     attendere la rete per aggiornare l'interfaccia.
    */
   suspend fun signOut() {
+    sessionEpoch.incrementAndGet()
     val current = accountMutable.value
-    if (current.flow == SimklAuthFlow.V2_DEVICE) {
-      val token = current.refreshToken?.takeIf { it.isNotBlank() }
-        ?: current.accessToken?.takeIf { it.isNotBlank() }
-      if (token != null && hasClientId()) {
-        runCatching { authClient.revoke(getClientId(), token) }
-      }
+    val token = current.refreshToken?.takeIf { it.isNotBlank() }
+      ?: current.accessToken?.takeIf { it.isNotBlank() }
+    val canRevoke = current.flow == SimklAuthFlow.V2_DEVICE &&
+      token != null && hasClientId()
+    withSessionGate {
+      appContext?.simklDataStore?.edit { prefs -> prefs.clear() }
+      accountMutable.value = SimklAccountState()
+      lastSyncMutable.value = null
+      // Gli snapshot non-Flow di sincronizzazione non devono sopravvivere alla
+      // disconnessione: altrimenti la prossima sync del nuovo collegamento partirebbe
+      // da un checkpoint della sessione precedente.
+      activitiesSnapshotCache = null
+      activitiesSnapshotRaw = null
+      lastSyncRaw = null
+      loginFlowCache.set(null)
+      invalidateWatchedCache()
+      watchedLibrary.set(emptyMap())
+      // I preferiti e i progressi copiati nel catalogo dalla sincronizzazione escono
+      // dall'interfaccia con la disconnessione: i dati locali restano.
+      MediaRepository.purgeSimklData()
     }
-    appContext?.simklDataStore?.edit { prefs -> prefs.clear() }
-    accountMutable.value = SimklAccountState()
-    lastSyncMutable.value = null
-    loginFlowCache.set(null)
-    invalidateWatchedCache()
-    watchedLibrary.set(emptyMap())
+    if (canRevoke) {
+      runCatching { authClient.revoke(getClientId(), token) }
+    }
   }
 
   /**
    * Segna la sessione come scaduta (refresh rifiutato): i token restano su disco — nessuna
    * cancellazione per un errore — ma l'app sa che serve una nuova autorizzazione.
+   * Non fa nulla se l'account risulta già scollegato: dopo una disconnessione nessuna
+   * scrittura residua deve riapparire nel datastore appena svuotato.
    */
   private suspend fun markSessionExpired(message: String) {
     val current = accountMutable.value
-    if (current.sessionExpired) return
+    if (!current.isLoggedIn || current.sessionExpired) return
     val updated = current.copy(sessionExpired = true)
     appContext?.simklDataStore?.edit { prefs -> prefs.writeAccount(updated) }
     accountMutable.value = updated
@@ -390,8 +439,16 @@ object SimklRepository {
         if (latestExpiry != null && System.currentTimeMillis() < latestExpiry - REFRESH_WINDOW_MS) return@withLock
       }
       val currentRefresh = latest.refreshToken?.takeIf { it.isNotBlank() } ?: return@withLock
+      // Il refresh attraversa la rete: se la disconnessione avviene mentre è in volo, le
+      // credenziali appena ottenute NON devono essere riscritte — altrimenti un account
+      // appena scollegato "risuscita" con i token del refresh partito prima del logout.
+      val epochBeforeRefresh = sessionEpoch.get()
       try {
         val bundle = authClient.refresh(requireClientId(), currentRefresh)
+        if (sessionEpoch.get() != epochBeforeRefresh) {
+          Log.i(TAG, "Refresh completato dopo la disconnessione: credenziali scartate.")
+          return@withLock
+        }
         persistTokens(bundle)
       } catch (e: SimklRefreshException) {
         if (e.needsReauthorization) markSessionExpired(e.localizedMessage ?: "refresh rifiutato")

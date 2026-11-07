@@ -21,12 +21,15 @@ import androidx.room.withTransaction
 import com.example.data.local.CachedMediaItemEntity
 import com.example.data.local.CatalogProgressEntity
 import com.example.data.local.EpisodeProgressEntity
+import com.example.data.local.MEDIA_SOURCE_SIMKL
 import com.example.data.local.MediaCacheMapper
 import com.example.data.local.MediaCacheMapper.toEntity
 import com.example.data.local.MediaCacheMapper.toMediaItem
 import com.example.data.local.StreamNovaDatabase
 import com.example.data.local.TmdbResponseCacheEntity
+import com.example.data.util.ReleaseDateUtils
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import com.example.data.model.AudioTrack
 import com.example.data.model.CastMember
 import com.example.data.model.CrewMember
@@ -37,6 +40,7 @@ import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.model.NextEpisodeInfo
+import com.example.data.model.WatchedEpisodePoint
 import com.example.data.model.SearchTypeFilter
 import com.example.data.model.SeasonItem
 import com.example.data.model.SubtitleTrack
@@ -55,6 +59,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -66,6 +71,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import com.example.data.util.AgeRatingClassifier
 import com.example.data.util.AsyncSingleFlight
+import com.example.data.util.DetailFactsMapper
 import com.example.data.util.NextEpisodeEnricher
 import kotlinx.coroutines.withContext
 
@@ -97,12 +103,46 @@ object MediaRepository {
   private val episodeProgressMap = ConcurrentHashMap<String, Long>()
 
   /**
+   * Provenienza di ogni progresso episodio, stessa chiave di [episodeProgressMap]:
+   * `null` = scritto dal locale (player), `MEDIA_SOURCE_SIMKL` = adottato dalla
+   * sincronizzazione. La pulizia al logout cancella solo le chiavi di provenienza SIMKL.
+   */
+  private val episodeProgressSourceMap = ConcurrentHashMap<String, String?>()
+
+  /**
+   * Scritture Room di progresso ancora in volo ([updateProgress]/[updateEpisodeProgress]
+   * persistono in coroutine asincrone). [purgeSimklData] le attende prima di leggere e
+   * riscrivere le righe: una posizione scritta dalla sincronizzazione potrebbe altrimenti
+   * atterrare DOPO la pulizia e sopravvivere alla disconnessione.
+   */
+  private val pendingProgressWrites = AtomicInteger(0)
+
+  /**
    * Durata reale misurata dal player per ciascun episodio, con la stessa chiave di
    * [episodeProgressMap]. Serve alla ripresa dei record persistiti: senza di essa un
    * episodio ricostruito (non presente nella lista locale troncata) non conoscerebbe
    * la propria durata e potrebbe scambiare una posizione avanzata per "fine episodio".
    */
   private val episodeDurationMap = ConcurrentHashMap<String, Long>()
+
+  /**
+   * Still (`still_path`) TMDB degli episodi, con chiave `mediaId_s<stagione>e<episodio>`.
+   *
+   * Gli episodi NON sono righe Room: a ogni emissione dell'osservatore il catalogo li
+   * ricostruisce dai generatori/seed (`mapEntitiesToUiState`). Senza questo registro in
+   * memoria, una still recuperata per la miniatura «Continua a guardare» andrebbe persa
+   * alla prima riemissione e la card tornerebbe al backdrop/poster della serie. La chiave
+   * distingue serie, stagione ed episodio: nessuna still può finire su un'altra puntata o
+   * su un altro titolo.
+   */
+  private val episodeStillOverrides = ConcurrentHashMap<String, String>()
+
+  /** Limite prudenziale del registro: evita una crescita illimitata su cataloghi enormi. */
+  private val maxEpisodeStillOverrides = 5_000
+
+  /** Copia della chiave condivisa con [episodeProgressMap] e [episodeDurationMap]. */
+  private fun episodeStillKey(mediaId: String, season: Int, episode: Int): String =
+    "${mediaId}_s${season}e$episode"
 
   /**
    * Generazione dello stato in memoria. Avanza quando un test (o un reset) sostituisce
@@ -850,16 +890,125 @@ object MediaRepository {
       } else {
         base
       }
-      // Sincronizza il progresso persistito dei singoli episodi
-      val enrichedEpisodes = itemWithSeed.episodes.map { ep ->
-        val saved = episodeProgressMap["${itemWithSeed.id}_s${ep.seasonNumber}e${ep.episodeNumber}"]
-        if (saved != null) ep.copy(currentProgressMs = saved) else ep
-      }
-      itemWithSeed.copy(episodes = enrichedEpisodes)
+      // Sincronizza il progresso persistito dei singoli episodi e riapplica la still TMDB
+      // (vedi `episodeStillOverrides`): gli episodi non sono righe Room, quindi ogni
+      // emissione dell'osservatore li ricostruisce e senza questo passaggio le miniature
+      // recuperate andrebbero perse.
+      applyEpisodeOverlays(itemWithSeed)
     }
     // La prossima puntata TMDB non è persistita in Room (dipende dai dettagli TMDB, che
     // hanno già la propria cache): il registro in memoria la riapplica a ogni emissione.
     return nextEpisodeEnricher.applyTo(mappedItems).sortedByDescending { it.rating }
+  }
+
+  /**
+   * Episodi completi recuperati da TMDB per la miniatura, per `mediaId` e chiave
+   * `s<stagione>e<episodio>`.
+   *
+   * Perché non basta [episodeStillOverrides]: il catalogo genera solo le prime stagioni
+   * (e comunque non le conosce tutte), quindi gli episodi di una stagione alta — quella
+   * di ripresa — esistono SOLO grazie al fetch TMDB. A ogni emissione Room
+   * `mapEntitiesToUiState` ricostruisce la lista dai generatori: senza questo registro le
+   * puntate aggiunte sparirebbero e la card tornerebbe al backdrop, pur avendo la still
+   * registrata (non c'è alcun episodio su cui applicarla).
+   *
+   * Limiti prudenziali: il registro non deve crescere senza controllo su cataloghi enormi.
+   */
+  private val episodeOverridesByMedia = ConcurrentHashMap<String, Map<String, Episode>>()
+  private val maxSeriesWithEpisodeOverrides = 512
+  private val maxEpisodesPerSeries = 500
+
+  private fun episodeOverrideKey(season: Int, episode: Int): String = "s${season}e$episode"
+
+  /** Registra (o sostituisce) gli episodi recuperati per una serie, con limiti prudenziali. */
+  private fun rememberEpisodeOverrides(mediaId: String, episodes: List<Episode>) {
+    if (episodes.isEmpty()) return
+    if (episodeOverridesByMedia[mediaId] == null &&
+      episodeOverridesByMedia.size >= maxSeriesWithEpisodeOverrides
+    ) {
+      episodeOverridesByMedia.clear()
+    }
+    episodeOverridesByMedia.compute(mediaId) { _, current ->
+      val merged = LinkedHashMap<String, Episode>(current ?: emptyMap())
+      episodes.forEach { merged[episodeOverrideKey(it.seasonNumber, it.episodeNumber)] = it }
+      if (merged.size <= maxEpisodesPerSeries) {
+        merged
+      } else {
+        LinkedHashMap(merged.entries.toList().takeLast(maxEpisodesPerSeries).associate { it.key to it.value })
+      }
+    }
+  }
+
+  /**
+   * Riapplica al titolo gli overlay che non vivono in Room: gli episodi recuperati da TMDB
+   * ([episodeOverridesByMedia], che possono non esistere nel catalogo generato), la still
+   * dell'episodio (`episodeStillOverrides`) e il progresso misurato dal player per singola
+   * puntata (`episodeProgressMap`).
+   *
+   * Perché serve: gli episodi non sono righe strutturate del database. A ogni emissione
+   * dell'osservatore Room il catalogo li ricostruisce dai generatori/seed e, senza questo
+   * passaggio, le puntate e le still recuperate dalla rete sparirebbero. Funzione pura
+   * rispetto ai registri passati (default: quelli in memoria), così la riapplicazione è
+   * verificabile nei test JVM.
+   *
+   * Le chiavi includono l'id del titolo: nessun episodio o still può essere applicato a un
+   * altro media o a un'altra puntata.
+   */
+  internal fun applyEpisodeOverlays(
+    item: MediaItem,
+    stills: Map<String, String> = episodeStillOverrides,
+    progress: Map<String, Long> = episodeProgressMap,
+    episodesByMedia: Map<String, Map<String, Episode>> = episodeOverridesByMedia
+  ): MediaItem {
+    val tmdbEpisodes = episodesByMedia[item.id].orEmpty()
+    // Percorso rapido: nessun episodio recuperato e nessun overlay per QUESTA serie. La
+    // conversione completa del catalogo (centinaia di titoli) non deve allocare liste nuove
+    // per i titoli non toccati dalle miniature.
+    val hasOverlay = tmdbEpisodes.isNotEmpty() || item.episodes.any { ep ->
+      val key = episodeStillKey(item.id, ep.seasonNumber, ep.episodeNumber)
+      stills.containsKey(key) || progress.containsKey(key)
+    }
+    if (!hasOverlay) return item
+
+    // 1) Unione: gli episodi del catalogo restano, quelli recuperati da TMDB vengono
+    //    aggiunti quando mancano e arricchiscono la puntata esistente con la still reale.
+    val merged = LinkedHashMap<Pair<Int, Int>, Episode>(item.episodes.size + tmdbEpisodes.size)
+    item.episodes.forEach { merged[it.seasonNumber to it.episodeNumber] = it }
+    tmdbEpisodes.values.forEach { fetched ->
+      val key = fetched.seasonNumber to fetched.episodeNumber
+      val existing = merged[key]
+      merged[key] = if (existing == null) {
+        fetched
+      } else {
+        existing.copy(
+          title = existing.title.takeIf { it.isNotBlank() } ?: fetched.title,
+          synopsis = existing.synopsis.takeIf { it.isNotBlank() } ?: fetched.synopsis,
+          durationMinutes = if (existing.durationMinutes > 0) existing.durationMinutes else fetched.durationMinutes,
+          totalDurationMs = if (existing.totalDurationMs > 0L) existing.totalDurationMs else fetched.totalDurationMs,
+          thumbnailUrl = fetched.thumbnailUrl ?: existing.thumbnailUrl,
+          videoUrl = existing.videoUrl.takeIf { it.isNotBlank() } ?: fetched.videoUrl,
+          airDate = existing.airDate ?: fetched.airDate
+        )
+      }
+    }
+
+    // 2) Still e progresso per episodio, con la chiave che lega il dato a QUESTO titolo.
+    val enriched = merged.values
+      .sortedWith(compareBy({ it.seasonNumber }, { it.episodeNumber }))
+      .map { ep ->
+        val key = episodeStillKey(item.id, ep.seasonNumber, ep.episodeNumber)
+        val saved = progress[key]
+        val still = stills[key]
+        when {
+          still != null -> ep.copy(
+            currentProgressMs = saved ?: ep.currentProgressMs,
+            thumbnailUrl = still
+          )
+          saved != null -> ep.copy(currentProgressMs = saved)
+          else -> ep
+        }
+      }
+    return item.copy(episodes = enriched)
   }
 
   /** Episodi generati (deterministici) per una serie non seed, con cache LRU. */
@@ -945,7 +1094,12 @@ object MediaRepository {
               isFavorite = prev.isFavorite,
               lastWatchedSeason = prev.lastWatchedSeason ?: item.lastWatchedSeason,
               lastWatchedEpisode = prev.lastWatchedEpisode ?: item.lastWatchedEpisode,
-              totalDurationMs = if (prev.totalDurationMs > 0) prev.totalDurationMs else item.totalDurationMs
+              totalDurationMs = if (prev.totalDurationMs > 0) prev.totalDurationMs else item.totalDurationMs,
+              // La provenienza dello stato utente sopravvive alla riparazione: un preferito
+              // o un progresso di SIMKL non diventano locali per un refresh delle immagini.
+              favoriteSource = prev.favoriteSource,
+              progressSource = prev.progressSource,
+              importedFromSimkl = prev.importedFromSimkl
             )
           } else {
             item
@@ -989,10 +1143,13 @@ object MediaRepository {
     if (database !== db || generation != stateGeneration.get()) return
     episodeProgressMap.clear()
     episodeDurationMap.clear()
+    episodeProgressSourceMap.clear()
     allEpisodeProgress.forEach { ep ->
       val key = episodeProgressKey(ep.mediaId, ep.seasonNumber, ep.episodeNumber)
       episodeProgressMap[key] = ep.progressMs
       if (ep.durationMs > 0L) episodeDurationMap[key] = ep.durationMs
+      // Assenza = provenienza locale; la mappa registra solo le provenienze esplicite.
+      if (ep.source != null) episodeProgressSourceMap[key] = ep.source else episodeProgressSourceMap.remove(key)
     }
     Log.i("MediaRepository", "Caricati ${allEpisodeProgress.size} progressi episodio da Room")
   }
@@ -1011,6 +1168,9 @@ object MediaRepository {
     database = db
     episodeProgressMap.clear()
     episodeDurationMap.clear()
+    episodeProgressSourceMap.clear()
+    episodeStillOverrides.clear()
+    episodeOverridesByMedia.clear()
     synchronized(generatedEpisodesCache) { generatedEpisodesCache.clear() }
     _mediaList.value = emptyList()
   }
@@ -1070,11 +1230,14 @@ object MediaRepository {
   }
 
   /**
-   * Numero massimo di pagine scaricate per ciascuna coppia (provider, tipo).
-   * Il crawl si ferma comunque su `total_pages` dichiarato da TMDB o su una pagina vuota:
-   * non esiste alcun limite fisso del tipo `for (pg in 1..2)`.
+   * Limite MASSIMO di pagina accettato dagli endpoint `discover` di TMDB.
+   *
+   * NON è un limite del catalogo: TMDB dichiara in `total_pages` quante pagine
+   * esistono (al massimo 500) e la paginazione si ferma lì. Il vecchio valore 25
+   * troncava artificialmente i cataloghi grandi (Netflix: 320 pagine, Prime Video:
+   * 431 pagine), rendendo irraggiungibile la maggior parte dei titoli.
    */
-  const val MAX_PROVIDER_PAGES = 25
+  const val MAX_PROVIDER_PAGES = 500
 
   /**
    * Pagine di catalogo provider caricate durante il bootstrap (refresh all'avvio).
@@ -1093,71 +1256,6 @@ object MediaRepository {
    /** TMDB ID di Paramount+ (utile per controlli specifici sul catalogo). */
    const val PARAMOUNT_TMDB_ID = 531
 
-   /** Network IDs di TMDB per HBO: 49 = HBO, 3186 = HBO Max */
-   const val HBO_NETWORK_IDS = "49|3186"
-
-   /**
-    * Helper per rilevare se un providerTag corrisponde a HBO (supporta varianti: hbo, hbomax, hbo_max, max).
-    */
-   fun isHboProvider(providerTag: String): Boolean =
-     providerTag.lowercase() in setOf("hbo", "hbomax", "hbo_max", "max")
-
-   /**
-    * Discover serie TV HBO tramite network IDs (49|3186), senza watch_region.
-    */
-   internal suspend fun discoverTvByNetwork(networkIds: String, page: Int): List<MediaItem> =
-     withContext(Dispatchers.IO) {
-       try {
-         val cleanKey = getEffectiveApiKey()
-         val cacheKey = "hbo_tv_p$page"
-         val currentList = _mediaList.value
-         val response = fetchTvWithCache(cacheKey) {
-           TmdbApiClient.service.discoverTvByNetwork(
-             apiKey = cleanKey,
-             networkId = networkIds,
-             sortBy = "popularity.desc",
-             language = "it-IT",
-             page = page
-           )
-         }
-         response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = "hbo") }
-       } catch (e: Exception) {
-         Log.w("MediaRepository", "Discover TV HBO fallito (page=$page): ${e.message}")
-         emptyList()
-       }
-     }
-
-   /**
-    * Discover film HBO tramite provider IDs con watch_region=US.
-    */
-   internal suspend fun discoverMoviesByProvider(
-     providerId: String,
-     isTv: Boolean,
-     page: Int,
-     watchRegion: String
-   ): List<MediaItem> =
-     withContext(Dispatchers.IO) {
-       try {
-         val cleanKey = getEffectiveApiKey()
-         val cacheKey = "hbo_movie_p$page"
-         val currentList = _mediaList.value
-         val response = fetchMoviesWithCache(cacheKey) {
-           TmdbApiClient.service.discoverMoviesByProvider(
-             apiKey = cleanKey,
-             providerId = providerId,
-             region = watchRegion,
-             sortBy = "popularity.desc",
-             language = "it-IT",
-             page = page
-           )
-         }
-         response.results.map { movieToMediaItem(it, currentList, provider = "hbo") }
-       } catch (e: Exception) {
-         Log.w("MediaRepository", "Discover Movies HBO fallito (page=$page): ${e.message}")
-         emptyList()
-       }
-     }
-
    /**
    * Provider ID REALI di TMDB condivisi da entrambi i cataloghi (Film e Serie TV),
    * interrogati con `with_watch_providers` + `watch_region=IT`.
@@ -1169,6 +1267,7 @@ object MediaRepository {
     Pair("1899|384", "hbo"),
     Pair("350", "apple"),
     Pair("531", "paramount"),
+    Pair("39", "nowtv"),
     Pair("283", "crunchyroll")
   )
 
@@ -1178,11 +1277,48 @@ object MediaRepository {
     val isTv: Boolean,
     val page: Int,
     val totalPages: Int,
-    val items: List<MediaItem>
+    val items: List<MediaItem>,
+    /**
+     * false quando la richiesta NON è riuscita (rete/HTTP/parsing): la pagina non
+     * esiste, quindi non va né persistita come progressione né interpretata come
+     * "catalogo esaurito". Il chiamante può ritentare la STESSA pagina.
+     */
+    val requestSucceeded: Boolean = true
   ) {
-    /** Prosegui solo se la pagina ha prodotto titoli e non si sono raggiunti i limiti. */
+    /** Pagine realmente disponibili, limitate al tetto tecnico di TMDB. */
+    val effectiveTotalPages: Int
+      get() = totalPages.coerceIn(0, MAX_PROVIDER_PAGES)
+
+    /**
+     * Prosegui solo se la richiesta è riuscita e TMDB dichiara altre pagine.
+     *
+     * NON si richiede che la pagina contenga titoli nuovi: una pagina può essere
+     * interamente composta da titoli già noti (catalogo sovrapposto tra provider)
+     * senza che il catalogo sia finito. L'unica prova di esaurimento è `total_pages`.
+     */
     val hasMore: Boolean
-      get() = items.isNotEmpty() && page < totalPages && page < MAX_PROVIDER_PAGES
+      get() = requestSucceeded && page < effectiveTotalPages
+  }
+
+  /**
+   * Query TMDB canonica del catalogo di un provider per la regione italiana.
+   *
+   * HBO / Max in Italia è esposto da TMDB con il provider **1899** ("HBO Max / Max"),
+   * NON con il 384 (che in `watch_region=IT` restituisce 0 risultati). Il vecchio
+   * percorso di paginazione interrogava il solo 384 mentre il bootstrap usava
+   * `1899|384`: il catalogo HBO on-demand risultava vuoto e la progressione veniva
+   * persistita come "esaurita" già alla prima pagina. La query è ora UNA sola, usata
+   * da bootstrap e paginazione on-demand, così i due elenchi coincidono.
+   */
+  data class ProviderTmdbQuery(
+    val providerIds: String,
+    val watchRegion: String
+  )
+
+  internal fun providerTmdbQuery(providerId: Int): ProviderTmdbQuery = when (providerId) {
+    // 1899 = HBO Max / Max in Italia; 384 resta per compatibilità con le altre regioni.
+    384, 1899 -> ProviderTmdbQuery(providerIds = "1899|384", watchRegion = "IT")
+    else -> ProviderTmdbQuery(providerIds = providerId.toString(), watchRegion = "IT")
   }
 
   /** Stato di ripresa della paginazione per UNA coppia (provider, tipo). */
@@ -1200,14 +1336,19 @@ object MediaRepository {
   /**
    * Etichetta provider derivata SOLO da un catalogo reale (endpoint discover
    * con `with_watch_providers`): l'attribuzione tramite `id % 4` è stata eliminata.
+   *
+   * `internal`: il valore DEVE coincidere con il `providerId` dei filtri di sezione
+   * (CategoryCatalogFilter) e con l'id di [com.example.ui.components.ProviderConstants],
+   * così la griglia trova i titoli scaricati dal catalogo del provider.
    */
-  private fun providerTagFor(providerId: Int): String = when (providerId) {
+  internal fun providerTagFor(providerId: Int): String = when (providerId) {
     8 -> "netflix"
     119 -> "prime"
     337 -> "disney"
     384, 1899 -> "hbo"
     350, 2 -> "apple"
     531 -> "paramount"
+    39 -> "nowtv"
     283 -> "crunchyroll"
     else -> providerId.toString()
   }
@@ -1215,7 +1356,38 @@ object MediaRepository {
   /** Cache key distinta per provider + tipo + pagina: nessuna collisione tra cataloghi. */
   private fun providerCacheKey(providerIds: String, isTv: Boolean, page: Int): String {
     val sanitized = providerIds.replace("|", "_").replace(",", "_")
-    return "provider_${mediaTypeKey(isTv)}_${sanitized}_p$page"
+    // v2: la query canonica del provider (ID + regione) è cambiata per HBO / Max.
+    // Le risposte della vecchia query (384 in watch_region=IT, vuota, oppure rete
+    // HBO in watch_region=US) non sono riutilizzabili per il nuovo catalogo.
+    return "provider_v2_${mediaTypeKey(isTv)}_${sanitized}_p$page"
+  }
+
+  /**
+   * Unione dei tag provider di un titolo, senza duplicati (case-insensitive).
+   *
+   * Un film/serie può essere disponibile su PIÙ servizi: `provider` è una lista
+   * separata da virgole e ogni catalogo aggiunge il proprio tag. La vecchia
+   * assegnazione secca (`provider = providerTag`) faceva sì che l'ultimo provider
+   * scaricato "rubasse" il titolo agli altri, riducendo le griglie Provider.
+   */
+  internal fun mergeProviderTags(existing: String?, added: String?): String? {
+    val addedTags = added.orEmpty()
+      .split(',')
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+    if (addedTags.isEmpty()) return existing?.takeIf { it.isNotBlank() }
+    val currentTags = existing.orEmpty()
+      .split(',')
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+    if (currentTags.isEmpty()) return addedTags.joinToString(",")
+
+    val result = currentTags.toMutableList()
+    val seen = currentTags.mapTo(mutableSetOf()) { it.lowercase() }
+    addedTags.forEach { tag ->
+      if (seen.add(tag.lowercase())) result += tag
+    }
+    return result.joinToString(",")
   }
 
   /** Persiste la progressione (prossima pagina + total_pages) per la coppia (provider, tipo). */
@@ -1251,10 +1423,20 @@ object MediaRepository {
       if (progress == null) {
         return@withContext ProviderPaginationState(nextPage = 1, hasMore = true)
       }
-      val cap = if (progress.totalPages > 0) minOf(progress.totalPages, MAX_PROVIDER_PAGES) else MAX_PROVIDER_PAGES
+      val totalPages = progress.totalPages.coerceAtLeast(0)
+      val cap = if (totalPages > 0) minOf(totalPages, MAX_PROVIDER_PAGES) else MAX_PROVIDER_PAGES
+      val exhausted = progress.nextPage > cap
+      // RECUPERO da una progressione "esaurita" inaffidabile: un catalogo con
+      // `total_pages <= 1` marcato come finito può essere il residuo di una risposta
+      // vuota/errata (es. provider interrogato con un ID regionale sbagliato, come HBO
+      // 384 in Italia). Si riparte dalla prima pagina, già in cache Room: nessun titolo
+      // viene duplicato e la progressione si riallinea al `total_pages` reale.
+      if (exhausted && totalPages <= 1) {
+        return@withContext ProviderPaginationState(nextPage = 1, hasMore = true)
+      }
       ProviderPaginationState(
         nextPage = progress.nextPage.coerceIn(1, MAX_PROVIDER_PAGES),
-        hasMore = progress.nextPage <= cap
+        hasMore = !exhausted
       )
     }
 
@@ -1342,13 +1524,17 @@ object MediaRepository {
       list.map { item ->
         if (item.id == id) {
           newFavState = !item.isFavorite
-          item.copy(isFavorite = newFavState)
+          // Scrittura LOCALE (utente): la provenienza torna locale — il preferito resta
+          // di proprietà dell'utente anche se era stato importato dalla watchlist SIMKL.
+          item.copy(isFavorite = newFavState, favoriteSource = null)
         } else item
       }
     }
     val currentDetail = _detailUiState.value
     if (currentDetail is MediaDetailUiState.Success && currentDetail.media.id == id) {
-      _detailUiState.value = currentDetail.copy(media = currentDetail.media.copy(isFavorite = newFavState))
+      _detailUiState.value = currentDetail.copy(
+        media = currentDetail.media.copy(isFavorite = newFavState, favoriteSource = null)
+      )
     }
     database?.let { db ->
       repoScope.launch {
@@ -1356,11 +1542,11 @@ object MediaRepository {
           val dao = db.cachedMediaDao()
           val existing = dao.getMediaById(id)
           if (existing != null) {
-            dao.updateFavorite(id, newFavState)
+            dao.updateFavoriteWithSource(id, newFavState, null)
           } else {
             // Riga non ancora persistita: la crea con lo stato aggiornato (niente preferiti persi)
             _mediaList.value.find { it.id == id }?.let { item ->
-              dao.insertOrUpdate(item.copy(isFavorite = newFavState).toEntity())
+              dao.insertOrUpdate(item.copy(isFavorite = newFavState, favoriteSource = null).toEntity())
             }
           }
         } catch (e: Exception) {
@@ -1372,6 +1558,46 @@ object MediaRepository {
 
   fun getEpisodeProgress(mediaId: String, seasonNumber: Int, episodeNumber: Int): Long {
     return episodeProgressMap[episodeProgressKey(mediaId, seasonNumber, episodeNumber)] ?: 0L
+  }
+
+  /**
+   * Punto più avanzato della visione di una serie: l'episodio con la coppia
+   * stagione/episodio più alta che ha un progresso registrato (> 0).
+   *
+   * È la base dell'opzione «Prossimo episodio dall'ultimo raggiunto»: quando si
+   * riavvia una stagione già vista, l'episodio più recente è quello del rewatch ma
+   * quello realmente più avanti nella serie resta questo. `null` se per il titolo non
+   * esiste alcun progresso: in quel caso la riga usa lo stato salvato del titolo.
+   *
+   * La lettura è in memoria ([episodeProgressMap], aggiornata in modo sincrono da
+   * [updateEpisodeProgress]): nessuna query Room e nessuna richiesta di rete.
+   */
+  fun furthestWatchedEpisode(mediaId: String): WatchedEpisodePoint? {
+    if (mediaId.isBlank()) return null
+    val prefix = "${mediaId}_s"
+    var best: WatchedEpisodePoint? = null
+    for ((key, progress) in episodeProgressMap) {
+      if (progress <= 0L || !key.startsWith(prefix)) continue
+      val position = key.substring(prefix.length)
+      val separator = position.indexOf('e')
+      if (separator <= 0) continue
+      val season = position.substring(0, separator).toIntOrNull() ?: continue
+      val episode = position.substring(separator + 1).toIntOrNull() ?: continue
+      if (season < 0 || episode <= 0) continue
+      val current = best
+      if (current == null ||
+        season > current.seasonNumber ||
+        (season == current.seasonNumber && episode > current.episodeNumber)
+      ) {
+        best = WatchedEpisodePoint(
+          seasonNumber = season,
+          episodeNumber = episode,
+          progressMs = progress,
+          durationMs = episodeDurationMap[key] ?: 0L
+        )
+      }
+    }
+    return best
   }
 
   /**
@@ -1405,12 +1631,16 @@ object MediaRepository {
    *        predefinito (adesso); la sincronizzazione SIMKL passa il `paused_at` della
    *        sessione, così l'ordinamento della riga e il confronto "chi e' piu' recente"
    *        restano fedeli alla fonte remota invece di adottare l'ora della sincronizzazione.
+   * @param source provenienza della scrittura: `null` = locale (player), la
+   *        sincronizzazione SIMKL passa `MEDIA_SOURCE_SIMKL`. Regola "ultimo scrittore
+   *        possessore": chi scrive per ultimo resta proprietario del dato al logout.
    */
   fun updateProgress(
     id: String,
     progressMs: Long,
     durationMs: Long = 0L,
-    lastWatchedAtMs: Long = System.currentTimeMillis()
+    lastWatchedAtMs: Long = System.currentTimeMillis(),
+    source: String? = null
   ) {
     val now = lastWatchedAtMs
     // Durata risolta UNA volta: i millisecondi reali del player hanno priorita', altrimenti
@@ -1425,7 +1655,8 @@ object MediaRepository {
           item.copy(
             currentProgressMs = progressMs,
             totalDurationMs = WatchProgress.resolveDuration(item.totalDurationMs, durationMs),
-            lastWatchedAt = now
+            lastWatchedAt = now,
+            progressSource = source
           )
         } else {
           item
@@ -1438,11 +1669,13 @@ object MediaRepository {
         media = currentDetail.media.copy(
           currentProgressMs = progressMs,
           totalDurationMs = WatchProgress.resolveDuration(currentDetail.media.totalDurationMs, durationMs),
-          lastWatchedAt = now
+          lastWatchedAt = now,
+          progressSource = source
         )
       )
     }
     database?.let { db ->
+      pendingProgressWrites.incrementAndGet()
       repoScope.launch {
         try {
           val dao = db.cachedMediaDao()
@@ -1453,36 +1686,50 @@ object MediaRepository {
             ?: resolvedDurationMs
           val effectiveDurationMs = WatchProgress.resolveDuration(knownDurationMs, durationMs)
           if (existing != null) {
-            // Scrive posizione + durata reale (mai azzerata) nella stessa UPDATE atomica.
-            dao.updateProgressWithDuration(id, progressMs, effectiveDurationMs, now)
+            // Scrive posizione + durata reale (mai azzerata) + provenienza nella stessa UPDATE.
+            dao.updateProgressWithDurationAndSource(id, progressMs, effectiveDurationMs, now, source)
           } else {
             _mediaList.value.find { it.id == id }?.let { item ->
               dao.insertOrUpdate(
                 item.copy(
                   currentProgressMs = progressMs,
                   totalDurationMs = WatchProgress.resolveDuration(item.totalDurationMs, durationMs),
-                  lastWatchedAt = now
+                  lastWatchedAt = now,
+                  progressSource = source
                 ).toEntity()
               )
             }
           }
         } catch (e: Exception) {
           Log.w("MediaRepository", "Failed to update progress in Room: ${e.message}")
+        } finally {
+          pendingProgressWrites.decrementAndGet()
         }
       }
     }
   }
 
+  /**
+   * Aggiorna il progresso di un **episodio**.
+   *
+   * @param source provenienza della scrittura (`null` = player locale, la
+   *        sincronizzazione SIMKL passa `MEDIA_SOURCE_SIMKL`): vale sia per la riga
+   *        episodio sia per i campi aggregati della scheda (ultimo scrittore possessore).
+   */
   fun updateEpisodeProgress(
     mediaId: String,
     seasonNumber: Int,
     episodeNumber: Int,
     progressMs: Long,
     durationMs: Long,
-    lastWatchedAtMs: Long = System.currentTimeMillis()
+    lastWatchedAtMs: Long = System.currentTimeMillis(),
+    source: String? = null
   ) {
     val key = episodeProgressKey(mediaId, seasonNumber, episodeNumber)
     episodeProgressMap[key] = progressMs
+    // ConcurrentHashMap non accetta valori nulli: l'assenza dalla mappa SIGNIFICA
+    // "provenienza locale" (player), la presenza con `MEDIA_SOURCE_SIMKL` la contraria.
+    if (source != null) episodeProgressSourceMap[key] = source else episodeProgressSourceMap.remove(key)
     val now = lastWatchedAtMs
 
     // Durata dell'EPISODIO corrente (mai quella della serie o di un episodio precedente):
@@ -1531,6 +1778,7 @@ object MediaRepository {
             lastWatchedSeason = seasonNumber,
             lastWatchedEpisode = episodeNumber,
             lastWatchedAt = now,
+            progressSource = source,
             episodes = updatedEpisodes
           )
         } else {
@@ -1556,6 +1804,7 @@ object MediaRepository {
           lastWatchedSeason = seasonNumber,
           lastWatchedEpisode = episodeNumber,
           lastWatchedAt = now,
+          progressSource = source,
           episodes = updatedEpisodes
         )
       )
@@ -1564,6 +1813,7 @@ object MediaRepository {
     database?.let { db ->
       // Scritture serializzate in ordine di chiamata: la riga aggregata del titolo deve
       // riflettere l'ULTIMO episodio salvato, non quello la cui scrittura finisce prima.
+      pendingProgressWrites.incrementAndGet()
       repoScope.launch(progressWriteDispatcher) {
         try {
           // Conserva la durata reale gia' persistita quando il player non ne fornisce una valida.
@@ -1582,21 +1832,25 @@ object MediaRepository {
               seasonNumber = seasonNumber,
               episodeNumber = episodeNumber,
               progressMs = progressMs,
-              durationMs = persistedEpisodeDurationMs
+              durationMs = persistedEpisodeDurationMs,
+              source = source
             )
           )
           // Persiste anche la durata dell'episodio corrente sulla riga del titolo: e' quella
           // letta dalla card "Continua a guardare" (mai la durata della serie).
-          db.cachedMediaDao().updateTvProgressWithDuration(
+          db.cachedMediaDao().updateTvProgressWithDurationAndSource(
             mediaId,
             progressMs,
             effectiveEpisodeDurationMs,
             seasonNumber,
             episodeNumber,
-            now
+            now,
+            source
           )
         } catch (e: Exception) {
           Log.w("MediaRepository", "Failed to update episode progress in Room: ${e.message}")
+        } finally {
+          pendingProgressWrites.decrementAndGet()
         }
       }
     }
@@ -1904,8 +2158,16 @@ object MediaRepository {
    *
    * @param markFavorite `true` per la watchlist SIMKL ("Plan to Watch"): porta il titolo nei
    *        Preferiti senza mai toglierlo da lì. Non elimina mai righe esistenti.
+   * @param source provenienza della scheda quando viene CREATA (`MEDIA_SOURCE_SIMKL` per
+   *        l'importazione SIMKL): registra `importedFromSimkl`, così la disconnessione
+   *        può rimuovere le schede esistite solo per l'import. Su una scheda esistente la
+   *        provenienza non cambia (uno stato locale non diventa mai "di SIMKL").
    */
-  suspend fun upsertExternalItem(item: MediaItem, markFavorite: Boolean = false): MediaItem? =
+  suspend fun upsertExternalItem(
+    item: MediaItem,
+    markFavorite: Boolean = false,
+    source: String? = null
+  ): MediaItem? =
     withContext(Dispatchers.IO) {
     val existing = _mediaList.value.firstOrNull { candidate ->
       candidate.id == item.id ||
@@ -1922,13 +2184,26 @@ object MediaRepository {
         lastWatchedEpisode = existing.lastWatchedEpisode ?: item.lastWatchedEpisode,
         lastWatchedAt = existing.lastWatchedAt,
         isFavorite = existing.isFavorite || markFavorite,
+        // Provenienza: su schede esistenti vale lo stato già scritto (locale o SIMKL che
+        // sia); il flag "importata" resta quello della riga storica.
+        favoriteSource = if (!existing.isFavorite && markFavorite) source else existing.favoriteSource,
+        progressSource = existing.progressSource,
+        importedFromSimkl = existing.importedFromSimkl,
         episodes = mergeEpisodes(existing.episodes, item.episodes),
         posterUrl = existing.posterUrl ?: item.posterUrl,
         backdropUrl = existing.backdropUrl ?: item.backdropUrl,
         provider = existing.provider
       )
     } else {
-      if (markFavorite) item.copy(isFavorite = true) else item
+      if (markFavorite) {
+        item.copy(
+          isFavorite = true,
+          favoriteSource = source,
+          importedFromSimkl = source == MEDIA_SOURCE_SIMKL
+        )
+      } else {
+        item.copy(importedFromSimkl = source == MEDIA_SOURCE_SIMKL)
+      }
     }
     // Una serie importata senza episodi resta senza elenco finché non arriva l'emissione
     // dell'osservatore Room (che li genera). Generarli subito tiene memoria e archivio
@@ -1965,8 +2240,17 @@ object MediaRepository {
    *
    * L'episodio gia' noto **vince** sul nuovo (lo stato di visione resta quello locale) ma i
    * suoi dati mancanti vengono completati con quelli appena importati: una durata reale al
-   * posto di una stimata, un titolo al posto di un segnaposto. Gli episodi assenti in locale
-   * vengono aggiunti in coda, senza duplicare quelli con la stessa identita'.
+   * posto di una stimata, un titolo al posto di un segnaposto.
+   *
+   * **Eccezione: la still dell'episodio.** Quando l'elenco appena importato proviene dai
+   * dettagli TMDB di una stagione ([SeasonItem.episodes]), la sua still `still_path` ha
+   * la PRIORITÀ assoluta rispetto al fallback locale generico (backdrop/poster della serie
+   * usato dai generatori di prova): solo la rete TMDB può indicare l'immagine specifica
+   * dell'episodio di ripresa, mentre il dato locale è un surrogato. Per questo `thumbnailUrl`
+   * viene sostituito quando l'importato lo espone, indipendentemente dal valore locale.
+   *
+   * Gli episodi assenti in locale vengono aggiunti in coda, senza duplicare quelli con la
+   * stessa identita'.
    */
   internal fun mergeEpisodes(existing: List<Episode>, incoming: List<Episode>): List<Episode> {
     if (incoming.isEmpty()) return existing
@@ -1979,7 +2263,7 @@ object MediaRepository {
         synopsis = current.synopsis.takeIf { it.isNotBlank() } ?: fresh.synopsis,
         durationMinutes = if (current.durationMinutes > 0) current.durationMinutes else fresh.durationMinutes,
         totalDurationMs = if (current.totalDurationMs > 0L) current.totalDurationMs else fresh.totalDurationMs,
-        thumbnailUrl = current.thumbnailUrl ?: fresh.thumbnailUrl,
+        thumbnailUrl = fresh.thumbnailUrl ?: current.thumbnailUrl,
         videoUrl = current.videoUrl.takeIf { it.isNotBlank() } ?: fresh.videoUrl
       )
     }
@@ -1988,29 +2272,321 @@ object MediaRepository {
   }
 
   /**
+   * Aggiorna la lista della Home ([mediaList]) con gli episodi di una stagione appena
+   * caricata da TMDB ([SeasonItem.episodes], già mappati in [Episode] con la still
+   * `thumbnailUrl` == `still_path`).
+   *
+   * Serve per arricchire le card "Continua a guardare" con la miniatura dell'episodio di
+   * ripresa quando la preferenza `useEpisodeThumbnails` è attiva: il modello di base
+   * ([MediaItem]) espone già `episodes: List<Episode>` con il campo `thumbnailUrl`, ma le
+   * still arrivate da TMDB non venivano propagate alla Home.
+   *
+   * Preserva lo stato utente dell'episodio (progresso e durata reali) fondendo i dati
+   * nuovi con quelli locali tramite [mergeEpisodes]: la still di rete prevale sul
+   * fallback locale, ma la posizione di ripresa e la durata misurata restano quelle
+   * salvate.
+   *
+   * Le still vengono applicate a TUTTE le schede della stessa serie ([seriesTwinIds]):
+   * lo stesso titolo può convivere in una scheda TMDB e in una scheda IMDb/Stremio e la
+   * riga Home non deve dipendere da quale delle due ha originato il caricamento.
+   *
+   * @param tmdbId id TMDB della serie quando è stato RISOLTO dal chiamante (schede
+   *        IMDb/Stremio che non lo dichiarano), così le gemelle sono riconoscibili.
+   * @return il [MediaItem] aggiornato (o `null` se il media non è trovato).
+   */
+  internal fun updateEpisodesForMedia(
+    mediaId: String,
+    newEpisodes: List<Episode>,
+    tmdbId: Int? = null
+  ): MediaItem? {
+    val list = _mediaList.value
+    val item = list.firstOrNull { it.id == mediaId }
+    if (item == null) {
+      Log.i(TAG_CW, "Miniature episodi: $mediaId non è nel catalogo in memoria")
+      return null
+    }
+    if (item.type != MediaType.SERIE_TV) return item
+
+    // Un episodio senza still specifica non deve portare in giro il backdrop/poster della
+    // serie come se fosse una miniatura: `null` lascia il fallback al layout della card e
+    // non sovrascrive una still già nota.
+    val safeEpisodes = newEpisodes.map { episode ->
+      if (episode.hasSpecificStillFor(item)) episode else episode.copy(thumbnailUrl = null)
+    }
+
+    // Registra le still specifiche per ogni scheda della serie: verranno riapplicate a ogni
+    // ricostruzione degli episodi (gli episodi non sono persistiti in Room). Il fallback
+    // della serie non viene mai registrato.
+    val seriesIds = seriesTwinIds(list, item, tmdbId)
+    if (episodeStillOverrides.size > maxEpisodeStillOverrides) episodeStillOverrides.clear()
+    var registered = 0
+    seriesIds.forEach { id ->
+      // Gli episodi di stagioni che il catalogo non genera esistono solo grazie a questo
+      // registro: va riapplicato a ogni ricostruzione da Room (vedi `applyEpisodeOverlays`).
+      rememberEpisodeOverrides(id, safeEpisodes)
+      safeEpisodes.forEach { episode ->
+        val still = episode.thumbnailUrl?.takeIf { it.isNotBlank() } ?: return@forEach
+        episodeStillOverrides[episodeStillKey(id, episode.seasonNumber, episode.episodeNumber)] = still
+        registered++
+      }
+    }
+
+    var updated: MediaItem? = null
+    // Nessuna scrittura Room: gli episodi non sono persistiti come righe strutturate, vengono
+    // ricostruiti a ogni emissione da `mapEntitiesToUiState`. L'aggiornamento in memoria è
+    // sufficiente a far arrivare le still alla Home, e la cache TMDB della stagione resta la
+    // fonte persistente dei metadati.
+    _mediaList.update { current ->
+      current.map { entry ->
+        if (entry.id !in seriesIds) {
+          entry
+        } else {
+          val merged = entry.copy(episodes = mergeEpisodes(entry.episodes, safeEpisodes))
+          if (entry.id == mediaId) updated = merged
+          merged
+        }
+      }
+    }
+    Log.i(
+      TAG_CW,
+      "Miniature episodi: $mediaId → ${registered} still registrate su ${seriesIds.size} schede"
+    )
+    return updated ?: item.copy(episodes = mergeEpisodes(item.episodes, safeEpisodes))
+  }
+
+  /**
+   * Id di tutte le schede del catalogo che rappresentano la stessa serie di [seed]:
+   * la scheda stessa, il gruppo a identità forte (TMDB/IMDb) e le schede con lo stesso
+   * `tmdbId` risolto o con lo stesso id IMDb.
+   *
+   * Perché non basta l'id: la stessa serie può arrivare sia da TMDB (`tmdb_tv_1418` con
+   * `tmdbId = 1418`) sia da un catalogo Stremio (`tt0898266`, con solo l'IMDb). Aggiornare
+   * una sola scheda lascerebbe senza still quella scelta dalla riga «Continua a guardare».
+   */
+  internal fun seriesTwinIds(
+    items: List<MediaItem>,
+    seed: MediaItem,
+    resolvedTmdbId: Int? = null
+  ): Set<String> {
+    val seedTmdb = seed.tmdbId?.takeIf { it > 0 } ?: resolvedTmdbId?.takeIf { it > 0 }
+    val seedImdb = MediaIdentity.imdbIdOf(seed)
+    return buildSet {
+      add(seed.id)
+      MediaIdentity.strongGroup(items, seed).forEach { add(it.id) }
+      items.forEach { candidate ->
+        if (candidate.type != MediaType.SERIE_TV) return@forEach
+        val sameTmdb = seedTmdb != null && candidate.tmdbId == seedTmdb
+        val candidateImdb = MediaIdentity.imdbIdOf(candidate)
+        val sameImdb = seedImdb != null && candidateImdb != null &&
+          candidateImdb.equals(seedImdb, ignoreCase = true)
+        if (sameTmdb || sameImdb) add(candidate.id)
+      }
+    }
+  }
+
+  /** Bersaglio del recupero still: serie (con id TMDB risolto), stagione e puntata di ripresa. */
+  internal data class EpisodeThumbnailTarget(
+    val mediaId: String,
+    val tmdbId: Int,
+    val seasonNumber: Int,
+    val episodeNumber: Int
+  )
+
+  /**
+   * Bersagli VALIDI del recupero miniature, senza rete: solo serie con un episodio di
+   * ripresa, con un id TMDB disponibile (dichiarato o risolto da [tmdbIdOf]) e la cui
+   * still di ripresa non sia già specifica.
+   *
+   * Una sola richiesta per coppia serie+stagione: le schede gemelle dello stesso titolo
+   * non devono duplicare il fetch della stessa stagione.
+   */
+  internal fun resolveEpisodeThumbnailTargets(
+    items: List<MediaItem>,
+    tmdbIdOf: (MediaItem) -> Int?
+  ): List<EpisodeThumbnailTarget> = items.asSequence()
+    .filter { it.type == MediaType.SERIE_TV }
+    .mapNotNull { item ->
+      val season = item.lastWatchedSeason?.takeIf { it >= 0 } ?: return@mapNotNull null
+      val episode = item.lastWatchedEpisode?.takeIf { it > 0 } ?: return@mapNotNull null
+      if (item.hasSpecificEpisodeThumbnail(season, episode)) return@mapNotNull null
+      val tmdbId = tmdbIdOf(item)?.takeIf { it > 0 } ?: return@mapNotNull null
+      EpisodeThumbnailTarget(item.id, tmdbId, season, episode)
+    }
+    .distinctBy { it.tmdbId to it.seasonNumber }
+    .toList()
+
+  /**
+   * Chiavi `tmdbId:stagione` delle miniature già richieste in questa sessione.
+   * Evita richieste ripetute quando la Home si ricompone (progressi, refresh, badge);
+   * un fallimento esplicito rimuove la chiave per consentire un nuovo tentativo.
+   */
+  private val episodeThumbnailRequests = ConcurrentHashMap.newKeySet<String>()
+
+  /**
+   * Recupera in BACKGROUND la still dell'episodio di ripresa delle serie di
+   * «Continua a guardare», per la preferenza «Usa miniature episodi».
+   *
+   * Perché serve: il modello di catalogo genera episodi con `thumbnailUrl` uguale al
+   * backdrop/poster della serie. Solo l'endpoint TMDB della stagione espone `still_path`
+   * dell'episodio. Questa funzione riusa [getSeasonDetails] (cache Room TMDB + fallback,
+   * nessuna richiesta duplicata se la stagione è già stata caricata dal Dettaglio o dal
+   * player) e applica l'esito a [mediaList] tramite [updateEpisodesForMedia], così la riga
+   * Home si aggiorna da sola senza bloccare né ritardare il primo render.
+   *
+   * Le schede provenienti da cataloghi Stremio/IMDb non dichiarano `tmdbId`: viene
+   * risolto da IMDb (una volta per processo, cache di [resolveImdbToTmdbId]) prima di
+   * chiedere la stagione. Senza questo passaggio il recupero veniva saltato e la card
+   * restava per sempre sul backdrop della serie.
+   *
+   * Salta le serie senza episodio di ripresa valido, senza id TMDB risolvibile e quelle
+   * la cui still di ripresa è già specifica (diversa dal backdrop/poster della serie).
+   */
+  suspend fun refreshEpisodeThumbnails(items: List<MediaItem>) = withContext(Dispatchers.IO) {
+    if (items.isEmpty()) return@withContext
+    if (getEffectiveApiKey().isBlank()) return@withContext
+
+    val resolvedTmdbIds = resolveSeriesTmdbIds(items)
+    val targets = resolveEpisodeThumbnailTargets(items) { item ->
+      item.tmdbId?.takeIf { it > 0 } ?: resolvedTmdbIds[item.id]
+    }
+    Log.i(
+      TAG_CW,
+      "Miniature episodi: ${targets.size} stagioni da arricchire su ${items.size} card CW"
+    )
+    if (targets.isEmpty()) return@withContext
+
+    val itemsById = items.associateBy { it.id }
+    try {
+      coroutineScope {
+        targets.map { target ->
+          async {
+            val item = itemsById[target.mediaId] ?: return@async
+            val key = "${target.tmdbId}:${target.seasonNumber}"
+            // Due emissioni ravvicinate della Home non duplicano la stessa stagione.
+            if (!episodeThumbnailRequests.add(key)) return@async
+            try {
+              val season = getSeasonDetails(target.tmdbId, target.seasonNumber, item)
+              val fromTmdb = season.episodes.map { epItem ->
+                epItem.toEpisode(
+                  item.id,
+                  getEpisodeProgress(item.id, epItem.seasonNumber, epItem.episodeNumber)
+                )
+              }
+              // Propaga solo se TMDB ha davvero esposto almeno una still specifica: in
+              // caso di errore/assenza `getSeasonDetails` ripiega sul backdrop della serie
+              // e riscrivere quel valore non porterebbe alcuna informazione nuova.
+              val specificStills = fromTmdb.count { episode -> episode.hasSpecificStillFor(item) }
+              Log.i(
+                TAG_CW,
+                "Miniature episodi: ${item.id} (tmdb=${target.tmdbId}) S${target.seasonNumber} " +
+                  "→ ${fromTmdb.size} ep, still specifiche=$specificStills"
+              )
+              if (specificStills > 0) {
+                updateEpisodesForMedia(item.id, fromTmdb, tmdbId = target.tmdbId)
+              }
+            } catch (e: CancellationException) {
+              throw e
+            } catch (e: Exception) {
+              // Rete assente o TMDB non raggiungibile: la chiave viene liberata per poter
+              // ritentare al prossimo ingresso nella Home.
+              episodeThumbnailRequests.remove(key)
+              Log.w(TAG_CW, "Miniatura episodio non recuperata per ${item.id} S${target.seasonNumber}: ${e.message}")
+            }
+          }
+        }.awaitAll()
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG_CW, "Recupero miniature episodi interrotto: ${e.message}")
+    }
+  }
+
+  /**
+   * Risolve via TMDB l'id delle serie che non lo dichiarano (schede IMDb/Stremio).
+   *
+   * Risoluzione in parallelo ma deduplicata per scheda; [resolveImdbToTmdbId] ha una
+   * cache per processo e non ripete la chiamata `find/{external_id}`. Un titolo non
+   * risolvibile viene semplicemente escluso: la card resta sul fallback previsto.
+   */
+  private suspend fun resolveSeriesTmdbIds(items: List<MediaItem>): Map<String, Int> = coroutineScope {
+    val unresolved = items.asSequence()
+      .filter { it.type == MediaType.SERIE_TV }
+      .filter { (it.tmdbId ?: 0) <= 0 }
+      .filter { MediaIdentity.imdbIdOf(it) != null }
+      .distinctBy { it.id }
+      .toList()
+    if (unresolved.isEmpty()) return@coroutineScope emptyMap()
+    unresolved.map { item ->
+      async {
+        val imdbId = MediaIdentity.imdbIdOf(item) ?: return@async null
+        // Single-flight: una ricomposizione ravvicinata della Home non duplica la
+        // richiesta `find/{external_id}` mentre la prima è ancora in volo.
+        val tmdbId = imdbToTmdbSingleFlight.run(imdbId.lowercase()) {
+          resolveImdbToTmdbId(imdbId, isTv = true)
+        }
+        tmdbId?.let { item.id to it }
+      }
+    }.awaitAll().mapNotNull { it }.toMap()
+  }
+
+  /** Una sola risoluzione IMDb→TMDB in volo per serie (vedi [resolveSeriesTmdbIds]). */
+  private val imdbToTmdbSingleFlight = AsyncSingleFlight<Int?>()
+
+
+  /** true se l'episodio ha già una still diversa dal backdrop/poster della serie. */
+  private fun MediaItem.hasSpecificEpisodeThumbnail(season: Int, episode: Int): Boolean {
+    val url = episodes.firstOrNull {
+      it.seasonNumber == season && it.episodeNumber == episode
+    }?.thumbnailUrl?.takeIf { it.isNotBlank() } ?: return false
+    return url != backdropUrl?.takeIf { it.isNotBlank() } &&
+      url != posterUrl?.takeIf { it.isNotBlank() }
+  }
+
+  /**
+   * true se la still dell'episodio è specifica del titolo: presente e diversa dal
+   * backdrop/poster della serie. I generatori locali usano proprio quei due URL come
+   * segnaposto, quindi il confronto li riconosce senza un flag aggiuntivo nel modello.
+   */
+  private fun Episode.hasSpecificStillFor(item: MediaItem): Boolean {
+    val url = thumbnailUrl?.takeIf { it.isNotBlank() } ?: return false
+    return url != item.backdropUrl?.takeIf { it.isNotBlank() } &&
+      url != item.posterUrl?.takeIf { it.isNotBlank() }
+  }
+
+  /**
    * Porta un titolo nei Preferiti (`true`) senza mai toglierlo. Usato dalla sincronizzazione
    * SIMKL per la watchlist: la UI legge i Preferiti da [mediaList], lo stesso archivio di
    * questa scrittura (nessun secondo elenco parallelo). Un `id` sconosciuto non fa nulla.
    *
+   * Un titolo GIA' preferito resta di proprietà di chi lo aveva scritto (nessun cambio di
+   * provenienza): un preferito locale non diventa mai "di SIMKL" per l'import della watchlist.
+   *
+   * @param source provenienza della scrittura (`null` = locale, `MEDIA_SOURCE_SIMKL` per
+   *        la watchlist SIMKL): registrata solo quando il preferito viene creato qui.
    * @return true se lo stato e' cambiato.
    */
-  suspend fun markFavorite(id: String): Boolean = withContext(Dispatchers.IO) {
+  suspend fun markFavorite(id: String, source: String? = null): Boolean = withContext(Dispatchers.IO) {
     val current = _mediaList.value.firstOrNull { it.id == id } ?: return@withContext false
     if (current.isFavorite) return@withContext false
-    _mediaList.update { list -> list.map { if (it.id == id) it.copy(isFavorite = true) else it } }
+    _mediaList.update { list ->
+      list.map { if (it.id == id) it.copy(isFavorite = true, favoriteSource = source) else it }
+    }
     val detail = _detailUiState.value
     if (detail is MediaDetailUiState.Success && detail.media.id == id) {
-      _detailUiState.value = detail.copy(media = detail.media.copy(isFavorite = true))
+      _detailUiState.value = detail.copy(media = detail.media.copy(isFavorite = true, favoriteSource = source))
     }
     try {
       val dao = database?.cachedMediaDao()
       if (dao != null) {
         val persisted = dao.getMediaById(id)
         if (persisted != null) {
-          dao.updateFavorite(id, true)
+          dao.updateFavoriteWithSource(id, true, source)
         } else {
           // Riga non ancora persistita: la crea con lo stato aggiornato (nessun preferito perso).
-          dao.insertOrUpdate(_mediaList.value.first { it.id == id }.toEntity())
+          dao.insertOrUpdate(
+            _mediaList.value.first { it.id == id }.copy(isFavorite = true, favoriteSource = source).toEntity()
+          )
         }
       }
     } catch (e: Exception) {
@@ -2118,6 +2694,162 @@ object MediaRepository {
       } catch (e: Exception) {
         Log.e("REMOVE_CW", "Failed to remove from continue watching in Room: ${e.message}", e)
       }
+    }
+  }
+
+  /**
+   * Rimuove dal catalogo locale i dati di provenienza SIMKL, chiamata dalla
+   * disconnessione dell'account (nulla a che vedere con un "reset preferiti").
+   *
+   * Regola "ultimo scrittore possessore": un dato resta di chi l'ha scritto per ultimo.
+   * Ogni scrittura locale (player, preferito manuale) trasferisce la proprietà al locale,
+   * quindi sopravvive qui; solo ciò che la sincronizzazione SIMKL ha scritto per ultimo
+   * viene rimosso. I record STORICI (precedenti alla tracciatura) hanno provenienza
+   * `null` = locale e non vengono MAI toccati: la loro origine non è ricostruibile dal
+   * database e non si inventa una provenienza che non si può dimostrare.
+   *
+   * - Preferiti con provenienza SIMKL: tolti dai Preferiti (la scheda resta se è nel
+   *   catalogo per altri motivi — seed/TMDB, progresso locale).
+   * - Progressi con provenienza SIMKL: azzerati dalla scheda e rimossi da
+   *   `episode_progress`. Se esistono righe episodio LOCALI per la stessa serie, lo stato
+   *   della scheda viene ricostruito dal punto locale più recente (nessun progresso
+   *   locale perso a causa di una sovrascrittura SIMKL).
+   * - Schede CREATE dall'importazione SIMKL (`importedFromSimkl`): eliminate, ma solo se
+   *   non hanno acquisito stato locale (preferito, progresso scheda o righe episodio
+   *   locali). Quelle con stato locale restano, privati solo dello stato SIMKL.
+   *
+   * Nessun dato remoto SIMKL viene toccato: questa funzione opera solo sul database locale.
+   */
+  suspend fun purgeSimklData() = withContext(Dispatchers.IO) {
+    val db = database ?: return@withContext
+    try {
+      // Le scritture di progresso persistono in coroutine asincrone: prima di leggere e
+      // riscrivere le righe si attende che non ce ne sia alcuna in volo, altrimenti una
+      // posizione scritta dalla sincronizzazione potrebbe atterrare DOPO la pulizia e
+      // sopravvivere alla disconnessione.
+      awaitProgressWritesQuiescence()
+
+      val dao = db.cachedMediaDao()
+      val episodeDao = db.episodeProgressDao()
+
+      // 1) Righe episodio di provenienza SIMKL: rimosse dalla persistenza e dalle mappe
+      //    in memoria. Quelle locali (provenienza null) restano intatte.
+      val allEpisodeRows = episodeDao.getAllProgress()
+      val simklEpisodeRows = allEpisodeRows.filter { it.source == MEDIA_SOURCE_SIMKL }
+      if (simklEpisodeRows.isNotEmpty()) {
+        episodeDao.clearProgressForSource(MEDIA_SOURCE_SIMKL)
+        simklEpisodeRows.forEach { ep ->
+          val key = episodeProgressKey(ep.mediaId, ep.seasonNumber, ep.episodeNumber)
+          episodeProgressMap.remove(key)
+          episodeDurationMap.remove(key)
+          episodeProgressSourceMap.remove(key)
+        }
+      }
+      // Punti di ripresa LOCALI per titolo: servono a ricostruire lo stato della scheda
+      // quando l'ultimo progresso era di SIMKL e a proteggere dall'eliminazione le schede
+      // importate con progressi locali.
+      val localPointsByMedia = allEpisodeRows
+        .filter { it.source != MEDIA_SOURCE_SIMKL && it.progressMs > 0L }
+        .groupBy { it.mediaId }
+
+      // 2) Schede: tolte dai Preferiti le provenienze SIMKL, azzerati i progressi SIMKL
+      //    (ricostruendoli dal punto locale più recente quando esiste), individuate le
+      //    schede importate da SIMKL che NON hanno acquisito stato locale.
+      val entities = dao.getAllCachedMedia()
+      val toUpdate = mutableListOf<CachedMediaItemEntity>()
+      val importedToDelete = mutableListOf<CachedMediaItemEntity>()
+      for (entity in entities) {
+        var updated = entity
+        if (updated.favoriteSource == MEDIA_SOURCE_SIMKL) {
+          updated = updated.copy(isFavorite = false, favoriteSource = null)
+        }
+        if (updated.progressSource == MEDIA_SOURCE_SIMKL) {
+          val localPoint = localPointsByMedia[updated.id]?.maxByOrNull { it.updatedAt }
+          updated = if (localPoint != null) {
+            updated.copy(
+              currentProgressMs = localPoint.progressMs,
+              totalDurationMs = localPoint.durationMs.takeIf { it > 0L } ?: updated.totalDurationMs,
+              lastWatchedSeason = localPoint.seasonNumber,
+              lastWatchedEpisode = localPoint.episodeNumber,
+              lastWatchedAt = localPoint.updatedAt,
+              progressSource = null
+            )
+          } else {
+            updated.copy(
+              currentProgressMs = 0L,
+              lastWatchedSeason = null,
+              lastWatchedEpisode = null,
+              lastWatchedAt = null,
+              progressSource = null
+            )
+          }
+        }
+        val localOwned = (updated.isFavorite && updated.favoriteSource != MEDIA_SOURCE_SIMKL) ||
+          updated.currentProgressMs > 0L ||
+          !localPointsByMedia[updated.id].isNullOrEmpty()
+        if (updated.importedFromSimkl && !localOwned) {
+          importedToDelete.add(updated)
+        } else if (updated != entity) {
+          toUpdate.add(updated)
+        }
+      }
+      if (toUpdate.isNotEmpty()) dao.insertOrUpdate(toUpdate)
+      if (importedToDelete.isNotEmpty()) {
+        val ids = importedToDelete.map { it.id }
+        dao.deleteByIds(ids, importedToDelete.mapNotNull { it.tmdbId })
+        // Nessuna riga episodio locale per costruzione, ma il residuo non deve restare.
+        ids.forEach { id -> episodeDao.clearProgressForMedia(id) }
+      }
+
+      // 3) Stato in memoria: stesso criterio, così l'interfaccia (Preferiti, Continua a
+      //    guardare) si aggiorna immediatamente. L'osservatore Room riemette comunque lo
+      //    stato coerente.
+      val deletedIds = importedToDelete.map { it.id }.toSet()
+      _mediaList.update { list ->
+        list.filterNot { it.id in deletedIds }.map { item ->
+          var updated = item
+          if (updated.favoriteSource == MEDIA_SOURCE_SIMKL) {
+            updated = updated.copy(isFavorite = false, favoriteSource = null)
+          }
+          if (updated.progressSource == MEDIA_SOURCE_SIMKL) {
+            val localPoint = localPointsByMedia[item.id]?.maxByOrNull { it.updatedAt }
+            updated = if (localPoint != null) {
+              updated.copy(
+                currentProgressMs = localPoint.progressMs,
+                totalDurationMs = localPoint.durationMs.takeIf { it > 0L } ?: updated.totalDurationMs,
+                lastWatchedSeason = localPoint.seasonNumber,
+                lastWatchedEpisode = localPoint.episodeNumber,
+                lastWatchedAt = localPoint.updatedAt,
+                progressSource = null
+              )
+            } else {
+              updated.copy(
+                currentProgressMs = 0L,
+                lastWatchedSeason = null,
+                lastWatchedEpisode = null,
+                lastWatchedAt = null,
+                progressSource = null
+              )
+            }
+          }
+          updated
+        }
+      }
+      Log.i(
+        "MediaRepository",
+        "purgeSimklData: ${simklEpisodeRows.size} righe episodio SIMKL rimosse, " +
+          "${toUpdate.size} schede aggiornate, ${importedToDelete.size} schede importate eliminate."
+      )
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "purgeSimklData: pulizia non completata: ${e.message}")
+    }
+  }
+
+  /** Attende (con tetto) che nessuna scrittura Room di progresso sia ancora in volo. */
+  private suspend fun awaitProgressWritesQuiescence(timeoutMs: Long = 3_000L) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (pendingProgressWrites.get() > 0 && System.currentTimeMillis() < deadline) {
+      delay(10)
     }
   }
 
@@ -2737,6 +3469,11 @@ object MediaRepository {
 
     val ageRating = AgeRatingClassifier.classifyMovieRating(dto.releaseDates)
       ?: baseMedia?.ageRating
+    // Campi di «Dettagli Film»: nessun fallback, così la UI nasconde la riga quando
+    // TMDB non espone il dato (mai durate/certificazioni/paesi di comodo).
+    val releaseDate = ReleaseDateUtils.normalizeIsoDate(dto.releaseDate)
+    val certification = DetailFactsMapper.movieCertification(dto.releaseDates)
+    val originCountry = DetailFactsMapper.originCountry(dto.productionCountries, dto.originCountry)
 
     return ExtendedMediaDetails(
       tmdbId = dto.id,
@@ -2746,9 +3483,11 @@ object MediaRepository {
       backdropUrl = backdrop,
       posterUrl = poster,
       releaseYear = dto.releaseDate?.take(4)?.toIntOrNull() ?: baseMedia?.year ?: 2024,
+      releaseDate = releaseDate,
       rating = dto.voteAverage ?: baseMedia?.rating ?: 8.0f,
       voteCount = dto.voteCount ?: 0,
       durationMinutes = dto.runtime ?: baseMedia?.durationMinutes ?: 120,
+      runtimeMinutes = dto.runtime?.takeIf { it > 0 },
       seasonsCount = null,
       episodesCount = null,
       genres = dto.genres?.map { it.name }?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() } ?: baseMedia?.genres ?: listOf("Cinema"),
@@ -2762,6 +3501,7 @@ object MediaRepository {
       similarItems = similar,
       isTv = false,
       ageRating = ageRating,
+      certification = certification,
       productionCompanies = dto.productionCompanies?.map {
         ProductionCompany(
           id = it.id,
@@ -2769,7 +3509,8 @@ object MediaRepository {
           logoUrl = TmdbApiClient.logoUrl(it.logoPath),
           originCountry = it.originCountry
         )
-      } ?: emptyList()
+      } ?: emptyList(),
+      originCountry = originCountry
     )
   }
 
@@ -2810,6 +3551,11 @@ object MediaRepository {
 
     val ageRating = AgeRatingClassifier.classifyTvRating(dto.contentRatings)
       ?: baseMedia?.ageRating
+    // Stessi campi rigorosi dei film: per le serie la durata è quella dichiarata di un
+    // episodio e la certificazione arriva da `content_ratings`. Nessun fallback.
+    val releaseDate = ReleaseDateUtils.normalizeIsoDate(dto.firstAirDate)
+    val certification = DetailFactsMapper.tvCertification(dto.contentRatings)
+    val originCountry = DetailFactsMapper.originCountry(dto.productionCountries, dto.originCountry)
 
     return ExtendedMediaDetails(
       tmdbId = dto.id,
@@ -2819,9 +3565,11 @@ object MediaRepository {
       backdropUrl = backdrop,
       posterUrl = poster,
       releaseYear = dto.firstAirDate?.take(4)?.toIntOrNull() ?: baseMedia?.year ?: 2024,
+      releaseDate = releaseDate,
       rating = dto.voteAverage ?: baseMedia?.rating ?: 8.0f,
       voteCount = dto.voteCount ?: 0,
       durationMinutes = dto.episodeRunTime?.firstOrNull() ?: baseMedia?.durationMinutes ?: 50,
+      runtimeMinutes = dto.episodeRunTime?.firstOrNull()?.takeIf { it > 0 },
       seasonsCount = dto.numberOfSeasons ?: baseMedia?.seasonsCount ?: 1,
       episodesCount = dto.numberOfEpisodes,
       genres = dto.genres?.map { it.name }?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() } ?: baseMedia?.genres ?: listOf("Serie TV"),
@@ -2836,6 +3584,7 @@ object MediaRepository {
       isTv = true,
       seasonEpisodesCount = seasonEpCounts,
       ageRating = ageRating,
+      certification = certification,
       productionCompanies = dto.productionCompanies?.map {
         ProductionCompany(
           id = it.id,
@@ -2844,6 +3593,7 @@ object MediaRepository {
           originCountry = it.originCountry
         )
       } ?: emptyList(),
+      originCountry = originCountry,
       nextEpisode = dto.nextEpisodeToAir.toNextEpisodeInfo()
     )
   }
@@ -3625,6 +4375,7 @@ object MediaRepository {
       logoUrl = existing?.logoUrl,
       type = MediaType.FILM,
       year = year,
+      releaseDate = ReleaseDateUtils.normalizeIsoDate(movie.releaseDate),
       durationMinutes = dur,
       rating = ((ratingVal * 10).toInt() / 10f),
       genres = if (genres.isNotEmpty()) genres else (existing?.genres ?: listOf("Cinema")),
@@ -3675,6 +4426,7 @@ object MediaRepository {
       logoUrl = existing?.logoUrl,
       type = MediaType.SERIE_TV,
       year = year,
+      releaseDate = ReleaseDateUtils.normalizeIsoDate(tv.firstAirDate),
       durationMinutes = 55,
       seasonsCount = existing?.seasonsCount ?: 2,
       rating = ((ratingVal * 10).toInt() / 10f),
@@ -3789,21 +4541,26 @@ object MediaRepository {
     page: Int
   ): Flow<ProviderCatalogPage> = flow {
     val cleanKey = getEffectiveApiKey()
-    val providerIds = providerId.toString()
+    // Query canonica UNICA (bootstrap e paginazione on-demand): per HBO / Max in
+    // Italia il provider TMDB corretto è 1899, non il 384.
+    val query = providerTmdbQuery(providerId)
+    val providerIds = query.providerIds
     val providerTag = providerTagFor(providerId)
     val cacheKey = providerCacheKey(providerIds, isTv, page)
+    var requestSucceeded = false
     try {
       val currentList = _mediaList.value
       var totalPages = 0
-      // Regione catalogo: IT. Per Crunchyroll (283) fallback a "US" se "IT" non
-      // restituisce titoli (pochi anime tracciati su TMDB con watch_region=IT).
-      var region = "IT"
+      // Regione catalogo dalla query canonica (IT). Per Crunchyroll (283) fallback a
+      // "US" se "IT" non restituisce titoli (pochi anime tracciati su TMDB con
+      // watch_region=IT).
+      var region = query.watchRegion
       val newItems: List<MediaItem> = if (isTv) {
         var response = fetchTvWithCache(cacheKey) {
           TmdbApiClient.service.discoverTvByProvider(
             apiKey = cleanKey,
             providerId = providerIds,
-            region = "IT",
+            region = region,
             sortBy = "popularity.desc",
             language = "it-IT",
             page = page
@@ -3830,7 +4587,7 @@ object MediaRepository {
           TmdbApiClient.service.discoverMoviesByProvider(
             apiKey = cleanKey,
             providerId = providerIds,
-            region = "IT",
+            region = region,
             sortBy = "popularity.desc",
             language = "it-IT",
             page = page
@@ -3853,10 +4610,11 @@ object MediaRepository {
         totalPages = response.totalPages ?: 0
         response.results.map { movieToMediaItem(it, currentList, provider = providerTag) }
       }
+      requestSucceeded = true
 
       Log.d(
         "PROVIDER_CATALOG",
-        "provider=$providerId (${providerTag}) isTv=$isTv page=$page region=$region -> " +
+        "provider=$providerId (query=$providerIds/${query.watchRegion}) (${providerTag}) isTv=$isTv page=$page region=$region -> " +
           "${newItems.size} titoli (total_pages=$totalPages)"
       )
 
@@ -3864,7 +4622,14 @@ object MediaRepository {
         val db = database
         if (db != null) {
           try {
-            db.cachedMediaDao().insertOrUpdate(newItems.map { it.toEntity() })
+            val dao = db.cachedMediaDao()
+            // La scrittura di una pagina NON deve azzerare preferiti/progressi già
+            // presenti: si riapplica lo stato utente della riga Room esistente.
+            val existingById = dao.getAllCachedMedia().associateBy { it.id }
+            val preserved = newItems.map { item ->
+              existingById[item.id]?.preserveUserStateInto(item) ?: item
+            }
+            dao.insertOrUpdate(preserved.map { it.toEntity() })
           } catch (e: Exception) {
             Log.w("MediaRepository", "Errore salvataggio Room loadProviderCatalog: ${e.message}")
           }
@@ -3875,8 +4640,11 @@ object MediaRepository {
           val idx = updated.indexOfFirst { it.id == item.id }
           if (idx >= 0) {
             val existing = updated[idx]
-            if (existing.provider == null || !existing.provider.contains(providerTag)) {
-              val combinedProvider = if (existing.provider.isNullOrBlank()) providerTag else "${existing.provider},$providerTag"
+            // Un titolo può essere disponibile su PIÙ provider: i tag si sommano,
+            // non si sostituiscono (altrimenti l'ultimo catalogo visitato "ruba" il
+            // titolo agli altri e le rispettive griglie si svuotano).
+            val combinedProvider = mergeProviderTags(existing.provider, providerTag)
+            if (combinedProvider != existing.provider) {
               updated[idx] = existing.copy(provider = combinedProvider)
               modified = true
             }
@@ -3890,15 +4658,30 @@ object MediaRepository {
         }
       }
 
-      // Progresso indipendente per coppia (provider, tipo)
-      saveProviderProgress(providerId, isTv, page, totalPages)
+      // Progresso indipendente per coppia (provider, tipo). Persistito SOLO per una
+      // richiesta riuscita: una pagina fallita non deve avanzare il cursore né
+      // marcare il catalogo come esaurito.
+      if (totalPages > 0) {
+        saveProviderProgress(providerId, isTv, page, totalPages)
+      }
 
-      emit(ProviderCatalogPage(providerId, isTv, page, totalPages, newItems))
+      emit(ProviderCatalogPage(providerId, isTv, page, totalPages, newItems, requestSucceeded = true))
     } catch (e: Exception) {
       Log.w("MediaRepository", "Errore loadProviderCatalog (providerId=$providerId, isTv=$isTv, page=$page): ${e.message}")
       // Lo stato di "fine paginazione" resta limitato a questa coppia: gli altri
       // provider e l'altro tipo (Film/Serie) continuano a caricarsi normalmente.
-      emit(ProviderCatalogPage(providerId, isTv, page, 0, emptyList()))
+      // `requestSucceeded = false` dice al ViewModel di NON avanzare la pagina: al
+      // prossimo trigger la STESSA pagina viene ritentata.
+      emit(
+        ProviderCatalogPage(
+          providerId = providerId,
+          isTv = isTv,
+          page = page,
+          totalPages = 0,
+          items = emptyList(),
+          requestSucceeded = false
+        )
+      )
     }
   }.flowOn(Dispatchers.IO)
 
@@ -3984,6 +4767,7 @@ object MediaRepository {
       logoUrl = existing?.logoUrl,
       type = MediaType.FILM,
       year = year,
+      releaseDate = ReleaseDateUtils.normalizeIsoDate(movie.releaseDate),
       durationMinutes = dur,
       rating = ((ratingVal * 10).toInt() / 10f),
       genres = if (genres.isNotEmpty()) genres else (existing?.genres ?: listOf("Cinema")),
@@ -4038,6 +4822,7 @@ object MediaRepository {
       logoUrl = existing?.logoUrl,
       type = MediaType.SERIE_TV,
       year = year,
+      releaseDate = ReleaseDateUtils.normalizeIsoDate(tv.firstAirDate),
       durationMinutes = 55,
       seasonsCount = existing?.seasonsCount ?: 2,
       rating = ((ratingVal * 10).toInt() / 10f),
@@ -4315,68 +5100,41 @@ object MediaRepository {
      fetchedItems: MutableMap<String, MediaItem>,
      maxPages: Int = MAX_PROVIDER_PAGES
    ) {
-     val hbo = isHboProvider(providerTag)
      val pageLimit = maxPages.coerceIn(1, MAX_PROVIDER_PAGES)
      var page = 1
      var totalPages = 0
      while (ProviderCatalogCrawlPolicy.shouldFetchPage(page, totalPages, pageLimit)) {
        val cacheKey = providerCacheKey(providerIds, isTv, page)
        val pageItems: List<MediaItem> = try {
+         // Stessa query della paginazione on-demand (`loadProviderCatalog`): il
+         // catalogo iniziale e quello completo non possono divergere. Per HBO la
+         // stringa `1899|384` è quella corretta per l'Italia (il solo 384 è vuoto).
          if (isTv) {
-           if (hbo) {
-             val response = fetchTvWithCache(cacheKey) {
-               TmdbApiClient.service.discoverTvByNetwork(
-                 apiKey = apiKey,
-                 networkId = HBO_NETWORK_IDS,
-                 sortBy = "popularity.desc",
-                 language = "it-IT",
-                 page = page
-               )
-             }
-             totalPages = response.totalPages ?: 0
-             response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = providerTag) }
-           } else {
-             val response = fetchTvWithCache(cacheKey) {
-               TmdbApiClient.service.discoverTvByProvider(
-                 apiKey = apiKey,
-                 providerId = providerIds,
-                 region = "IT",
-                 sortBy = "popularity.desc",
-                 language = "it-IT",
-                 page = page
-               )
-             }
-             totalPages = response.totalPages ?: 0
-             response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = providerTag) }
+           val response = fetchTvWithCache(cacheKey) {
+             TmdbApiClient.service.discoverTvByProvider(
+               apiKey = apiKey,
+               providerId = providerIds,
+               region = "IT",
+               sortBy = "popularity.desc",
+               language = "it-IT",
+               page = page
+             )
            }
+           totalPages = response.totalPages ?: 0
+           response.results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList, provider = providerTag) }
          } else {
-           if (hbo) {
-             val response = fetchMoviesWithCache(cacheKey) {
-               TmdbApiClient.service.discoverMoviesByProvider(
-                 apiKey = apiKey,
-                 providerId = providerIds,
-                 region = "US",
-                 sortBy = "popularity.desc",
-                 language = "it-IT",
-                 page = page
-               )
-             }
-             totalPages = response.totalPages ?: 0
-             response.results.map { movieToMediaItem(it, currentList, provider = providerTag) }
-           } else {
-             val response = fetchMoviesWithCache(cacheKey) {
-               TmdbApiClient.service.discoverMoviesByProvider(
-                 apiKey = apiKey,
-                 providerId = providerIds,
-                 region = "IT",
-                 sortBy = "popularity.desc",
-                 language = "it-IT",
-                 page = page
-               )
-             }
-             totalPages = response.totalPages ?: 0
-             response.results.map { movieToMediaItem(it, currentList, provider = providerTag) }
+           val response = fetchMoviesWithCache(cacheKey) {
+             TmdbApiClient.service.discoverMoviesByProvider(
+               apiKey = apiKey,
+               providerId = providerIds,
+               region = "IT",
+               sortBy = "popularity.desc",
+               language = "it-IT",
+               page = page
+             )
            }
+           totalPages = response.totalPages ?: 0
+           response.results.map { movieToMediaItem(it, currentList, provider = providerTag) }
          }
        } catch (e: Exception) {
          Log.w(
@@ -4391,7 +5149,9 @@ object MediaRepository {
       pageItems.forEach { item ->
         val existing = fetchedItems[item.id]
         fetchedItems[item.id] = if (existing != null) {
-          existing.copy(provider = providerTag)
+          // I tag provider si SOMMANO: un titolo disponibile su più servizi deve
+          // restare visibile in OGNI griglia del provider, non solo nell'ultima.
+          existing.copy(provider = mergeProviderTags(existing.provider, providerTag))
         } else {
           item
         }
@@ -4492,7 +5252,8 @@ object MediaRepository {
           posterUrl = fetched.posterUrl ?: init?.posterUrl ?: cur.posterUrl,
           rating = fetched.rating,
           synopsis = if (cur.synopsis.length < fetched.synopsis.length) fetched.synopsis else cur.synopsis,
-          provider = fetched.provider ?: cur.provider,
+          // Un titolo può appartenere a più cataloghi provider: i tag si sommano.
+          provider = mergeProviderTags(cur.provider, fetched.provider),
           isTrending = cur.isTrending || fetched.isTrending,
           isTop10 = cur.isTop10 || fetched.isTop10
         )

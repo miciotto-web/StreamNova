@@ -76,6 +76,8 @@
     <string name="torbox_source_unknown">Status unbekannt</string>
     <string name="torbox_source_audio">Audio</string>
     <string name="torbox_source_subtitles">Untertitel</string>
+    <string name="source_card_size_label">Größe</string>
+    <string name="source_card_debrid_via">über %1$s</string>
 
     <!-- Context Menu -->
     <string name="context_resume">Fortsetzen</string>
@@ -87,6 +89,27 @@
     <string name="detail_tab_more_like_this">Ähnliche Titel</string>
     <string name="detail_tab_technical_details">Technische Daten</string>
     <string name="detail_tab_production">Produktion</string>
+    <string name="detail_tab_movie_details">Filmdetails</string>
+    <string name="detail_tab_series_details">Details</string>
+    <string name="detail_movie_details_title">Filmdetails</string>
+    <string name="detail_series_details_title">Seriendetails</string>
+    <string name="detail_info_status">Status</string>
+    <string name="detail_info_release">Veröffentlichung</string>
+    <string name="detail_info_first_air">Erstausstrahlung</string>
+    <string name="detail_info_runtime">Laufzeit</string>
+    <string name="detail_info_episode_runtime">Folgenlänge</string>
+    <string name="detail_info_certification">Altersfreigabe</string>
+    <string name="detail_info_origin_country">Herkunftsland</string>
+    <string name="detail_info_empty">Keine Details verfügbar</string>
+    <string name="detail_status_released">Veröffentlicht</string>
+    <string name="detail_status_post_production">Postproduktion</string>
+    <string name="detail_status_in_production">In Produktion</string>
+    <string name="detail_status_planned">Geplant</string>
+    <string name="detail_status_canceled">Abgesetzt</string>
+    <string name="detail_status_rumored">Gerücht</string>
+    <string name="detail_status_returning_series">Laufend</string>
+    <string name="detail_status_ended">Beendet</string>
+    <string name="detail_status_pilot">Pilot</string>
     <string name="production_section_title">PRODUKTIONSFIRMEN</string>
     <string name="production_empty">Keine Produktionsfirmen verfügbar</string>
     <string name="studio_movies_title">Filme des Studios</string>
@@ -255,6 +278,34 @@
      <string name="settings_status_connected">Verbunden</string>
      <string name="settings_status_verify_account">Konto überprüfen</string>
      <string name="settings_use_torbox_instant">TorBox Instant Debrid verwenden</string>
+     <string name="settings_home_section">Home</string>
+     <string name="settings_hide_unreleased">Nicht veröffentlichte Inhalte ausblenden</string>
+     <string name="settings_hide_unreleased_desc">Blendet Filme und Serien aus, die noch nicht veröffentlicht wurden.</string>
+     <!-- Bereich „Weiterschauen“ -->
+     <string name="settings_cw_section_title">Weiterschauen</string>
+     <string name="settings_cw_section_desc">Einstellungen für den Bereich \"Weiterschauen\".</string>
+     <string name="settings_cw_expanded">Offen</string>
+     <string name="settings_cw_collapsed">Geschlossen</string>
+     <string name="settings_cw_show">Weiterschauen anzeigen</string>
+     <string name="settings_cw_show_desc">Zeigt die Zeile „Weiterschauen“ auf dem Home-Bildschirm.</string>
+     <string name="settings_cw_layout">Zeilenlayout</string>
+     <string name="settings_cw_layout_card">Karte</string>
+     <string name="settings_cw_layout_wide">Breit</string>
+     <string name="settings_cw_layout_poster">Poster</string>
+     <string name="settings_cw_layout_selected">Ausgewählt</string>
+     <string name="settings_cw_episode_thumbnails">Episoden-Vorschaubilder in \"Weiterschauen\" verwenden</string>
+     <string name="settings_cw_episode_thumbnails_desc">Verwendet Episoden-Vorschaubilder als Standardbild. Wenn deaktiviert, wird das Hintergrundbild verwendet.</string>
+     <string name="settings_cw_blur_unwatched">Ungesehene in „Weiterschauen“ unscharf</string>
+     <string name="settings_cw_blur_unwatched_desc">Macht die Vorschaubilder der nächsten Episode in „Weiterschauen“ unscharf, um Spoiler zu vermeiden.</string>
+     <string name="settings_cw_next_from_furthest">Nächste Episode ab dem weitesten Stand</string>
+     <string name="settings_cw_next_from_furthest_desc">Zeigt die nächste Episode basierend auf dem weitesten Stand der Wiedergabe. Für Rewatches deaktivieren, um stattdessen die zuletzt gesehene Episode zu verwenden.</string>
+     <string name="settings_cw_show_unaired">Noch nicht ausgestrahlte Episoden anzeigen</string>
+     <string name="settings_cw_show_unaired_desc">Nimmt kommende Episoden in \"Weiterschauen\" auf, bevor sie ausgestrahlt werden.</string>
+     <string name="settings_cw_sort">Sortierung</string>
+     <string name="settings_cw_sort_desc">Wie die Elemente in \"Weiterschauen\" sortiert werden</string>
+     <string name="settings_cw_sort_default">Standard</string>
+     <string name="settings_cw_sort_title">Titel (A-Z)</string>
+     <string name="settings_cw_sort_rating">TMDB-Bewertung</string>
      <string name="settings_search_section">Suche und Kataloge</string>
      <string name="settings_tmdb_genre_fallback">TMDB als Fallback für Genres verwenden</string>
      <string name="settings_tmdb_genre_fallback_desc">Findet Filme und Serien über TMDB, wenn keiner der konfigurierten Kataloge das gewählte Genre unterstützt.</string>
@@ -265,8 +316,19 @@
      <string name="settings_autoplay">Automatische Wiedergabe (Autoplay)</string>
      <string name="settings_preferred_resolution">Bevorzugte Auflösung</string>
      <string name="settings_preferred_audio_language">Bevorzugte Audiosprache</string>
+     <string name="settings_prioritize_italian_audio">Italienische Quellen bevorzugen</string>
+     <string name="settings_prioritize_italian_audio_desc">Setzt italienische Quellen an die erste Stelle, wenn verfügbar.</string>
      <string name="settings_autoplay_next_episode">Nächste Episode automatisch abspielen</string>
      <string name="settings_auto_resume">Wiedergabe automatisch fortsetzen</string>
+     <!-- Overlay und Wiedergabehinweise -->
+     <string name="settings_loading_overlay">Lade-Overlay anzeigen</string>
+     <string name="settings_loading_overlay_desc">Zeigt beim Start des Inhalts den Bildschirm mit Poster und Logo. Deaktivieren fuer den kompakten Ladeindikator.</string>
+     <string name="settings_loading_status">Ladestatus anzeigen</string>
+     <string name="settings_loading_status_desc">Zeigt die echte Ladephase (Quelle wird vorbereitet, Verbindung, Pufferung) beim Start und waehrend der Vorbereitung.</string>
+     <string name="settings_pause_overlay">Pause-Overlay</string>
+     <string name="settings_pause_overlay_desc">Zeigt nach einigen Sekunden Pause Poster, Titel und Inhaltsangabe des laufenden Inhalts.</string>
+     <string name="settings_parental_guide">Inhaltshinweise</string>
+     <string name="settings_parental_guide_desc">Zeigt beim Start von Filmen und Serien kurze Hinweise zu Vulgaritaet, Gewalt, Angst und Alkohol/Drogen.</string>
      <string name="settings_sec_stream_selection">Stream-Auswahl</string>
      <string name="settings_reuse_last_stream">Letzten Link wiederverwenden</string>
      <string name="settings_reuse_last_stream_desc">Zuletzt funktionierenden Stream für denselben Film/dieselbe Episode automatisch abspielen, wenn der Cache noch gültig ist.</string>
@@ -281,6 +343,7 @@
      <string name="settings_preferred_subtitle_lang">Bevorzugte Sprache</string>
      <string name="settings_subtitle_size">Untertitelgröße</string>
      <string name="settings_subtitle_background">Untertitel-Hintergrund</string>
+     <string name="settings_subtitle_opacity">Hintergrund-Deckkraft</string>
      <string name="settings_subtitle_position">Untertitel-Position</string>
 
      <string name="settings_forced_subtitles">Forced-Untertitel falls im Video vorhanden</string>
@@ -302,6 +365,15 @@
      <string name="settings_clear_cache">Cache leeren</string>
      <string name="settings_restore_defaults">Einstellungen zurücksetzen</string>
      <string name="settings_legal_info">Rechtliche Hinweise</string>
+
+     <!-- Info-Bereich: App-Identität und Danksagungen. TMDB-Angaben bleiben in
+          jeder Sprache wortgleich auf Englisch (Attributionsanforderung). -->
+     <string name="settings_sec_info">Informationen</string>
+     <string name="settings_sec_acknowledgements">Danksagungen</string>
+     <string name="settings_info_version">Version %1$s</string>
+     <string name="settings_info_tmdb_attribution">This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.</string>
+     <string name="settings_info_tmdb_url">https://www.themoviedb.org/</string>
+     <string name="settings_info_legal_disclaimer">All logos, trademarks, posters, and related artwork shown within the app are the property of their respective owners. StreamNova is an independent product and is not affiliated with, endorsed by, or sponsored by any content provider, streaming service, or studio.</string>
  
      <!-- Language Labels -->
      <string name="lang_italian">Italienisch</string>
@@ -319,13 +391,23 @@
  
      <!-- Subtitle & Resolution Options -->
      <string name="res_auto">Auto</string>
+     <string name="sub_size_extra_small">Sehr klein</string>
      <string name="sub_size_small">Klein</string>
      <string name="sub_size_medium">Mittel</string>
      <string name="sub_size_large">Groß</string>
      <string name="sub_size_very_large">Sehr groß</string>
      <string name="sub_bg_none">Keiner</string>
      <string name="sub_bg_black">Schwarz</string>
-     <string name="sub_bg_semi_transparent">Halbtransparentes Schwarz</string>
+     <string name="sub_bg_white">Weiß</string>
+     <string name="sub_bg_blue">Blau</string>
+     <string name="sub_opacity_full">100%</string>
+     <string name="sub_opacity_high">75%</string>
+     <string name="sub_opacity_medium">50%</string>
+     <string name="sub_opacity_low">25%</string>
+     <string name="sub_label_size">Größe</string>
+     <string name="sub_label_background">Hintergrund</string>
+     <string name="sub_label_opacity">Deckkraft</string>
+     <string name="player_subtitles_appearance">Untertitel-Darstellung</string>
      <string name="sub_pos_bottom">Unten</string>
      <string name="sub_pos_center">Mitte</string>
      <string name="sub_pos_top">Oben</string>
@@ -354,6 +436,25 @@
 
      <string name="player_format_label">Format: %s</string>
      <string name="player_loading_stream">Stream wird geladen…</string>
+     <string name="player_debrid_loading_stream">Videostream wird geladen…</string>
+     <!-- Echter Ladestatus (Phasen aus Player-Ereignissen) -->
+     <string name="player_status_preparing_source">Quelle wird vorbereitet…</string>
+     <string name="player_status_connecting">Verbindung…</string>
+     <string name="player_status_loading_content">Inhalt wird geladen…</string>
+     <string name="player_status_buffering">Pufferung…</string>
+     <string name="player_status_ready">Bereit zur Wiedergabe</string>
+     <!-- Pause-Overlay -->
+     <string name="player_pause_overlay_paused">Pausiert</string>
+     <!-- Parental Guide (Tiffara) -->
+     <string name="parental_guide_title">Inhaltshinweise</string>
+     <string name="parental_guide_category_profanity">Vulgaritaet</string>
+     <string name="parental_guide_category_violence">Gewalt</string>
+     <string name="parental_guide_category_fear">Angst</string>
+     <string name="parental_guide_category_alcohol_drugs">Alkohol/Drogen</string>
+     <string name="parental_guide_severity_mild">Leicht</string>
+     <string name="parental_guide_severity_moderate">Mittel</string>
+     <string name="parental_guide_severity_severe">Schwer</string>
+     <string name="parental_guide_series_note">Serien-Hinweise</string>
      <string name="player_playback_error_title">Wiedergabefehler</string>
      <string name="player_playback_error_message">Wiedergabefehler: %s</string>
      <string name="player_cd_playback_error">Wiedergabefehler</string>
@@ -366,6 +467,8 @@
      <string name="player_next_episode_title">NÄCHSTE FOLGE</string>
      <string name="player_next_episode_watch_now">JETZT ANSEHEN</string>
      <string name="player_next_episode_countdown">Startet in %1$d s</string>
+     <string name="player_next_episode_no_source">Keine Quelle für die nächste Folge verfügbar. Wähle eine Quelle manuell aus, um fortzufahren.</string>
+     <string name="player_next_episode_select_source">QUELLE AUSWÄHLEN</string>
      <string name="player_cd_aspect_ratio">Seitenverhältnis anpassen</string>
      <string name="player_cd_video_quality">Videoqualität</string>
      <string name="player_cd_playback_speed">Wiedergabegeschwindigkeit</string>
@@ -377,6 +480,7 @@
      <string name="player_source_selector_current">In Wiedergabe</string>
      <string name="player_source_selector_empty">Keine Quelle für diesen Titel verfügbar.</string>
      <string name="player_source_fallback_switched">Quelle nicht verfügbar · Wechsel zu %1$s</string>
+     <string name="player_online_subtitle_restore_failed">Der gespeicherte Untertitel ist nicht mehr verfügbar. Wähle ihn erneut unter Online-Untertitel aus.</string>
      <string name="player_scrub_hint">OK bestätigt • BACK bricht ab</string>
      <string name="player_cd_selected">Ausgewählt</string>
 

@@ -102,6 +102,22 @@ data class NextEpisodeInfo(
 )
 
 /**
+ * Punto più avanzato della visione di una serie: episodio e progresso registrati per
+ * quella puntata (letti dalla tabella `episode_progress`).
+ *
+ * [progressMs] è la posizione **dell'episodio** (non quella aggregata del titolo) e
+ * [durationMs] è la durata reale misurata dal player per lo stesso episodio (`0` se
+ * sconosciuta). Serve a «Prossimo episodio dall'ultimo raggiunto» per distinguere una
+ * puntata in corso da una conclusa senza inventare durate.
+ */
+data class WatchedEpisodePoint(
+  val seasonNumber: Int,
+  val episodeNumber: Int,
+  val progressMs: Long,
+  val durationMs: Long
+)
+
+/**
  * Modello universale di un contenuto, usato direttamente dalle card e dalle liste Compose.
  *
  * [Immutable] è una PROMESSA sul contratto del tipo, verificata sul codice: tutte le
@@ -138,6 +154,15 @@ data class MediaItem(
   val imdbId: String? = null,
   val type: MediaType = MediaType.FILM,
   val year: Int = 2024,
+  /**
+   * Data di uscita completa (`yyyy-MM-dd`) quando la sorgente la espone in modo
+   * affidabile: TMDB `release_date` per i film, `first_air_date` per le serie TV.
+   *
+   * `null` = data sconosciuta o non affidabile (cataloghi addon che dichiarano solo
+   * l'anno, date malformate, cache locali prive del dato): il filtro "Nascondi
+   * contenuti non rilasciati" lascia il contenuto visibile.
+   */
+  val releaseDate: String? = null,
   val durationMinutes: Int = 120,
   val seasonsCount: Int? = null,
   val rating: Float = 8.5f,
@@ -150,6 +175,23 @@ data class MediaItem(
   val lastWatchedEpisode: Int? = null,
   val lastWatchedAt: Long? = null,
   val isFavorite: Boolean = false,
+  /**
+   * Provenienza dello stato "preferito": `null` = scritto dal locale (utente o dati
+   * storici), [com.example.data.local.MEDIA_SOURCE_SIMKL] = importato dalla watchlist
+   * SIMKL. La disconnessione da SIMKL rimuove solo i preferiti di provenienza SIMKL.
+   */
+  val favoriteSource: String? = null,
+  /**
+   * Provenienza del progresso corrente della scheda: `null` = scritto dal locale (player o
+   * dati storici), [com.example.data.local.MEDIA_SOURCE_SIMKL] = adottato dalla
+   * sincronizzazione SIMKL (ultimo scrittore possessore).
+   */
+  val progressSource: String? = null,
+  /**
+   * true se la scheda è stata CREATA dall'importazione SIMKL: al logout può essere
+   * eliminata, ma solo se non ha acquisito stato locale (preferito o progresso propri).
+   */
+  val importedFromSimkl: Boolean = false,
   val provider: String? = null,
   val isTop10: Boolean = false,
   val isTrending: Boolean = false,
@@ -268,9 +310,24 @@ data class ExtendedMediaDetails(
    */
   val logoUrl: String? = null,
   val releaseYear: Int,
+  /**
+   * Data di uscita (`yyyy-MM-dd`) restituita da TMDB: `release_date` per i film,
+   * `first_air_date` per le serie TV. `null` = TMDB non espone una data valida.
+   *
+   * A differenza di [releaseYear] non contiene fallback: la sezione «Dettagli Film»
+   * mostra l'anno solo da qui (o da [MediaItem.releaseDate]), mai da un valore di
+   * comodo.
+   */
+  val releaseDate: String? = null,
   val rating: Float,
   val voteCount: Int = 0,
   val durationMinutes: Int = 120,
+  /**
+   * Durata dichiarata da TMDB senza fallback (`runtime` per i film, primo valore di
+   * `episode_run_time` per le serie). `null` = dato assente: la riga «Durata» non
+   * viene mostrata.
+   */
+  val runtimeMinutes: Int? = null,
   val seasonsCount: Int? = null,
   val episodesCount: Int? = null,
   val genres: List<String> = emptyList(),
@@ -283,7 +340,18 @@ data class ExtendedMediaDetails(
   val isTv: Boolean = false,
   val seasonEpisodesCount: Map<Int, Int> = emptyMap(),
   val ageRating: Int? = null,
+  /**
+   * Certificazione TMDB grezza (es. `PG-13`, `T`, `VM14`) selezionata con la stessa
+   * priorità di [com.example.data.util.AgeRatingClassifier] (IT, poi fallback).
+   * `null` = nessuna certificazione valida: la riga non viene mostrata.
+   */
+  val certification: String? = null,
   val productionCompanies: List<ProductionCompany> = emptyList(),
+  /**
+   * Nome leggibile del paese d'origine (`production_countries`/`origin_country`).
+   * `null` = TMDB non lo espone: la riga non viene mostrata.
+   */
+  val originCountry: String? = null,
   /** Prossima puntata annunciata da TMDB (`next_episode_to_air`), `null` se assente. */
   val nextEpisode: NextEpisodeInfo? = null
 )

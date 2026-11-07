@@ -145,6 +145,7 @@ private fun getProviderLogoUrlOrResource(provider: StreamingProvider): Any? {
         384, 49, 1899 -> R.drawable.logo_provider_hbomax
         350 -> R.drawable.logo_provider_appletv
         531 -> R.drawable.logo_provider_paramount
+        39 -> R.drawable.logo_provider_nowtv
         283 -> R.drawable.logo_provider_crunchyroll
         else -> provider.logoUrl
     }
@@ -159,6 +160,7 @@ private fun getProviderLogoHeight(provider: StreamingProvider): Dp {
         337 -> 56.dp
         384, 49, 1899 -> 50.dp
         350 -> 44.dp
+        39 -> 46.dp
         else -> 40.dp
     }
 }
@@ -221,6 +223,14 @@ private fun getProviderBrush(provider: StreamingProvider): Brush {
                 Color(0xFFF47521),
                 Color(0xFF5E2B06),
                 Color(0xFF140A04)
+            )
+        )
+        // NOW TV: radiale teal (icona ufficiale NOW: wordmark bianco su teal)
+        39 -> Brush.radialGradient(
+            listOf(
+                Color(0xFF1499A2),
+                Color(0xFF0A6A72),
+                Color(0xFF054248)
             )
         )
         else -> Brush.radialGradient(

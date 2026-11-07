@@ -30,10 +30,14 @@ class StreamManagerDirectSourceTest {
     infoHash: String? = null,
     name: String? = null,
     title: String? = null,
-    headers: Map<String, String> = emptyMap()
+    headers: Map<String, String> = emptyMap(),
+    addonId: String? = null,
+    addonLogo: String? = null,
   ): StremioStreamCandidate = StremioStreamCandidate(
     addonName = "Comet | ElfHosted",
     baseUrl = "https://comet.elfhosted.com/eyJjb25maWcifQ",
+    addonId = addonId,
+    addonLogo = addonLogo,
     item = StremioStreamItem(
       name = name,
       title = title,
@@ -114,6 +118,21 @@ class StreamManagerDirectSourceTest {
     )
     assertTrue(source != null)
     assertEquals("1080p", source!!.quality)
+  }
+
+  @Test
+  fun identitaDellAddonVienePropagataAllaSorgente() {
+    val source = StreamManager.directStreamSource(
+      candidate(
+        url = "https://cdn/x",
+        addonId = "com.comet.addon",
+        addonLogo = "https://comet.elfhosted.com/assets/logo.png",
+      )
+    )!!
+
+    assertEquals("com.comet.addon", source.addonId)
+    assertEquals("https://comet.elfhosted.com/assets/logo.png", source.addonLogo)
+    assertEquals("Comet | ElfHosted", source.addonName)
   }
 
   @Test

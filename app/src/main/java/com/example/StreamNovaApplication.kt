@@ -7,6 +7,7 @@ import coil.disk.DiskCache
 import com.example.data.image.ImageCache
 import com.example.data.local.StreamNovaDatabase
 import com.example.data.prefs.AppSettingsRepository
+import com.example.data.prefs.PersistentSubtitleRepository
 import com.example.data.prefs.SettingsRepository
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
@@ -72,6 +73,7 @@ class StreamNovaApplication : Application(), ImageLoaderFactory {
 
     // Preferenze Debrid/TorBox, credenziali SIMKL + lista addon Stremio installati (DataStore)
     StartupTrace.trace("app_settings_repository_init") { AppSettingsRepository.init(this) }
+    StartupTrace.trace("persistent_subtitle_repository_init") { PersistentSubtitleRepository.init(this) }
     StartupTrace.trace("simkl_repository_init") { SimklRepository.init(this) }
     StartupTrace.trace("stremio_addon_repository_init") { StremioAddonRepository.init() }
     // Contesto per il resolver catalogo -> provider: senza questo la sorgente

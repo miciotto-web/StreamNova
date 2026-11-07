@@ -15,7 +15,11 @@ import androidx.compose.runtime.Immutable
 internal data class SubtitleStyleSnapshot(
   /** Frazione dell'altezza vista usata da `SubtitleView.setFractionalTextSize`. */
   val textSizeFraction: Float,
-  /** `CaptionStyleCompat.backgroundColor` applicato con `SubtitleView.setStyle`. */
+  /**
+   * `CaptionStyleCompat.backgroundColor` applicato con `SubtitleView.setStyle`.
+   * Include già l'opacità scelta dall'utente: cambiare solo l'opacità produce un
+   * valore diverso e quindi una riapplicazione dello stile.
+   */
   val backgroundColor: Int,
   /** Frazione di distanza dal bordo inferiore usata da `setBottomPaddingFraction`. */
   val bottomPaddingFraction: Float

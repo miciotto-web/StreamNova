@@ -839,6 +839,10 @@ class StreamManager(
         isProgressive = true,
         isItalian = isItalian,
         addonName = candidate.addonName,
+        // Identità dell'ADDON di origine (manifest id + logo ufficiale): resta
+        // separata dal provider Debrid usato per riprodurre lo stream.
+        addonId = candidate.addonId?.trim()?.takeIf { it.isNotBlank() },
+        addonLogo = candidate.addonLogo?.trim()?.takeIf { it.isNotBlank() },
         // Identità dell'INSTALLAZIONE (baseUrl con configurazione): due addon con
         // lo stesso manifest.id (es. Torrentio globale e IT) restano distinti.
         addonInstallId = candidate.baseUrl.trimEnd('/'),

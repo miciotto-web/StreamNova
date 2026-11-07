@@ -188,7 +188,10 @@ internal fun rememberNextEpisodePromptVisible(
   isTvShow: Boolean,
   hasNextEpisode: Boolean,
   dismissed: Boolean,
-  playbackFailed: Boolean
+  playbackFailed: Boolean,
+  hasActiveStream: Boolean = true,
+  autoplayBlocked: Boolean = false,
+  sourceSelectionActive: Boolean = false
 ): Boolean {
   val state = remember(
     clock,
@@ -197,7 +200,10 @@ internal fun rememberNextEpisodePromptVisible(
     isTvShow,
     hasNextEpisode,
     dismissed,
-    playbackFailed
+    playbackFailed,
+    hasActiveStream,
+    autoplayBlocked,
+    sourceSelectionActive
   ) {
     derivedStateOf {
       !isScrubbing && NextEpisodePromptUtils.shouldShow(
@@ -207,7 +213,10 @@ internal fun rememberNextEpisodePromptVisible(
         isTvShow = isTvShow,
         hasNextEpisode = hasNextEpisode,
         dismissed = dismissed,
-        playbackFailed = playbackFailed
+        playbackFailed = playbackFailed,
+        hasActiveStream = hasActiveStream,
+        autoplayBlocked = autoplayBlocked,
+        sourceSelectionActive = sourceSelectionActive
       )
     }
   }
