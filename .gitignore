@@ -16,6 +16,7 @@ local.properties
 
 # --- Tooling / agent ---
 .kilo/
+.artifacts/
 
 # --- Segreti e ambienti ---
 .env
@@ -60,6 +61,7 @@ SnakeNeon/
 keystore.properties
 signing.properties
 local.properties
+STREAMNOVA firma e password digital.txt
 # Extracted JVM/Kotlin dependency classes accidentally written at repository root
 /META-INF/
 /com/
