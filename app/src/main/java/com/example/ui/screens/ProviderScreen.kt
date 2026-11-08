@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -46,7 +47,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -90,6 +94,83 @@ enum class ProviderCatalogFilter(val labelRes: Int) {
   DRAMA(R.string.filter_drama),
   COMEDY(R.string.filter_comedy),
   ANIMATION(R.string.filter_animation)
+}
+
+/** Padding orizzontale (per lato) della griglia poster della schermata Provider. */
+internal val PROVIDER_GRID_SIDE_PADDING: Dp = 32.dp
+
+/** Larghezza minima di una cella, come `GridCells.Adaptive(minSize = ...)`. */
+internal val PROVIDER_GRID_MIN_CELL_WIDTH: Dp = 150.dp
+
+/** Spaziatura orizzontale tra le celle della griglia poster. */
+internal val PROVIDER_GRID_SPACING: Dp = 16.dp
+
+/**
+ * Distanza (in item) dall'ultimo elemento visibile oltre la quale viene richiesta
+ * la pagina successiva del catalogo. Non è un limite di risultati: serve solo ad
+ * anticipare il caricamento prima che il focus raggiunga il bordo.
+ */
+internal const val PROVIDER_PREFETCH_DISTANCE = 3
+
+/** Tag di test della griglia poster (harness D-pad / caricamento progressivo). */
+internal const val PROVIDER_GRID_TEST_TAG = "provider_media_grid"
+
+/**
+ * Condizione UNICA del caricamento progressivo della griglia Provider.
+ *
+ * Non dipende da una dimensione minima della lista: una prima pagina corta (es. 8
+ * titoli) deve comunque richiedere la successiva, altrimenti il catalogo resta
+ * bloccato per sempre su quella pagina. `hasMore` proviene dalle sorgenti reali
+ * (TMDB/Stremio) e non da una soglia numerica.
+ */
+internal fun shouldRequestNextProviderPage(
+  totalItems: Int,
+  lastVisibleItemIndex: Int,
+  isLoading: Boolean,
+  hasMoreForFilter: Boolean,
+  prefetchDistance: Int = PROVIDER_PREFETCH_DISTANCE
+): Boolean {
+  if (isLoading || !hasMoreForFilter) return false
+  // Griglia non ancora composta (catalogo vuoto): la pagina successiva va richiesta,
+  // è l'unico modo per riempire la schermata.
+  if (totalItems == 0) return true
+  return lastVisibleItemIndex >= totalItems - prefetchDistance
+}
+
+/**
+ * Numero di colonne che `GridCells.Adaptive` calcola per la larghezza disponibile.
+ *
+ * Replica la formula di Compose (`count = max(1, (available + spacing) / (minSize + spacing))`)
+ * per conoscere il numero REALE di celle della prima riga. Serve al D-pad: solo la prima
+ * riga è il limite superiore della griglia, e un indice fisso non può rappresentarlo su
+ * tutte le densità/risoluzioni TV (960dp → 5 colonne, 1280dp → 7).
+ *
+ * @param availableWidth larghezza utile della griglia, content padding ESCLUSO.
+ */
+internal fun adaptiveGridColumnCount(
+  availableWidth: Dp,
+  minCellWidth: Dp = PROVIDER_GRID_MIN_CELL_WIDTH,
+  spacing: Dp = PROVIDER_GRID_SPACING
+): Int = adaptiveGridColumnCountPx(
+  availableWidthPx = availableWidth.value.toInt(),
+  minCellWidthPx = minCellWidth.value.toInt(),
+  spacingPx = spacing.value.toInt()
+)
+
+/**
+ * Variante in PIXEL della formula di `GridCells.Adaptive`: identica all'aritmetica
+ * intera usata da Compose, quindi immune agli arrotondamenti dp→px delle diverse
+ * densità TV.
+ */
+internal fun adaptiveGridColumnCountPx(
+  availableWidthPx: Int,
+  minCellWidthPx: Int,
+  spacingPx: Int
+): Int {
+  if (availableWidthPx <= 0 || minCellWidthPx <= 0) return 1
+  val cellStep = minCellWidthPx + spacingPx
+  if (cellStep <= 0) return 1
+  return maxOf(1, (availableWidthPx + spacingPx) / cellStep)
 }
 
 @Composable
@@ -181,7 +262,33 @@ fun ProviderScreen(
   // salvato come Saveable, quindi al Back dal Dettaglio la griglia ritrova la lista intatta in
   // memoria e lo scroll invariato, con il poster target nelle stesse coordinate visive.
   val gridState = rememberSaveable(provider.id, saver = LazyGridState.Saver) { LazyGridState() }
-  val isProviderLoading by (viewModel?.isProviderLoading ?: MutableStateFlow(false)).collectAsState()
+  val loadingProviderFlow = remember(viewModel) { viewModel?.isProviderLoading ?: MutableStateFlow(false) }
+  val isProviderLoading by loadingProviderFlow.collectAsState()
+
+  // Stato REALE di avanzamento per tipo, esposto dal ViewModel: la griglia sa se
+  // esiste ancora una pagina da chiedere (TMDB o Stremio) senza dedurlo dal numero
+  // di card già visibili.
+  val tmdbHasMoreFlow = remember(viewModel) {
+    viewModel?.providerHasMorePages ?: MutableStateFlow(emptyMap())
+  }
+  val stremioHasMoreFlow = remember(viewModel) {
+    viewModel?.stremioProviderHasMorePages ?: MutableStateFlow(emptyMap())
+  }
+  val tmdbHasMorePages by tmdbHasMoreFlow.collectAsState()
+  val stremioHasMorePages by stremioHasMoreFlow.collectAsState()
+
+  fun hasMoreFor(isTv: Boolean): Boolean {
+    val key = Pair(provider.tmdbProviderId, isTv)
+    // Senza ViewModel (anteprime/test) il chiamante decide tramite onLoadMore.
+    if (viewModel == null) return true
+    val tmdbHasMore = tmdbHasMorePages[key] ?: true
+    // Stremio è una sorgente solo quando la copertura del provider NON è NONE:
+    // altrimenti il suo "hasMore" di default terrebbe aperta per sempre la
+    // paginazione anche dopo l'esaurimento del catalogo TMDB.
+    val stremioHasMore = coverage != ProviderCoverage.NONE &&
+      (stremioHasMorePages[key] ?: true)
+    return tmdbHasMore || stremioHasMore
+  }
 
   // Crunchyroll: catalogo dominato da serie TV/anime -> filtro iniziale dedicato
   var selectedFilter by rememberSaveable(provider) {
@@ -191,6 +298,28 @@ fun ProviderScreen(
   // Filtro effettivamente applicato alla griglia, persistito (rememberSaveable) per
   // distinguere un REALE cambio filtro da un semplice ritorno dal Dettaglio.
   var appliedFilterName by rememberSaveable(provider.id) { mutableStateOf<String?>(null) }
+
+  // Richiesta della pagina successiva per il filtro corrente. Il ViewModel ignora
+  // le chiamate duplicate o già esaurite, quindi può essere invocata senza rischio
+  // sia dal pre-caricamento iniziale sia dallo scrolling.
+  fun loadNextPages() {
+    when (selectedFilter) {
+      ProviderCatalogFilter.TV_SERIES -> {
+        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+        onLoadMore?.invoke(true)
+      }
+      ProviderCatalogFilter.MOVIES -> {
+        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+        onLoadMore?.invoke(false)
+      }
+      else -> {
+        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
+        viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
+        onLoadMore?.invoke(false)
+        onLoadMore?.invoke(true)
+      }
+    }
+  }
 
   // Reset dello scroll e pre-caricamento pagina iniziale SOLO al cambio filtro (o a cache
   // vuota): al ritorno dal Dettaglio con dati già presenti nessun refresh automatico parte
@@ -207,58 +336,7 @@ fun ProviderScreen(
     // Pre-caricamento pagina iniziale: il ViewModel ignora la chiamata se una fetch per
     // quella coppia (provider, tipo) è già in corso o se il catalogo è esaurito.
     if (firstComposition || filterChanged || providerMedia.isEmpty()) {
-      when (selectedFilter) {
-        ProviderCatalogFilter.TV_SERIES -> {
-          viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
-          onLoadMore?.invoke(true)
-        }
-        ProviderCatalogFilter.MOVIES -> {
-          viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
-          onLoadMore?.invoke(false)
-        }
-        else -> {
-          viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
-          viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
-          onLoadMore?.invoke(false)
-          onLoadMore?.invoke(true)
-        }
-      }
-    }
-  }
-
-  // Scorrimento Infinito: snapshotFlow rileva quando l'utente si avvicina alla fine
-  // dell'elenco (anche via D-pad, che fa scorrere la LazyGrid). La chiave include la
-  // dimensione della lista: ad OGNIA pagina caricata l'effetto si riavvia e
-  // rivaluta la soglia, così il caricamento prosegue finché non si esce dalla
-  // finestra visibile o il catalogo non è esaurito.
-  LaunchedEffect(gridState, selectedFilter, provider) {
-    snapshotFlow {
-      val layoutInfo = gridState.layoutInfo
-      val totalItems = layoutInfo.totalItemsCount
-      val lastVisibleItemIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-      totalItems to lastVisibleItemIndex
-    }
-    .distinctUntilChanged()
-    .collect { (totalItems, lastVisibleItemIndex) ->
-      // Aggiungi il controllo tassativo !isProviderLoading e verifica che l'utente stia davvero scrollando verso la fine
-      if (!isProviderLoading && totalItems > 12 && lastVisibleItemIndex >= totalItems - 3) {
-        when (selectedFilter) {
-          ProviderCatalogFilter.TV_SERIES -> {
-            viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
-            onLoadMore?.invoke(true)
-          }
-          ProviderCatalogFilter.MOVIES -> {
-            viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
-            onLoadMore?.invoke(false)
-          }
-          else -> {
-            viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = false)
-            viewModel?.loadNextProviderPage(provider.tmdbProviderId, isTv = true)
-            onLoadMore?.invoke(false)
-            onLoadMore?.invoke(true)
-          }
-        }
-      }
+      loadNextPages()
     }
   }
 
@@ -324,6 +402,59 @@ fun ProviderScreen(
           }
       }
     }
+  }
+
+  // Scorrimento progressivo: snapshotFlow rileva quando l'utente si avvicina alla fine
+  // dell'elenco (anche via D-pad, che fa scorrere la LazyVerticalGrid).
+  //
+  // Differenze rispetto alla versione precedente:
+  //  - NESSUNA soglia fissa sul numero di card (`totalItems > 12`): una prima pagina
+  //    di 8 titoli lasciava la griglia sotto quella soglia e la pagina successiva non
+  //    veniva MAI richiesta, per nessun provider;
+  //  - il trigger dipende dallo stato hasMore REALE (TMDB/Stremio), non da un numero;
+  //  - la chiave include `providerMedia.size`: ogni pagina che arriva rivaluta subito
+  //    la posizione, così una lista più corta del viewport viene completata
+  //    automaticamente (e i dati non vengono mai sovrascritti: si accodano).
+  LaunchedEffect(
+    gridState,
+    selectedFilter,
+    provider,
+    providerMedia.size,
+    filteredItems.size,
+    hasMoreFor(false),
+    hasMoreFor(true)
+  ) {
+    if (!hasMoreFor(false) && !hasMoreFor(true)) return@LaunchedEffect
+    snapshotFlow {
+      val layoutInfo = gridState.layoutInfo
+      val totalItems = layoutInfo.totalItemsCount
+      val lastVisibleItemIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+      totalItems to lastVisibleItemIndex
+    }
+      .distinctUntilChanged()
+      .collect { (measuredTotalItems, lastVisibleItemIndex) ->
+        val filterHasMore = when (selectedFilter) {
+          ProviderCatalogFilter.TV_SERIES -> hasMoreFor(true)
+          ProviderCatalogFilter.MOVIES -> hasMoreFor(false)
+          else -> hasMoreFor(false) || hasMoreFor(true)
+        }
+        // Catalogo del tutto assente: gridState può conservare le misure precedenti
+        // (griglia non composta). Va trattato come vuoto, altrimenti il caricamento
+        // non partirebbe mai. Un FILTRO senza risultati, invece, non deve far
+        // scaricare in raffica tutte le pagine: si resta sulla pagina corrente.
+        val catalogIsEmpty = providerMedia.isEmpty()
+        if (filteredItems.isEmpty() && !catalogIsEmpty) return@collect
+        val totalItems = if (catalogIsEmpty) 0 else measuredTotalItems
+        if (shouldRequestNextProviderPage(
+            totalItems = totalItems,
+            lastVisibleItemIndex = lastVisibleItemIndex,
+            isLoading = isProviderLoading,
+            hasMoreForFilter = filterHasMore
+          )
+        ) {
+          loadNextPages()
+        }
+      }
   }
 
   // Target di ripristino non più disponibile: nessuna card potrebbe confermarlo e il gate
@@ -536,72 +667,97 @@ fun ProviderScreen(
       }
     } else {
       TvFocusBringIntoView(topOffsetDp = 48.dp) {
-        LazyVerticalGrid(
-          state = gridState,
-          columns = GridCells.Adaptive(minSize = 150.dp),
-          contentPadding = PaddingValues(start = 32.dp, end = 32.dp, top = 24.dp, bottom = 48.dp),
-          horizontalArrangement = Arrangement.spacedBy(16.dp),
-          verticalArrangement = Arrangement.spacedBy(16.dp),
-          modifier = Modifier.fillMaxSize()
-        ) {
-          itemsIndexed(filteredItems, key = { _, it -> it.id }, contentType = { _, _ -> "media_poster" }) { index, item ->
-            Box(
-              modifier = Modifier
-                .fillMaxWidth()
-                .then(
-                  if (index == 0) {
-                    Modifier.tvFocusRequester(firstGridItemFocusRequester, firstGridItemAttachment)
-                  } else {
-                    Modifier
-                  }
-                )
-                .focusProperties {
-                  if (index < 6) {
-                    // Le chips filtro sono in una LazyRow: se la relativa chip non e' montata
-                    // (riga scorrita) non assegnarla, per non passare un requester orfano.
-                    val filterAttachment = filterAttachments[lastFocusedFilterIndex]
-                    val filterRequester = filterFocusRequesters[lastFocusedFilterIndex]
-                    up = filterAttachment.guard(filterRequester) ?: FocusRequester.Default
-                  }
-                },
-              contentAlignment = Alignment.TopCenter
-            ) {
-              PosterMediaCard(
-                media = item,
-                onClick = { onMediaClick(item) },
-                // Griglia Provider: ripristino con conferma del focus reale (retry limitati).
-                confirmFocusRestore = true
-              )
-            }
+        // Il numero di colonne della griglia è calcolato dalla larghezza REALE del
+        // contenitore con la stessa formula di `GridCells.Adaptive`: la soglia per il
+        // D-pad UP non può essere un indice fisso (es. 6), perché su una TV 960dp le
+        // colonne sono 5 e l'indice 5 appartiene già alla SECONDA riga. Con un indice
+        // fisso quella card risaliva ai filtri scavalcando la prima riga.
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+          val density = LocalDensity.current
+          val gridColumns = with(density) {
+            adaptiveGridColumnCountPx(
+              availableWidthPx = (maxWidth - PROVIDER_GRID_SIDE_PADDING * 2).roundToPx(),
+              minCellWidthPx = PROVIDER_GRID_MIN_CELL_WIDTH.roundToPx(),
+              spacingPx = PROVIDER_GRID_SPACING.roundToPx()
+            )
           }
-
-          if (isProviderLoading) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
+          LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Adaptive(minSize = PROVIDER_GRID_MIN_CELL_WIDTH),
+            contentPadding = PaddingValues(
+              start = PROVIDER_GRID_SIDE_PADDING,
+              end = PROVIDER_GRID_SIDE_PADDING,
+              top = 24.dp,
+              bottom = 48.dp
+            ),
+            horizontalArrangement = Arrangement.spacedBy(PROVIDER_GRID_SPACING),
+            verticalArrangement = Arrangement.spacedBy(PROVIDER_GRID_SPACING),
+            modifier = Modifier
+              .fillMaxSize()
+              .testTag(PROVIDER_GRID_TEST_TAG)
+          ) {
+            itemsIndexed(filteredItems, key = { _, it -> it.id }, contentType = { _, _ -> "media_poster" }) { index, item ->
               Box(
                 modifier = Modifier
                   .fillMaxWidth()
-                  .padding(vertical = 24.dp),
-                contentAlignment = Alignment.Center
+                  .then(
+                    if (index == 0) {
+                      Modifier.tvFocusRequester(firstGridItemFocusRequester, firstGridItemAttachment)
+                    } else {
+                      Modifier
+                    }
+                  )
+                  .focusProperties {
+                    // Solo la PRIMA riga della griglia è il vero limite superiore: da lì
+                    // il D-pad UP raggiunge la chip dei filtri. Le righe successive
+                    // risalgono alla riga precedente con la ricerca spaziale nativa.
+                    if (index < gridColumns) {
+                      // Le chips filtro sono in una LazyRow: se la relativa chip non e' montata
+                      // (riga scorrita) non assegnarla, per non passare un requester orfano.
+                      val filterAttachment = filterAttachments[lastFocusedFilterIndex]
+                      val filterRequester = filterFocusRequesters[lastFocusedFilterIndex]
+                      up = filterAttachment.guard(filterRequester) ?: FocusRequester.Default
+                    }
+                  },
+                contentAlignment = Alignment.TopCenter
               ) {
-                Row(
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(12.dp),
+                PosterMediaCard(
+                  media = item,
+                  onClick = { onMediaClick(item) },
+                  // Griglia Provider: ripristino con conferma del focus reale (retry limitati).
+                  confirmFocusRestore = true
+                )
+              }
+            }
+
+            if (isProviderLoading) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
                   modifier = Modifier
-                    .background(Color(0xCC141414), RoundedCornerShape(24.dp))
-                    .border(1.dp, provider.accentColor.copy(alpha = 0.4f), RoundedCornerShape(24.dp))
-                    .padding(horizontal = 20.dp, vertical = 10.dp)
+                    .fillMaxWidth()
+                    .padding(vertical = 24.dp),
+                  contentAlignment = Alignment.Center
                 ) {
-                  CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    color = provider.accentColor,
-                    strokeWidth = 2.dp
-                  )
-                  Text(
-                    text = stringResource(R.string.provider_loading_more, provider.name),
-                    color = Color.White.copy(alpha = 0.85f),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                  )
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier
+                      .background(Color(0xCC141414), RoundedCornerShape(24.dp))
+                      .border(1.dp, provider.accentColor.copy(alpha = 0.4f), RoundedCornerShape(24.dp))
+                      .padding(horizontal = 20.dp, vertical = 10.dp)
+                  ) {
+                    CircularProgressIndicator(
+                      modifier = Modifier.size(20.dp),
+                      color = provider.accentColor,
+                      strokeWidth = 2.dp
+                    )
+                    Text(
+                      text = stringResource(R.string.provider_loading_more, provider.name),
+                      color = Color.White.copy(alpha = 0.85f),
+                      fontSize = 13.sp,
+                      fontWeight = FontWeight.Medium
+                    )
+                  }
                 }
               }
             }

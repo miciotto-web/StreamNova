@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Android 12+ disegna il proprio splash di sistema prima della finestra.
+         Lo sfondo resta quello del video d'intro; l'icona è quella ufficiale
+         dell'app, con lo stesso colore di fondo per evitare un disco di contrasto.
+         Il video continua a essere riprodotto dalla schermata interna dell'app
+         (non dallo splash di sistema). -->
+    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/splash_video_background</item>
+        <item name="android:windowSplashScreenBackground">@color/splash_video_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/splash_video_background</item>
+    </style>
+</resources>

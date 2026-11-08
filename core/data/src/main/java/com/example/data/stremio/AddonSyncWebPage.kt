@@ -119,7 +119,7 @@ internal val ADDON_SYNC_PAGE: String = """
           return '<li class="row">' +
             '<div class="info"><strong>' + esc(a.name) + '</strong>' +
             '<span>' + esc(a.url) + '</span></div>' + badge +
-            '<button class="danger" data-id="' + esc(a.id) + '">Rimuovi</button>' +
+            '<button class="danger" data-id="' + esc(a.installId || a.id) + '">Rimuovi</button>' +
             '</li>';
         }).join('');
       })

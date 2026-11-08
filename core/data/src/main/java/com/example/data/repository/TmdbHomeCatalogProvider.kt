@@ -768,7 +768,7 @@ object TmdbHomeCatalogProvider {
 
   // ── Etichette delle righe ──────────────────────────────────────────────────
 
-  internal data class HomeLabels(
+  data class HomeLabels(
     val popularMovies: String,
     val topRatedMovies: String,
     val newMovies: String,
@@ -938,7 +938,7 @@ object TmdbHomeCatalogProvider {
   )
 
   /** Etichette nella lingua dell'app (le righe extra le mostrano come titolo). */
-  internal fun labelsFor(language: String): HomeLabels =
+  fun labelsFor(language: String): HomeLabels =
     when (language.substringBefore("-").trim().lowercase()) {
       "en" -> HomeLabels(
         popularMovies = "Popular Movies",

@@ -63,8 +63,25 @@ object SeekPreviewCaptureSupport {
   /** Produttori le cui implementazioni di ImageReader/codec non sono state verificate sicure. */
   private val UNSUPPORTED_MANUFACTURERS = setOf("amazon")
 
-  /** SoC con il difetto osservato (mt8696 = Fire TV Stick 4K Max 2ª gen). */
-  private val UNSUPPORTED_CHIPSETS = setOf("mt8696")
+  /**
+   * Firme di piattaforma in cui la cattura via ImageReader non è affidabile o termina il
+   * processo; in tutti questi casi l'estrattore usa il percorso GL.
+   *
+   * - `mt8696`: Fire TV Stick 4K Max 2ª gen, abort in `libmedia_jni` alla lettura delle plane.
+   * - `goldfish`/`ranchu`: emulatore Android (verificato su AOSP TV x86, API 36). Dopo seek
+   *   ravvicinati le Image YUV_420_888 contengono chroma non scritta (pixel verdi/magenta,
+   *   luma parzialmente visibile) mentre lo stesso decoder via SurfaceTexture/glReadPixels
+   *   produce frame corretti: il difetto è del percorso ImageReader, non del decoder.
+   */
+  private val UNSUPPORTED_CAPTURE_TARGETS = setOf(
+    "mt8696",
+    "goldfish",
+    "goldfish_x86",
+    "goldfish_x64",
+    "goldfish_arm64",
+    "ranchu",
+    "ranchu64"
+  )
 
   /**
    * Decisione operativa: prima l'override manuale, poi la firma della piattaforma.
@@ -109,7 +126,7 @@ object SeekPreviewCaptureSupport {
     if (manufacturerToken != null && manufacturerToken in UNSUPPORTED_MANUFACTURERS) return false
     return listOf(board, hardware)
       .map { it.normalized() }
-      .none { it != null && it in UNSUPPORTED_CHIPSETS }
+      .none { it != null && it in UNSUPPORTED_CAPTURE_TARGETS }
   }
 
   private fun String?.normalized(): String? =

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -29,6 +30,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
@@ -45,14 +47,16 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.example.data.model.Episode
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
-import com.example.data.repository.MediaRepository
+import com.example.data.prefs.StreamingEngineMode
 import com.example.data.streaming.StreamResult
 import com.example.data.update.UpdateRepository
 import com.example.data.update.shouldShowStartupUpdatePrompt
 import com.example.ui.components.HeroCarouselState
+import com.example.ui.components.AnchoredRowKeyState
 import com.example.ui.components.ModalOverlayState
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.TvPinDialog
@@ -74,13 +78,14 @@ import com.example.ui.screens.PlayerScreen
 import com.example.ui.screens.ProviderScreen
 import com.example.ui.screens.PersonDetailScreen
 import com.example.ui.screens.CompanyDetailScreen
-import com.example.ui.screens.SplashScreen
 import com.example.ui.screens.TrailerErrorOverlay
 import com.example.ui.screens.TrailerLoadingOverlay
 import com.example.ui.screens.TrailerPlayerScreen
 import com.example.ui.screens.UpdatePromptDialog
+import com.example.ui.screens.splash.SplashVideoScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.NovaBackground
+import com.example.ui.util.FocusTrace
 import com.example.ui.viewmodel.ScreenState
 import com.example.ui.viewmodel.SidebarSection
 import com.example.ui.viewmodel.StreamNovaViewModel
@@ -91,8 +96,39 @@ import kotlinx.coroutines.delay
 /** Finestra temporale del doppio Back sulla Home per uscire dall'app (feedback breve). */
 private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
 
-/** Durata della Splash Screen iniziale, ottenuta con coroutine/delay (mai Thread.sleep). */
-private const val SPLASH_DURATION_MS = 10_000L
+/**
+ * Limite oltre il quale la Home viene composta anche se la splash non ha ancora
+ * segnalato l'avvio del video (rete di sicurezza, non un timeout di riproduzione).
+ */
+private const val HOME_CONTENT_GATE_SAFETY_TIMEOUT_MS = 10_000L
+
+/**
+ * Pausa tra il primo frame del video splash e la composizione della Home: lascia
+ * al decoder il tempo di avviarsi senza contesa di CPU. Non incide sulla durata
+ * del video né sulla pausa finale di 4 s (la Home si compone durante il filmato).
+ */
+private const val HOME_CONTENT_GATE_DELAY_AFTER_VIDEO_MS = 1_500L
+
+/**
+ * Tasti di navigazione/conferma che la finestra della Home non deve ricevere mentre un
+ * modale (menu contestuale di «Continua a guardare», dialog in-window) è aperto.
+ *
+ * Il menu contestuale è una finestra Dialog separata: normalmente i tasti arrivano lì. Nei
+ * primi frame di apertura, prima che la finestra del dialogo prenda il focus, potrebbero
+ * però essere consegnati alla finestra della Home. Consumare DOWN **e UP** evita che una
+ * card sottostante esegua un'azione (la `TvFocusableBox` interpreta il KeyUp come click)
+ * e che il D-pad muova il focus dietro al popup.
+ */
+private fun isModalGuardedKey(keyCode: Int): Boolean = when (keyCode) {
+  KeyEvent.KEYCODE_DPAD_UP,
+  KeyEvent.KEYCODE_DPAD_DOWN,
+  KeyEvent.KEYCODE_DPAD_LEFT,
+  KeyEvent.KEYCODE_DPAD_RIGHT,
+  KeyEvent.KEYCODE_DPAD_CENTER,
+  KeyEvent.KEYCODE_ENTER,
+  KeyEvent.KEYCODE_NUMPAD_ENTER -> true
+  else -> false
+}
 
 /**
  * Riga della Home usata come ANCORA DI CONTENUTO quando il target di ripristino non e' piu'
@@ -147,15 +183,29 @@ class MainActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    MediaRepository.init(applicationContext)
+    StartupTrace.mark("main_activity_oncreate_enter")
+    // MediaRepository è già inizializzato in StreamNovaApplication.onCreate() (con il
+    // database Room): ripeterlo qui rieseguiva la stessa inizializzazione sullo stesso
+    // database, quindi è stato rimosso per evitare il lavoro ridondante del bootstrap.
     // Controllo aggiornamenti all'avvio: in background (Dispatchers.IO) e una sola volta
     // per processo, quindi non blocca né rallenta la Home. Se trova una versione più
     // recente il popup compare a schermata libera; in ogni altro esito — app aggiornata,
     // offline, errore — non disturba. Nessun download parte senza la scelta dell'utente.
     UpdateRepository.checkForUpdatesOnStartup()
+    StartupTrace.mark("after_update_check_scheduled")
     requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+    StartupTrace.mark("after_requested_orientation")
     enableEdgeToEdge()
+    StartupTrace.mark("after_enable_edge_to_edge")
     setContent {
+      StartupTrace.mark("compose_content_enter")
+      // Primo frame realmente disegnato: è il confine tra "schermo vuoto/splash
+      // nativo" e "app visibile". Lo splash video parte solo dopo questo evento.
+      LaunchedEffect(Unit) {
+        StartupTrace.mark("first_frame_effect")
+        androidx.compose.runtime.withFrameNanos { }
+        StartupTrace.mark("first_frame_drawn")
+      }
       val appLanguage by viewModel.appLanguage.collectAsState()
       val context = LocalContext.current
       val currentLocale = remember(appLanguage) { java.util.Locale(appLanguage) }
@@ -178,7 +228,9 @@ class MainActivity : ComponentActivity() {
           StreamNovaApp(viewModel = viewModel, activity = this@MainActivity)
         }
       }
+      StartupTrace.mark("compose_content_exit")
     }
+    StartupTrace.mark("main_activity_oncreate_exit")
   }
 }
 
@@ -231,6 +283,15 @@ fun StreamNovaApp(
     }
   }
 
+  // Traccia SOLO DEBUG della destinazione attiva: permette di distinguere "il Dettaglio è
+  // ancora la destinazione" da "il Dettaglio è stato poppato verso la Home" durante il
+  // ritorno dal player.
+  LaunchedEffect(navController) {
+    navController.currentBackStackEntryFlow.collect { entry ->
+      FocusTrace.log("NAV", "route=${entry.destination.route}")
+    }
+  }
+
   // Feedback errore di risoluzione sorgenti (es. timeout o nessuna sorgente):
   // mostra un toast con il messaggio di errore e reimposta lo stato su Idle
   LaunchedEffect(streamResolutionState) {
@@ -245,15 +306,50 @@ fun StreamNovaApp(
   // Flag: ripristina il focus sul contenuto (riga/card) quando si torna dal Dettaglio
   var pendingContentFocusRestore by remember { mutableStateOf(false) }
 
-  // Splash Screen iniziale cinematografica StreamNova
-  var isSplashActive by remember { mutableStateOf(true) }
+  // Splash Screen iniziale: intro video ufficiale StreamNova (logo 3D animato).
+  // `rememberSaveable`: una ricreazione dell'Activity NON deve far ripartire il
+  // filmato da capo una volta che l'intro è terminata. La Home resta composta
+  // sotto la splash per tutta la riproduzione, quindi i dati si caricano in
+  // parallelo al video e al termine non c'è nulla da ricaricare.
+  var isSplashActive by rememberSaveable { mutableStateOf(true) }
 
-  // Fine Splash: coroutine sospesa (delay) sullo scope di Compose, NON blocca il
-  // Main Thread e non congela il rendering. Al termine dei 10s la Splash viene
-  // smontata e resta esposto il normale contenuto iniziale (NavHost -> Home).
+  // Contenuto principale (Home + sidebar) composto solo DOPO il primo frame del
+  // video splash.
+  //
+  // Perché: la splash è disegnata SOPRA la Home, ma Compose compone l'intero albero
+  // prima della prima cornice. Comporre hero, righe, card e immagini prima di
+  // mostrare la splash sposta in avanti di secondi la comparsa dello splash video
+  // sui TV box più lenti (misurato con StartupTrace). Il primo frame deve contenere
+  // SOLO la splash; la Home viene composta appena il video mostra il suo primo
+  // frame, così continua a caricarsi/comporsi in parallelo alla riproduzione,
+  // senza ritardarla e senza lasciare nulla da ricaricare alla fine.
+  // `rememberSaveable`: alla ricreazione dell'Activity la Home è già pronta.
+  var isMainContentReady by rememberSaveable { mutableStateOf(false) }
+
+  // Primo frame del video realmente a schermo. La composizione della Home parte
+  // poco dopo: il decoder deve poter mostrare il filmato senza contendere CPU
+  // nella fase più delicata dell'avvio. Il resto del video e la pausa di 4 s
+  // bastano comunque a completare il caricamento della Home.
+  var isVideoFirstFrameRendered by remember { mutableStateOf(false) }
+  LaunchedEffect(isVideoFirstFrameRendered) {
+    if (!isVideoFirstFrameRendered || isMainContentReady) return@LaunchedEffect
+    delay(HOME_CONTENT_GATE_DELAY_AFTER_VIDEO_MS)
+    if (!isMainContentReady) {
+      isMainContentReady = true
+      StartupTrace.mark("home_content_gate_open_video_started")
+    }
+  }
+
+  // Rete di sicurezza: se la splash non segnala mai l'avvio (player non
+  // riproducibile, surface mai pronta) la Home viene comunque composta dopo
+  // questo limite, invece di restare fuori per sempre.
   LaunchedEffect(Unit) {
-    delay(SPLASH_DURATION_MS)
-    isSplashActive = false
+    if (isMainContentReady) return@LaunchedEffect
+    delay(HOME_CONTENT_GATE_SAFETY_TIMEOUT_MS)
+    if (!isMainContentReady) {
+      isMainContentReady = true
+      StartupTrace.mark("home_content_gate_open_timeout")
+    }
   }
 
   /*
@@ -369,6 +465,12 @@ fun StreamNovaApp(
             } else if (pendingContentFocusRestore) {
               val savedTargetId = viewModel.lastFocusedMediaId.value
               val savedProviderId = viewModel.lastFocusedProviderId.value
+              FocusTrace.log(
+                "HOME",
+                "pendingContentFocusRestore: plan=${contentFocusRestorePlan(savedTargetId)} " +
+                  "savedTarget=$savedTargetId provider=$savedProviderId " +
+                  "focusRestoreRequested=${viewModel.focusRestoreRequested.value}"
+              )
               when (contentFocusRestorePlan(savedTargetId)) {
                 ContentFocusRestorePlan.RESTORE_SAVED_TARGET -> {
                   // Percorso INVARIATO: il target salvato esiste ancora, la Home lo
@@ -438,9 +540,20 @@ fun StreamNovaApp(
             // precedente) e questa intercettazione deve lasciarlo passare. Sul primo poster
             // resta invece false, quindi il LEFT esce regolarmente verso la Sidebar.
             .onPreviewKeyEvent { keyEvent ->
+              // Mentre un modale è aperto la Home non esegue alcuna azione: se la finestra
+              // del dialog non ha ancora il focus, i tasti arriverebbero qui e muoverebbero
+              // il focus o attiverebbero la card sottostante.
+              if (ModalOverlayState.isAnyOpen &&
+                isModalGuardedKey(keyEvent.nativeKeyEvent.keyCode)
+              ) {
+                return@onPreviewKeyEvent true
+              }
               if (!ModalOverlayState.isAnyOpen &&
                 !isSidebarExpanded &&
                 !HeroCarouselState.consumesLeftKey &&
+                // Righe ancorate della Home: con un poster selezionato oltre il primo il LEFT
+                // torna al poster precedente e deve arrivare alla riga, non aprire la sidebar.
+                !AnchoredRowKeyState.consumesLeftKey &&
                 keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
                 keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT
               ) {
@@ -474,65 +587,70 @@ fun StreamNovaApp(
             }
         ) {
           // Main Screen Content — larghezza e posizione fisse, non si sposta mai.
-          CompositionLocalProvider(
-            LocalLastFocusedTarget provides lastFocusedTarget,
-            LocalLastFocusedMediaId provides lastFocusedMediaId,
-            LocalLastFocusedProviderId provides lastFocusedProviderId,
-            LocalFocusRestoreToken provides focusRestoreToken,
-            LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() },
-            LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() }
-          ) {
-            HomeScreen(
-              viewModel = viewModel,
-              onProviderClick = { provider ->
-                viewModel.openProvider(provider)
-                navController.navigate(Screen.Provider.createRoute(provider.id))
-              },
-              onMediaClick = { media ->
-                // NON chiamare viewModel.saveLastFocusedMedia(media.id) qui!
-                // HomeScreen.kt gestisce già internamente handleRowMediaClick salvando la rowKey specifica.
-                // Canale LIVE (addon Stremio, es. TvVoo): nessuna scheda stagioni/episodi,
-                // si aprono direttamente le sorgenti del canale.
-                if (viewModel.isLiveChannel(media.id)) {
-                  viewModel.openLiveChannel(media)
-                  navController.navigate(Screen.Detail.createRoute(media.type, media.tmdbId ?: 0))
-                } else {
-                  viewModel.openDetail(media)
-                  val tmdbId = media.tmdbId ?: 0
-                  navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
+          //
+          // Composta solo quando il primo frame della splash è già a schermo (vedi
+          // `isMainContentReady`): durante la splash resta comunque invisibile, ma la
+          // sua composizione non deve precedere la comparsa del video.
+          if (isMainContentReady) {
+            CompositionLocalProvider(
+              LocalLastFocusedTarget provides lastFocusedTarget,
+              LocalLastFocusedMediaId provides lastFocusedMediaId,
+              LocalLastFocusedProviderId provides lastFocusedProviderId,
+              LocalFocusRestoreToken provides focusRestoreToken,
+              LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() },
+              LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() }
+            ) {
+              HomeScreen(
+                viewModel = viewModel,
+                onProviderClick = { provider ->
+                  viewModel.openProvider(provider)
+                  navController.navigate(Screen.Provider.createRoute(provider.id))
+                },
+                onMediaClick = { media ->
+                  // NON chiamare viewModel.saveLastFocusedMedia(media.id) qui!
+                  // HomeScreen.kt gestisce già internamente handleRowMediaClick salvando la rowKey specifica.
+                  // Canale LIVE (addon Stremio, es. TvVoo): nessuna scheda stagioni/episodi,
+                  // si aprono direttamente le sorgenti del canale.
+                  if (viewModel.isLiveChannel(media.id)) {
+                    viewModel.openLiveChannel(media)
+                    navController.navigate(Screen.Detail.createRoute(media.type, media.tmdbId ?: 0))
+                  } else {
+                    viewModel.openDetail(media)
+                    val tmdbId = media.tmdbId ?: 0
+                    navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
+                  }
+                },
+                modifier = Modifier
+                  .fillMaxSize()
+                  .padding(start = 60.dp)
+              )
+            }
+
+            // Left Sidebar Menu — overlay sopra la Home.
+            // onFocusChanged ESTERNO aggiorna sidebarHasFocus (solo tracking, NON collassa la sidebar).
+            SidebarNavigation(
+              currentSection = currentSection,
+              itemFocusRequesters = sidebarItemFocusRequesters,
+              onSectionSelected = { section ->
+                if (section == SidebarSection.HOME) {
+                  isSidebarExpanded = false
+                  viewModel.requestHomeScrollToTop()
                 }
+                if (section == SidebarSection.CERCA) {
+                  isSidebarExpanded = false
+                }
+                viewModel.setSection(section)
               },
+              isSidebarExpanded = isSidebarExpanded,
+              onCollapseRequest = { isSidebarExpanded = false },
+              // La voce "Addon" è sempre presente nella sidebar, in ogni modalità del motore.
+              showAddons = true,
               modifier = Modifier
-                .fillMaxSize()
-                .padding(start = 60.dp)
+                .align(Alignment.CenterStart)
+                .focusRequester(sidebarFocusRequester)
+                .onFocusChanged { sidebarHasFocus = it.hasFocus }
             )
           }
-
-          // Left Sidebar Menu — overlay sopra la Home.
-          // onFocusChanged ESTERNO aggiorna sidebarHasFocus (solo tracking, NON colapsa la sidebar).
-          SidebarNavigation(
-            currentSection = currentSection,
-            itemFocusRequesters = sidebarItemFocusRequesters,
-            onSectionSelected = { section ->
-              if (section == SidebarSection.HOME) {
-                isSidebarExpanded = false
-                viewModel.requestHomeScrollToTop()
-              }
-              if (section == SidebarSection.CERCA) {
-                isSidebarExpanded = false
-              }
-              viewModel.setSection(section)
-            },
-            isSidebarExpanded = isSidebarExpanded,
-            onCollapseRequest = { isSidebarExpanded = false },
-            // La voce "Addon" compare nella sidebar solo in modalità Debrid TorBox:
-            // in Web Streaming (HTTP) gli addon non alimentano la risoluzione sorgenti.
-            showAddons = streamingEngineMode.supportsAddonsSection,
-            modifier = Modifier
-              .align(Alignment.CenterStart)
-              .focusRequester(sidebarFocusRequester)
-              .onFocusChanged { sidebarHasFocus = it.hasFocus }
-          )
         }
       }
 
@@ -577,13 +695,49 @@ fun StreamNovaApp(
         val seasonEpisodesUiState by viewModel.seasonEpisodesUiState.collectAsState()
         val lastFocusedCastMemberId by viewModel.lastFocusedCastMemberId.collectAsState()
         val lastFocusedCompanyId by viewModel.lastFocusedCompanyId.collectAsState()
+        // Chiusure del selettore sorgenti avvenute mentre QUESTA scheda era composta
+        // sotto l'overlay: il Dettaglio le usa per riprendere il focus su «Riproduci».
+        val sourceDialogDismissedToken by viewModel.sourceDialogDismissedToken.collectAsState()
+        // Chiusure del trailer interno (overlay globale sopra il NavHost) avvenute mentre
+        // QUESTA scheda era composta sotto di esso: stesso ripristino del focus su
+        // «Riproduci», con un segnale distinto da quello del selettore delle sorgenti.
+        val trailerDismissedToken by viewModel.trailerDismissedToken.collectAsState()
+        // Chiusure del player (overlay globale sopra il NavHost) avvenute mentre QUESTA
+        // scheda era composta sotto di esso: al rientro la scheda riprende il focus su
+        // «Riproduci». Il player non è una destinazione di navigazione, quindi la scheda
+        // resta quella corrente e non c'è alcun pop da eseguire.
+        val playerClosedToken by viewModel.playerClosedToken.collectAsState()
+
+        // Uscita DAL Dettaglio verso la destinazione sottostante (Home/Provider): lo stato
+        // della scheda viene azzerato solo quando la destinazione ha davvero lasciato la
+        // composizione. Durante la transizione di uscita del NavHost la scheda resta
+        // composta: azzerare `selectedMedia`/la stagione subito la faceva ridisegnare con
+        // la lista episodi ricostruita dal catalogo (senza still TMDB) per una frazione di
+        // secondo, prima che la Home diventasse visibile (flash segnalato).
+        // Il flag è per destinazione (`backStackEntry.id`): una ricreazione della
+        // composizione (es. Activity ricreata) non azzera nulla, perché nessun BACK è in
+        // corso; solo il ritorno richiesto dall'utente lo fa.
+        var detailExitPending by remember(backStackEntry.id) { mutableStateOf(false) }
+        DisposableEffect(backStackEntry.id) {
+          onDispose {
+            if (detailExitPending) viewModel.completeDetailExit()
+          }
+        }
 
                 // (2) Back dal Dettaglio: popBackStack verso la schermata precedente.
         // Se lo stack contiene più dettagli, risale alla scheda precedente
         // ripristinandone stato e metadati. Solo quando lo stack è esaurito si torna a Home/Provider.
         BackHandler(enabled = screenState != ScreenState.PLAYER) {
-          val hasPreviousDetail = viewModel.popDetail()
+          FocusTrace.log(
+            "DETAIL_BACK",
+            "BackHandler Dettaglio: screenState=$screenState route=${navController.currentDestination?.route} " +
+              "playerClosedToken=${viewModel.playerClosedToken.value}"
+          )
+          // Lo stato UI resta intatto finché la scheda è composta: nessun frame con la
+          // lista episodi priva delle still. L'azzeramento è differito al dispose (sopra).
+          val hasPreviousDetail = viewModel.popDetail(clearDetailUiState = false)
           if (!hasPreviousDetail) {
+            detailExitPending = true
             pendingContentFocusRestore = true
           }
           navController.popBackStack()
@@ -622,8 +776,12 @@ fun StreamNovaApp(
             media = currentMedia,
             allMedia = allMedia,
             onBackClick = {
-              val hasPreviousDetail = viewModel.popDetail()
+              // Stessa uscita del tasto BACK: stato conservato fino al dispose della
+              // destinazione, così la scheda non si ridisegna senza still durante la
+              // transizione verso la Home.
+              val hasPreviousDetail = viewModel.popDetail(clearDetailUiState = false)
               if (!hasPreviousDetail) {
+                detailExitPending = true
                 pendingContentFocusRestore = true
               }
               navController.popBackStack()
@@ -640,6 +798,18 @@ fun StreamNovaApp(
             onToggleFavorite = { viewModel.toggleFavorite(it) },
             onToggleWatched = { viewModel.toggleWatched(it) },
             onPlayTrailer = { viewModel.playTrailer(it) },
+            // «Seleziona fonte» accanto a Trailer: SOLO in modalità Debrid e per
+            // contenuti che non siano canali live (per i canali il Play apre già
+            // il selettore delle sorgenti dell'addon). Apre la schermata di scelta
+            // manuale esistente senza avviare alcuna riproduzione automatica.
+            onSelectSourceClick = if (isLiveChannel || streamingEngineMode != StreamingEngineMode.DEBRID_TORBOX) {
+              null
+            } else {
+              { m: MediaItem, ep: Episode? -> viewModel.openManualSourceSelection(m, ep) }
+            },
+            sourceDialogDismissedToken = sourceDialogDismissedToken,
+            trailerDismissedToken = trailerDismissedToken,
+            playerClosedToken = playerClosedToken,
             onProviderClick = { provider ->
               viewModel.openProvider(provider)
               navController.navigate(Screen.Provider.createRoute(provider.id))
@@ -762,24 +932,40 @@ targetCompanyId = lastFocusedCompanyId,
     BackHandler(enabled = screenState == ScreenState.PLAYER) {
       Log.d("BACK_TRACE", "MAINACTIVITY: ingresso del BackHandler")
       Log.d("BACK_TRACE", "MAINACTIVITY: valore di screenState: $screenState")
+      FocusTrace.log(
+        "MAIN_BACK",
+        "BackHandler player: route=${navController.currentDestination?.route} " +
+          "playerClosedToken=${viewModel.playerClosedToken.value}"
+      )
       // Chiude il player: la riproduzione si ferma con il dispose di PlayerScreen e il
-      // progresso viene salvato in Room (closePlayer). Se il player è stato aperto dal
-      // Dettaglio (catalogo -> Detail -> Player), closePlayer() ripristina la sezione
-      // (CERCA/altro) e qui si esegue solo il popBackStack per tornare al Detail.
+      // progresso viene salvato in Room (closePlayer).
+      //
+      // Il player è un OVERLAY composto sopra il NavHost: la destinazione sottostante
+      // (Dettaglio, Provider o Home) non è mai stata sostituita, quindi il BACK chiude SOLO
+      // il player e NON deve eseguire alcun pop. Il vecchio pop condizionato a "player
+      // aperto dal Dettaglio" era codice morto (closePlayer() azzera l'origine PRIMA della
+      // lettura) e, se mai riattivato, avrebbe rimosso la scheda Dettaglio riportando alla
+      // Home dopo la chiusura del player.
       Log.d("BACK_TRACE", "MAINACTIVITY: chiamata a closePlayer()")
+      FocusTrace.log(
+        "MAIN_BACK",
+        "closePlayer: route=${navController.currentDestination?.route} " +
+          "screenState=$screenState token=${viewModel.playerClosedToken.value}"
+      )
       viewModel.resetStreamState()
       viewModel.closePlayer()
-      if (viewModel.playerOpenedFromDetail()) {
-        Log.d("BACK_TRACE", "MAINACTIVITY: eventuale popBackStack() eseguito")
-        navController.popBackStack()
-      } else {
-        Log.d("BACK_TRACE", "MAINACTIVITY: eventuale popBackStack() non eseguito")
-      }
+      FocusTrace.log(
+        "MAIN_BACK",
+        "closePlayer done: route=${navController.currentDestination?.route} " +
+          "screenState=${viewModel.screenState.value} token=${viewModel.playerClosedToken.value}"
+      )
+      Log.d("BACK_TRACE", "MAINACTIVITY: player chiuso, destinazione sottostante invariata")
     }
 
     // BackHandler per annullare la ricerca in corso se l'utente preme BACK sul telecomando
     BackHandler(enabled = streamResolutionState is StreamResolutionState.Loading) {
       Log.d("BACK_TRACE", "MAINACTIVITY: cancellazione ricerca stream al BACK")
+      FocusTrace.log("MAIN_BACK", "BackHandler risoluzione stream: resetStreamState")
       viewModel.resetStreamState()
     }
 
@@ -792,14 +978,9 @@ targetCompanyId = lastFocusedCompanyId,
     val showSourceDialog by viewModel.showSourceDialog.collectAsState()
     val availableSources by viewModel.availableSources.collectAsState()
     val sourceDialogMedia by viewModel.sourceDialogMedia.collectAsState()
-    if (showSourceDialog && availableSources.isNotEmpty() && sourceDialogMedia != null) {
-      TorBoxSourceSelectionScreen(
-        sources = availableSources,
-        target = sourceDialogMedia,
-        onSelect = { source -> viewModel.selectSource(source) },
-        onDismiss = { viewModel.dismissSourceDialog() }
-      )
-    }
+    // Preferenze di riproduzione: guidano l'ordinamento della lista sorgenti
+    // ("Privilegia tracce italiane", "Risoluzione preferita").
+    val playbackSettings by viewModel.playbackSettings.collectAsState()
 
     val showParentalPinDialog by viewModel.showParentalPinDialog.collectAsState()
     val parentalPinErrorResId by viewModel.parentalPinErrorResId.collectAsState()
@@ -846,6 +1027,20 @@ targetCompanyId = lastFocusedCompanyId,
       PlayerScreen(viewModel = viewModel)
     }
 
+    // Scelta MANUALE delle sorgenti: composta DOPO il player. Deve restare sopra
+    // l'overlay di riproduzione quando viene aperta dal player (es. dopo un fallimento
+    // dell'autoplay del prossimo episodio: "Nessuna fonte disponibile… Seleziona una
+    // fonte manualmente"). Prima era sotto il player e quindi invisibile in quel caso.
+    if (showSourceDialog && availableSources.isNotEmpty() && sourceDialogMedia != null) {
+      TorBoxSourceSelectionScreen(
+        sources = availableSources,
+        target = sourceDialogMedia,
+        settings = playbackSettings,
+        onSelect = { source -> viewModel.selectSource(source) },
+        onDismiss = { viewModel.dismissSourceDialog() }
+      )
+    }
+
     // Trailer interno (YouTube embedded): sopra ogni schermata, mai Intent esterno.
     val trailerState by viewModel.trailerState.collectAsState()
     when (val trailer = trailerState) {
@@ -859,7 +1054,24 @@ targetCompanyId = lastFocusedCompanyId,
     }
 
     if (isSplashActive) {
-      SplashScreen()
+      // Intro video: riproduzione integrale, poi pausa di 4 s sull'ultimo frame,
+      // poi Home. Errore reale o impossibilità di avviare il video chiudono
+      // subito la splash: nessun percorso la lascia sopra la Home.
+      SplashVideoScreen(
+        // Il primo frame del video è realmente a schermo: la Home può essere
+        // composta dopo una breve pausa (vedi `isVideoFirstFrameRendered`),
+        // senza rubare CPU al decoder nella fase di avvio.
+        onVideoStarted = {
+          isVideoFirstFrameRendered = true
+        },
+        onFinished = {
+          Log.i("SplashIntro", "HOME_VISIBLE t=${SystemClock.elapsedRealtime()}")
+          // Anche un'uscita anomala (player non disponibile) deve lasciare una
+          // Home composta: la splash non è mai l'ultima schermata.
+          isMainContentReady = true
+          isSplashActive = false
+        }
+      )
     }
   }
 }

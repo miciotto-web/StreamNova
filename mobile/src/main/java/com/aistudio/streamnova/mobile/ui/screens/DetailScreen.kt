@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -56,6 +58,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -457,6 +460,18 @@ fun DetailScreen(
         }
       }
 
+      // Scheda «Dettagli» (parità con la TV 1.0.5): stato, anno, durata,
+      // certificazione e paese d'origine — solo righe con dato reale TMDB.
+      item(key = "movie-details") {
+        MobileMovieDetailsSection(
+          details = state.details,
+          media = media,
+          isTvSeries = isSeries,
+          modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        Spacer(modifier = Modifier.height(18.dp))
+      }
+
       item(key = "tabs") {
         MobileDetailTabs(
           labels = tabs,
@@ -762,4 +777,95 @@ private fun detailHeroHeight(expanded: Boolean, isLandscape: Boolean) = when {
   isLandscape -> 220.dp
   expanded -> 360.dp
   else -> 280.dp
+}
+
+/**
+ * Scheda «Dettagli» mobile: le stesse informazioni della sezione TV 1.0.5 (stato,
+ * anno, durata, certificazione, paese d'origine), presentate in righe compatte
+ * senza gestione del fuoco D-pad (interazione touch). Una riga senza dato non
+ * viene composta; nessun valore inventato quando TMDB non espone il campo.
+ */
+@Composable
+private fun MobileMovieDetailsSection(
+  details: com.example.data.model.ExtendedMediaDetails?,
+  media: com.example.data.model.MediaItem,
+  isTvSeries: Boolean,
+  modifier: Modifier = Modifier
+) {
+  val status = com.example.data.util.DetailFactsMapper.status(details?.status)
+  val releaseYear = com.example.data.util.DetailFactsMapper.releaseYear(
+    details?.releaseDate ?: media.releaseDate
+  )
+  val duration = com.example.data.util.DetailFactsMapper.formatDuration(details?.runtimeMinutes)
+  val certification = details?.certification?.takeIf { it.isNotBlank() }
+  val originCountry = details?.originCountry?.takeIf { it.isNotBlank() }
+
+  val statusLabel = status?.let {
+    stringResource(
+      when (it) {
+        com.example.data.util.DetailFactsMapper.TitleStatus.RELEASED -> R.string.detail_status_released
+        com.example.data.util.DetailFactsMapper.TitleStatus.POST_PRODUCTION -> R.string.detail_status_post_production
+        com.example.data.util.DetailFactsMapper.TitleStatus.IN_PRODUCTION -> R.string.detail_status_in_production
+        com.example.data.util.DetailFactsMapper.TitleStatus.PLANNED -> R.string.detail_status_planned
+        com.example.data.util.DetailFactsMapper.TitleStatus.CANCELED -> R.string.detail_status_canceled
+        com.example.data.util.DetailFactsMapper.TitleStatus.RUMORED -> R.string.detail_status_rumored
+        com.example.data.util.DetailFactsMapper.TitleStatus.RETURNING_SERIES -> R.string.detail_status_returning_series
+        com.example.data.util.DetailFactsMapper.TitleStatus.ENDED -> R.string.detail_status_ended
+        com.example.data.util.DetailFactsMapper.TitleStatus.PILOT -> R.string.detail_status_pilot
+      }
+    )
+  }
+  val releaseLabel = stringResource(
+    if (isTvSeries) R.string.detail_info_first_air else R.string.detail_info_release
+  )
+  val runtimeLabel = stringResource(
+    if (isTvSeries) R.string.detail_info_episode_runtime else R.string.detail_info_runtime
+  )
+  val rows = listOfNotNull(
+    statusLabel?.let { stringResource(R.string.detail_info_status) to it },
+    releaseYear?.let { releaseLabel to it.toString() },
+    duration?.let { runtimeLabel to it },
+    certification?.let { stringResource(R.string.detail_info_certification) to it },
+    originCountry?.let { stringResource(R.string.detail_info_origin_country) to it }
+  )
+  if (rows.isEmpty()) return
+
+  Column(modifier = modifier.fillMaxWidth()) {
+    MobileDetailSectionHeader(
+      text = stringResource(
+        if (isTvSeries) R.string.detail_series_details_title else R.string.detail_movie_details_title
+      ),
+      icon = Icons.Default.Info,
+      modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+    rows.forEachIndexed { index, (label, value) ->
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = label,
+          color = NovaTextMuted,
+          fontSize = 13.sp,
+          modifier = Modifier.weight(1f)
+        )
+        Text(
+          text = value,
+          color = NovaTextPrimary,
+          fontSize = 14.sp,
+          fontWeight = FontWeight.Medium,
+          textAlign = TextAlign.End
+        )
+      }
+      if (index < rows.lastIndex) {
+        HorizontalDivider(
+          color = NovaSurfaceVariant,
+          thickness = 0.5.dp
+        )
+      }
+    }
+  }
 }

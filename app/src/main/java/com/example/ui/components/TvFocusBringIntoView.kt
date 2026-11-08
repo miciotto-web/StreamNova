@@ -91,6 +91,22 @@ open class TvFocusBringIntoViewSpec(
 @OptIn(ExperimentalFoundationApi::class)
 object TvFocusRowBringIntoViewSpec : BringIntoViewSpec {
 
+  /**
+   * Margine di sicurezza dal bordo del viewport, proporzionale alla dimensione della card.
+   *
+   * La card focalizzata si ingrandisce (scala 1.06 attorno al centro): fermare il bordo di
+   * layout a filo schermo lascia fuori lo schermo la meta' della crescita (3% per lato) e il
+   * bordo di focus, producendo la card "tagliata" sul bordo TV. Il 7% porta il bordo di
+   * LAYOUT a `containerSize - 0.07 * size`: anche una volta applicata la scala (bordo
+   * disegnato a +3% per lato) resta un margine visivo di ~4% della card, a qualsiasi
+   * densita' e dimensione.
+   *
+   * NOTA: la condizione di stop deve essere il raggiungimento DEL MARGINE, non la semplice
+   * non-visualizzazione: con una tolleranza intermedia (es. fermarsi appena la card entra
+   * nel viewport) lo spec restituisce 0 prima del target e la card resta a filo bordo.
+   */
+  private const val FOCUS_EDGE_MARGIN_FRACTION = 0.07f
+
   override val scrollAnimationSpec: AnimationSpec<Float> =
     tween(durationMillis = 150, easing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f))
 
@@ -98,12 +114,28 @@ object TvFocusRowBringIntoViewSpec : BringIntoViewSpec {
     if (size <= 0f || containerSize <= 0f) return 0f
 
     val trailingEdge = offset + size
+
+    // Card piu' larga del viewport: il margine non e' rappresentabile, si mantiene il
+    // comportamento originale (bordi a filo, clampato dal range di scroll della lista).
+    if (size >= containerSize) {
+      return when {
+        offset < 0f -> offset
+        trailingEdge > containerSize -> trailingEdge - containerSize
+        else -> 0f
+      }
+    }
+
+    val edgeMargin = size * FOCUS_EDGE_MARGIN_FRACTION
+    val targetLeading = edgeMargin
+    val targetTrailing = containerSize - edgeMargin
     return when {
-      // Elemento fuori dal bordo iniziale: riportalo in vista (valore negativo).
-      offset < 0f -> offset
-      // Elemento fuori dal bordo finale: scorri in avanti solo quanto basta (positivo).
-      trailingEdge > containerSize -> trailingEdge - containerSize
-      // Gi completamente visibile: nessuno scorrimento, niente sobbalzi.
+      // Elemento oltre il bordo iniziale: riportalo in vista fino al margine (valore negativo).
+      offset < targetLeading -> offset - targetLeading
+      // Elemento oltre il bordo finale: scorri in avanti fermando il bordo destro al margine
+      // (positivo), cosi' la card focalizzata, scala e bordo di focus compresi, resta
+      // interamente visibile e distaccata dal bordo TV.
+      trailingEdge > targetTrailing -> trailingEdge - targetTrailing
+      // Entro i margini: nessuno scorrimento, niente sobbalzi.
       else -> 0f
     }
   }

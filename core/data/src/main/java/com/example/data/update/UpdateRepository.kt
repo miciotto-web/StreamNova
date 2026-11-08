@@ -174,9 +174,23 @@ object UpdateRepository {
    * istanze puntate a un MockWebServer locale, come già fanno
    * [GitHubUpdateClient] e [ApkDownloader] tramite i loro parametri di
    * costruzione.
+   *
+   * Le due istanze di default sono `by lazy`: costruirle durante l'inizializzazione
+   * dell'oggetto significava creare due OkHttp client e due Moshi PRIMA del primo
+   * frame (~1 s all'avvio, misurato con StartupTrace). Il primo uso reale è dentro
+   * il controllo in background, quindi la costruzione avviene su Dispatchers.IO.
    */
-  internal var client: GitHubUpdateClient = GitHubUpdateClient()
-  internal var downloader: ApkDownloader = ApkDownloader()
+  private val defaultClient: GitHubUpdateClient by lazy { GitHubUpdateClient() }
+  private var clientOverride: GitHubUpdateClient? = null
+  internal var client: GitHubUpdateClient
+    get() = clientOverride ?: defaultClient
+    set(value) { clientOverride = value }
+
+  private val defaultDownloader: ApkDownloader by lazy { ApkDownloader() }
+  private var downloaderOverride: ApkDownloader? = null
+  internal var downloader: ApkDownloader
+    get() = downloaderOverride ?: defaultDownloader
+    set(value) { downloaderOverride = value }
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   private val _state = MutableStateFlow<UpdateCheckState>(UpdateCheckState.Idle)

@@ -283,7 +283,8 @@ object AddonSyncServer {
   private fun handleGetAddons(): HttpResponse {
     return try {
       val items = StremioAddonRepository.getInstalledAddons().joinToString(",") { addon ->
-        """{"id":${jsonString(addon.id)},"name":${jsonString(addon.manifest.displayTitle)},""" +
+        """{"id":${jsonString(addon.id)},"installId":${jsonString(addon.installId)},""" +
+          """"name":${jsonString(addon.manifest.displayTitle)},""" +
           """"url":${jsonString(addon.baseUrl)},"enabled":${addon.isEnabled}}"""
       }
       HttpResponse(200, "application/json; charset=UTF-8", "[$items]")
@@ -321,12 +322,11 @@ object AddonSyncServer {
 
   private fun handleRemoveAddon(id: String): HttpResponse {
     return try {
-      val exists = StremioAddonRepository.getInstalledAddons()
-        .any { it.id == id || it.baseUrl == id }
-      if (!exists) {
-        return HttpResponse(404, "application/json; charset=UTF-8", errorJson("Addon non trovato"))
-      }
-      StremioAddonRepository.removeAddon(id)
+      // Risolve su una singola installazione: con Torrentio globale + IT (stesso
+      // manifest.id) il vecchio confronto su `id` avrebbe rimosso entrambe.
+      val addon = StremioAddonRepository.findInstalledAddon(id)
+        ?: return HttpResponse(404, "application/json; charset=UTF-8", errorJson("Addon non trovato"))
+      StremioAddonRepository.removeAddon(addon.installId)
       HttpResponse(200, "application/json; charset=UTF-8", """{"success":true}""")
     } catch (e: Exception) {
       HttpResponse(500, "application/json; charset=UTF-8", errorJson(e.message ?: "Errore sconosciuto"))

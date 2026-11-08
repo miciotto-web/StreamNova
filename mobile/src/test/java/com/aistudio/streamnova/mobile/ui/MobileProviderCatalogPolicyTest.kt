@@ -30,7 +30,7 @@ class MobileProviderCatalogPolicyTest {
   @Test
   fun leCardProviderUsanoOrdineEBrandingDellaTv() {
     assertEquals(
-      listOf("netflix", "hbo", "disney", "prime", "apple", "paramount", "crunchyroll"),
+      listOf("netflix", "hbo", "disney", "prime", "apple", "paramount", "nowtv", "crunchyroll"),
       ProviderConstants.ALL.map { it.id }
     )
     ProviderConstants.ALL.forEach { provider ->

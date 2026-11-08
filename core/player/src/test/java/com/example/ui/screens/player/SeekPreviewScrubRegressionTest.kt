@@ -31,7 +31,8 @@ import org.junit.runner.RunWith
  * restino vere le garanzie esistenti:
  * - nessuna seek a ogni pressione (solo alla conferma);
  * - una sola seek alla conferma, con l'ultima posizione proposta;
- * - BACK annulla senza seek;
+ * - BACK annulla senza seek se la sessione è ancora aperta e riporta all'origine se la
+ *   seek era già stata confermata (settling);
  * - il player si mette in pausa una volta sola all'apertura.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -199,6 +200,32 @@ class SeekPreviewScrubRegressionTest {
 
     assertTrue("BACK non applica seek", player.seekTargets.isEmpty())
     assertEquals(null, w.preview.state.value)
+    w.preview.release()
+  }
+
+  /**
+   * BACK dopo la conferma (overlay ancora in settling): la seek già applicata viene
+   * annullata e il player torna all'origine, mentre l'anteprima resta chiusa.
+   */
+  @Test
+  fun `BACK durante il settling riporta il player all'origine`() = runTest {
+    val player = FakePlayer(tenMinutesMs, positionMs = 100_000L)
+    val w = Wiring(player, this)
+
+    w.scrub.onArrowPressed(PlayerScrub.FORWARD)
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS + 1L)
+    assertEquals("la conferma ha applicato la seek", listOf(110_000L), player.seekTargets)
+
+    w.scrub.cancel()
+    advanceUntilIdle()
+
+    assertEquals(
+      "il BACK in settling annulla la seek confermata tornando all'origine",
+      listOf(110_000L, 100_000L),
+      player.seekTargets
+    )
+    assertEquals("l'anteprima non deve riapparire", null, w.preview.state.value)
+
     w.preview.release()
   }
 

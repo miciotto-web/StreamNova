@@ -42,6 +42,8 @@ class SimklLoginPersistenceTest {
 
   @After
   fun tearDown() {
+    // Non lasciare il grant OAuth fittizio nel DataStore condiviso tra test Robolectric.
+    runBlocking { SimklRepository.signOut() }
     server.shutdown()
   }
 

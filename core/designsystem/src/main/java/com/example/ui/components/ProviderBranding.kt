@@ -29,6 +29,7 @@ object ProviderBranding {
     384, 49, 1899 -> R.drawable.provider_hbomax
     350 -> R.drawable.provider_appletv
     531 -> R.drawable.provider_paramount
+    39 -> R.drawable.provider_nowtv
     283 -> R.drawable.provider_crunchyroll
     else -> null
   }

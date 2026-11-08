@@ -129,7 +129,10 @@ object MediaCacheMapper {
       lastWatchedSeason = this.lastWatchedSeason,
       lastWatchedEpisode = this.lastWatchedEpisode,
       lastWatchedAt = this.lastWatchedAt,
-      ageRating = this.ageRating
+      ageRating = this.ageRating,
+      favoriteSource = this.favoriteSource,
+      progressSource = this.progressSource,
+      importedFromSimkl = this.importedFromSimkl
     )
   }
 
@@ -204,6 +207,9 @@ object MediaCacheMapper {
       lastWatchedEpisode = this.lastWatchedEpisode,
       lastWatchedAt = this.lastWatchedAt,
       isFavorite = this.isFavorite,
+      favoriteSource = this.favoriteSource,
+      progressSource = this.progressSource,
+      importedFromSimkl = this.importedFromSimkl,
       provider = this.provider,
       isTrending = this.isTrending,
       isTop10 = this.isTop10,

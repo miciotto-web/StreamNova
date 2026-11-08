@@ -206,6 +206,7 @@ class SeekPreviewControllerTest {
   fun `la cattura in volo completa e la posizione piu recente segue senza annullamenti`() = runTest {
     val h = harness(this)
     val firstGate = CompletableDeferred<Unit>()
+    val latestGate = CompletableDeferred<Unit>()
     h.source.gate = firstGate
     h.source.result = { pos -> frame(pos) }
     val controller = controller(h)
@@ -219,18 +220,26 @@ class SeekPreviewControllerTest {
     // La cattura della prima posizione NON è annullata dalla seconda pressione: è il
     // cuore della correzione (le pressioni ravvicinate non buttano via la cattura in volo).
     assertTrue("nessun annullamento durante lo scrubbing", h.source.cancelled.isEmpty())
+    // La prima richiesta ha già acquisito firstGate; la successiva userà latestGate.
+    h.source.gate = latestGate
     firstGate.complete(Unit)
     runCurrent()
 
-    // Il fotogramma catturato su posizioni ancora valide viene PUBBLICATO (overlay ancora
-    // aperto): la cattura non è scartata né sostituita da un annullamento, e lo scrubbing
-    // (non ancora concluso) riceve l'aggiornamento durante le pressioni, non alla fine.
-    assertTrue(
-      "un fotogramma reale è pubblicato mentre lo scrubbing è ancora in corso",
-      controller.state.value is SeekPreviewState.Frame
+    // Il frame della richiesta già superata viene comunque pubblicato: è l'unica immagine
+    // disponibile e lasciare l'overlay sul placeholder renderebbe la preview invisibile per
+    // tutta la durata dello scrubbing. Lo stato è già `Loading` per la posizione più recente,
+    // ma conserva il frame della precedente: la UI lo disegna (attenuato) invece del vuoto.
+    val loading = controller.state.value as SeekPreviewState.Loading
+    assertEquals(120_000L, loading.positionMs)
+    assertEquals(
+      "il frame disponibile resta a video mentre la posizione più recente è in attesa",
+      110_000L,
+      loading.frame?.positionMs
     )
 
-    // L'elaborazione residua con fluisce sull'ultima posizione richiesta, che conclude.
+    // Ora si libera la cattura della posizione più recente.
+    latestGate.complete(Unit)
+    // L'elaborazione residua confluisce sull'ultima posizione richiesta, che conclude.
     advanceUntilIdle()
     val finalState = controller.state.value
     assertEquals("l'ultima posizione richiesta conclude l'aggiornamento", 120_000L, finalState?.positionMs)
@@ -243,6 +252,146 @@ class SeekPreviewControllerTest {
     assertTrue(h.cache.get(110_000L) != null)
     assertTrue(h.cache.get(120_000L) != null)
     controller.release()
+  }
+
+  @Test
+  fun `lo scrubbing allindietro pubblica il frame disponibile e conclude sullultima posizione`() = runTest {
+    val h = harness(this)
+    val firstGate = CompletableDeferred<Unit>()
+    val latestGate = CompletableDeferred<Unit>()
+    h.source.gate = firstGate
+    h.source.result = { pos -> frame(pos) }
+    val controller = controller(h)
+
+    // Inversione di direzione: la cattura di 200s resta in volo, l'utente torna a 190s.
+    controller.show(200_000L)
+    runCurrent()
+    controller.show(190_000L)
+    runCurrent()
+    assertTrue("nessun annullamento durante lo scrubbing", h.source.cancelled.isEmpty())
+
+    h.source.gate = latestGate
+    firstGate.complete(Unit)
+    runCurrent()
+
+    val loading = controller.state.value as SeekPreviewState.Loading
+    assertEquals("la UI è già sulla posizione più recente", 190_000L, loading.positionMs)
+    assertEquals("il frame disponibile (200s) resta a video", 200_000L, loading.frame?.positionMs)
+    assertEquals("il frame superato resta comunque in cache", 200_000L, h.cache.get(200_000L)?.positionMs)
+
+    latestGate.complete(Unit)
+    advanceUntilIdle()
+
+    val finalState = controller.state.value
+    assertTrue(finalState is SeekPreviewState.Frame)
+    assertEquals(
+      "anche all'indietro la preview finale è l'ultima posizione richiesta",
+      190_000L,
+      finalState?.positionMs
+    )
+    assertEquals(
+      "solo la prima e l'ultima posizione raggiungono la sorgente",
+      listOf(200_000L, 190_000L),
+      h.source.requested
+    )
+    controller.release()
+  }
+
+  @Test
+  fun `il frame precedente resta visibile mentre si attende la posizione aggiornata`() = runTest {
+    val h = harness(this)
+    h.source.result = { pos -> frame(pos) }
+    val controller = controller(h)
+
+    controller.show(110_000L)
+    advanceUntilIdle()
+    assertEquals(110_000L, (controller.state.value as SeekPreviewState.Frame).positionMs)
+
+    val gate = CompletableDeferred<Unit>()
+    h.source.gate = gate
+    controller.show(120_000L)
+    runCurrent()
+
+    val loading = controller.state.value as SeekPreviewState.Loading
+    assertEquals("il timestamp mostrato è già quello richiesto", 120_000L, loading.positionMs)
+    assertEquals(
+      "l'ultimo frame valido resta a video (attenuato) durante l'attesa",
+      110_000L,
+      loading.frame?.positionMs
+    )
+
+    gate.complete(Unit)
+    advanceUntilIdle()
+    assertEquals(120_000L, (controller.state.value as SeekPreviewState.Frame).positionMs)
+    controller.release()
+  }
+
+  @Test
+  fun `la conferma mostra il frame finale anche se una cattura superata era in volo`() = runTest {
+    val h = harness(this)
+    val firstGate = CompletableDeferred<Unit>()
+    val latestGate = CompletableDeferred<Unit>()
+    h.source.gate = firstGate
+    h.source.result = { pos -> frame(pos) }
+    val controller = controller(h)
+
+    controller.show(110_000L)
+    runCurrent()
+    controller.show(120_000L)
+    runCurrent()
+
+    var dismissed = false
+    controller.finishAndDismiss(
+      targetPositionMs = 120_000L,
+      fallbackTimeoutMs = 2_000L,
+      holdDurationMs = 100L
+    ) { dismissed = true }
+
+    h.source.gate = latestGate
+    firstGate.complete(Unit)
+    runCurrent()
+
+    assertFalse("la cattura superata non chiude l'anteprima", dismissed)
+    val waiting = controller.state.value as SeekPreviewState.Loading
+    assertEquals("la UI è già sulla posizione da confermare", 120_000L, waiting.positionMs)
+    assertEquals(
+      "durante la conferma il miglior frame disponibile resta a video",
+      110_000L,
+      waiting.frame?.positionMs
+    )
+
+    latestGate.complete(Unit)
+    advanceUntilIdle()
+
+    assertTrue("l'anteprima si chiude solo dopo il frame finale", dismissed)
+    assertNull("a conferma avvenuta l'overlay sparisce", controller.state.value)
+    assertTrue(h.cache.get(110_000L) != null)
+    assertTrue(h.cache.get(120_000L) != null)
+  }
+
+  @Test
+  fun `lannullamento durante una richiesta superata non pubblica nulla`() = runTest {
+    val h = harness(this)
+    val gate = CompletableDeferred<Unit>()
+    h.source.gate = gate
+    h.source.result = { pos -> frame(pos) }
+    val controller = controller(h)
+
+    controller.show(110_000L)
+    runCurrent()
+    controller.show(120_000L)
+    runCurrent()
+
+    // BACK: lo scrubbing si annulla mentre la prima cattura è in volo e la seconda in coda.
+    controller.hide()
+    runCurrent()
+    gate.complete(Unit)
+    advanceUntilIdle()
+
+    assertNull("l'anteprima resta chiusa", controller.state.value)
+    assertTrue("la cattura in volo è annullata", h.source.cancelled.contains(110_000L))
+    assertEquals("nessuna nuova cattura dopo la chiusura", listOf(110_000L), h.source.requested)
+    assertEquals("nessun frame della sessione chiusa resta in cache", 0, h.cache.size())
   }
 
   @Test

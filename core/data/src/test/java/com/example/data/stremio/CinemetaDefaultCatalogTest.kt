@@ -11,12 +11,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Verifica che la sorgente predefinita della Home sia **Cinemeta** e non più i
- * feed nativi TMDB:
- *  - l'addon di sistema usa l'URL/manifest ufficiali e dichiara i cataloghi
- *    standard (Popolari / Più votati / Nuovi) per Film e Serie TV;
- *  - [StremioCatalogRepository.buildHomeCatalogs] mappa quei cataloghi sulle
- *    righe della Home, senza reintrodurre feed TMDB.
+ * Compatibilità e fedeltà del manifest **Cinemeta** dopo il ripristino:
+ *  - l'addon di sistema usa URL/manifest ufficiali e dichiara i cataloghi standard
+ *    (Popolari / Più votati / Nuovi) per Film e Serie TV, oltre ai due cataloghi
+ *    speciali ufficiali;
+ *  - generi ed extra riproducono quelli realmente restituiti dal manifest;
+ *  - [StremioCatalogRepository.buildHomeCatalogs] riconosce le sezioni Cinemeta
+ *    costruite senza `homeSlot` (fallback sul `catalogId`).
  */
 class CinemetaDefaultCatalogTest {
 
@@ -92,7 +93,56 @@ class CinemetaDefaultCatalogTest {
   }
 
   @Test
-  fun leRigheHomeArrivanoDaiCataloghiCinemeta() {
+  fun ilManifestRiproduceGeneriEdExtraUfficiali() {
+    val movieTop = CinemetaAddon.findCatalog(MediaType.FILM, CinemetaAddon.CATALOG_POPULAR)!!
+    val seriesTop = CinemetaAddon.findCatalog(MediaType.SERIE_TV, CinemetaAddon.CATALOG_POPULAR)!!
+    val movieNew = CinemetaAddon.findCatalog(MediaType.FILM, CinemetaAddon.CATALOG_NEW)!!
+    val seriesNew = CinemetaAddon.findCatalog(MediaType.SERIE_TV, CinemetaAddon.CATALOG_NEW)!!
+
+    // Generi: le serie aggiungono le tre opzioni realmente dichiarate da Cinemeta.
+    assertEquals(19, movieTop.genreOptions().size)
+    assertEquals(22, seriesTop.genreOptions().size)
+    assertTrue(
+      seriesTop.genreOptions().containsAll(listOf("Reality-TV", "Talk-Show", "Game-Show"))
+    )
+    assertFalse(movieTop.genreOptions().contains("Reality-TV"))
+    assertTrue(movieTop.supportsExtra(EXTRA_SEARCH))
+    assertFalse(seriesNew.supportsExtra(EXTRA_SEARCH))
+
+    // Anni: 1920→anno corrente per i film, 1960→anno corrente per le serie.
+    val currentYear = CinemetaAddon.newReleasesYear
+    assertEquals((currentYear downTo 1920).count(), movieNew.genreOptions().size)
+    assertEquals((currentYear downTo 1960).count(), seriesNew.genreOptions().size)
+    assertTrue(movieNew.isExtraRequired(EXTRA_GENRE))
+    assertTrue(seriesNew.isExtraRequired(EXTRA_GENRE))
+
+    // Cataloghi speciali dichiarati dal manifest ufficiale, non mostrati in Home
+    // perché richiedono un elenco di id fornito dal chiamante.
+    val lastVideos = CinemetaAddon.manifest.findCatalog(
+      TYPE_SERIES,
+      CinemetaAddon.CATALOG_LAST_VIDEOS
+    )
+    val calendarVideos = CinemetaAddon.manifest.findCatalog(
+      TYPE_SERIES,
+      CinemetaAddon.CATALOG_CALENDAR_VIDEOS
+    )
+    assertNotNull(lastVideos)
+    assertNotNull(calendarVideos)
+    assertTrue(lastVideos!!.isExtraRequired(CinemetaAddon.EXTRA_LAST_VIDEOS_IDS))
+    assertTrue(calendarVideos!!.isExtraRequired(CinemetaAddon.EXTRA_CALENDAR_VIDEOS_IDS))
+    assertTrue(
+      "I cataloghi speciali non devono entrare nelle righe Home",
+      CinemetaAddon.homeCatalogPlans(MediaType.SERIE_TV).none {
+        it.catalog.effectiveId in setOf(
+          CinemetaAddon.CATALOG_LAST_VIDEOS,
+          CinemetaAddon.CATALOG_CALENDAR_VIDEOS
+        )
+      }
+    )
+  }
+
+  @Test
+  fun leSezioniCinemetaLegacyRestanoMappateSulleRigheHome() {
     val m1 = movie("tt1000001", "Popolare")
     val m2 = movie("tt1000002", "Votato")
     val m3 = movie("tt1000003", "Nuovo")

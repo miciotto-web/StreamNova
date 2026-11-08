@@ -74,10 +74,14 @@ class ContinueWatchingResumeEpisodeTest {
       .setTransactionExecutor(testDispatcher.asExecutor())
       .build()
     LastWorkingStreamRepository.setInstanceForTesting(database)
+    // Isola il repository dal caricamento cache dell'Application: un loadFromCache
+    // concorrente può svuotare la mappa dei progressi appena scritta dal test.
+    MediaRepository.setDatabaseForTesting(database)
   }
 
   @After
   fun tearDown() {
+    MediaRepository.setDatabaseForTesting(null)
     LastWorkingStreamRepository.setInstanceForTesting(null)
     database.close()
     AppSettingsRepository.setTorBoxApiKey(null)

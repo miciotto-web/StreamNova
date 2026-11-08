@@ -108,6 +108,12 @@ fun Modifier.dpadVerticalFastScroll(
   shouldEngage: () -> Boolean = { true },
   onFastScrollingChanged: (Boolean) -> Unit = {},
   shouldHaltForward: () -> Boolean = { false },
+  /**
+   * `true` quando la superficie focalizzata gestisce da sé i ripetuti orizzontali (righe
+   * ancorate della Home: `AnchoredFocusRow`). In quel caso la throttle NON consuma i
+   * ripetuti LEFT/RIGHT e li lascia scendere fino alla riga, che protegge l'animazione.
+   */
+  shouldHandleHorizontalRepeatsBelow: () -> Boolean = { false },
   horizontalGateMs: Long = 80L,
   verticalVelocityDpPerSec: Float = DEFAULT_VERTICAL_VELOCITY_DP_PER_SEC,
   endTimeoutMs: Long = DEFAULT_END_TIMEOUT_MS,
@@ -253,6 +259,7 @@ fun Modifier.dpadVerticalFastScroll(
     // I ripetuti verticali sono completamente consumati dal preview handler qui sopra quando
     // il takeover è attivo; Long.MAX_VALUE rende la throttle un puro gate orizzontale.
     verticalGateMs = Long.MAX_VALUE,
+    shouldDeferHorizontalRepeats = shouldHandleHorizontalRepeatsBelow,
   )
 }
 
@@ -267,7 +274,12 @@ fun Modifier.dpadVerticalFastScroll(
  */
 fun Modifier.dpadRepeatThrottle(
   horizontalGateMs: Long = 80L,
-  verticalGateMs: Long = 112L
+  verticalGateMs: Long = 112L,
+  /**
+   * `true` se i ripetuti orizzontali devono proseguire verso il figlio (riga ancorata) invece
+   * di essere consumati qui con `focusManager.moveFocus`.
+   */
+  shouldDeferHorizontalRepeats: () -> Boolean = { false }
 ): Modifier = composed {
   val focusManager = LocalFocusManager.current
   val lastRepeatTime = remember { longArrayOf(0L) }
@@ -283,6 +295,11 @@ fun Modifier.dpadRepeatThrottle(
     ) {
       val isVertical = native.keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
         native.keyCode == KeyEvent.KEYCODE_DPAD_UP
+      // Le righe ancorate governano da sole i ripetuti orizzontali: l'evento deve arrivare
+      // al loro handler di riga (figlio di questo modificatore).
+      if (!isVertical && shouldDeferHorizontalRepeats()) {
+        return@onPreviewKeyEvent false
+      }
       val gateMs = if (isVertical) verticalGateMs else horizontalGateMs
       val now = SystemClock.uptimeMillis()
       if (now - lastRepeatTime[0] < gateMs) {

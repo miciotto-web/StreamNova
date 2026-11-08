@@ -22,6 +22,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -30,18 +31,21 @@ import org.robolectric.annotation.Config
  * Verifica la SELEZIONE della sorgente dei cataloghi Home, per tipo.
  *
  * Regole coperte:
- *  - senza addon utilizzabili Cinemeta resta la sorgente;
+ *  - senza addon utilizzabili resta la sorgente di default (Cinemeta in produzione);
  *  - un addon solo-film non sopprime le righe Serie TV (e viceversa);
  *  - cataloghi solo-search, con extra obbligatori o di tipi non supportati non
  *    contano come utilizzabili;
- *  - un addon con contenuti validi sostituisce le righe Cinemeta dello stesso tipo,
+ *  - un addon con contenuti validi sostituisce le righe stock dello stesso tipo,
  *    senza coesistenza;
- *  - risposta vuota o errore producono il fallback Cinemeta deterministico;
+ *  - risposta vuota o errore producono la sorgente di default deterministica;
  *  - una risoluzione iniziata prima non sovrascrive una più recente.
  *
  * Il server locale ricrea il manifest di un addon Stremio: nessun id reale è
- * codificato nel codice di produzione. Il caricamento Cinemeta è sostituito da un
- * loader iniettato, così il test non dipende dalla rete.
+ * codificato nel codice di produzione. Il loader della sorgente di default è
+ * INIETTATO: qui usa sezioni sintetiche Cinemeta, mentre in produzione
+ * [StremioCatalogRepository.loadDefaultHomeSections] combina i cataloghi ufficiali
+ * Cinemeta con le righe Novità provider TMDB. Nessun test
+ * dipende dalla rete.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36])
@@ -52,9 +56,17 @@ class HomeCatalogSourceSelectionTest {
   /** Tipi richiesti al loader Cinemeta, nell'ordine delle risoluzioni. */
   private val cinemetaRequests = mutableListOf<List<MediaType>>()
 
+  @Before
+  fun setUp() {
+    // La memoria delle sezioni Home è un singleton di processo: un test precedente
+    // (es. un ViewModel che risolve la Home) non deve influenzare questo.
+    StremioCatalogRepository.resetHomeSectionMemory()
+  }
+
   @After
   fun tearDown() {
     StremioCatalogRepository.clearCache()
+    StremioCatalogRepository.resetHomeSectionMemory()
     StremioAddonRepository.getInstalledAddons().forEach { StremioAddonRepository.removeAddon(it.id) }
     StremioAddonRepository.clearCaches()
     fixtures.forEach { it.stop() }

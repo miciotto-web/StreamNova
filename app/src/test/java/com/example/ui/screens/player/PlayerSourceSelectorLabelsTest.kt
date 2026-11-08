@@ -21,6 +21,9 @@ class PlayerSourceSelectorLabelsTest {
     declaredQuality: String = quality,
     addonName: String? = null,
     infoHash: String? = null,
+    fileIdx: Int? = null,
+    addonInstallId: String? = null,
+    releaseTitle: String? = null,
     headers: Map<String, String> = emptyMap()
   ) = StreamSource(
     streamUrl = url,
@@ -29,6 +32,9 @@ class PlayerSourceSelectorLabelsTest {
     declaredQuality = declaredQuality,
     addonName = addonName,
     infoHash = infoHash,
+    fileIdx = fileIdx,
+    addonInstallId = addonInstallId,
+    releaseTitle = releaseTitle,
     headers = headers
   )
 
@@ -97,5 +103,86 @@ class PlayerSourceSelectorLabelsTest {
     )
     assertFalse(entries[0].isCurrent)
     assertEquals(-1, PlayerSourceSelector.currentIndexOf(entries.map { it.source }, null))
+  }
+
+  @Test
+  fun sameProviderAndResolutionAreDistinguishedByTorrentIdentity() {
+    // Due sorgenti dello stesso addon con la stessa risoluzione: solo il torrent
+    // realmente in riproduzione (infoHash) deve risultare corrente.
+    val playing = source(
+      name = "IlCorsaroViola",
+      quality = "1080p",
+      addonName = "IlCorsaroViola",
+      infoHash = "HASH_PLAYING"
+    )
+    val sibling = source(
+      name = "IlCorsaroViola",
+      quality = "1080p",
+      addonName = "IlCorsaroViola",
+      infoHash = "HASH_SIBLING"
+    )
+    val entries = PlayerSourceSelector.buildEntries(listOf(sibling, playing), playing)
+
+    assertFalse("La prima sorgente non è quella in riproduzione", entries[0].isCurrent)
+    assertTrue("La sorgente con lo stesso infoHash in riproduzione deve essere marcata", entries[1].isCurrent)
+    assertEquals(1, PlayerSourceSelector.currentIndexOf(listOf(sibling, playing), playing))
+  }
+
+  @Test
+  fun differentFilesOfTheSameSeasonPackAreNotTheCurrentSource() {
+    // Stesso torrent (season pack) ma file diverso: fileIdx distingue i due episodi.
+    val playing = source("Pack", quality = "1080p", infoHash = "HASH_PACK", fileIdx = 0)
+    val otherEpisode = source("Pack", quality = "1080p", infoHash = "HASH_PACK", fileIdx = 1)
+    val entries = PlayerSourceSelector.buildEntries(listOf(otherEpisode, playing), playing)
+
+    assertFalse(entries[0].isCurrent)
+    assertTrue(entries[1].isCurrent)
+  }
+
+  @Test
+  fun theResolvedCopyOfTheSameFileInASeasonPackIsStillCurrent() {
+    // Sblocco TorBox on-demand: la sorgente corrente ha l'URL, la voce della lista
+    // no. Hash e fileIdx restano l'identità reale della sorgente.
+    val candidate = source("Pack", quality = "4K", infoHash = "HASH_PACK", fileIdx = 3)
+    val resolved = candidate.copy(streamUrl = "https://cdn.example/unlocked.m3u8")
+    val entries = PlayerSourceSelector.buildEntries(listOf(candidate), resolved)
+
+    assertTrue(entries[0].isCurrent)
+  }
+
+  @Test
+  fun theSameTorrentFromADifferentAddonInstallIsNotCurrent() {
+    // Stesso torrent restituito da due configurazioni Stremio distinte: l'identità
+    // dell'installazione fa parte della sorgente, quindi solo una voce è corrente.
+    val playing = source(
+      name = "Torrentio",
+      quality = "1080p",
+      infoHash = "HASH_SHARED",
+      addonName = "Torrentio",
+      addonInstallId = "https://torrentio.strem.fun/"
+    )
+    val otherInstall = source(
+      name = "Torrentio",
+      quality = "1080p",
+      infoHash = "HASH_SHARED",
+      addonName = "Torrentio",
+      addonInstallId = "https://torrentioita.stremio-italia.eu/"
+    )
+    val entries = PlayerSourceSelector.buildEntries(listOf(otherInstall, playing), playing)
+
+    assertFalse(entries[0].isCurrent)
+    assertTrue(entries[1].isCurrent)
+  }
+
+  @Test
+  fun duplicateIdentitiesMarkOnlyTheFirstListEntry() {
+    // Due voci indistinguibili (stesso torrent, stesso file, stessa installazione):
+    // la lista non deve mostrare DUE badge "In riproduzione".
+    val playing = source("Addon", quality = "1080p", infoHash = "HASH_DUP", fileIdx = 0)
+    val duplicate = playing.copy()
+    val entries = PlayerSourceSelector.buildEntries(listOf(playing, duplicate), playing)
+
+    assertTrue(entries[0].isCurrent)
+    assertFalse(entries[1].isCurrent)
   }
 }

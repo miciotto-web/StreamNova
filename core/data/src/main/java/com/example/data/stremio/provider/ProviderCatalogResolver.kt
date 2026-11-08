@@ -82,9 +82,9 @@ class DefaultProviderCatalogResolver(
   fun hasBindingsFor(providerId: String): Boolean = bindingsFor(providerId).isNotEmpty()
 
   /**
-   * true se [addonManifestId] identifica un addon di SISTEMA autorizzato come
-   * catalogo nativo di default (Cinemeta). Serve a non richiedere alcuna conferma
-   * utente per la sorgente predefinita della Home: il default è già autorizzato.
+   * LEGACY: true se [addonManifestId] identifica l'addon di sistema storico
+   * (Cinemeta). Dopo la migrazione a TMDB non esiste più una sorgente nativa
+   * "addon": la Home usa TMDB e questo controllo resta per compatibilità.
    */
   fun isSystemDefaultAddon(addonManifestId: String?): Boolean =
     CinemetaAddon.isSystemAddon(addonManifestId)
@@ -150,20 +150,22 @@ object ProviderCatalogResolvers {
  * REGOLE (in ordine)
  * 1. **Addon di catalogo personalizzati attivi** (Xperience / Easy Catalog / ...,
  *    cioè `hasCustomCatalogAddons() == true`):
- *     - i cataloghi di **Cinemeta non entrano MAI** nel piano del provider:
+ *     - eventuali cataloghi di **Cinemeta non entrano MAI** nel piano del provider:
  *       [selectTargets] li esclude a monte e [matchesProvider] rifiuta ogni
- *       target Cinemeta anche se qualcuno arrivasse a valle;
+ *       target Cinemeta anche se qualcuno arrivasse a valle (difesa storica: dopo
+ *       la migrazione TMDB l'addon di sistema non è più una sorgente);
  *     - i cataloghi degli addon attivi vengono associati al provider con un match
  *       DICHIARATIVO sul manifest dell'addon: `catalog.id`, `catalog.name`, il nome
  *       dell'addon e i valori dichiarati per gli extra `genre` / `provider` /
- *       `platform` ([matchesProvider]). Nessun contenuto Cinemeta può sopravvivere
- *       in nessuna schermata provider.
+ *       `platform` ([matchesProvider]).
  * 2. **Nessun addon di catalogo personalizzato** (`hasCustomCatalogAddons() == false`):
- *    Cinemeta, addon di sistema, resta ammesso come FALLBACK ed è l'unica sorgente
- *    di default autorizzata ([systemDefaultBinding]).
+ *    il piano del provider resta VUOTO e la schermata usa il catalogo nativo TMDB
+ *    Discover (`with_watch_providers`). Il vecchio fallback Cinemeta
+ *    ([systemDefaultBinding]) non viene più costruito: resta solo per compatibilità.
  * 3. Il confronto è su **confine di token** (mai sottostringa grezza: "max" non
  *    matcha "maxwell", "apple" non matcha "pineapple") e copre i token ESATTI di
- *    ogni piattaforma (`prime` / `amazon`, `paramount`, `crunchyroll`, `disney`,
+ *    ogni piattaforma (`prime` / `amazon`, `paramount`, `now` / `nowtv`,
+ *    `crunchyroll`, `disney`,
  *    `apple`, `hbo` / `max`, `netflix`) oltre alle varianti dichiarate dai
  *    provider: `amazon prime` / `prime video`, `paramount+` / `paramount plus`,
  *    ecc. Un catalogo NON viene scartato se non dichiara gli extra `genre` /
@@ -196,11 +198,13 @@ object ProviderCatalogSourcePolicy {
   /**
    * Token ESATTI che identificano una piattaforma nell'ID o nel nome del catalogo
    * (manifest Xperience / Easy Catalog: `streaming_prime_movies`,
-   * `tmdb.movie.amazon`, `snoak_paramount_top10_movies`, `streaming_crunchyroll_movies`, ...).
+   * `tmdb.movie.amazon`, `snoak_paramount_top10_movies`, `streaming_now_movies`,
+   * `streaming_crunchyroll_movies`, ...).
    */
   private val CATALOG_ID_TOKENS: Map<String, Set<String>> = mapOf(
     "prime" to setOf("prime", "amazon"),
     "paramount" to setOf("paramount"),
+    "nowtv" to setOf("now", "nowtv"),
     CRUNCHYROLL_ID to setOf(CRUNCHYROLL_ID),
     "disney" to setOf("disney"),
     "apple" to setOf("apple"),
@@ -253,7 +257,7 @@ object ProviderCatalogSourcePolicy {
    *
    * Il target appartiene al provider quando l'ID del catalogo o il nome del
    * catalogo contiene uno dei token esatti del provider in [CATALOG_ID_TOKENS]
-   * (`prime` / `amazon`, `paramount`, `crunchyroll`, `disney`, `apple`,
+   * (`prime` / `amazon`, `paramount`, `now` / `nowtv`, `crunchyroll`, `disney`, `apple`,
    * `hbo` / `max`, `netflix`) oppure uno degli alias dichiarati, il nome
    * dell'addon o un'opzione dichiarata per `genre` / `provider` / `platform`.
    *
@@ -319,11 +323,12 @@ object ProviderCatalogSourcePolicy {
     }
 
   /**
-   * Binding di FALLBACK sui cataloghi di sistema Cinemeta: usato SOLO quando non
-   * è attivo nessun addon di catalogo personalizzato e nessun binding dichiarato
-   * copre il provider. Cinemeta non è specifico del provider, quindi il piano che
-   * lo contiene va marcato `fallbackToDefault` ([ProviderCatalogPlan.fallbackToDefault])
-   * e non può mai valere copertura `FULL`.
+   * LEGACY: binding di fallback sui cataloghi di sistema Cinemeta.
+   *
+   * Dopo la migrazione a TMDB non viene più usato: senza addon il piano del
+   * provider resta vuoto e la schermata usa TMDB Discover. Resta per compatibilità
+   * con i test e con eventuali chiamanti storici; un piano che lo contenesse va
+   * comunque marcato `fallbackToDefault` e non può valere copertura `FULL`.
    */
   fun systemDefaultBinding(
     provider: ProviderAliasProvider,

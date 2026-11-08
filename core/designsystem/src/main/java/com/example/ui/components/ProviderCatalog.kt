@@ -102,6 +102,18 @@ object ProviderConstants {
     accentColor = Color(0xFF9CC7FF)
   )
 
+  /** NOW TV (Sky): provider TMDB 39 verificato su `watch_region=IT` (Film e Serie TV). */
+  val NOW_TV = StreamingProvider(
+    id = "nowtv",
+    tmdbProviderId = 39,
+    tag = "NOW ORIGINALS",
+    primaryColor = Color(0xFF067E86),
+    secondaryColor = Color(0xFF072326),
+    accentColor = Color(0xFF328288),
+    logoUrl = "https://image.tmdb.org/t/p/w500/oFAnvlaEW2KT6J7XM0DXjlWqKu9.png",
+    logoResId = R.drawable.provider_nowtv
+  )
+
   val CRUNCHYROLL = StreamingProvider(
     id = "crunchyroll",
     tmdbProviderId = 283,
@@ -111,5 +123,5 @@ object ProviderConstants {
     accentColor = Color(0xFFFF9A3E)
   )
 
-  val ALL = listOf(NETFLIX, HBO, DISNEY, PRIME_VIDEO, APPLE_TV, PARAMOUNT_PLUS, CRUNCHYROLL)
+  val ALL = listOf(NETFLIX, HBO, DISNEY, PRIME_VIDEO, APPLE_TV, PARAMOUNT_PLUS, NOW_TV, CRUNCHYROLL)
 }

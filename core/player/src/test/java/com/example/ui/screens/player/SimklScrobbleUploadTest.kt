@@ -118,6 +118,8 @@ class SimklScrobbleUploadTest {
 
   @After
   fun tearDown() {
+    // Isola le credenziali OAuth di prova dagli altri test Robolectric.
+    runBlocking { SimklRepository.signOut() }
     server.shutdown()
   }
 

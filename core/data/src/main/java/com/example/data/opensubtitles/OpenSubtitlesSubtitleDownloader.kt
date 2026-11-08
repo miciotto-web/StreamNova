@@ -196,8 +196,9 @@ internal object OpenSubtitlesPayloadCodec {
  * 2. Scarica l'URL temporaneo (seguendo i redirect), senza mai loggarlo.
  * 3. Decodifica il payload: ZIP → estrazione del file sottotitolo; GZIP → decompressione;
  *    HTML → errore INVALID_FILE.
- * 4. Salva il file in [targetDir] (cache dell'app) con estensione corretta e restituisce
- *    il [File] locale pronto per essere allegato al player come traccia esterna.
+ * 4. Salva il file in [targetDir] (directory permanente `filesDir/online_subtitles`
+ *    dell'app) con estensione corretta e restituisce il [File] locale pronto per
+ *    essere allegato al player come traccia esterna.
  *
  * Nessuna API key viene inviata al download del file (il link temporaneo è pre-autorizzato)
  * e nessun URL temporaneo viene stampato nei log.

@@ -57,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -115,6 +116,7 @@ import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
 import com.example.data.stremio.StremioCatalogMapper
+import com.example.data.util.DetailFactsMapper
 import com.example.ui.components.MediaActionBar
 import com.example.ui.components.MediaActionBarFocus
 import com.example.ui.components.ProviderBadge
@@ -139,6 +141,7 @@ import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import com.example.ui.util.FocusTrace
 import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -151,6 +154,30 @@ private val DetailTitleShadow = TextStyle(
 enum class DetailTab(val titleRes: Int) {
   EPISODI(R.string.detail_tab_episodes),
   PRODUZIONE(R.string.detail_tab_production),
+  /**
+   * Scheda informativa con i metadati TMDB (stato, rilascio, durata, certificazione,
+   * paese). Per le serie TV usa solo i campi equivalenti realmente disponibili e
+   * un'etichetta neutra («Dettagli»), mai dati cinematografici travestiti.
+   */
+  DETTAGLI_FILM(R.string.detail_tab_movie_details),
+}
+
+/**
+ * Ordine delle schede della scheda Dettagli.
+ *
+ * Le schede preesistenti mantengono il loro ordine (Episodi solo per le serie, poi
+ * Produzione); «Dettagli Film» si aggiunge subito dopo Produzione, quindi le due
+ * sezioni restano adiacenti e raggiungibili con una sola pressione di D-pad.
+ */
+internal fun detailTabs(
+  isTvSeries: Boolean,
+  includeMovieDetails: Boolean = true
+): List<DetailTab> = buildList {
+  if (isTvSeries) add(DetailTab.EPISODI)
+  add(DetailTab.PRODUZIONE)
+  // I canali LIVE degli addon Stremio non hanno metadati TMDB: la scheda non viene
+  // aggiunta (le schede preesistenti restano invariate).
+  if (includeMovieDetails) add(DetailTab.DETTAGLI_FILM)
 }
 
 /**
@@ -228,6 +255,49 @@ fun DetailScreen(
   onRetry: (() -> Unit)? = null,
   onToggleWatched: ((MediaItem) -> Unit)? = null,
   onPlayTrailer: ((MediaItem) -> Unit)? = null,
+  /**
+   * Selezione MANUALE della sorgente (modalità Debrid): non-null solo quando il motore
+   * attivo è Debrid TorBox e il contenuto supporta la scelta della fonte. Riceve il
+   * media corrente e l'episodio attivo (null per i film). Con null il pulsante
+   * «Seleziona fonte» non è composto e la catena di focus resta quella storica.
+   */
+  onSelectSourceClick: ((MediaItem, Episode?) -> Unit)? = null,
+  /**
+   * Token che avanza a ogni chiusura del selettore delle sorgenti aperto sopra questa
+   * scheda (Back o «Annulla», i percorsi già supportati). La scheda resta composta sotto
+   * l'overlay, quindi nessun effetto di focus ri-parte alla chiusura: senza questo segnale
+   * il fallback di focus di Compose (nodo focalizzato smontato) atterra sulla sinossi,
+   * primo nodo focusabile della scheda. Al avanzamento del token il focus torna su
+   * «Riproduci»; un token già avanzato PRIMA dell'ingresso in composizione non deve
+   * strappare il focus (rientri da Consigliati/Cast/Casa di produzione) e viene quindi
+   * ignorato confrontandolo con l'ultimo valore visto da questa composizione.
+   */
+  sourceDialogDismissedToken: Int = 0,
+  /**
+   * Token che avanza a ogni chiusura del trailer interno aperto da questa scheda (BACK del
+   * telecomando o pulsante «Chiudi»). Il trailer è un overlay composto sopra la scheda,
+   * che resta quindi montata sotto di esso: nessun effetto di focus ri-parte alla chiusura
+   * e, senza questo segnale, il fallback di Compose lascerebbe il cursore sulla sinossi.
+   * Al avanzamento del token il focus torna su «Riproduci», con lo stesso protocollo del
+   * token delle sorgenti ma su un canale DISTINTO: i due ripristini non si consumano a
+   * vicenda e la chiusura del selettore fonte (Fase 4) resta invariata. Un token già
+   * avanzato PRIMA dell'ingresso in composizione viene ignorato, come per le sorgenti.
+   */
+  trailerDismissedToken: Int = 0,
+  /**
+   * Token che avanza a OGNI chiusura del player (BACK del telecomando). Il player è un
+   * OVERLAY composto sopra il NavHost: la scheda Dettaglio resta composta sotto di esso e
+   * al ritorno nessuno dei suoi effetti di focus ri-parte. Smontando il nodo focalizzato
+   * del player, il fallback di focus di Compose atterra sul PRIMO nodo focusabile della
+   * scheda (la sinossi), non sul pulsante «Riproduci».
+   *
+   * Al avanzamento di questo token la scheda riprende ESCLUSIVAMENTE il focus su
+   * «Riproduci», con lo stesso protocollo di conferma reale (`onFocusChanged`) dei token
+   * del selettore sorgenti e del trailer, su un canale DEDICATO: un token avanzato PRIMA
+   * dell'ingresso in composizione (scheda aperta dopo la chiusura del player) viene
+   * ignorato e non strappa il focus al ripristino del cast/produzione.
+   */
+  playerClosedToken: Int = 0,
   onCastMemberClick: ((CastMember) -> Unit)? = null,
   onCompanyClick: ((ProductionCompany) -> Unit)? = null,
   targetCastMemberId: Int? = null,
@@ -253,11 +323,9 @@ fun DetailScreen(
 
 
   val isTvSeries = displayMedia.type == MediaType.SERIE_TV && !isLiveChannel
-  val tabs = if (isTvSeries) {
-    listOf(DetailTab.EPISODI, DetailTab.PRODUZIONE)
-  } else {
-    listOf(DetailTab.PRODUZIONE)
-  }
+  // «Dettagli Film» è sempre accanto a «Produzione»: l'ordine delle schede esistenti
+  // resta invariato (Episodi, Produzione) e la nuova scheda si aggiunge in coda.
+  val tabs = detailTabs(isTvSeries, includeMovieDetails = !isLiveChannel)
 
   // Tab selezionato PERSISTENTE nel backstack di Navigation (rememberSaveable):
   // tornando con Back da una scheda aperta dai Consigliati, la scheda originale rientra
@@ -511,7 +579,15 @@ fun DetailScreen(
    // Main Scrollable Content
    val listState = rememberLazyListState()
 
-    // Catena D-pad della barra azioni: Riproduci -> Cuore -> Occhio -> Trailer.
+    // Traccia SOLO DEBUG della vita della scheda: distingue "il Dettaglio è ancora composto
+    // sotto il player" da "la destinazione è stata smontata/poppata".
+    DisposableEffect(displayMedia.id) {
+      FocusTrace.log("DETAIL", "compose mount media=${displayMedia.id}")
+      onDispose { FocusTrace.log("DETAIL", "compose dispose media=${displayMedia.id}") }
+    }
+
+    // Catena D-pad della barra azioni: Riproduci -> Cuore -> Occhio -> Trailer
+    // (-> Seleziona fonte quando il pulsante è presente, cioè in modalità Debrid).
     // "Riproduci" e' il PRIMO (e unico) nodo focusabile della zona superiore:
     // header, logo, titolo, badge e backdrop sono puramente visivi e non
     // ricevono mai il focus D-pad.
@@ -618,6 +694,110 @@ fun DetailScreen(
       listState.scrollToItem(0, 0)
     }
 
+    // Ritorno dal selettore delle sorgenti (chiuso con Back o «Annulla»): la scheda è
+    // rimasta composta sotto l'overlay, quindi l'effetto di focus iniziale qui sopra non
+    // ri-parte e il fallback di focus di Compose lascerebbe il cursore sulla sinossi.
+    // Al avanzamento del token il focus torna ESCLUSIVAMENTE su «Riproduci», con lo
+    // stesso protocollo del focus iniziale (ritenti per frame finché onPlayFocusChanged
+    // non conferma l'atterraggio). Solo i token che avanzano MENTRE questa composizione
+    // è viva sono consumati: un token ereditato dall'ingresso non tocca il focus.
+    var lastSeenSourceDismissedToken by remember(displayMedia.id) {
+      mutableStateOf(sourceDialogDismissedToken)
+    }
+    LaunchedEffect(sourceDialogDismissedToken) {
+      if (sourceDialogDismissedToken == lastSeenSourceDismissedToken) return@LaunchedEffect
+      lastSeenSourceDismissedToken = sourceDialogDismissedToken
+      repeat(20) {
+        withFrameNanos { } // attende composizione + smontaggio dell'overlay e layout del nodo
+        try {
+          actionFocus.play.requestFocus()
+        } catch (_: Exception) {
+          // FocusRequester non ancora inizializzato: riprova al frame successivo.
+        }
+        if (isPlayFocused) {
+          listState.scrollToItem(0, 0)
+          return@LaunchedEffect
+        }
+        delay(32)
+      }
+      listState.scrollToItem(0, 0)
+    }
+
+    // Ritorno dal TRAILER interno (Back del telecomando o pulsante «Chiudi»): stesso
+    // scenario strutturale del selettore delle sorgenti — il trailer è un overlay di
+    // MainActivity composto sopra il NavHost, questa scheda resta viva sotto di esso e
+    // nessuno dei suoi effetti di focus ri-parte. Smontando il pulsante di chiusura del
+    // trailer, il fallback di Compose lasciava il cursore sulla sinossi.
+    // Il segnale è un token DEDICATO (non quello delle sorgenti): ogni chiusura avvenuta
+    // mentre questa composizione è viva riporta il focus ESCLUSIVAMENTE su «Riproduci»,
+    // film o serie TV. Un token ereditato all'ingresso (apertura della scheda dopo una
+    // chiusura precedente) viene ignorato, come per le sorgenti.
+    var lastSeenTrailerDismissedToken by remember(displayMedia.id) {
+      mutableStateOf(trailerDismissedToken)
+    }
+    LaunchedEffect(trailerDismissedToken) {
+      if (trailerDismissedToken == lastSeenTrailerDismissedToken) return@LaunchedEffect
+      lastSeenTrailerDismissedToken = trailerDismissedToken
+      repeat(20) {
+        withFrameNanos { } // attende composizione + smontaggio dell'overlay e layout del nodo
+        try {
+          actionFocus.play.requestFocus()
+        } catch (_: Exception) {
+          // FocusRequester non ancora inizializzato: riprova al frame successivo.
+        }
+        if (isPlayFocused) {
+          listState.scrollToItem(0, 0)
+          return@LaunchedEffect
+        }
+        delay(32)
+      }
+      listState.scrollToItem(0, 0)
+    }
+
+    // Ritorno dal PLAYER: stesso scenario strutturale del trailer e del selettore sorgenti
+    // (overlay di MainActivity sopra il NavHost, scheda viva sotto di esso). Alla chiusura
+    // del player il nodo focalizzato dell'overlay viene smontato e il fallback di focus di
+    // Compose atterra sul primo nodo focusabile della scheda (la sinossi): la scheda non è
+    // mai stata smontata, quindi il suo effetto di focus iniziale non ri-parte.
+    //
+    // Al segnale il focus torna su «Riproduci» con l'attesa legata alla COMPOSIZIONE
+    // (`withFrameNanos`, nessun ritardo arbitrario) e con la conferma REALE del focus
+    // (`onPlayFocusChanged`): `requestFocus()` da solo può essere scartato mentre l'overlay
+    // viene smontato. Canale DEDICATO (non quello delle sorgenti o del trailer): un rientro
+    // dal player non consuma i loro ripristini e viceversa. Un token ereditato all'ingresso
+    // in composizione non tocca il focus (rientri da Consigliati/Cast/Produzione).
+    var lastSeenPlayerClosedToken by remember(displayMedia.id) {
+      mutableStateOf(playerClosedToken)
+    }
+    LaunchedEffect(playerClosedToken) {
+      if (playerClosedToken == lastSeenPlayerClosedToken) return@LaunchedEffect
+      lastSeenPlayerClosedToken = playerClosedToken
+      FocusTrace.log(
+        "DETAIL",
+        "playerClosedToken=$playerClosedToken: ripristino focus su Riproduci " +
+          "(media=${displayMedia.id}, playFocusedBefore=$isPlayFocused)"
+      )
+      var attempts = 0
+      while (!isPlayFocused && attempts < 20) {
+        attempts++
+        withFrameNanos { } // smontaggio dell'overlay + layout del nodo della scheda
+        try {
+          actionFocus.play.requestFocus()
+        } catch (_: Exception) {
+          // FocusRequester non ancora agganciato: si ritenta al frame successivo.
+        }
+        withFrameNanos { } // lascia applicare la richiesta e arrivare onFocusChanged
+      }
+      FocusTrace.log(
+        "DETAIL",
+        "playerClosedToken=$playerClosedToken: tentativi=$attempts " +
+          "isPlayFocused=$isPlayFocused"
+      )
+      if (isPlayFocused) {
+        // La pulsantiera torna interamente in vista (offset 0) con il focus confermato.
+        listState.scrollToItem(0, 0)
+      }
+    }
    CompositionLocalProvider(LocalBringIntoViewSpec provides guardedBringIntoViewSpec) {
    LazyColumn(
      state = listState,
@@ -950,14 +1130,17 @@ fun DetailScreen(
               // L'ultima visione salvata (o S1E1 per un titolo mai avviato) è autorevole:
               // se la stagione non è ancora caricata l'episodio viene ricostruito con gli
               // stessi numeri, mai sostituito da S1E1 (bug "riprende la prima puntata").
-              val resolved = EpisodeResumeResolver.resolve(
+              val resolved = EpisodeResumeResolver.resolveWithLookup(
                 media = displayMedia,
-                extraEpisodes = episodesForSeason
+                extraEpisodes = episodesForSeason,
+                progressOf = { season, episode ->
+                  MediaRepository.getEpisodeProgress(displayMedia.id, season, episode)
+                },
+                durationOf = { season, episode ->
+                  MediaRepository.getEpisodeDurationMs(displayMedia.id, season, episode)
+                }
               )
-              val savedProgress = resolved?.let {
-                MediaRepository.getEpisodeProgress(displayMedia.id, it.seasonNumber, it.episodeNumber)
-              } ?: 0L
-              resolved?.copy(currentProgressMs = savedProgress)
+              resolved
             } else null
 
             val playButtonLabel = if (displayMedia.type == MediaType.SERIE_TV && !isLiveChannel) {
@@ -976,7 +1159,8 @@ fun DetailScreen(
             }
 
             // Barra azioni: pillola Riproduci + Cuore (preferiti) + Occhio (visto) +
-            // Trailer YouTube interno (mai Intent verso l'app esterna).
+            // Trailer YouTube interno (mai Intent verso l'app esterna) +
+            // Seleziona fonte (solo in modalità Debrid, via onSelectSourceClick).
             // SU dalla barra: sale verso la sinossi se presente, altrimenti resta bloccato.
             MediaActionBar(
               playLabel = playButtonLabel,
@@ -986,12 +1170,21 @@ fun DetailScreen(
               isWatched = displayMedia.isWatched,
               onToggleWatched = { onToggleWatched?.invoke(displayMedia) },
               onPlayTrailer = { onPlayTrailer?.invoke(displayMedia) },
+              // Selezione manuale: il target è lo stesso episodio del pulsante
+              // Riproduci (resume), così il dialog mostra il contesto SxE corretto;
+              // per i film resumeEpisode è null.
+              onSelectSource = onSelectSourceClick?.let { callback ->
+                { callback(displayMedia, resumeEpisode) }
+              },
               focus = actionFocus,
               upTarget = if (hasFocusableSynopsis(synopsisText)) synopsisFocusRequester else FocusRequester.Cancel,
               onFocusChanged = { focused ->
                 isActionBarFocused = focused
               },
-              onPlayFocusChanged = { isPlayFocused = it }
+              onPlayFocusChanged = { focused ->
+                isPlayFocused = focused
+                FocusTrace.log("DETAIL", "Riproduci focus REALE=$focused token=$playerClosedToken")
+              }
             )
           }
         }
@@ -1022,6 +1215,13 @@ fun DetailScreen(
         ) {
           tabs.forEachIndexed { index, tab ->
             val isSelected = selectedTab == index
+            // La scheda dei metadati è pensata per i film: per una serie TV mantiene
+            // la stessa posizione ma con l'etichetta neutra «Dettagli».
+            val tabTitleRes = if (tab == DetailTab.DETTAGLI_FILM && isTvSeries) {
+              R.string.detail_tab_series_details
+            } else {
+              tab.titleRes
+            }
             TvFocusableBox(
               shape = RoundedCornerShape(8.dp),
               onClick = { selectedTab = index }
@@ -1036,7 +1236,7 @@ fun DetailScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
               ) {
                 Text(
-                  text = stringResource(tab.titleRes),
+                  text = stringResource(tabTitleRes),
                   color = if (isSelected || isFocused) NovaCyanBright else NovaTextSecondary,
                   fontSize = 16.sp,
                   fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium
@@ -1370,6 +1570,16 @@ fun DetailScreen(
               onFocusRestored = onClearTargetCompany,
 
 
+              modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
+            )
+          }
+        }
+        DetailTab.DETTAGLI_FILM -> {
+          item {
+            MovieDetailsSection(
+              details = extendedDetails,
+              media = displayMedia,
+              isTvSeries = isTvSeries,
               modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
             )
           }
@@ -1917,6 +2127,148 @@ fun EpisodeRowItem(
       }
     }
   }
+}
+
+/**
+ * Scheda «Dettagli Film»: elenco etichetta/valore con separatore sottile, senza card
+ * né decorazioni aggiuntive rispetto al riferimento TV.
+ *
+ * Fonti dei dati (tutte TMDB, nessun valore fisso):
+ *  - stato → [ExtendedMediaDetails.status];
+ *  - anno di uscita/prima messa in onda → data ISO stretta del dettaglio o, in
+ *    caricamento, la data già nota del [MediaItem] (mai un anno di comodo);
+ *  - durata → [ExtendedMediaDetails.runtimeMinutes] (runtime del film o durata di un
+ *    episodio per le serie);
+ *  - certificazione → [ExtendedMediaDetails.certification] (grezza, es. `PG-13`);
+ *  - paese → [ExtendedMediaDetails.originCountry].
+ *
+ * Una riga senza dato non viene composta. Ogni riga è focalizzabile: il D-pad può
+ * scorrere l'elenco e la riga a fuoco ha un'evidenza discreta (bordo/sfondo ciano),
+ * necessaria per l'accessibilità TV.
+ */
+@Composable
+fun MovieDetailsSection(
+  details: ExtendedMediaDetails?,
+  media: MediaItem,
+  isTvSeries: Boolean,
+  modifier: Modifier = Modifier
+) {
+  val status = DetailFactsMapper.status(details?.status)
+  val statusLabel = status?.let { stringResource(it.labelRes()) }
+  val releaseYear = DetailFactsMapper.releaseYear(details?.releaseDate ?: media.releaseDate)
+  val duration = DetailFactsMapper.formatDuration(details?.runtimeMinutes)
+  val certification = details?.certification?.takeIf { it.isNotBlank() }
+  val originCountry = details?.originCountry?.takeIf { it.isNotBlank() }
+
+  val statusRow = statusLabel?.let { stringResource(R.string.detail_info_status) to it }
+  val releaseLabel = stringResource(
+    if (isTvSeries) R.string.detail_info_first_air else R.string.detail_info_release
+  )
+  val runtimeLabel = stringResource(
+    if (isTvSeries) R.string.detail_info_episode_runtime else R.string.detail_info_runtime
+  )
+  val certificationLabel = stringResource(R.string.detail_info_certification)
+  val originCountryLabel = stringResource(R.string.detail_info_origin_country)
+
+  val rows = listOfNotNull(
+    statusRow,
+    releaseYear?.let { releaseLabel to it.toString() },
+    duration?.let { runtimeLabel to it },
+    certification?.let { certificationLabel to it },
+    originCountry?.let { originCountryLabel to it }
+  )
+
+  Column(modifier = modifier.fillMaxWidth()) {
+    Text(
+      text = stringResource(
+        if (isTvSeries) R.string.detail_series_details_title else R.string.detail_movie_details_title
+      ),
+      color = NovaTextPrimary,
+      fontSize = 22.sp,
+      fontWeight = FontWeight.Bold,
+      letterSpacing = 0.2.sp
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+
+    if (rows.isEmpty()) {
+      Text(
+        text = stringResource(R.string.detail_info_empty),
+        color = NovaTextMuted,
+        fontSize = 14.sp,
+        modifier = Modifier.padding(vertical = 12.dp)
+      )
+    } else {
+      rows.forEachIndexed { index, (label, value) ->
+        MovieDetailFactRow(
+          label = label,
+          value = value,
+          showDivider = index < rows.lastIndex
+        )
+      }
+    }
+  }
+}
+
+/** Riga informativa focalizzabile della scheda «Dettagli Film». */
+@Composable
+private fun MovieDetailFactRow(
+  label: String,
+  value: String,
+  showDivider: Boolean
+) {
+  var isFocused by remember { mutableStateOf(false) }
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(6.dp))
+      .onFocusChanged { isFocused = it.isFocused }
+      .focusable()
+      .background(if (isFocused) NovaCyan.copy(alpha = 0.12f) else Color.Transparent)
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 10.dp, vertical = 14.dp),
+      verticalAlignment = Alignment.Top
+    ) {
+      Text(
+        text = label,
+        color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+        fontSize = 15.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.weight(0.28f)
+      )
+      Text(
+        text = value,
+        color = NovaTextPrimary,
+        fontSize = 15.sp,
+        lineHeight = 20.sp,
+        modifier = Modifier.weight(0.72f)
+      )
+    }
+    if (showDivider) {
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 10.dp)
+          .height(1.dp)
+          .background(Color.White.copy(alpha = 0.12f))
+      )
+    }
+  }
+}
+
+/** Etichetta localizzata dello stato TMDB normalizzato. */
+private fun DetailFactsMapper.TitleStatus.labelRes(): Int = when (this) {
+  DetailFactsMapper.TitleStatus.RELEASED -> R.string.detail_status_released
+  DetailFactsMapper.TitleStatus.POST_PRODUCTION -> R.string.detail_status_post_production
+  DetailFactsMapper.TitleStatus.IN_PRODUCTION -> R.string.detail_status_in_production
+  DetailFactsMapper.TitleStatus.PLANNED -> R.string.detail_status_planned
+  DetailFactsMapper.TitleStatus.CANCELED -> R.string.detail_status_canceled
+  DetailFactsMapper.TitleStatus.RUMORED -> R.string.detail_status_rumored
+  DetailFactsMapper.TitleStatus.RETURNING_SERIES -> R.string.detail_status_returning_series
+  DetailFactsMapper.TitleStatus.ENDED -> R.string.detail_status_ended
+  DetailFactsMapper.TitleStatus.PILOT -> R.string.detail_status_pilot
 }
 
 @Composable

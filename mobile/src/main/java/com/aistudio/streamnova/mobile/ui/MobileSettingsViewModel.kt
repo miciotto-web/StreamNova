@@ -17,6 +17,7 @@ import com.example.data.prefs.PreferredResolution
 import com.example.data.prefs.SettingsRepository
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
+import com.example.data.prefs.SubtitleOpacity
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.TargetBufferOption
@@ -297,6 +298,9 @@ class MobileSettingsViewModel : ViewModel() {
 
   fun setSubtitleBackground(value: SubtitleBackground) =
     SettingsRepository.setSubtitleBackground(value)
+
+  fun setSubtitleOpacity(value: SubtitleOpacity) =
+    SettingsRepository.setSubtitleOpacity(value)
 
   fun setSubtitlePosition(value: SubtitlePosition) =
     SettingsRepository.setSubtitlePosition(value)

@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasRequestFocusAction
+import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -108,8 +109,10 @@ class SettingsTmdbGenreFallbackRowTest {
       rule.waitForIdle()
       pressOk()
       rule.runOnIdle { assertFalse(AppSettingsRepository.tmdbGenreFallbackEnabled.value) }
+      // Lo stato è veicolato dallo switch e dalla sua descrizione semantica (lo stato
+      // "OFF" non è più un testo separato nella riga).
       rule.onNode(
-        hasRequestFocusAction() and hasAnyDescendant(hasText(SWITCH_LABEL)) and hasAnyDescendant(hasText("OFF"))
+        hasRequestFocusAction() and hasAnyDescendant(hasText(SWITCH_LABEL)) and hasStateDescription("OFF")
       ).assertExists()
 
       switchRow().requestFocus()

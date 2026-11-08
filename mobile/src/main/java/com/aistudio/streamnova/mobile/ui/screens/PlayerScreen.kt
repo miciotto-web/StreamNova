@@ -112,6 +112,7 @@ import com.example.data.prefs.BackBufferOption
 import com.example.data.prefs.DecoderFallbackMode
 import com.example.data.prefs.InitialBufferOption
 import com.example.data.prefs.PlaybackSettings
+import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.SettingsRepository
 import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.TargetBufferOption
@@ -120,6 +121,9 @@ import com.example.data.streaming.CacheState
 import com.example.data.streaming.StreamSource
 import com.example.ui.screens.player.CustomDefaultTrackNameProvider
 import com.example.ui.screens.player.NuvioRenderersFactory
+import com.example.data.prefs.StreamingEngineMode
+import com.example.ui.screens.player.DebridLoadingScreen
+import com.example.ui.screens.player.DebridLoadingOverlay
 import com.example.ui.screens.player.NuvioTrackSelector
 import com.example.ui.screens.player.PlayerHttpDataSource
 import com.example.ui.screens.player.PlayerLoadErrorHandlingPolicy
@@ -223,20 +227,47 @@ fun MobilePlayerScreen(
     when {
       state.loading -> {
         PlayerStatusScaffold(title = state.media?.title.orEmpty(), onBack = onBack) {
-          Column(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-          ) {
-            CircularProgressIndicator(color = NovaCyan)
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-              text = stringResource(
-                if (manualSelection) R.string.player_sources_searching else R.string.player_loading
-              ),
-              color = NovaTextMuted,
-              fontSize = 14.sp
+          val engineMode by AppSettingsRepository.streamingEngineMode.collectAsStateWithLifecycle()
+          val loadingMedia = state.media
+          // Percorso Debrid: schermata cinematografica (poster a tutto schermo + logo
+          // pulsante), stessa esperienza della TV 1.0.5. Selezione manuale o percorso
+          // HTTP: indicatore compatto come prima.
+          val debridStartup = !manualSelection &&
+            engineMode == StreamingEngineMode.DEBRID_TORBOX &&
+            loadingMedia != null
+          if (debridStartup && loadingMedia != null) {
+            val artwork = remember(
+              loadingMedia.id,
+              loadingMedia.logoUrl,
+              loadingMedia.backdropUrl,
+              loadingMedia.posterUrl,
+              loadingMedia.originalTitle,
+              loadingMedia.title
+            ) { DebridLoadingScreen.artworkOf(loadingMedia) }
+            DebridLoadingOverlay(
+              backgroundUrl = artwork.backgroundUrl,
+              logoUrl = artwork.logoUrl,
+              fallbackTitle = artwork.fallbackTitle,
+              statusText = stringResource(
+                if (state.source == null) R.string.player_sources_searching else R.string.player_loading
+              )
             )
+          } else {
+            Column(
+              modifier = Modifier.fillMaxSize(),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.Center
+            ) {
+              CircularProgressIndicator(color = NovaCyan)
+              Spacer(modifier = Modifier.height(12.dp))
+              Text(
+                text = stringResource(
+                  if (manualSelection) R.string.player_sources_searching else R.string.player_loading
+                ),
+                color = NovaTextMuted,
+                fontSize = 14.sp
+              )
+            }
           }
         }
       }

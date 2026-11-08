@@ -15,6 +15,7 @@ import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,6 +56,7 @@ import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SkipNext
@@ -70,6 +73,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -96,9 +100,12 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -119,7 +126,10 @@ import com.example.ui.screens.player.SeekPreviewRegistry
 import com.example.ui.screens.player.SeekPreviewState
 import com.example.ui.screens.player.PlayerIntroUtils
 import com.example.domain.model.IntroWindow
+import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.IntroSkipRepository
+import com.example.data.repository.ParentalGuideRepository
+import com.example.data.repository.ParentalGuideSummary
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
@@ -144,11 +154,18 @@ import com.example.data.model.SubtitleTrack
 import com.example.data.model.VideoResolution
 import com.example.data.prefs.PreferredResolution
 import com.example.data.prefs.SubtitleBackground
+import com.example.data.prefs.SubtitleOpacity
+import com.example.data.prefs.SubtitleSize
+import com.example.data.prefs.withOpacity
+import com.example.data.prefs.PersistentSubtitleSelectionPolicy
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklEpisodePayload
 import com.example.data.repository.SimklMediaPayload
 import com.example.data.streaming.diagnostics.StreamDiagnostics
 import com.example.ui.screens.player.SimklScrobbler
+import com.example.ui.screens.player.subtitleBackgroundLabel
+import com.example.ui.screens.player.subtitleOpacityLabel
+import com.example.ui.screens.player.subtitleSizeLabel
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCyan
@@ -160,17 +177,25 @@ import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import com.example.ui.util.FocusTrace
 import com.example.ui.util.streamUnavailableMessage
 import java.util.Locale
 import com.example.ui.viewmodel.StreamNovaViewModel
 import com.example.ui.viewmodel.StreamResolutionState
 import com.example.ui.viewmodel.OnlineSubtitleDownloadState
+import com.example.ui.viewmodel.NextEpisodeAutoplayState
 import com.example.data.opensubtitles.OpenSubtitlesDownloadError
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Auto-hide dei controlli del player dopo N ms di inattività con il telecomando. */
 private const val CONTROLS_HIDE_DELAY_MS = 4_000L
+
+/**
+ * Durata di visualizzazione dell'overlay Parental Guide ("Avvisi sui contenuti"):
+ * ingresso, ~7,5 secondi a video, uscita con dissolvenza.
+ */
+private const val PARENTAL_GUIDE_DISPLAY_MS = 7_500L
 
 /**
  * Passo della navigazione temporale ◀ / ▶ con il focus sulla TIMELINE dei controlli.
@@ -212,16 +237,21 @@ private const val MAX_SUBTITLE_ERROR_RECOVERIES = 2
 /**
  * FASE 3.4 "Sfondo dei sottotitoli": costruisce il CaptionStyleCompat da applicare al
  * SubtitleView Media3 (API disponibile in 1.5.1: SubtitleView.setStyle). Le altre
- * proprietà restano quelle del default Media3 (testo bianco, nessun bordo, window
- * trasparente): varia solo il colore di sfondo dietro al testo, così che:
- * - NESSUNO: alpha 0 → SubtitlePainter non disegna alcun background;
- * - NERO: nero opaco; NERO SEMI-TRASPARENTE: nero con trasparenza (50%).
+ * proprietà restano quelle del default Media3 (nessun bordo, window trasparente).
+ *
+ * - il colore di sfondo è quello scelto, con l'opacità utente applicata al canale alpha;
+ * - "Nessuno" resta trasparente (alpha 0 → SubtitlePainter non disegna il riquadro);
+ * - il colore del testo è adattivo: bianco su Nero/Blu/nessuno sfondo, nero su Bianco,
+ *   così il testo resta leggibile con qualunque combinazione.
  */
-private fun subtitleCaptionStyleFor(background: SubtitleBackground): CaptionStyleCompat {
+internal fun subtitleCaptionStyleFor(
+  background: SubtitleBackground,
+  opacity: SubtitleOpacity
+): CaptionStyleCompat {
   val base = CaptionStyleCompat.DEFAULT
   return CaptionStyleCompat(
-    base.foregroundColor,
-    background.backgroundColor,
+    background.textColor,
+    background.withOpacity(opacity),
     base.windowColor,
     base.edgeType,
     base.edgeColor,
@@ -271,6 +301,52 @@ internal fun resolveVideoFocusTarget(
   return if (isIntroActive) VideoFocusTarget.INTRO_BANNER else VideoFocusTarget.IDLE
 }
 
+/** Azione eseguita dal BACK del telecomando nel player. */
+internal enum class PlayerBackAction {
+  /** Un modale del player è aperto: il BACK chiude quello e nient'altro. */
+  DISMISS_MODALS,
+
+  /** Anteprima di scrubbing aperta o in settling: il BACK annulla la seek e il player resta aperto. */
+  CANCEL_SCRUB,
+
+  /** Banner "Salta intro" a video: il BACK lo dismette, il player resta aperto. */
+  DISMISS_SKIP_INTRO,
+
+  /** Overlay "Prossimo Episodio" a video: il BACK lo nasconde, il player resta aperto. */
+  DISMISS_NEXT_EPISODE,
+
+  /** Nessuna superficie contestuale da chiudere: il BACK chiude il player. */
+  CLOSE_PLAYER
+}
+
+/**
+ * Decide l'azione del BACK a partire dallo stato del player. Funzione PURA, testabile
+ * senza Compose.
+ *
+ * Regola: **una sola pressione fa una sola cosa**, con la priorità delle superfici
+ * contestuali a video. L'anteprima di scrubbing conta come superficie aperta sia mentre
+ * l'utente sta scegliendo la posizione ([activeScrub]) sia durante il settling
+ * ([seekSettling]): in quest'ultimo caso la seek è già stata applicata, ma l'overlay è
+ * ancora a video e il BACK deve annullarla riportando il player al punto di partenza.
+ *
+ * Modale aperto, banner "Salta intro" e overlay "Prossimo Episodio" conservano la
+ * priorità che avevano prima di questa fase. Senza alcuna di queste superfici il BACK
+ * chiude il player come sempre.
+ */
+internal fun resolvePlayerBackAction(
+  anyModalOpen: Boolean,
+  activeScrub: Boolean,
+  seekSettling: Boolean,
+  skipIntroVisible: Boolean,
+  nextEpisodePromptVisible: Boolean
+): PlayerBackAction = when {
+  anyModalOpen -> PlayerBackAction.DISMISS_MODALS
+  activeScrub || seekSettling -> PlayerBackAction.CANCEL_SCRUB
+  skipIntroVisible -> PlayerBackAction.DISMISS_SKIP_INTRO
+  nextEpisodePromptVisible -> PlayerBackAction.DISMISS_NEXT_EPISODE
+  else -> PlayerBackAction.CLOSE_PLAYER
+}
+
 /**
  * Risale alla [Activity] ospite anche quando il [Context] è un wrapper
  * (ContextThemeWrapper/ContextWrapper), così da poter gestire i flag della
@@ -292,7 +368,23 @@ fun PlayerScreen(
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
-  val playbackState by viewModel.playbackState.collectAsState()
+  // Fase 6.1: il polling del player chiama `updatePlaybackPosition` ogni 500 ms. Se lo stato
+  // raccolto fosse letto direttamente nel corpo della schermata, OGNI tick la
+  // ricomporrebbe per intero (media, stream, sottotitoli, AndroidView inclusi) anche se
+  // l'unica cosa cambiata è la posizione — che ora vive in `playbackClock` e viene
+  // letta solo dai composable foglia.
+  //
+  // `livePlaybackState` è lo stato realmente emesso dal ViewModel (posizione inclusa):
+  // serve ai punti che devono conoscere la posizione corrente quando eseguono (creazione
+  // player, cambio episodio/sorgente). `playbackState` è la PROIEZIONE usata in
+  // composizione: identica, ma con i soli campi "tick" azzerati. `derivedStateOf` usa
+  // l'uguaglianza strutturale, quindi finché cambia solo la posizione i lettori NON
+  // vengono invalidati.
+  val playbackStateFlow = viewModel.playbackState
+  val livePlaybackState by playbackStateFlow.collectAsState()
+  val playbackState by remember(playbackStateFlow) {
+    derivedStateOf { playbackStateWithoutPosition(livePlaybackState) }
+  }
   val playbackSettings by viewModel.playbackSettings.collectAsState()
 
   /**
@@ -308,9 +400,15 @@ fun PlayerScreen(
 
   val showSourceDialog by viewModel.showSourceDialog.collectAsState()
   val streamResolutionState by viewModel.streamResolutionState.collectAsState()
+  // Motore di streaming attivo: distingue il percorso di avvio Debrid dal playback HTTP.
+  // In DEBRID_TORBOX il resolver esegue solo addon Stremio + TorBox, quindi ogni sorgente
+  // della sessione appartiene a quel percorso.
+  val streamingEngineMode by viewModel.streamingEngineMode.collectAsState()
   val onlineSubtitles by viewModel.onlineSubtitles.collectAsState()
   val isOnlineSubtitlesLoading by viewModel.isOnlineSubtitlesLoading.collectAsState()
   val onlineSubtitleDownload by viewModel.onlineSubtitleDownload.collectAsState()
+  val restoredPersistentSubtitle by viewModel.restoredPersistentSubtitle.collectAsState()
+  val persistentSubtitleRestoreFailed by viewModel.persistentSubtitleRestoreFailed.collectAsState()
 
   // ── Selettore sorgenti interno al player ───────────────────────────────
   // Sorgenti valide disponibili per il titolo corrente (aggiornate in modo
@@ -341,12 +439,11 @@ fun PlayerScreen(
     mediaType = media.type.name
   ) || media.episodes.isNotEmpty() || media.type.labelItalian.contains("serie", ignoreCase = true)
 
-  // Episodio attivo (se TV Show ma episode è null, cerca il primo o l'ultimo guardato)
-  val currentEp = episode ?: if (isTvShow) {
-    media.episodes.firstOrNull {
-      it.seasonNumber == (media.lastWatchedSeason ?: 1) &&
-      it.episodeNumber == (media.lastWatchedEpisode ?: 1)
-    } ?: media.episodes.firstOrNull()
+  // Episodio attivo. Senza episodio esplicito, la ripresa usa l'episodio salvato
+  // (stagione/episodio), ricostruendolo se non è nella lista locale troncata: mai S1E1.
+  // I canali LIVE sono tipizzati SERIE_TV ma non hanno episodi: nessun S1E1 sintetico.
+  val currentEp = episode ?: if (isTvShow && !viewModel.isLiveChannel(media.id)) {
+    EpisodeResumeResolver.resolve(media)
   } else null
 
   // Payload SIMKL: `currentEp` (non il solo `episode`) perché una serie riprodotta senza
@@ -384,8 +481,16 @@ fun PlayerScreen(
   // sotto diventa `true` solo se il buffering dura almeno REVEAL_DELAY_MS e torna subito
   // `false` quando la riproduzione riparte (o durante scrubbing/errore).
   var showBufferingOverlay by remember { mutableStateOf(false) }
-  var currentPosition by remember { mutableLongStateOf(playbackState.currentPositionMs) }
-  var totalDuration by remember { mutableLongStateOf(playbackState.durationMs.coerceAtLeast(1L)) }
+  // Fase 6.1: posizione e durata NON sono più `MutableState` del corpo di questa schermata.
+  // Vivono in un holder `@Stable` letto solo dai figli che le mostrano (timeline, minutaggio)
+  // e dai flag booleani derivati: il tick da 500 ms non invalida più l'intera PlayerScreen.
+  val playbackClock = remember {
+    PlayerPlaybackClock(
+      // Posizione di ripresa letta dallo stato REALE (la proiezione la azzera).
+      initialPositionMs = viewModel.playbackState.value.currentPositionMs,
+      initialDurationMs = playbackState.durationMs.coerceAtLeast(1L)
+    )
+  }
   var isPlaying by remember { mutableStateOf(true) }
   var areControlsVisible by remember { mutableStateOf(true) }
   // Scrubbing a schermo intero (◀ / ▶ con i controlli nascosti): stato di anteprima
@@ -428,6 +533,13 @@ fun PlayerScreen(
   // risoluzione" e la transizione restava bloccata sul caricamento.
   val isSwitchingEpisode by viewModel.isSwitchingEpisode.collectAsState()
 
+  // Stato esplicito dell'autoplay del prossimo episodio: durante la ricerca della stessa
+  // fonte Debrid, e dopo un fallimento terminale, popup e countdown NON devono riarmarsi.
+  val nextEpisodeAutoplayState by viewModel.nextEpisodeAutoplayState.collectAsState()
+  val isAutoplayBlocked = nextEpisodeAutoplayState.blocksAutomaticAdvance
+  val isAutoplayUnavailable = nextEpisodeAutoplayState == NextEpisodeAutoplayState.SOURCE_UNAVAILABLE ||
+    nextEpisodeAutoplayState == NextEpisodeAutoplayState.MANUAL_SELECTION_REQUIRED
+
   // Risoluzione video rilevata in tempo reale da ExoPlayer (es. 1080p, 720p, 4K)
   var detectedResolution by remember { mutableStateOf("") }
   var selectedQualityLabel by remember { mutableStateOf("Auto") }
@@ -435,6 +547,42 @@ fun PlayerScreen(
   // Stato per l'applicazione della "Risoluzione preferita" persistente (una volta per episodio)
   var playerReady by remember { mutableStateOf(false) }
   var initialQualityApplied by remember { mutableStateOf(false) }
+
+  // Schermata di caricamento cinematografica del percorso Debrid: poster del titolo a
+  // tutto schermo + logo originale pulsante + dicitura localizzata. La decisione è pura
+  // e testabile (DebridLoadingScreen): qui si leggono solo gli stati già esistenti.
+  //  - `isDebridSource`: motore Debrid e sorgente con identità Debrid;
+  //  - `playerReady`: false dal prepare fino al primo STATE_READY, quindi distingue il
+  //    caricamento INIZIALE dagli stalli di una riproduzione già avviata;
+  //  - errore o scrubbing: la scena non deve mai coprire lo stato di errore/anteprima.
+  val isDebridStartupSource = DebridLoadingScreen.isDebridStartup(
+    source = playbackState.currentSource,
+    engineMode = streamingEngineMode
+  )
+  // Impostazione "Mostra overlay di caricamento": OFF disattiva la scena cinematografica
+  // e lascia il comportamento alternativo già previsto dal player (indicatore compatto
+  // con spinner + stato di caricamento). Nessun'altra condizione è alterata.
+  val showDebridLoadingScreen = playbackSettings.loadingOverlayEnabled &&
+    DebridLoadingScreen.shouldShow(
+      isDebridSource = isDebridStartupSource,
+      isBuffering = isBuffering,
+      isPlayerReady = playerReady,
+      hasPlaybackError = playbackErrorMessage != null,
+      isScrubbing = isScrubbing
+    )
+  // Artwork ricavato dai soli metadati già in sessione: nessuna chiamata TMDB aggiuntiva
+  // all'avvio del player.
+  val debridLoadingArtwork = remember(
+    media.id,
+    media.logoUrl,
+    media.backdropUrl,
+    media.posterUrl,
+    media.originalTitle,
+    media.title
+  ) {
+    DebridLoadingScreen.artworkOf(media)
+  }
+
   // Stato per il passaggio automatico all'episodio successivo a fine riproduzione
   var playbackEnded by remember { mutableStateOf(false) }
   // Sessione fallita/non conclusa: errore ExoPlayer, streamUrl assente/vuoto o errore di
@@ -448,19 +596,33 @@ fun PlayerScreen(
   // Overlay "Prossimo Episodio": attivo negli ultimi 35 secondi o a STATE_ENDED.
   // Durante lo scrubbing resta fuori schermo: nessun overlay e nessun countdown di
   // auto-avanzamento mentre l'utente sta solo cercando nel contenuto.
-  // Durante la transizione al prossimo episodio (`isSwitchingEpisode`) l'overlay è
-  // sempre nascosto: posizione e durata sono ancora quelle dell'episodio precedente e
-  // non devono riattivare il countdown mentre la nuova sorgente viene risolta.
-  val isNextEpisodePromptVisible = !isScrubbing && NextEpisodePromptUtils.shouldShow(
-    positionMs = currentPosition,
-    durationMs = totalDuration,
+  // Fase 6.1: il flag è DERIVATO dalla posizione, quindi questa schermata si ricompone solo
+  // quando l'overlay deve davvero comparire/scomparire, non ad ogni tick del polling.
+  val isNextEpisodePromptVisible = rememberNextEpisodePromptVisible(
+    clock = playbackClock,
+    isScrubbing = isScrubbing,
     playbackEnded = playbackEnded,
     isTvShow = isTvShow,
     hasNextEpisode = nextEpisode != null,
     dismissed = nextEpisodeDismissed,
     playbackFailed = playbackFailed,
-    switchingEpisode = isSwitchingEpisode
+    // Senza uno stream per l'episodio corrente il clock è quello dell'episodio
+    // precedente (fermo a fine video): mai rianimare il popup su quel dato.
+    hasActiveStream = playbackState.streamUrl != null,
+    autoplayBlocked = isAutoplayBlocked,
+    sourceSelectionActive = isSourceSelectionActive
   )
+
+  // Card "Nessuna fonte disponibile per il prossimo episodio": visibile dopo il fallimento
+  // terminale, ma non durante una nuova ricerca manuale (spinner) né sopra la schermata
+  // di scelta delle sorgenti (che ha il proprio focus).
+  val isNextEpisodeUnavailableVisible = NextEpisodePromptUtils.shouldShowUnavailableCard(
+    autoplayState = nextEpisodeAutoplayState,
+    sourceSelectionActive = isSourceSelectionActive,
+    resolutionLoading = streamResolutionState is StreamResolutionState.Loading
+  )
+  // Una sola nozione di "overlay del prossimo episodio" per focus e gestione tasti.
+  val isNextEpisodeOverlayVisible = isNextEpisodePromptVisible || isNextEpisodeUnavailableVisible
 
   // Aspect ratio / ResizeMode
   var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
@@ -469,6 +631,11 @@ fun PlayerScreen(
   // Messaggio discreto del cambio automatico di sorgente (fallback su errore
   // definitivo): nessun dialog, nessuna pausa della riproduzione.
   var sourceSwitchNotice by remember { mutableStateOf<String?>(null) }
+
+  // Avviso non bloccante quando il sottotitolo OpenSubtitles salvato per questo
+  // contenuto non è più recuperabile: nessuna traccia alternativa viene selezionata
+  // automaticamente, la riproduzione non viene interrotta.
+  var subtitleRestoreNotice by remember { mutableStateOf(false) }
 
   // Velocità di riproduzione
   var currentSpeed by remember { mutableFloatStateOf(1.0f) }
@@ -514,6 +681,9 @@ fun PlayerScreen(
   // necessariamente sul banner visibile.
   val introBannerFocusRequester = remember { FocusRequester() }
   val nextEpisodeFocusRequester = remember { FocusRequester() }
+  // Requester dedicato al messaggio "fonte non disponibile": il focus D-pad finisce
+  // sull'azione di scelta manuale, non sui controlli coperti sotto la card.
+  val nextEpisodeUnavailableFocusRequester = remember { FocusRequester() }
   val idleFocusRequester = remember { FocusRequester() }
   // Requester DEDICATO al comando "Sorgente video" dell'HUD: il focus va ripristinato
   // qui alla chiusura del selettore (D-pad su Android TV).
@@ -536,15 +706,8 @@ fun PlayerScreen(
   val skipIntroOkReleasePending = remember { mutableStateOf(false) }
   var hideTimerTick by remember { mutableLongStateOf(0L) }
 
-  // BACK gerarchico (livello 1): finché è aperto un modale, il tasto Back chiude SOLO il modale.
-  BackHandler(enabled = anyModalOpen) {
-    Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler (modale)")
-    Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
-    showTrackQuickPanel = false
-    showSubtitleModal = false
-    showQualityModal = false
-    showSpeedModal = false
-  }
+  // Il BACK del telecomando è gestito in un unico punto (vedi `performPlayerBack` più sotto):
+  // qui non serve più un BackHandler dedicato ai modali.
 
   val streamHeaders = playbackState.streamHeaders
   // FASE 3.3: frazione altezza per la dimensione testo sottotitoli (lettura tracciata in
@@ -552,10 +715,35 @@ fun PlayerScreen(
   val subtitleTextSizeFraction = playbackSettings.subtitleSize.textSizeFraction
   // FASE 3.4: stile caption per lo sfondo dei sottotitoli (lettura tracciata in
   // composizione: qualsiasi cambio preferenza ri-esegue l'update del PlayerView).
-  val subtitleCaptionStyle = subtitleCaptionStyleFor(playbackSettings.subtitleBackground)
+  // Fase 6.1: l'istanza è memorizzata sulla preferenza di sfondo: ricrearla ad ogni
+  // ricomposizione rendeva impossibile riconoscere "stesso stile" nell'update della vista.
+  val subtitleCaptionStyle = remember(
+    playbackSettings.subtitleBackground,
+    playbackSettings.subtitleOpacity
+  ) {
+    subtitleCaptionStyleFor(
+      playbackSettings.subtitleBackground,
+      playbackSettings.subtitleOpacity
+    )
+  }
   // FASE 3.5: frazione per la posizione verticale dei sottotitoli (lettura tracciata in
   // composizione: qualsiasi cambio preferenza ri-esegue l'update del PlayerView).
   val subtitleBottomPaddingFraction = playbackSettings.subtitlePosition.bottomPaddingFraction
+  // Fase 6.1: valori effettivamente applicati al SubtitleView, confrontabili per valore, e
+  // guardia che evita di riapplicare stile/dimensione/posizione (e di loggare) quando non
+  // sono cambiati. La guardia è per-istanza di PlayerView: una vista ricreata riapplica.
+  val subtitleStyleSnapshot = remember(
+    subtitleTextSizeFraction,
+    subtitleCaptionStyle,
+    subtitleBottomPaddingFraction
+  ) {
+    SubtitleStyleSnapshot(
+      textSizeFraction = subtitleTextSizeFraction,
+      backgroundColor = subtitleCaptionStyle.backgroundColor,
+      bottomPaddingFraction = subtitleBottomPaddingFraction
+    )
+  }
+  val subtitleStyleApplier = remember { SubtitleStyleApplier() }
   // Sorgente riproducibile SOLO se reale. Per un titolo TMDB la mancanza di stream NON
   // deve mai ripiegare su un video demo di un altro contenuto: in quel caso videoUrl = null.
   // Il fallback al video seed è consentito esclusivamente per gli elementi demo reali.
@@ -586,18 +774,32 @@ fun PlayerScreen(
     Log.d("THE_PITT_PLAYER", "PlayerScreen: media.tmdbId=318508, videoUrl=$videoUrl, streamUrl=${playbackState.streamUrl}, isDemoSeed=${MediaRepository.isDemoSeedItem(media.id)}")
   }
 
+  // Fase REALE del caricamento (impostazione "Mostra stato di caricamento"): derivata
+  // SOLO da eventi già tracciati dal player e dal resolver delle sorgenti, nessuna
+  // percentuale o tempo simulato. Ricalcolata a ogni cambio dei flag sottostanti.
+  val playerLoadingPhase = PlayerLoadingStatus.resolvePhase(
+    hasPlaybackError = playbackErrorMessage != null,
+    hasSourceUrl = videoUrl != null,
+    isPlayerReady = playerReady,
+    isBuffering = isBuffering
+  )
+
   // Factory HTTP STABILE: le intestazioni della sorgente attiva possono cambiare
   // (cambio manuale di sorgente dal player) senza dover ricreare l'ExoPlayer.
   //
-  // Trasporto OkHttp e NON DefaultHttpDataSource: quest'ultimo usa HttpURLConnection,
-  // il cui canale interruptibile fa fallire la cancellazione del loader durante una
-  // seek (IllegalStateException "Unbalanced enter/exit" → "Unexpected runtime error").
-  // Le "default request properties" vengono applicate al momento della creazione del
-  // DataSource (cioè al prepare()): aggiornarle in place mantiene la STESSA istanza di
-  // player ed evita duplicazioni/ricreazioni. Con la ricreazione il player ripartirebbe
-  // da zero (nuovo buffering, decoder da riavviare, posizione persa).
+  // Il trasporto e' OkHttpDataSource (vedi PlayerHttpDataSourceFactory): con
+  // DefaultHttpDataSource ogni seek all'indietro fuori buffer poteva chiudere la
+  // connessione dal thread della seek (Thread.interrupt del Loader), facendo
+  // sollevare a Okio "Unbalanced enter/exit" e a Media3
+  // "ExoPlaybackException: Unexpected runtime error".
+  //
+  // La factory applica le "default request properties" al momento della
+  // creazione del DataSource (cioe' al prepare()): aggiornarle in place mantiene
+  // la STESSA istanza di player e evita duplicazioni/ricreazioni. Con la
+  // ricreazione il player ripartirebbe da zero (nuovo buffering, decoder da
+  // riavviare, posizione persa).
   val httpDataSourceFactory = remember {
-    PlayerHttpDataSource.createFactory(DEFAULT_HTTP_USER_AGENT)
+    PlayerHttpDataSourceFactory(initialUserAgent = DEFAULT_HTTP_USER_AGENT)
   }
   // Factory schema-aware usata dal player per TUTTE le sorgenti: http(s) viene delegato
   // alla [httpDataSourceFactory] sopra (headers e User-Agent aggiornati in place), mentre
@@ -606,7 +808,7 @@ fun PlayerScreen(
   // su `file://`, e il fallimento della traccia esterna verrebbe recuperato togliendo
   // proprio il sottotitolo appena scaricato.
   val playbackDataSourceFactory = remember {
-    DefaultDataSource.Factory(context, httpDataSourceFactory)
+    DefaultDataSource.Factory(context, httpDataSourceFactory.asFactory())
   }
   // Le intestazioni vengono aggiornate DURANTE la composizione (non in un
   // SideEffect): quando il player viene ricreato (es. passaggio HLS <-> link
@@ -614,8 +816,7 @@ fun PlayerScreen(
   // composizione, e deve quindi trovare gia' le intestazioni aggiornate.
   // Il blocco `remember` e' dichiarato PRIMA del `remember` che crea il player.
   remember(streamHeaders) {
-    httpDataSourceFactory.setUserAgent(streamHeaders["User-Agent"] ?: DEFAULT_HTTP_USER_AGENT)
-    httpDataSourceFactory.setDefaultRequestProperties(streamHeaders)
+    httpDataSourceFactory.updateHeaders(streamHeaders, DEFAULT_HTTP_USER_AGENT)
   }
 
   // Sottotitoli esterni della sorgente attiva: vengono solo allegati al Media3
@@ -818,7 +1019,8 @@ fun PlayerScreen(
           loadStreamOnPlayer(
             player = this,
             url = videoUrl,
-            positionMs = playbackState.currentPositionMs,
+            // Stato REALE: la proiezione di composizione azzera la posizione.
+            positionMs = viewModel.playbackState.value.currentPositionMs,
             source = "creazione-player"
           )
         } else if (isCurrentlySwitching) {
@@ -865,7 +1067,7 @@ fun PlayerScreen(
     }
     Log.d(
       "StreamNovaIntro",
-      "Stato intro: isTvShow=$isTvShow, introWindow=$resolved, currentPosition=$currentPosition, playbackState=${exoPlayer.playbackState}"
+      "Stato intro: isTvShow=$isTvShow, introWindow=$resolved, currentPosition=${playbackClock.positionMs}, playbackState=${exoPlayer.playbackState}"
     )
   }
 
@@ -1427,6 +1629,14 @@ fun PlayerScreen(
    * Applica al TrackSelector Media3 le preferenze persistenti "Lingua audio preferita":
    * mapping su codici ISO 639-1 e 639-2.
    * Rimuove eventuali override manuali per consentire la corretta selezione automatica.
+   *
+   * Quando le tracce sono già note, la sola lista di lingue preferite non basta se
+   * il contenitore non espone un codice ISO sulla traccia italiana (caso frequente
+   * nei file MKV: traccia con etichetta "Italiano"/"Italian" e lingua `und`).
+   * In quel caso viene applicato un override esplicito sulla traccia riconosciuta,
+   * così la riproduzione non parte in inglese. Un override viene mantenuto anche
+   * quando la traccia preferita è già selezionata solo per etichetta: senza di esso
+   * Media3 tornerebbe alla prima traccia alla successiva rivalutazione.
    */
   fun applyAudioAutoSelection(preferredLanguage: String) {
     val languages = mapPreferredAudioLanguages(preferredLanguage)
@@ -1438,6 +1648,26 @@ fun PlayerScreen(
       builder.setPreferredAudioLanguages()
     } else {
       builder.setPreferredAudioLanguages(*languages.toTypedArray())
+      val tracks = exoPlayer.currentTracks
+      val selected = PlayerAudioTrackSelector.findSelectedAudioTrack(tracks)
+      // La selezione automatica è già corretta per CODICE lingua: Media3 la manterrà.
+      // Se invece la corrispondenza è solo per etichetta, l'override va conservato.
+      val selectedMatchesByCode = selected != null &&
+        PlayerAudioTrackSelector.matchesLanguageCode(selected.format.language, languages)
+      if (!selectedMatchesByCode) {
+        val preferredTrack = PlayerAudioTrackSelector.findPreferredAudioTrack(tracks, languages)
+        if (preferredTrack != null) {
+          builder.setOverrideForType(
+            TrackSelectionOverride(preferredTrack.group.mediaTrackGroup, preferredTrack.trackIndex)
+          )
+          Log.i(
+            "PlayerScreen",
+            "Audio: traccia preferita applicata esplicitamente " +
+              "(lang=${preferredTrack.format.language ?: "und"}, " +
+              "label=${preferredTrack.format.label ?: "-"}, index=${preferredTrack.trackIndex})"
+          )
+        }
+      }
     }
     trackSelector.setParameters(builder)
   }
@@ -1453,7 +1683,13 @@ fun PlayerScreen(
   // La sessione viene marcata come fallita: nessun auto-next da errore di risoluzione.
   // Ma se siamo in modalita' selezione sorgente o durante la risoluzione streaming, NON e' un errore:
   // il player rimarra' in attesa o mostrera' il dialog di selezione sorgente.
-  LaunchedEffect(videoUrl, streamResolutionState, isSourceSelectionActive, isSwitchingEpisode) {
+  LaunchedEffect(
+    videoUrl,
+    streamResolutionState,
+    isSourceSelectionActive,
+    isSwitchingEpisode,
+    isAutoplayUnavailable
+  ) {
     if (videoUrl == null) {
       // Risoluzione in corso ("Caricamento episodio successivo..."), selezione
       // sorgente attiva o transizione al prossimo episodio: mai errore/schermata nera.
@@ -1463,6 +1699,13 @@ fun PlayerScreen(
       ) {
         isBuffering = true
         playbackFailed = false
+        playbackErrorMessage = null
+      } else if (isAutoplayUnavailable) {
+        // Autoplay terminato per fonte non disponibile: il messaggio dedicato
+        // (con l'azione di scelta manuale) è già a video. Nessun errore generico
+        // duplicato; la sessione resta "non avviata" e nessun auto-next può partire.
+        isBuffering = false
+        playbackFailed = true
         playbackErrorMessage = null
       } else if (streamResolutionState is StreamResolutionState.Error) {
         isBuffering = false
@@ -1536,11 +1779,13 @@ fun PlayerScreen(
     }
 
     if (isEpisodeChange || isUrlChange || isManualSourceChange) {
+      // Stato REALE del ViewModel: la proiezione di composizione azzera la posizione.
+      val livePositionMs = viewModel.playbackState.value.currentPositionMs
       val targetPos = if (isEpisodeChange) {
         lastLoadedEpKey = currentEpKey
-        playbackState.currentPositionMs
+        livePositionMs
       } else {
-        exoPlayer.currentPosition.takeIf { it > 0 } ?: playbackState.currentPositionMs
+        exoPlayer.currentPosition.takeIf { it > 0 } ?: livePositionMs
       }
 
       Log.i(
@@ -1555,7 +1800,12 @@ fun PlayerScreen(
       )
       isBuffering = true
       playbackFailed = false
-      currentPosition = targetPos
+      // Nuovo caricamento (episodio, URL o sorgente scelta manualmente): il player non è
+      // più "pronto" fino al prossimo STATE_READY. È il segnale che fa riapparire la
+      // scena di caricamento Debrid SOLO all'avvio di un flusso, mai durante gli stalli
+      // di una riproduzione già in corso (dove `playerReady` resta true).
+      playerReady = false
+      playbackClock.updatePosition(targetPos)
 
       // Ferma e ripulisce la vecchia istanza di ExoPlayer per evitare STATE_BUFFERING fantasma:
       // stessa sequenza IDENTICA usata al primo avvio (S1E1), così headers HTTP,
@@ -1590,14 +1840,9 @@ fun PlayerScreen(
     manualSubtitleSelection = null
     manualAudioSelection = null
     onlineSubtitleActivationLang = null
+    subtitleRestoreNotice = false
     nextEpisodeDismissed = false
     nextEpisodeCountdownSeconds = 0
-    // Nuovo episodio: posizione e durata dell'episodio precedente NON sono valide per
-    // questo. Se restano, la finestra degli ultimi 35 secondi risulta già soddisfatta
-    // e il countdown "Prossimo Episodio" riparte immediatamente, facendo avanzare di
-    // nuovo prima che la nuova sorgente sia pronta (su Debrid: ricerca infinita).
-    currentPosition = playbackState.currentPositionMs
-    totalDuration = playbackState.durationMs.coerceAtLeast(1L)
   }
 
   // Applica la "Risoluzione preferita" una sola volta, quando il player è pronto
@@ -1633,8 +1878,17 @@ fun PlayerScreen(
 
   // "Lingua audio preferita": applica/riapplica le preferenze persistenti al TrackSelector
   // quando cambiano o al cambio episodio/ricreazione player.
+  // `currentTracksState` è una chiave perché la traccia preferita può essere
+  // riconosciuta solo dall'etichetta (lingua `und`): in quel caso l'override
+  // esplicito deve essere applicato appena Media3 pubblica le tracce.
   // Se l'utente ha fatto una selezione manuale, non sovrascriviamo la scelta.
-  LaunchedEffect(exoPlayer, playbackSettings.preferredAudioLanguage, currentEpKey, manualAudioSelection) {
+  LaunchedEffect(
+    exoPlayer,
+    playbackSettings.preferredAudioLanguage,
+    currentEpKey,
+    currentTracksState,
+    manualAudioSelection
+  ) {
     if (manualAudioSelection == null) {
       applyAudioAutoSelection(playbackSettings.preferredAudioLanguage)
     }
@@ -1647,7 +1901,10 @@ fun PlayerScreen(
   // L'attivazione è esplicitamente "pinned" con [onlineSubtitleActivationLang] così
   // sopravvive ai re-prepare e non viene disabilitata dalle preferenze automatiche
   // (Forced / Abilita automaticamente) finché l'utente non sceglie altro.
-  fun attachDownloadedOnlineSubtitle(localSubtitle: com.example.domain.model.Subtitle) {
+  fun attachDownloadedOnlineSubtitle(
+    localSubtitle: com.example.domain.model.Subtitle,
+    isPersistentRestore: Boolean = false
+  ) {
     // Validazione del file SCARICATO: un percorso sbagliato, un file vuoto o una pagina
     // HTML al posto del sottotitolo sono la CAUSA del fallimento della traccia. Il
     // file non viene allegato al player (che cosi' non puo' fallire) e il problema
@@ -1660,6 +1917,9 @@ fun PlayerScreen(
           "THE_PITT_PLAYER",
           "Sottotitolo online scaricato non utilizzabile ($validity): la traccia non viene allegata al player."
         )
+        if (isPersistentRestore) {
+          viewModel.markPersistentSubtitleRestoreFailed()
+        }
         viewModel.clearOnlineSubtitleDownloadState()
         return
       }
@@ -1667,6 +1927,9 @@ fun PlayerScreen(
     val config = PlayerSubtitleMediaItemBuilder.toConfiguration(localSubtitle)
     if (config == null) {
       Log.w("PlayerScreen", "Sottotitolo online scaricato: configurazione Media3 non valida")
+      if (isPersistentRestore) {
+        viewModel.markPersistentSubtitleRestoreFailed()
+      }
       viewModel.clearOnlineSubtitleDownloadState()
       return
     }
@@ -1680,7 +1943,14 @@ fun PlayerScreen(
         "id=${config.id} lang=${localSubtitle.lang} pos=$currentPos playing=$wasPlaying"
     )
     viewModel.injectOnlineSubtitle(localSubtitle)
-    if (currentItem != null) {
+    // Se la traccia è già allegata al MediaItem corrente (caso tipico del ripristino
+    // all'apertura, quando `playbackState.subtitles` è già stato usato per costruire
+    // l'item), non ricreare il MediaItem: si attiverebbe un inutile re-prepare.
+    val alreadyAttached = currentItem
+      ?.localConfiguration
+      ?.subtitleConfigurations
+      ?.any { it.id == config.id && it.uri == config.uri } == true
+    if (currentItem != null && !alreadyAttached) {
       val existing = currentItem.localConfiguration?.subtitleConfigurations.orEmpty()
       val updatedConfigs = (existing.filter { it.uri != config.uri && it.id != config.id } + config)
       val newItem = currentItem.buildUpon()
@@ -1706,6 +1976,17 @@ fun PlayerScreen(
       .build()
     onlineSubtitleActivationLang = normLang.trim().takeIf { it.isNotBlank() }
     manualSubtitleSelection = null
+    // Salva la selezione del sottotitolo in modo persistente per questo contenuto.
+    // La selezione verrà ripristinata automaticamente alla prossima apertura
+    // dello stesso film/episodio, anche dopo la chiusura completa del player
+    // o il riavvio dell'app.
+    val localFileForSave = localPath?.let { java.io.File(it) }
+    viewModel.persistOnlineSubtitleSelection(
+      media = media,
+      episode = currentEp,
+      subtitle = localSubtitle,
+      localFile = localFileForSave
+    )
     viewModel.clearOnlineSubtitleDownloadState()
   }
 
@@ -1716,26 +1997,66 @@ fun PlayerScreen(
     }
   }
 
+  // Sottotitolo persistente ripristinato: stesso percorso di allegamento dei download
+  // manuali, così l'attivazione e la selezione della traccia restano identiche.
+  LaunchedEffect(restoredPersistentSubtitle) {
+    val subtitle = restoredPersistentSubtitle ?: return@LaunchedEffect
+    attachDownloadedOnlineSubtitle(subtitle, isPersistentRestore = true)
+    viewModel.clearRestoredPersistentSubtitle()
+  }
+
+  // Avviso non bloccante: il sottotitolo salvato non è recuperabile. Resta visibile
+  // pochi secondi e non seleziona automaticamente nessun'altra traccia.
+  LaunchedEffect(persistentSubtitleRestoreFailed) {
+    if (persistentSubtitleRestoreFailed) {
+      subtitleRestoreNotice = true
+      viewModel.clearPersistentSubtitleRestoreFailed()
+      delay(5_000L)
+      subtitleRestoreNotice = false
+    }
+  }
+
   // "Prossimo Episodio": countdown automatico quando l'overlay è visibile e l'opzione
   // "Riproduci automaticamente il prossimo episodio" è ON. Allo scadere del countdown si
   // passa al prossimo episodio (risoluzione stream inclusa, senza uscire dal player);
   // con l'opzione OFF resta solo il pulsante manuale "Guarda ora" senza countdown.
   // Mai auto-next da sessione fallita: playbackFailed blocca sempre il passaggio.
-  LaunchedEffect(isNextEpisodePromptVisible, playbackSettings.autoPlayNextEpisodeEnabled, currentEpKey) {
-    if (!isNextEpisodePromptVisible || !playbackSettings.autoPlayNextEpisodeEnabled) {
+  LaunchedEffect(
+    isNextEpisodePromptVisible,
+    playbackSettings.autoPlayNextEpisodeEnabled,
+    currentEpKey,
+    isAutoplayBlocked
+  ) {
+    val startSeconds = NextEpisodePromptUtils.countdownStartSeconds(
+      promptVisible = isNextEpisodePromptVisible,
+      autoPlayNextEpisodeEnabled = playbackSettings.autoPlayNextEpisodeEnabled,
+      autoplayBlocked = isAutoplayBlocked
+    )
+    if (startSeconds <= 0) {
+      // Popup chiuso, autoplay OFF o stato Debrid terminale: nessun timer, nessun riarmo.
       nextEpisodeCountdownSeconds = 0
       return@LaunchedEffect
     }
-    nextEpisodeCountdownSeconds = NextEpisodePromptUtils.COUNTDOWN_SECONDS
-    while (nextEpisodeCountdownSeconds > 0) {
+    nextEpisodeCountdownSeconds = startSeconds
+    while (!NextEpisodePromptUtils.isCountdownExpired(nextEpisodeCountdownSeconds)) {
       delay(1_000L)
-      nextEpisodeCountdownSeconds--
+      nextEpisodeCountdownSeconds = NextEpisodePromptUtils.countdownAfterTick(nextEpisodeCountdownSeconds)
     }
     val target = nextEpisode
-    if (target != null && !playbackFailed) {
+    if (target != null && !playbackFailed && !isAutoplayBlocked) {
       Log.i("NextEpisode", "Transizione automatica a S${target.seasonNumber}E${target.episodeNumber}")
       viewModel.saveCurrentPlaybackProgress(exoPlayer.duration.coerceAtLeast(exoPlayer.currentPosition))
-      viewModel.playNextEpisode(target)
+      // Funello AUTOMATICO: il ViewModel scarta la richiesta se la ricerca della stessa
+      // fonte è in corso o è fallita (stato terminale). Una callback duplicata o tardiva
+      // del countdown non può quindi avviare un altro episodio.
+      viewModel.autoPlayNextEpisode(target)
+    }
+  }
+
+  // Fallimento terminale dell'autoplay: il focus va sull'azione "Seleziona fonte".
+  LaunchedEffect(isNextEpisodeUnavailableVisible) {
+    if (isNextEpisodeUnavailableVisible) {
+      nextEpisodeUnavailableFocusRequester.requestFocusAfterFrame()
     }
   }
 
@@ -1763,15 +2084,15 @@ fun PlayerScreen(
   DisposableEffect(simklScrobbler) {
     val previousScrobbler = simklScrobbler
     onDispose {
-      // `currentPosition`/`totalDuration` sono MutableState: la chiusura legge i valori
+      // `playbackClock` è lo stato condiviso della schermata: la chiusura legge i valori
       // correnti (ultima posizione pollata dell'episodio appena abbandonato) senza
       // accedere al player, che potrebbe già essere stato rilasciato.
       Log.d(
         "[NEXT_EP_DEBUG]",
         "SimklScrobbler onDispose: stop sessione precedente " +
-          "(${simklMedia.episode?.let { "S${it.season}E${it.number}" } ?: "film"}) pos=$currentPosition"
+          "(${simklMedia.episode?.let { "S${it.season}E${it.number}" } ?: "film"}) pos=${playbackClock.positionMs}"
       )
-      previousScrobbler.onStop(simklProgressPercent(currentPosition, totalDuration))
+      previousScrobbler.onStop(simklProgressPercent(playbackClock.positionMs, playbackClock.durationMs))
     }
   }
 
@@ -1858,7 +2179,7 @@ fun PlayerScreen(
           // Flusso riprodotto con successo: salvalo come "ultimo funzionante" per il titolo
           // (funzione "Riusa l'ultimo link"). Nessun salvataggio su READY di contenuti demo.
           viewModel.onStreamPlaybackReady()
-          totalDuration = exoPlayer.duration.coerceAtLeast(1L)
+          playbackClock.updateDuration(exoPlayer.duration)
           val vf = exoPlayer.videoFormat
           val vs = exoPlayer.videoSize
           val activeTrack = exoPlayer.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
@@ -1908,7 +2229,7 @@ fun PlayerScreen(
 
       override fun onTimelineChanged(timeline: Timeline, reason: Int) {
         if (exoPlayer.duration > 0L) {
-          totalDuration = exoPlayer.duration.coerceAtLeast(1L)
+          playbackClock.updateDuration(exoPlayer.duration)
           updateIntroWindow()
         }
       }
@@ -2223,9 +2544,14 @@ fun PlayerScreen(
     }
   }
 
-  // Polling periodico per la posizione e aggiornamento risoluzione se non ancora agganciata
-  val currentPositionRef by rememberUpdatedState(currentPosition)
-  val totalDurationRef by rememberUpdatedState(totalDuration)
+  // Polling periodico per la posizione e aggiornamento risoluzione se non ancora agganciata.
+  //
+  // Fase 6.1: il ciclo vive in un composable FIGLIO (`PlayerPositionTicker`) e scrive in un
+  // holder stabile (`playbackClock`) che aggiorna lo stato solo su valori realmente cambiati
+  // e non campiona affatto in pausa. Il corpo di `PlayerScreen` non legge più posizione e
+  // durata, quindi il tick da 500 ms non invalida più l'intera schermata: restano invalidati
+  // solo la timeline, il minutaggio e i flag derivati quando cambiano valore.
+  val playerPositionSource = remember(exoPlayer) { ExoPlayerPositionSource(exoPlayer) }
   val selectedQualityLabelRef by rememberUpdatedState(selectedQualityLabel)
   val detectedResolutionRef by rememberUpdatedState(detectedResolution)
 
@@ -2233,50 +2559,50 @@ fun PlayerScreen(
   // a ~5 secondi per non spammare il logcat durante la finestra di fine episodio.
   var lastNextEpLogBucket by remember { mutableLongStateOf(-1L) }
 
-  LaunchedEffect(exoPlayer, isPlaying) {
-    while (true) {
-      if (exoPlayer.isPlaying) {
-        currentPosition = exoPlayer.currentPosition
-        // player.duration può essere C.TIME_UNSET (-1) o non ancora pronto: in tal
-        // caso si mantengono i valori noti, senza basare overlay/countdown su durate fittizie.
-        val rawDuration = exoPlayer.duration
-        if (rawDuration > 0L && rawDuration != C.TIME_UNSET) {
-          totalDuration = rawDuration
-        }
-        viewModel.updatePlaybackPosition(currentPosition, totalDuration, exoPlayer.bufferedPosition)
-        // [NextEpisode] diagnostica negli ultimi 40 secondi (log throttled a ~5s).
-        val remaining = totalDuration - currentPosition
-        if (isTvShow && nextEpisode != null && remaining in 0L..40_000L) {
-          val bucket = currentPosition / 5_000L
-          if (bucket != lastNextEpLogBucket) {
-            lastNextEpLogBucket = bucket
-            Log.i(
-              "NextEpisode",
-              "pos=$currentPosition / dur=$totalDuration, remaining=${remaining}ms, shouldShowPrompt=$isNextEpisodePromptVisible"
-            )
-          }
-        }
-        if (selectedQualityLabelRef == "Auto" && detectedResolutionRef.isEmpty()) {
-          val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
-          val w = exoPlayer.videoFormat?.width ?: exoPlayer.videoSize.width
-          updateResolutionFromHeight(h, w)
-        }
-        if (introWindow == null && introDbWindow != null) {
-          updateIntroWindow()
-        }
-        introWindow?.let { win ->
-          if (currentPosition in (win.startMs - 15_000L)..(win.endMs)) {
-            val visible = !isIntroDismissed && PlayerIntroUtils.isButtonVisible(currentPosition, win)
-            Log.d(
-              "StreamNovaIntro",
-              "Posizione intro: currentPosition=$currentPosition, startMs=${win.startMs}, endMs=${win.endMs}, isButtonVisible=$visible, isIntroDismissed=$isIntroDismissed, isTvShow=$isTvShow"
-            )
-          }
-        }
+  // Lavoro NON grafico di ogni campione (ViewModel, diagnostica, risoluzione, intro).
+  // Posizione e durata arrivano come PARAMETRI: nessuna lettura di stato nel corpo della
+  // schermata, così l'isolamento della ricomposizione resta effettivo.
+  val onPlaybackSample: (Long, Long) -> Unit = { positionMs, durationMs ->
+    viewModel.updatePlaybackPosition(positionMs, durationMs, exoPlayer.bufferedPosition)
+    // [NextEpisode] diagnostica negli ultimi 40 secondi (log throttled a ~5s).
+    val remaining = durationMs - positionMs
+    if (isTvShow && nextEpisode != null && remaining in 0L..40_000L) {
+      val bucket = positionMs / 5_000L
+      if (bucket != lastNextEpLogBucket) {
+        lastNextEpLogBucket = bucket
+        Log.i(
+          "NextEpisode",
+          "pos=$positionMs / dur=$durationMs, remaining=${remaining}ms, shouldShowPrompt=$isNextEpisodePromptVisible"
+        )
       }
-      delay(500)
+    }
+    if (selectedQualityLabelRef == "Auto" && detectedResolutionRef.isEmpty()) {
+      val h = exoPlayer.videoFormat?.height ?: exoPlayer.videoSize.height
+      val w = exoPlayer.videoFormat?.width ?: exoPlayer.videoSize.width
+      updateResolutionFromHeight(h, w)
+    }
+    if (introWindow == null && introDbWindow != null) {
+      updateIntroWindow()
+    }
+    introWindow?.let { win ->
+      if (positionMs in (win.startMs - 15_000L)..(win.endMs)) {
+        val visible = !isIntroDismissed && PlayerIntroUtils.isButtonVisible(positionMs, win)
+        Log.d(
+          "StreamNovaIntro",
+          "Posizione intro: currentPosition=$positionMs, startMs=${win.startMs}, endMs=${win.endMs}, isButtonVisible=$visible, isIntroDismissed=$isIntroDismissed, isTvShow=$isTvShow"
+        )
+      }
     }
   }
+
+  PlayerPositionTicker(
+    playerKey = exoPlayer,
+    isPlaying = isPlaying,
+    source = playerPositionSource,
+    clock = playbackClock,
+    onSample = onPlaybackSample
+  )
+
 
   // ---------------------------------------------------------------------------
   // INTRO / "SALTA INTRO" (IntroDB e Metadati Reali)
@@ -2313,14 +2639,93 @@ fun PlayerScreen(
     updateIntroWindow()
   }
 
-  val isIntroActive = !isIntroDismissed &&
-    PlayerIntroUtils.isButtonVisible(currentPosition, introWindow)
+  // Fase 6.1: stato DERIVATO dal booleano — la schermata si ricompone solo quando il
+  // pulsante/banner "Salta intro" deve davvero comparire o sparire, non ad ogni tick.
+  val isIntroActive = rememberIntroActive(
+    clock = playbackClock,
+    isIntroDismissed = isIntroDismissed,
+    introWindow = introWindow
+  )
+
+  // ---------------------------------------------------------------------------
+  // OVERLAY IN PAUSA (impostazione "Overlay in pausa", default OFF)
+  // ---------------------------------------------------------------------------
+  // Timer unico (UN solo LaunchedEffect, nessun timer duplicato): parte quando tutti
+  // i criteri reali indicano pausa stabile; la ripresa prima dei 5 secondi riavvia
+  // l'effetto e annulla il timer; la ripresa quando visibile lo riavvia e lo nasconde
+  // IMMEDIATAMENTE. Il cambio contenuto/episodio è tra le chiavi: stato sempre reset.
+  var showPauseOverlay by remember { mutableStateOf(false) }
+  val pauseOverlayTimerActive = PauseOverlayPolicy.shouldStartTimer(
+    enabled = playbackSettings.pauseOverlayEnabled,
+    isPaused = !isPlaying,
+    isPlayerReady = playerReady,
+    isBuffering = isBuffering,
+    hasPlaybackError = playbackErrorMessage != null,
+    playbackEnded = playbackEnded,
+    isScrubbing = isScrubbing
+  )
+  LaunchedEffect(pauseOverlayTimerActive, currentEpKey, media.id) {
+    if (!pauseOverlayTimerActive) {
+      showPauseOverlay = false
+      return@LaunchedEffect
+    }
+    delay(PauseOverlayPolicy.REVEAL_DELAY_MS)
+    // A timer scaduto i criteri sono ancora validi (altrimenti l'effetto sarebbe
+    // stato riavviato prima): l'overlay compare e resta fino alla ripresa.
+    showPauseOverlay = true
+  }
+
+  // ---------------------------------------------------------------------------
+  // AVVISI SUI CONTENUTI / PARENTAL GUIDE (impostazione "Avvisi sui contenuti", OFF)
+  // ---------------------------------------------------------------------------
+  var parentalGuide by remember { mutableStateOf<ParentalGuideSummary?>(null) }
+  var parentalGuideVisible by remember { mutableStateOf(false) }
+  // Una sola visualizzazione per contenuto/episodio: chiave dell'ultimo avviso mostrato.
+  var parentalGuideShownFor by remember { mutableStateOf<String?>(null) }
+
+  // Recupero: UNA sola richiesta per contenuto/episodio, indipendente dallo stato del
+  // player (mai ri-innescata da buffering/pausa/ripresa) e MAI in attesa per l'avvio
+  // del video: l'effetto è sospensivo su dispatcher IO dentro il repository.
+  LaunchedEffect(media.id, currentEpKey, playbackSettings.parentalGuideEnabled) {
+    parentalGuide = null
+    parentalGuideVisible = false
+    parentalGuideShownFor = null
+    if (!playbackSettings.parentalGuideEnabled) return@LaunchedEffect
+    // Priorità: id IMDb dell'episodio se realmente disponibile, altrimenti quello
+    // della serie (o del film). Nessuna chiamata TMDB aggiuntiva: senza id IMDb non
+    // c'è avviso (mai inventato).
+    val guideImdbId = currentEp?.effectiveImdbId ?: media.effectiveImdbId
+    if (guideImdbId.isNullOrBlank()) return@LaunchedEffect
+    parentalGuide = ParentalGuideRepository.getParentalGuide(guideImdbId)
+  }
+
+  // Visualizzazione: una sola volta per contenuto/episodio, al primo avvio reale
+  // (player pronto, riproduzione attiva); MAI durante buffering, pausa o scrubbing e
+  // MAI ripetuta a ogni variazione di stato (guardia `parentalGuideShownFor`).
+  LaunchedEffect(parentalGuide, playerReady, isPlaying, isBuffering) {
+    val guide = parentalGuide
+    if (guide == null || !guide.hasVisibleCategories) return@LaunchedEffect
+    if (parentalGuideShownFor == currentEpKey) return@LaunchedEffect
+    if (!playerReady || !isPlaying || isBuffering || isScrubbing) return@LaunchedEffect
+    parentalGuideShownFor = currentEpKey
+    parentalGuideVisible = true
+    delay(PARENTAL_GUIDE_DISPLAY_MS)
+    parentalGuideVisible = false
+  }
+  // Pausa o buffering durante la visualizzazione → nascosta subito, senza riapparire
+  // per questo contenuto (la chiave è già registrata).
+  LaunchedEffect(isPlaying, isBuffering) {
+    if (!isPlaying || isBuffering) parentalGuideVisible = false
+  }
 
   // Durante lo scrubbing l'HUD resta nascosto anche a video in pausa o durante il settling:
-  // l'unico elemento a video è l'overlay di anteprima della posizione.
-  val hudShown = (areControlsVisible || !isPlaying) && !isScrubbing && !isSeekSettling
+  // l'unico elemento a video è l'overlay di anteprima della posizione. Lo stesso vale per
+  // la scena di caricamento Debrid: finché il primo frame non è pronto l'unica superficie a
+  // video è poster + logo, senza controlli sovrapposti (il focus resta sul nodo di riposo).
+  val hudShown = (areControlsVisible || !isPlaying) && !isScrubbing && !isSeekSettling &&
+    !showDebridLoadingScreen
 
-  val showSkipIntro = isIntroActive && !hudShown && !isScrubbing
+  val showSkipIntro = isIntroActive && !hudShown && !isScrubbing && !showDebridLoadingScreen
 
   fun kickAutoHide() {
     hideTimerTick++
@@ -2360,7 +2765,7 @@ fun PlayerScreen(
       (exoPlayer.currentPosition + seekDelta).coerceAtLeast(0L)
     }
     exoPlayer.seekTo(target)
-    currentPosition = target
+    playbackClock.updatePosition(target)
     hideTimerTick++
   }
 
@@ -2419,10 +2824,10 @@ fun PlayerScreen(
     introWindow?.let { window ->
       Log.d(
         "StreamNovaIntro",
-        "Salta Intro: seekTo=${window.endMs}, currentPosition=$currentPosition, isTvShow=$isTvShow"
+        "Salta Intro: seekTo=${window.endMs}, currentPosition=${playbackClock.positionMs}, isTvShow=$isTvShow"
       )
       exoPlayer.seekTo(window.endMs)
-      currentPosition = window.endMs
+      playbackClock.updatePosition(window.endMs)
     }
     isIntroDismissed = true
     try {
@@ -2500,7 +2905,10 @@ fun PlayerScreen(
         isSeekSettling = true
         seekPreview.finishAndDismiss(
           targetPositionMs = activePreviewPositionMs,
-          fallbackTimeoutMs = 1500L,
+          // La cattura di una posizione richiesta impiega 1.5-2.3 s (seek + frame dal
+          // decoder dedicato): con 1.5 s il frame finale veniva annullato prima di arrivare
+          // e l'anteprima si chiudeva sull'ultimo frame disponibile o sul placeholder.
+          fallbackTimeoutMs = 3000L,
           holdDurationMs = 650L,
           onDismissed = {
             isSeekSettling = false
@@ -2526,19 +2934,25 @@ fun PlayerScreen(
    * del player (quindi stessi URL, header HTTP, cookie, redirect, proxy, HLS/DASH/DRM).
    * Cambiare episodio o fonte sostituisce la sorgente: il registro rilascia la precedente
    * e il controller azzera cache e overlay. Nessun riferimento alla superficie del player.
+   *
+   * La creazione è DIFFERITA: qui si registra solo la factory, così nessun oggetto
+   * dell'anteprima (né il controllo piattaforma) viene costruito all'apertura del player.
+   * L'estrattore nasce alla prima richiesta del controller, cioè al primo scrubbing.
    */
-  val previewSource = remember(videoUrl, playbackMediaSourceFactory) {
+  val previewSourceFactory = remember(videoUrl, playbackMediaSourceFactory) {
     videoUrl?.takeIf { it.isNotBlank() }?.let { url ->
-      PlayerSeekPreviewExtractor(
-        context = context,
-        mediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, emptyList()),
-        mediaSourceFactory = playbackMediaSourceFactory
-      )
+      {
+        PlayerSeekPreviewExtractor(
+          context = context,
+          mediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, emptyList()),
+          mediaSourceFactory = playbackMediaSourceFactory
+        )
+      }
     }
   }
-  DisposableEffect(previewSource) {
-    if (previewSource != null) {
-      SeekPreviewRegistry.install(previewSource)
+  DisposableEffect(previewSourceFactory) {
+    if (previewSourceFactory != null) {
+      SeekPreviewRegistry.installLazy(previewSourceFactory)
     } else {
       SeekPreviewRegistry.clear()
     }
@@ -2555,12 +2969,16 @@ fun PlayerScreen(
     scrub.commit()
   }
 
-  /** BACK durante lo scrubbing: nessuna seek, si riprende dal punto di partenza. */
+  /**
+   * BACK durante lo scrubbing: nessuna seek se la sessione è ancora aperta; se la seek è
+   * già stata confermata e l'overlay è in settling, il controller riporta il player
+   * all'origine con `CLOSEST_SYNC` (keyframe più vicino, non necessariamente il
+   * millisecondo esatto).
+   */
   fun cancelScrub() {
     isSeekSettling = false
     activePreviewPositionMs = 0L
     seekPreview.hide()
-    (exoPlayer as? ExoPlayer)?.setSeekParameters(SeekParameters.CLOSEST_SYNC)
     scrub.cancel()
   }
 
@@ -2586,14 +3004,14 @@ fun PlayerScreen(
   // target di focus; quando sparisce si torna al nodo di riposo. Durante scrubbing, modali o
   // overlay "Prossimo Episodio" il focus NON viene toccato. `requestFocusAfterFrame` gestisce
   // il caso "nodo non ancora montato" senza invocare requester non agganciati.
-  LaunchedEffect(hudShown, isIntroActive, isScrubbing, anyModalOpen, isNextEpisodePromptVisible) {
+  LaunchedEffect(hudShown, isIntroActive, isScrubbing, anyModalOpen, isNextEpisodeOverlayVisible) {
     when (
       resolveVideoFocusTarget(
         hudShown = hudShown,
         isIntroActive = isIntroActive,
         isScrubbing = isScrubbing,
         anyModalOpen = anyModalOpen,
-        isNextEpisodePromptVisible = isNextEpisodePromptVisible
+        isNextEpisodePromptVisible = isNextEpisodeOverlayVisible
       )
     ) {
       VideoFocusTarget.INTRO_BANNER -> introBannerFocusRequester.requestFocusAfterFrame()
@@ -2620,9 +3038,13 @@ fun PlayerScreen(
   // (3) Ripristino focus dopo chiusura modali
   LaunchedEffect(anyModalOpen, areControlsVisible) {
     if (anyModalOpen || !areControlsVisible) return@LaunchedEffect
-    // Con l'overlay "Prossimo Episodio" visibile il focus resta sul pulsante
-    // "Guarda ora": nessun furto del focus verso i controlli di riproduzione.
-    if (isNextEpisodePromptVisible) return@LaunchedEffect
+    // Con l'overlay "Prossimo Episodio" (o il messaggio di fonte non disponibile)
+    // visibile il focus resta sulla card: nessun furto verso i controlli.
+    if (isNextEpisodeOverlayVisible) return@LaunchedEffect
+    // Scena di caricamento Debrid: l'HUD non è composto, quindi non esiste alcun nodo
+    // Play da focalizzare. Il focus resta sul nodo di riposo (effetto 4) finché il
+    // player non è pronto.
+    if (showDebridLoadingScreen) return@LaunchedEffect
     delay(200)
     if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
   }
@@ -2640,9 +3062,9 @@ fun PlayerScreen(
     isScrubbing,
     isSeekSettling,
     anyModalOpen,
-    isNextEpisodePromptVisible
+    isNextEpisodeOverlayVisible
   ) {
-    if (anyModalOpen || isNextEpisodePromptVisible || isSeekSettling) return@LaunchedEffect
+    if (anyModalOpen || isNextEpisodeOverlayVisible || isSeekSettling) return@LaunchedEffect
     if (hudShown) {
       if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
     } else if (!isScrubbing && !playerHasFocus) {
@@ -2650,36 +3072,111 @@ fun PlayerScreen(
     }
   }
 
-  // BACK su controlli: se l'overlay "Prossimo Episodio" è visibile, il primo BACK lo
-  // nasconde (consente di vedere i titoli di coda senza auto-next); il BACK successivo
-  // esce dal player.
-  BackHandler(enabled = !anyModalOpen) {
-    Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler")
-    Log.d("BACK_TRACE", "PLAYERSCREEN: valore di anyModalOpen: $anyModalOpen")
-    if (isScrubbing || isSeekSettling) {
-      Log.i("SeekSync", "PLAYERSCREEN: BackHandler durante scrubbing/settling: annulla scrubbing")
-      cancelScrub()
-    } else if (showSkipIntro) {
-      Log.d("BACK_TRACE", "PLAYERSCREEN: BACK con banner Salta Intro visibile: chiusura banner")
-      isIntroDismissed = true
-      try {
-        idleFocusRequester.requestFocus()
-      } catch (_: Exception) {}
-    } else if (isNextEpisodePromptVisible) {
-      Log.d("BACK_TRACE", "PLAYERSCREEN: BACK su overlay Prossimo Episodio: chiusura overlay")
-      nextEpisodeDismissed = true
-      nextEpisodeCountdownSeconds = 0
-    } else {
-      Log.d("BACK_TRACE", "PLAYERSCREEN: chiamata a closePlayer()")
-      viewModel.resetStreamState()
-      viewModel.closePlayer()
+  // ---------------------------------------------------------------------------
+  // BACK DEL TELECOMANDO — UNA PRESSIONE, UNA AZIONE
+  //
+  // Il tasto fisico arriva qui come KEY_DOWN + KEY_UP. Il DOWN viene CONSUMATO senza
+  // eseguire l'azione (l'unico effetto è congelare la conferma dello scrubbing) e l'azione
+  // avviene UNA sola volta sul rilascio. Consumare il DOWN non è una preferenza: sulle TV
+  // con dispatch "legacy" del BACK (Android 11 e precedenti, quindi la maggior parte dei
+  // televisori) `Activity.onKeyUp` chiama `onBackPressed()` solo se il DOWN ha armato il
+  // tracking; un DOWN lasciato passare viene consumato più in basso nella gerarchia di
+  // viste e il dispatcher non viene mai interpellato: la pressione andava persa e serviva
+  // un secondo BACK per uscire dal player. Gestendo il tasto direttamente sul rilascio
+  // l'esito non dipende più da chi consuma il DOWN né dalla versione della piattaforma.
+  //
+  // `backKeyDownPending` distingue un BACK FISICO (DOWN+UP gestiti qui) da un BACK avviato dal
+  // SISTEMA (predictive back / OnBackPressedDispatcher, che arriva senza i nostri KEY_DOWN): in
+  // quel caso agisce il BackHandler. Il flag garantisce che una pressione fisica non produca
+  // DUE azioni quando la piattaforma recapita anche il proprio callback.
+  var backKeyDownPending by remember { mutableStateOf(false) }
+
+  /**
+   * Esegue UNA volta l'azione decisa per lo stato corrente del player.
+   *
+   * Lo scrub viene letto dallo stato VIVO del controller (`scrub.isScrubbing`): non passa
+   * da Compose e non può restare indietro rispetto a un'apertura, a una conferma o al
+   * congelamento del timer avvenuti nello stesso frame del KEY_UP. Il settling resta invece
+   * lo stato Compose che descrive l'overlay ancora a video (`isSeekSettling`).
+   */
+  fun performPlayerBack() {
+    val activeScrub = scrub.isScrubbing
+    val seekSettling = isSeekSettling
+    val action = resolvePlayerBackAction(
+      anyModalOpen = anyModalOpen,
+      activeScrub = activeScrub,
+      seekSettling = seekSettling,
+      skipIntroVisible = showSkipIntro,
+      nextEpisodePromptVisible = isNextEpisodePromptVisible
+    )
+    FocusTrace.log(
+      "PLAYER",
+      "BACK -> $action (modale=$anyModalOpen scrubbing=$activeScrub settling=$seekSettling " +
+        "skipIntro=$showSkipIntro nextEpisode=$isNextEpisodePromptVisible)"
+    )
+    when (action) {
+      PlayerBackAction.DISMISS_MODALS -> {
+        Log.d("BACK_TRACE", "PLAYERSCREEN: BACK con modale aperto: chiusura modale")
+        showTrackQuickPanel = false
+        showSubtitleModal = false
+        showQualityModal = false
+        showSpeedModal = false
+      }
+
+      PlayerBackAction.CANCEL_SCRUB -> {
+        Log.i("SeekSync", "PLAYERSCREEN: BACK durante scrub/settling: annulla e torna all'origine")
+        cancelScrub()
+      }
+
+      PlayerBackAction.DISMISS_SKIP_INTRO -> {
+        Log.d("BACK_TRACE", "PLAYERSCREEN: BACK con banner Salta Intro visibile: chiusura banner")
+        isIntroDismissed = true
+        try {
+          idleFocusRequester.requestFocus()
+        } catch (_: Exception) {}
+      }
+
+      PlayerBackAction.DISMISS_NEXT_EPISODE -> {
+        Log.d("BACK_TRACE", "PLAYERSCREEN: BACK su overlay Prossimo Episodio: chiusura overlay")
+        nextEpisodeDismissed = true
+        nextEpisodeCountdownSeconds = 0
+      }
+
+      PlayerBackAction.CLOSE_PLAYER -> {
+        Log.d("BACK_TRACE", "PLAYERSCREEN: chiamata a closePlayer()")
+        viewModel.resetStreamState()
+        viewModel.closePlayer()
+      }
     }
+  }
+
+  // BACK avviato dal sistema (predictive back / dispatcher) oppure con un modale aperto nella
+  // finestra principale: non c'è alcun KEY_DOWN in corso e l'azione va eseguita subito.
+  //
+  // Questo BackHandler è composto DOPO quello del player in MainActivity (e dopo quello della
+  // risoluzione stream): il dispatcher li interroga in ordine inverso di registrazione, quindi
+  // finché PlayerScreen è composto è questo a decidere. Il BACK di sistema non può quindi
+  // scavalcare scrub/settling e chiudere il player al posto di annullare la seek.
+  BackHandler {
+    if (backKeyDownPending) {
+      Log.d("BACK_TRACE", "PLAYERSCREEN: BACK di sistema ignorato: pressione fisica in corso")
+      return@BackHandler
+    }
+    Log.d("BACK_TRACE", "PLAYERSCREEN: ingresso del BackHandler")
+    performPlayerBack()
   }
 
   Box(
     modifier = modifier
       .fillMaxSize()
-      .onFocusChanged { state -> playerHasFocus = state.hasFocus }
+      .onFocusChanged { state ->
+        playerHasFocus = state.hasFocus
+        // Pressione BACK rimasta "aperta" mentre il player perde il focus (UP mai recapitato):
+        // il flag va azzerato, altrimenti il prossimo BACK avviato dal sistema verrebbe
+        // ignorato come se appartenesse ancora a quella pressione.
+        if (!state.hasFocus) backKeyDownPending = false
+        FocusTrace.log("PLAYER", "focus root hasFocus=${state.hasFocus}")
+      }
       .background(Color.Black)
       // Lo scrubbing è gestito in PREVIEW, prima di ogni altro gestore del tasto: il
       // clickable dello sfondo (tocco per mostrare/nascondere l'HUD) consuma OK/ENTER nel
@@ -2690,6 +3187,34 @@ fun PlayerScreen(
         val keyCode = native.keyCode
         val isKeyDown = native.action == KeyEvent.ACTION_DOWN
         val scrubDirection = PlayerScrub.directionForKeyCode(keyCode)
+
+        // BACK: gestito QUI, sul rilascio, e consumato sia sul DOWN sia sull'UP.
+        //
+        // Il DOWN viene consumato senza eseguire nulla: così nessun altro livello può
+        // interpretarlo (né la gerarchia di viste, né un tracking di sistema che non
+        // arriverebbe mai al dispatcher) e l'unica azione avviene sul rilascio, UNA volta.
+        // Vedi il commento di `performPlayerBack`: è ciò che rende il tasto indipendente
+        // dal dispatch "legacy" delle TV.
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+          FocusTrace.log(
+            "PLAYER",
+            "KEY_BACK ${if (isKeyDown) "DOWN" else "UP"} repeat=${native.repeatCount} " +
+              "scrubbing=${scrub.isScrubbing} settling=$isSeekSettling hud=$hudShown"
+          )
+          if (isKeyDown) {
+            backKeyDownPending = true
+            // BACK premuto durante uno scrubbing ancora aperto: il timer di conferma viene
+            // congelato. Tra DOWN e UP il silenzio può superare COMMIT_DELAY_MS e la seek
+            // verrebbe applicata proprio mentre l'utente sta annullando. Se la conferma è
+            // già avvenuta (settling) non c'è timer: il rollback userà l'origine conservata.
+            scrub.freezeCommit()
+          } else {
+            val physicalPress = backKeyDownPending
+            backKeyDownPending = false
+            if (physicalPress) performPlayerBack()
+          }
+          return@onPreviewKeyEvent true
+        }
 
         // Rilascio dell'OK che ha confermato lo skip intro: consumato qui, altrimenti il
         // clickable dello sfondo interpreterebbe il click e aprirebbe i controlli.
@@ -2719,12 +3244,9 @@ fun PlayerScreen(
 
         if (scrub.isScrubbing || isSeekSettling) {
           // Con l'anteprima aperta o in settling il telecomando appartiene allo scrubbing: ogni pressione
-          // (comprese le ripetizioni del sistema) vale un passo, OK conferma, BACK annulla.
+          // (comprese le ripetizioni del sistema) vale un passo, OK conferma.
+          // BACK è già stato gestito sopra (ramo dedicato): qui non arriva.
           when {
-            keyCode == KeyEvent.KEYCODE_BACK -> {
-              if (isKeyDown && native.repeatCount == 0) cancelScrub()
-              return@onPreviewKeyEvent true
-            }
             keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER -> {
               if (isKeyDown) {
                 if (scrub.isScrubbing) {
@@ -2746,9 +3268,15 @@ fun PlayerScreen(
 
         // ◀ / ▶ a video pulito: aprono lo scrubbing. Con l'HUD a schermo (o una modale
         // aperta) l'evento NON viene toccato: resta a Compose, che sposta il focus fra i
-        // controlli a video (Play, Tracce audio, Sottotitoli, ...).
+        // controlli a video (Play, Tracce audio, Sottotitoli, ...). Durante la scena di
+        // caricamento Debrid il telecomando non deve aprire lo scrubbing: il flusso non è
+        // ancora pronto e la schermata non ha controlli da navigare.
         if (scrubDirection != 0) {
-          if (hudShown || anyModalOpen || isLive || totalDuration <= 0) return@onPreviewKeyEvent false
+          if (hudShown || anyModalOpen || isLive || showDebridLoadingScreen ||
+            playbackClock.durationMs <= 0
+          ) {
+            return@onPreviewKeyEvent false
+          }
           if (isKeyDown) onScrubArrowPressed(scrubDirection)
           return@onPreviewKeyEvent true
         }
@@ -2760,38 +3288,7 @@ fun PlayerScreen(
         val keyCode = native.keyCode
         val isKeyDown = native.action == KeyEvent.ACTION_DOWN
 
-        // Gestione BACK telecomando
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-          if (isKeyDown && native.repeatCount == 0) {
-            Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent KEYCODE_BACK down, anyModalOpen=$anyModalOpen")
-            if (isScrubbing || isSeekSettling) {
-              Log.i("SeekSync", "PLAYERSCREEN: onKeyEvent BACK su scrubbing/settling: annulla scrubbing")
-              cancelScrub()
-            } else if (anyModalOpen) {
-              showTrackQuickPanel = false
-              showSubtitleModal = false
-              showQualityModal = false
-              showSpeedModal = false
-            } else if (showSkipIntro) {
-              Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent BACK su Salta Intro: chiusura banner")
-              isIntroDismissed = true
-              try {
-                idleFocusRequester.requestFocus()
-              } catch (_: Exception) {}
-            } else if (isNextEpisodePromptVisible) {
-              // Primo BACK con overlay "Prossimo Episodio": nasconde solo l'overlay
-              // (niente auto-next, restano i titoli di coda); serve un secondo BACK per uscire.
-              Log.d("BACK_TRACE", "PLAYERSCREEN: BACK su overlay Prossimo Episodio: chiusura overlay")
-              nextEpisodeDismissed = true
-              nextEpisodeCountdownSeconds = 0
-            } else {
-              Log.d("BACK_TRACE", "PLAYERSCREEN: onKeyEvent chiamata a closePlayer()")
-              viewModel.resetStreamState()
-              viewModel.closePlayer()
-            }
-          }
-          return@onKeyEvent true
-        }
+        // Il BACK fisico è gestito in PREVIEW (vedi sopra), sul rilascio e una sola volta.
 
         if (!isKeyDown) return@onKeyEvent false
 
@@ -2836,6 +3333,9 @@ fun PlayerScreen(
 
           // OK / Centro D-Pad
           KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> when {
+            // Messaggio "fonte non disponibile": OK/ENTER appartiene al pulsante
+            // «Seleziona fonte» della card, non a una transizione automatica.
+            isNextEpisodeUnavailableVisible -> false
             // Overlay "Prossimo Episodio" visibile (e focus non sul badge, gia'
             // gestito da TvFocusableBox): OK/ENTER avvia SUBITO la transizione.
             isNextEpisodePromptVisible -> {
@@ -2936,27 +3436,36 @@ fun PlayerScreen(
         // FASE 3.3 "Dimensione sottotitoli": applica la dimensione persistente al rendering
         // dei sottotitoli Media3 (SubtitleView di PlayerView). Frazione dell'altezza vista;
         // senza tracce sottotitoli non produce alcun effetto o errore.
-        view.subtitleView?.setFractionalTextSize(subtitleTextSizeFraction)
         // FASE 3.4 "Sfondo dei sottotitoli": applica lo sfondo persistente via
         // SubtitleView.setStyle(CaptionStyleCompat) (API disponibile in Media3 1.5.1).
         // Nei cue senza background incorporato, SubtitlePainter disegna
         // CaptionStyleCompat.backgroundColor dietro al testo solo se alpha > 0, quindi
         // con "Nessuno" (alpha 0) nessuno sfondo è disegnato. Senza tracce sottotitoli
         // non produce alcun effetto o errore.
-        view.subtitleView?.setStyle(subtitleCaptionStyle)
         // FASE 3.5 "Posizione dei sottotitoli": applica la posizione verticale persistente
         // via SubtitleView.setBottomPaddingFraction (API nativa disponibile in Media3 1.5.1).
         // È la distanza dal bordo inferiore come frazione dell'altezza vista, usata da
         // SubtitlePainter per i cue senza posizione esplicita (Cue.line == DIMEN_UNSET,
         // caso standard); cue con posizione propria e cue bitmap restano nativi Media3.
         // Senza tracce sottotitoli non produce alcun effetto o errore.
-        view.subtitleView?.setBottomPaddingFraction(subtitleBottomPaddingFraction)
-        Log.i(
-          "PlayerScreen",
-          "Dimensione sottotitoli: ${playbackSettings.subtitleSize.label} (fraction=$subtitleTextSizeFraction); " +
-            "sfondo: ${playbackSettings.subtitleBackground.label} (${subtitleCaptionStyle.backgroundColor}); " +
-            "posizione: ${playbackSettings.subtitlePosition.label} (bottomFraction=$subtitleBottomPaddingFraction)"
-        )
+        //
+        // Fase 6.1: le tre chiamate e il log diagnostico vengono eseguiti SOLO quando i
+        // valori effettivi cambiano (o quando la PlayerView è stata ricreata). Prima
+        // venivano ripetuti ad ogni ricomposizione della schermata.
+        val subtitleView = view.subtitleView
+        if (subtitleView != null && subtitleStyleApplier.shouldApply(subtitleView, subtitleStyleSnapshot)) {
+          subtitleView.setFractionalTextSize(subtitleStyleSnapshot.textSizeFraction)
+          subtitleView.setStyle(subtitleCaptionStyle)
+          subtitleView.setBottomPaddingFraction(subtitleStyleSnapshot.bottomPaddingFraction)
+          subtitleStyleApplier.markApplied(subtitleView, subtitleStyleSnapshot)
+          Log.i(
+            "PlayerScreen",
+            "Dimensione sottotitoli: ${playbackSettings.subtitleSize.label} (fraction=$subtitleTextSizeFraction); " +
+              "sfondo: ${playbackSettings.subtitleBackground.label} " +
+              "(${playbackSettings.subtitleOpacity.label}, ${subtitleCaptionStyle.backgroundColor}); " +
+              "posizione: ${playbackSettings.subtitlePosition.label} (bottomFraction=$subtitleBottomPaddingFraction)"
+          )
+        }
       },
       modifier = Modifier.fillMaxSize()
     )
@@ -3010,11 +3519,39 @@ fun PlayerScreen(
       }
     }
 
+    // Avviso non bloccante: il sottotitolo OpenSubtitles salvato per questo contenuto
+    // non è più recuperabile. Nessun'altra traccia viene selezionata automaticamente.
+    AnimatedVisibility(
+      visible = subtitleRestoreNotice,
+      enter = fadeIn(),
+      exit = fadeOut(),
+      modifier = Modifier
+        .align(Alignment.TopCenter)
+        .padding(top = 140.dp)
+    ) {
+      Box(
+        modifier = Modifier
+          .background(Color.Black.copy(alpha = 0.82f), RoundedCornerShape(20.dp))
+          .border(1.dp, NovaCyan.copy(alpha = 0.7f), RoundedCornerShape(20.dp))
+          .padding(horizontal = 20.dp, vertical = 8.dp)
+      ) {
+        Text(
+          text = stringResource(R.string.player_online_subtitle_restore_failed),
+          color = NovaTextPrimary,
+          fontSize = 13.sp,
+          fontWeight = FontWeight.Medium
+        )
+      }
+    }
+
     // Buffering indicator: durante lo scrubbing resta fuori schermo
     // (l'unico elemento a video è l'overlay di anteprima della posizione) e, fuori dallo
     // scrubbing, appare solo dopo l'isteresi di PlayerBufferingOverlay: gli stalli brevi
-    // da cambio di rendition non fanno lampeggiare lo spinner.
-    if (showBufferingOverlay && !isScrubbing && playbackErrorMessage == null) {
+    // da cambio di rendition non fanno lampeggiare lo spinner. Sull'avvio Debrid lascia
+    // il posto alla schermata cinematografica: mai due indicatori sovrapposti.
+    if (showBufferingOverlay && !isScrubbing && playbackErrorMessage == null &&
+      !showDebridLoadingScreen
+    ) {
       Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -3031,7 +3568,10 @@ fun PlayerScreen(
           )
           Spacer(modifier = Modifier.height(12.dp))
           Text(
-            text = if (isSwitchingEpisode) {
+            text = if (playbackSettings.loadingStatusEnabled) {
+              // Stato REALE del caricamento (fasi derivate dagli eventi del player).
+              playerLoadingPhaseLabel(playerLoadingPhase)
+            } else if (isSwitchingEpisode) {
               stringResource(R.string.player_loading_next_episode)
             } else {
               stringResource(R.string.player_loading_stream)
@@ -3051,6 +3591,32 @@ fun PlayerScreen(
           }
         }
       }
+    }
+
+    // Schermata di caricamento Debrid (SOLO avvio del flusso): poster/immagine del titolo
+    // a tutto schermo, logo originale pulsante e dicitura localizzata. Compare subito con
+    // il prepare (senza l'isteresi dello spinner compatto) e sparisce al primo
+    // STATE_READY, cioè quando il player è pronto a mostrare il video.
+    // `zIndex` la tiene sopra l'HUD per tutta la durata del caricamento iniziale; non ha
+    // nodi focalizzabili, quindi il D-pad continua ad arrivare al player (BACK compreso).
+    AnimatedVisibility(
+      visible = showDebridLoadingScreen,
+      enter = fadeIn(animationSpec = tween(durationMillis = 200)),
+      exit = fadeOut(animationSpec = tween(durationMillis = 120)),
+      modifier = Modifier
+        .fillMaxSize()
+        .zIndex(25f)
+    ) {
+      DebridLoadingOverlay(
+        backgroundUrl = debridLoadingArtwork.backgroundUrl,
+        logoUrl = debridLoadingArtwork.logoUrl,
+        fallbackTitle = debridLoadingArtwork.fallbackTitle,
+        // Stato REALE del caricamento quando l'impostazione è attiva; il messaggio
+        // fisso storico resta il fallback per l'impostazione disattivata.
+        statusText = if (playbackSettings.loadingStatusEnabled) {
+          playerLoadingPhaseLabel(playerLoadingPhase)
+        } else stringResource(R.string.player_debrid_loading_stream)
+      )
     }
 
     // Errore compatto: mantiene visibili video e controlli per non bloccare il player.
@@ -3146,6 +3712,43 @@ fun PlayerScreen(
           }
         }
       }
+    }
+
+    // 1bis. Overlay in pausa (impostazione "Overlay in pausa"): dopo 5 secondi di
+    // pausa mostra poster, logo, titolo originale, stagione/episodio e sinossi.
+    // In alto a sinistra: non copre timeline né barra dei controlli (visibili in
+    // pausa come sempre); nessun nodo focalizzabile → mai interferenza con DPAD.
+    AnimatedVisibility(
+      visible = showPauseOverlay,
+      enter = fadeIn(animationSpec = tween(durationMillis = 300)),
+      exit = fadeOut(animationSpec = tween(durationMillis = 150)),
+      modifier = Modifier
+        .align(Alignment.TopStart)
+        .padding(start = 40.dp, top = 40.dp)
+        .zIndex(18f)
+    ) {
+      PauseInfoOverlay(
+        posterUrl = media.posterUrl,
+        title = media.originalTitle.ifBlank { media.title },
+        episodeSubtitle = episodeSubtitle,
+        synopsis = currentEp?.synopsis?.takeIf { it.isNotBlank() } ?: media.synopsis
+      )
+    }
+
+    // 1ter. Avvisi sui contenuti (Parental Guide): una sola volta per contenuto o
+    // episodio, al primo avvio reale della riproduzione; mai durante buffering,
+    // pausa o ripresa. In alto a sinistra, ~2,5 s, poi scompare da solo. Nessun
+    // overlay senza dati (la guardia `hasVisibleCategories` è obbligatoria).
+    val parentalGuideData = parentalGuide
+    if (parentalGuideData != null && parentalGuideData.hasVisibleCategories) {
+      ParentalGuideOverlay(
+        visible = parentalGuideVisible,
+        categories = parentalGuideData.categories,
+        modifier = Modifier
+          .align(Alignment.TopStart)
+          .padding(start = 40.dp, top = 40.dp)
+          .zIndex(19f)
+      )
     }
 
     // 2. Overlay Controlli HUD Player TV
@@ -3274,10 +3877,10 @@ fun PlayerScreen(
                   introWindow?.let { window ->
                     Log.d(
                       "StreamNovaIntro",
-                      "Click Salta Intro (HUD): seekTo=${window.endMs}, currentPosition=$currentPosition, isTvShow=$isTvShow"
+                      "Click Salta Intro (HUD): seekTo=${window.endMs}, currentPosition=${playbackClock.positionMs}, isTvShow=$isTvShow"
                     )
                     exoPlayer.seekTo(window.endMs)
-                    currentPosition = window.endMs
+                    playbackClock.updatePosition(window.endMs)
                   }
                   isIntroDismissed = true
                   requestFocusOn(playPauseFocusRequester)
@@ -3326,14 +3929,9 @@ fun PlayerScreen(
           // -------------------------------------------------------------------
           // 2. BARRA DI SCORRIMENTO (Timeline)
           // -------------------------------------------------------------------
-          val progressFraction = if (totalDuration > 0 && !isLive) {
-            (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
-          } else 0f
-
-          val bufferFraction = if (totalDuration > 0 && !isLive) {
-            (exoPlayer.bufferedPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
-          } else 0f
-
+          // Fase 6.1: le frazioni non sono più calcolate qui (nel corpo dell'HUD): vengono
+          // lette nello scope più piccolo che le mostra, così il tick di 500 ms ricompone
+          // solo la barra e non l'intero OSD.
           Box(
             modifier = Modifier
               .fillMaxWidth()
@@ -3402,6 +4000,17 @@ fun PlayerScreen(
                 contentAlignment = Alignment.CenterStart
               ) {
                 val widthPx = maxWidth
+
+                // Fase 6.1: posizione e durata sono lette qui, nel più piccolo scope che le
+                // mostra. Il tick da 500 ms invalida solo questa barra (3 Box e il thumb) e
+                // non l'HUD né il resto della schermata.
+                val clockDurationMs = playbackClock.durationMs
+                val progressFraction = if (clockDurationMs > 0 && !isLive) {
+                  (playbackClock.positionMs.toFloat() / clockDurationMs.toFloat()).coerceIn(0f, 1f)
+                } else 0f
+                val bufferFraction = if (clockDurationMs > 0 && !isLive) {
+                  (exoPlayer.bufferedPosition.toFloat() / clockDurationMs.toFloat()).coerceIn(0f, 1f)
+                } else 0f
 
                 // Track Base della Timeline
                 Box(
@@ -3583,12 +4192,9 @@ fun PlayerScreen(
             }
 
             // LATO DESTRO: Minutaggio formattato (es. "00:02 / 41:54")
-            Text(
-              text = if (isLive) "LIVE" else formatTimePair(currentPosition, totalDuration),
-              color = Color.White,
-              fontSize = 16.sp,
-              fontWeight = FontWeight.SemiBold
-            )
+            // Fase 6.1: composable foglia dedicato, così il tick da 500 ms ricompone solo
+            // questa Text e non la barra controlli dell'HUD.
+            PlayerPlaybackTimeLabel(clock = playbackClock, isLive = isLive)
           }
         }
       }
@@ -3625,14 +4231,10 @@ fun PlayerScreen(
                 } catch (_: Exception) {}
                 true
               }
-              KeyEvent.KEYCODE_BACK -> {
-                // BACK sul banner: dismiss del banner senza chiudere il player
-                isIntroDismissed = true
-                try {
-                  idleFocusRequester.requestFocus()
-                } catch (_: Exception) {}
-                true
-              }
+              // BACK sul banner: NON gestito qui. Il banner riceve solo il KEY_DOWN
+              // (l'UP tornerebbe all'Activity), quindi consumarlo dismetterebbe il banner
+              // e lascerebbe il rilascio al BackHandler del player. Lo dismette il
+              // BackHandler del player (ramo `showSkipIntro`) con un'unica pressione.
               KeyEvent.KEYCODE_DPAD_UP -> {
                 true
               }
@@ -3694,7 +4296,7 @@ fun PlayerScreen(
       ) {
         PlayerScrubOverlay(
           positionMs = overlayPosition,
-          durationMs = totalDuration,
+          durationMs = playbackClock.durationMs,
           deltaMs = overlayDelta,
           previewState = seekPreviewState
         )
@@ -3731,6 +4333,29 @@ fun PlayerScreen(
       )
     }
 
+    // Autoplay TERMINATO: la stessa fonte Debrid non è disponibile per il nuovo episodio.
+    // Nessun countdown e nessun avanzamento: solo un messaggio chiaro e la scelta manuale.
+    AnimatedVisibility(
+      visible = isNextEpisodeUnavailableVisible,
+      enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
+      exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
+      modifier = Modifier
+        .align(Alignment.BottomEnd)
+        .zIndex(101f)
+        .padding(end = 40.dp, bottom = 40.dp)
+    ) {
+      NextEpisodeUnavailableCard(
+        focusRequester = nextEpisodeUnavailableFocusRequester,
+        onSelectSource = {
+          kickAutoHide()
+          // Riapre la ricerca per l'EPISODIO CORRENTE (quello per cui l'autoplay è
+          // fallito), poi mostra la selezione manuale esistente. La scelta dell'utente
+          // ripristina il normale flusso di riproduzione.
+          viewModel.openManualSourceSelection(media, currentEp)
+        }
+      )
+    }
+
 if (showTrackQuickPanel) {
       val audioOptions = getAvailableAudioOptions(currentTracksState)
       PlayerTrackQuickPanel(
@@ -3747,8 +4372,10 @@ if (showTrackQuickPanel) {
           if (selectedOption != null) {
             manualAudioSelection = ManualAudioSelection(selectedOption.group, selectedOption.trackIndex)
             PlayerRuntimeControllerTrackSelection.selectAudioTrack(exoPlayer, index)
-            selectedOption.language.trim().lowercase().takeIf { it.isNotBlank() && it != "und" }
-              ?.let(viewModel::setPreferredAudioLanguage)
+            // La scelta manuale vale per la sessione/episodio corrente e NON modifica
+            // la preferenza globale "Lingua audio preferita": una selezione una tantum
+            // (es. traccia inglese) non deve far partire in inglese tutti i flussi
+            // successivi. La preferenza globale si cambia solo dalle Impostazioni.
           }
           showTrackQuickPanel = false
         },
@@ -3774,6 +4401,7 @@ if (showTrackQuickPanel) {
         selectedLocalIndex = selectedIndex,
         onSelectLocal = { idx ->
           if (idx == 0) {
+            viewModel.clearPersistentSubtitleForContent(media, currentEp)
             manualSubtitleSelection = ManualSubtitleSelection(null, -1)
             onlineSubtitleActivationLang = null
             PlayerRuntimeControllerTrackSelection.disableSubtitles(exoPlayer)
@@ -3781,6 +4409,20 @@ if (showTrackQuickPanel) {
           } else {
             val selectedOption = subtitleOptions.getOrNull(idx - 1)
             if (selectedOption != null) {
+              // L'utente ha scelto una traccia dal menu. Se è la traccia OpenSubtitles
+              // persistente già attiva, l'associazione resta valida; in ogni altro caso
+              // (traccia nativa, Stremio o "Nessuno") la precedente associazione
+              // OpenSubtitles viene rimossa, come richiesto.
+              val saved = viewModel.savedPersistentSubtitle(media, currentEp)
+              val selectedFormatId =
+                selectedOption.group.getTrackFormat(selectedOption.trackIndex).id
+              if (PersistentSubtitleSelectionPolicy.shouldClearOnManualSelection(
+                  saved = saved,
+                  selectedTrackId = selectedFormatId
+                )
+              ) {
+                viewModel.clearPersistentSubtitleForContent(media, currentEp)
+              }
               manualSubtitleSelection = ManualSubtitleSelection(selectedOption.group, selectedOption.trackIndex)
               onlineSubtitleActivationLang = null
               PlayerRuntimeControllerTrackSelection.selectSubtitleTrack(exoPlayer, idx - 1)
@@ -3815,6 +4457,12 @@ if (showTrackQuickPanel) {
           manualSubtitleSelection = null
           onlineSubtitleActivationLang = null
         },
+        subtitleSize = playbackSettings.subtitleSize,
+        subtitleBackground = playbackSettings.subtitleBackground,
+        subtitleOpacity = playbackSettings.subtitleOpacity,
+        onSelectSubtitleSize = { viewModel.setSubtitleSize(it) },
+        onSelectSubtitleBackground = { viewModel.setSubtitleBackground(it) },
+        onSelectSubtitleOpacity = { viewModel.setSubtitleOpacity(it) },
         onDismiss = { showSubtitleModal = false }
       )
     }
@@ -3915,6 +4563,19 @@ if (showTrackQuickPanel) {
       )
     }
   }
+}
+
+/**
+ * Etichetta localizzata della fase di caricamento REALE (impostazione "Mostra stato
+ * di caricamento"). Le fasi derivano solo da eventi del player: nessun testo inventato.
+ */
+@Composable
+private fun playerLoadingPhaseLabel(phase: PlayerLoadingPhase): String = when (phase) {
+  PlayerLoadingPhase.PREPARING_SOURCE -> stringResource(R.string.player_status_preparing_source)
+  PlayerLoadingPhase.CONNECTING -> stringResource(R.string.player_status_connecting)
+  PlayerLoadingPhase.LOADING_CONTENT -> stringResource(R.string.player_status_loading_content)
+  PlayerLoadingPhase.BUFFERING -> stringResource(R.string.player_status_buffering)
+  PlayerLoadingPhase.READY -> stringResource(R.string.player_status_ready)
 }
 
 /**
@@ -4127,6 +4788,13 @@ fun PlayerSubtitleSelectionDialog(
   headerSwitchLabel: String? = null,
   headerSwitchChecked: Boolean = false,
   onHeaderSwitchToggle: ((Boolean) -> Unit)? = null,
+  /** Aspetto dei sottotitoli condiviso con le Impostazioni generali (SettingsRepository). */
+  subtitleSize: SubtitleSize = SubtitleSize.MEDIUM,
+  subtitleBackground: SubtitleBackground = SubtitleBackground.BLACK,
+  subtitleOpacity: SubtitleOpacity = SubtitleOpacity.FIFTY,
+  onSelectSubtitleSize: (SubtitleSize) -> Unit = {},
+  onSelectSubtitleBackground: (SubtitleBackground) -> Unit = {},
+  onSelectSubtitleOpacity: (SubtitleOpacity) -> Unit = {},
   onlineDownloadState: OnlineSubtitleDownloadState? = null,
   onRetryOnlineDownload: () -> Unit = {},
   onDismiss: () -> Unit
@@ -4227,9 +4895,25 @@ fun PlayerSubtitleSelectionDialog(
         }
       }
 
+      Spacer(modifier = Modifier.height(12.dp))
+
+      // 3. Aspetto dei sottotitoli: dimensione, sfondo e opacità.
+      // Gli stessi valori delle Impostazioni generali (SettingsRepository): ogni tocco
+      // aggiorna il DataStore e il player riapplica lo stile senza interrompere la
+      // riproduzione. I chip restano nello stesso slot di composizione tra una selezione
+      // e l'altra, quindi il focus DPAD resta sul chip appena confermato.
+      SubtitleAppearanceSection(
+        size = subtitleSize,
+        background = subtitleBackground,
+        opacity = subtitleOpacity,
+        onSelectSize = onSelectSubtitleSize,
+        onSelectBackground = onSelectSubtitleBackground,
+        onSelectOpacity = onSelectSubtitleOpacity
+      )
+
       Spacer(modifier = Modifier.height(14.dp))
 
-      // 3. Controller Sincronizzazione Offset (+/- 250 ms)
+      // 4. Controller Sincronizzazione Offset (+/- 250 ms)
       Column(
         modifier = Modifier
           .fillMaxWidth()
@@ -4373,11 +5057,11 @@ fun PlayerSubtitleSelectionDialog(
 
       Spacer(modifier = Modifier.height(14.dp))
 
-      // 4. Sezione Tracce Scrollabili
+      // 5. Sezione Tracce Scrollabili
       Column(
         modifier = Modifier
           .fillMaxWidth()
-          .heightIn(max = 340.dp)
+          .heightIn(max = 250.dp)
           .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(6.dp)
       ) {
@@ -5070,6 +5754,26 @@ private fun formatTimePair(currentMs: Long, totalMs: Long): String {
   return "${fmt(curSec)} / ${fmt(totSec)}"
 }
 
+/**
+ * Minutaggio dell'HUD (Fase 6.1).
+ *
+ * Composable FOGLIA dedicato alla lettura di [PlayerPlaybackClock]: il tick del polling
+ * invalida solo questa `Text`, non la barra controlli o l'intero OSD. Testo, colore e
+ * tipografia sono identici a prima ("LIVE" sui canali live).
+ */
+@Composable
+private fun PlayerPlaybackTimeLabel(
+  clock: PlayerPlaybackClock,
+  isLive: Boolean
+) {
+  Text(
+    text = if (isLive) "LIVE" else formatTimePair(clock.positionMs, clock.durationMs),
+    color = Color.White,
+    fontSize = 16.sp,
+    fontWeight = FontWeight.SemiBold
+  )
+}
+
 data class MediaAudioTrackOption(
   val group: Tracks.Group,
   val trackIndex: Int,
@@ -5253,4 +5957,300 @@ private fun NextEpisodePromptCard(
       }
     }
   }
+}
+
+/**
+ * Card mostrata quando l'autoplay del prossimo episodio si ferma perché la stessa
+ * fonte Debrid non è disponibile. Non esiste alcun countdown: l'unica azione è la
+ * scelta manuale della fonte, che ripristina la riproduzione normale.
+ */
+@Composable
+private fun NextEpisodeUnavailableCard(
+  focusRequester: FocusRequester,
+  onSelectSource: () -> Unit
+) {
+  LaunchedEffect(Unit) {
+    focusRequester.requestFocusAfterFrame()
+  }
+
+  Column(
+    modifier = Modifier
+      .widthIn(max = 360.dp)
+      .shadow(
+        elevation = 12.dp,
+        shape = RoundedCornerShape(16.dp),
+        spotColor = Color(0xFFFF5252)
+      )
+      .background(
+        color = Color(0xF20B111E),
+        shape = RoundedCornerShape(16.dp)
+      )
+      .border(
+        width = 1.5.dp,
+        color = Color(0xFFFF5252).copy(alpha = 0.85f),
+        shape = RoundedCornerShape(16.dp)
+      )
+      .padding(horizontal = 20.dp, vertical = 16.dp),
+    verticalArrangement = Arrangement.spacedBy(12.dp)
+  ) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+      Icon(
+        imageVector = Icons.Default.Warning,
+        contentDescription = null,
+        tint = Color(0xFFFF5252),
+        modifier = Modifier.size(18.dp)
+      )
+      Text(
+        text = stringResource(R.string.player_next_episode_title),
+        color = Color(0xFFFF5252),
+        fontWeight = FontWeight.Bold,
+        fontSize = 12.sp,
+        letterSpacing = 1.sp
+      )
+    }
+    Text(
+      text = stringResource(R.string.player_next_episode_no_source),
+      color = Color.White.copy(alpha = 0.9f),
+      fontSize = 14.sp,
+      lineHeight = 19.sp
+    )
+    TvFocusableBox(
+      modifier = Modifier.focusRequester(focusRequester),
+      shape = RoundedCornerShape(50),
+      onClick = onSelectSource
+    ) { isFocused ->
+      Row(
+        modifier = Modifier
+          .shadow(
+            elevation = if (isFocused) 16.dp else 4.dp,
+            shape = RoundedCornerShape(50),
+            spotColor = NovaCyanBright
+          )
+          .background(
+            color = if (isFocused) NovaCyanBright else Color(0xCC0B111E),
+            shape = RoundedCornerShape(50)
+          )
+          .border(
+            width = if (isFocused) 2.dp else 1.5.dp,
+            color = if (isFocused) Color.White else NovaCyan.copy(alpha = 0.8f),
+            shape = RoundedCornerShape(50)
+          )
+          .padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Icon(
+          imageVector = Icons.Default.Tune,
+          contentDescription = null,
+          tint = if (isFocused) Color.Black else NovaCyanBright,
+          modifier = Modifier.size(18.dp)
+        )
+        Text(
+          text = stringResource(R.string.player_next_episode_select_source),
+          color = if (isFocused) Color.Black else Color.White,
+          fontWeight = FontWeight.Bold,
+          fontSize = 13.sp,
+          letterSpacing = 0.5.sp
+        )
+      }
+    }
+  }
+}
+
+/**
+ * Sezione "Aspetto dei sottotitoli" del menu Sottotitoli del player.
+ *
+ * Riproduce in miniatura le tre preferenze condivise con le Impostazioni generali
+ * (dimensione, sfondo, opacità). I valori arrivano da [com.example.data.prefs.SettingsRepository],
+ * quindi ogni selezione è già persistita e il player la riapplica subito, senza
+ * interrompere la riproduzione.
+ *
+ * Scelte di layout pensate per il telecomando:
+ * - una riga per preferenza, etichetta fissa a sinistra e chip di pari larghezza a destra;
+ * - chip con `focusedScale = 1f`: l'indicazione di focus è il bordo, così i chip vicini
+ *   non si sovrappongono quando si sposta il focus;
+ * - ogni chip mantiene la stessa posizione nel tree Compose tra una selezione e l'altra,
+ *   quindi il focus DPAD resta sul chip confermato (nessun salto all'inizio).
+ */
+@Composable
+private fun SubtitleAppearanceSection(
+  size: SubtitleSize,
+  background: SubtitleBackground,
+  opacity: SubtitleOpacity,
+  onSelectSize: (SubtitleSize) -> Unit,
+  onSelectBackground: (SubtitleBackground) -> Unit,
+  onSelectOpacity: (SubtitleOpacity) -> Unit
+) {
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .background(NovaSurfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+      .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
+      .padding(12.dp)
+  ) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+      Icon(
+        imageVector = Icons.Default.Palette,
+        contentDescription = null,
+        tint = NovaCyan,
+        modifier = Modifier.size(16.dp)
+      )
+      Text(
+        text = stringResource(R.string.player_subtitles_appearance),
+        color = NovaTextSecondary,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold
+      )
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+
+    SubtitleAppearanceRow(label = stringResource(R.string.sub_label_size)) {
+      SubtitleSize.entries.forEach { option ->
+        SubtitleAppearanceChip(
+          selected = option == size,
+          description = subtitleSizeLabel(option),
+          onClick = { onSelectSize(option) }
+        ) { isFocused ->
+          SubtitleChipText(
+            text = "Aa",
+            selected = option == size,
+            isFocused = isFocused,
+            fontSize = when (option) {
+              SubtitleSize.EXTRA_SMALL -> 10.sp
+              SubtitleSize.SMALL -> 12.sp
+              SubtitleSize.MEDIUM -> 14.sp
+              SubtitleSize.LARGE -> 16.sp
+              SubtitleSize.VERY_LARGE -> 18.sp
+            }
+          )
+        }
+      }
+    }
+
+    Spacer(modifier = Modifier.height(6.dp))
+
+    SubtitleAppearanceRow(label = stringResource(R.string.sub_label_background)) {
+      SubtitleBackground.entries.forEach { option ->
+        SubtitleAppearanceChip(
+          selected = option == background,
+          description = subtitleBackgroundLabel(option),
+          onClick = { onSelectBackground(option) }
+        ) { isFocused ->
+          SubtitleChipText(
+            text = subtitleBackgroundLabel(option),
+            selected = option == background,
+            isFocused = isFocused
+          )
+        }
+      }
+    }
+
+    Spacer(modifier = Modifier.height(6.dp))
+
+    SubtitleAppearanceRow(label = stringResource(R.string.sub_label_opacity)) {
+      SubtitleOpacity.entries.forEach { option ->
+        SubtitleAppearanceChip(
+          selected = option == opacity,
+          description = subtitleOpacityLabel(option),
+          onClick = { onSelectOpacity(option) }
+        ) { isFocused ->
+          SubtitleChipText(
+            text = subtitleOpacityLabel(option),
+            selected = option == opacity,
+            isFocused = isFocused
+          )
+        }
+      }
+    }
+  }
+}
+
+/** Riga etichetta + chip di una preferenza dell'aspetto sottotitoli. */
+@Composable
+private fun SubtitleAppearanceRow(
+  label: String,
+  content: @Composable RowScope.() -> Unit
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    Text(
+      text = label,
+      color = NovaTextSecondary,
+      fontSize = 11.sp,
+      fontWeight = FontWeight.Medium,
+      maxLines = 1,
+      modifier = Modifier.width(76.dp)
+    )
+    Spacer(modifier = Modifier.width(8.dp))
+    Row(
+      modifier = Modifier.weight(1f),
+      horizontalArrangement = Arrangement.spacedBy(4.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      content = content
+    )
+  }
+}
+
+/**
+ * Chip selezionabile di una riga "Aspetto".
+ *
+ * Il contenuto riceve lo stato di focus per poter colorare il testo come le altre
+ * righe del dialog (`trackOptionRowAppearance`). La larghezza è distribuita con
+ * `weight(1f)` all'interno della riga: tutti i chip restano allineati anche con
+ * etichette di lunghezza diversa.
+ */
+@Composable
+private fun RowScope.SubtitleAppearanceChip(
+  selected: Boolean,
+  description: String,
+  onClick: () -> Unit,
+  content: @Composable (isFocused: Boolean) -> Unit
+) {
+  TvFocusableBox(
+    shape = RoundedCornerShape(8.dp),
+    focusedScale = 1f,
+    borderWidth = 1.5.dp,
+    onClick = onClick,
+    modifier = Modifier
+      .weight(1f)
+      .semantics { contentDescription = description }
+  ) { isFocused ->
+    val appearance = trackOptionRowAppearance(isSelected = selected, isFocused = isFocused)
+    Box(
+      contentAlignment = Alignment.Center,
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(30.dp)
+        .background(appearance.background, RoundedCornerShape(8.dp))
+        .border(1.dp, appearance.borderColor, RoundedCornerShape(8.dp))
+    ) {
+      content(isFocused)
+    }
+  }
+}
+
+/** Testo di un chip "Aspetto": ciano quando selezionato o a fuoco, altrimenti neutro. */
+@Composable
+private fun SubtitleChipText(
+  text: String,
+  selected: Boolean,
+  isFocused: Boolean,
+  fontSize: TextUnit = 11.sp
+) {
+  Text(
+    text = text,
+    color = if (isFocused || selected) NovaCyanBright else NovaTextSecondary,
+    fontSize = fontSize,
+    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+    maxLines = 1
+  )
 }

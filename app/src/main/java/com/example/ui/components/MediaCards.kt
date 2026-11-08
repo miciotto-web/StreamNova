@@ -1,8 +1,10 @@
 package com.example.ui.components
 
+import android.os.Build
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -38,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
@@ -59,6 +63,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -76,7 +81,9 @@ import com.example.R
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.model.WatchProgress
+import com.example.data.prefs.ContinueWatchingLayout
 import com.example.data.stremio.StremioCatalogMapper
+import com.example.ui.util.NextEpisodeBadgeRules
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
@@ -94,6 +101,14 @@ val LocalLastFocusedMediaId = compositionLocalOf<String?> { null }
  * Solo la card appartenente alla riga `rowKey` può consumare il target.
  */
 val LocalLastFocusedTarget = compositionLocalOf<Pair<String, String>?> { null }
+
+/**
+ * CompositionLocal della KEY STABILE della card da ripristinare (key Compose dell'item della
+ * riga, es. `trend_m_123`). Identifica la CARD, non la sua posizione: al ritorno dal Dettaglio
+ * la colonna viene risolta per identità e verificata con questa key, così un riordino del
+ * catalogo non fa atterrare il focus su un'altra card.
+ */
+val LocalLastFocusedCardKey = compositionLocalOf<String?> { null }
 
 /** CompositionLocal per il token di ripristino che cambia ad ogni tentativo. */
 val LocalFocusRestoreToken = compositionLocalOf<Int> { 0 }
@@ -203,12 +218,25 @@ fun CardMediaImage(
 
   val effectiveFallbackRes = fallbackRes?.takeIf { it != R.drawable.banner_dune }
 
-  if (targetUrl != null) {
-    SubcomposeAsyncImage(
-      model = ImageRequest.Builder(LocalContext.current)
-        .data(targetUrl)
+  // UNA ImageRequest per card e per URL. Prima veniva costruita a ogni ricomposizione della
+  // card: un Builder + un ImageRequest nuovi ogni volta, poi assegnati a `painter.request`,
+  // che è uno `mutableStateOf` e quindi confronta i due oggetti campo per campo
+  // (`ImageRequest.equals`). Con `remember` l'oggetto è creato una volta e il confronto è
+  // per identità. La chiave è (context, URL): nessuno stato viene catturato, quindi non
+  // esistono catture obsolete e il comportamento di caricamento resta identico.
+  val context = LocalContext.current
+  val imageRequest = remember(context, targetUrl) {
+    targetUrl?.let { url ->
+      ImageRequest.Builder(context)
+        .data(url)
         .crossfade(true)
-        .build(),
+        .build()
+    }
+  }
+
+  if (imageRequest != null) {
+    SubcomposeAsyncImage(
+      model = imageRequest,
       contentDescription = contentDescription,
       contentScale = contentScale,
       modifier = modifier,
@@ -292,9 +320,19 @@ fun PosterRatingBadge(
   }
 }
 
+/** Tag semantico del badge "Prossima puntata" (regressioni UI). */
+const val NEXT_EPISODE_BADGE_TEST_TAG = "cw_next_episode_badge"
+
 /**
- * Continua a guardare - Full-bleed 16:9 card con overlay testi e progresso
- * Design: immagine occupa tutta la card, testi sovrapposti in basso a sinistra
+ * Continua a guardare - card con immagine, testi sovrapposti e barra di progresso.
+ *
+ * Il layout è scelto nelle Impostazioni («Continua a guardare»):
+ *  - [ContinueWatchingLayout.CARD]  → 16:9 full-bleed 280x158 (storico);
+ *  - [ContinueWatchingLayout.WIDE]  → card orizzontale 380x158, immagine a sinistra;
+ *  - [ContinueWatchingLayout.POSTER] → locandina 2:3 180x270.
+ *
+ * L'immagine arriva dal policy della Home ([artworkUrl]): miniatura dell'episodio,
+ * backdrop o locandina. [blurArtwork] è già deciso dal policy (solo episodi non visti).
  */
 @Composable
 fun ContinueWatchingCard(
@@ -304,8 +342,21 @@ fun ContinueWatchingCard(
   modifier: Modifier = Modifier,
   focusRequester: FocusRequester? = null,
   rowKey: String? = null,
-  isRestoreTarget: Boolean = false
+  isRestoreTarget: Boolean = false,
+  layout: ContinueWatchingLayout = ContinueWatchingLayout.CARD,
+  artworkUrl: String? = null,
+  blurArtwork: Boolean = false
 ) {
+  val cardWidth = when (layout) {
+    ContinueWatchingLayout.CARD -> 280.dp
+    ContinueWatchingLayout.WIDE -> 380.dp
+    ContinueWatchingLayout.POSTER -> 180.dp
+  }
+  val cardHeight = when (layout) {
+    ContinueWatchingLayout.CARD,
+    ContinueWatchingLayout.WIDE -> 158.dp
+    ContinueWatchingLayout.POSTER -> 270.dp
+  }
   val fallbackRes = (media.backdropRes ?: media.posterRes)?.takeIf { it != R.drawable.banner_dune }
   val targetMediaId = LocalLastFocusedMediaId.current
   val pendingRestoreId = targetMediaId
@@ -320,6 +371,8 @@ fun ContinueWatchingCard(
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
   val cardFocusRequester = focusRequester ?: internalFocusRequester
+  // Il consumo del target avviene solo su un ARRIVO reale del focus (vedi FocusArrivalTracker).
+  val focusArrival = remember { FocusArrivalTracker() }
 
   // Track whether we've successfully requested focus for the current token
   var focusRequestedToken by remember { mutableStateOf<Int?>(null) }
@@ -348,14 +401,18 @@ fun ContinueWatchingCard(
 
     TvFocusableBox(
     modifier = modifier
-      .width(280.dp)
-      .height(158.dp)
+      .width(cardWidth)
+      .height(cardHeight)
       .focusProperties {
         canFocus = !isRestoringActive || (media.id == pendingRestoreId && (rowKey == null || isRestoreTarget))
       }
       .focusRequester(cardFocusRequester)
       .onFocusChanged { focusState ->
-        if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
+        val focusArrived = focusArrival.onFocusChanged(focusState.isFocused)
+        // Nelle righe della Home il target si consuma solo quando il focus ARRIVA davvero:
+        // una conferma duplicata sullo stesso nodo non deve rilasciarlo (vedi FocusArrivalTracker).
+        val consumesTarget = if (rowKey == null) focusState.isFocused else focusArrived && isRestoreTarget
+        if (consumesTarget) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }
@@ -365,19 +422,20 @@ fun ContinueWatchingCard(
     onClick = onClick,
     onLongPress = onLongPress
   ) { isFocused ->
-    Box(
+    when (layout) {
+      ContinueWatchingLayout.CARD -> Box(
       modifier = Modifier
         .fillMaxSize()
         .clip(RoundedCornerShape(14.dp))
+        .testTag(continueWatchingLayoutTestTag(ContinueWatchingLayout.CARD))
     ) {
       // Immagine full-bleed 16:9
-      CardMediaImage(
-        primaryUrl = media.backdropUrl,
-        secondaryUrl = media.posterUrl,
+      ContinueWatchingArtwork(
+        media = media,
+        artworkUrl = artworkUrl,
+        blurArtwork = blurArtwork,
         fallbackRes = fallbackRes,
-        contentDescription = media.title,
-        modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.Crop
+        modifier = Modifier.fillMaxSize()
       )
 
       // Gradiente inferiore per i testi
@@ -423,6 +481,62 @@ fun ContinueWatchingCard(
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium
           )
+        }
+      }
+
+      // Badge "Prossima puntata": SOLO da dati TMDB completi e verificabili (serie in onda
+      // con `next_episode_to_air` valido e non trascorso, nella STESSA stagione salvata in
+      // ripresa). Le regole vivono in un unico punto ([NextEpisodeBadgeRules]); nessuna
+      // data viene stimata o dedotta.
+      // Ancorato in alto a sinistra: non copre titolo, barra di progresso, minuti
+      // rimanenti (in alto a destra) né il centro della locandina.
+      // `lastWatchedSeason` è chiave del remember: al cambio stagione durante la visione
+      // il badge deve ricalcolarsi subito, senza aspettare un nuovo dato TMDB.
+      val nextEpisodeBadge = remember(media.tvStatus, media.nextEpisode, media.lastWatchedSeason) {
+        NextEpisodeBadgeRules.resolve(media)
+      }
+      if (nextEpisodeBadge != null) {
+        // Formato compatto: sfondo scuro traslucido, bordo appena percepibile e testo
+        // ridotto. La data resta l'informazione più leggibile, mentre il codice
+        // stagione/episodio la affianca sulla stessa riga con meno peso visivo.
+        val badgeShape = RoundedCornerShape(6.dp)
+        Column(
+          modifier = Modifier
+            .align(Alignment.TopStart)
+            .padding(8.dp)
+            .clip(badgeShape)
+            .background(Color.Black.copy(alpha = 0.66f))
+            .border(1.dp, NovaCyan.copy(alpha = 0.18f), badgeShape)
+            .padding(horizontal = 4.dp, vertical = 1.dp)
+            .testTag(NEXT_EPISODE_BADGE_TEST_TAG)
+        ) {
+          Text(
+            text = stringResource(R.string.cw_next_episode_label),
+            color = NovaCyanBright.copy(alpha = 0.90f),
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            softWrap = false
+          )
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+              text = nextEpisodeBadge.airDateText,
+              color = Color.White,
+              fontSize = 10.5.sp,
+              fontWeight = FontWeight.Bold,
+              maxLines = 1,
+              softWrap = false
+            )
+            Spacer(modifier = Modifier.width(2.dp))
+            Text(
+              text = nextEpisodeBadge.seasonEpisodeText,
+              color = Color.White.copy(alpha = 0.72f),
+              fontSize = 7.sp,
+              fontWeight = FontWeight.SemiBold,
+              maxLines = 1,
+              softWrap = false
+            )
+          }
         }
       }
 
@@ -496,6 +610,371 @@ fun ContinueWatchingCard(
         )
       }
     }
+
+      ContinueWatchingLayout.WIDE -> ContinueWatchingWideLayout(
+        media = media,
+        artworkUrl = artworkUrl,
+        blurArtwork = blurArtwork,
+        fallbackRes = fallbackRes
+      )
+
+      ContinueWatchingLayout.POSTER -> ContinueWatchingPosterLayout(
+        media = media,
+        artworkUrl = artworkUrl,
+        blurArtwork = blurArtwork,
+        fallbackRes = fallbackRes
+      )
+    }
+  }
+}
+
+/** Tag semantico del layout attivo della card (verifiche di regressione UI). */
+fun continueWatchingLayoutTestTag(layout: ContinueWatchingLayout): String =
+  "cw_layout_${layout.name.lowercase()}"
+
+/**
+ * Immagine della card: URL deciso dal policy, con la stessa catena di fallback di
+ * [CardMediaImage]. La sfocatura anti-spoiler è applicata solo all'immagine (non ai
+ * testi), così titolo e avanzamento restano leggibili.
+ */
+@Composable
+private fun ContinueWatchingArtwork(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean,
+  @DrawableRes fallbackRes: Int?,
+  modifier: Modifier = Modifier
+) {
+  // `Modifier.blur` usa RenderEffect e su API < 31 non ha effetto: in quel caso si
+  // applica una velatura scura equivalente, così la protezione anti-spoiler resta
+  // attiva anche sui TV box con Android 8-11.
+  val canBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+  Box(modifier = modifier) {
+    CardMediaImage(
+      primaryUrl = artworkUrl ?: media.backdropUrl,
+      secondaryUrl = media.posterUrl,
+      fallbackRes = fallbackRes,
+      contentDescription = media.title,
+      modifier = Modifier
+        .fillMaxSize()
+        .then(if (blurArtwork && canBlur) Modifier.blur(16.dp) else Modifier),
+      contentScale = ContentScale.Crop
+    )
+    if (blurArtwork && !canBlur) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(Color.Black.copy(alpha = 0.62f))
+      )
+    }
+  }
+}
+
+/** Badge «Xm rimanenti» condiviso dai tre layout. */
+@Composable
+private fun ContinueWatchingRemainingBadge(
+  media: MediaItem,
+  modifier: Modifier = Modifier
+) {
+  val remainingMins = if (media.currentProgressMs > 0) {
+    WatchProgress.remainingMinutes(
+      totalDurationMs = media.totalDurationMs,
+      resumePositionMs = media.currentProgressMs,
+      runtimeMinutes = media.durationMinutes
+    )?.takeIf { it > 0 }
+  } else null
+  if (remainingMins == null) return
+  Box(
+    modifier = modifier
+      .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(6.dp))
+      .padding(horizontal = 8.dp, vertical = 4.dp)
+  ) {
+    Text(
+      text = stringResource(R.string.badge_minutes_remaining, remainingMins),
+      color = Color.White,
+      fontSize = 11.sp,
+      fontWeight = FontWeight.Medium
+    )
+  }
+}
+
+/**
+ * Badge «Prossima puntata»: SOLO da dati TMDB completi e verificabili (serie in onda con
+ * `next_episode_to_air` valido e non trascorso, nella STESSA stagione salvata in ripresa).
+ * Le regole vivono in un unico punto ([NextEpisodeBadgeRules]).
+ */
+@Composable
+private fun ContinueWatchingNextEpisodeBadge(
+  media: MediaItem,
+  modifier: Modifier = Modifier
+) {
+  val nextEpisodeBadge = remember(media.tvStatus, media.nextEpisode, media.lastWatchedSeason) {
+    NextEpisodeBadgeRules.resolve(media)
+  } ?: return
+  val badgeShape = RoundedCornerShape(6.dp)
+  Column(
+    modifier = modifier
+      .clip(badgeShape)
+      .background(Color.Black.copy(alpha = 0.66f))
+      .border(1.dp, NovaCyan.copy(alpha = 0.18f), badgeShape)
+      .padding(horizontal = 4.dp, vertical = 1.dp)
+      .testTag(NEXT_EPISODE_BADGE_TEST_TAG)
+  ) {
+    Text(
+      text = stringResource(R.string.cw_next_episode_label),
+      color = NovaCyanBright.copy(alpha = 0.90f),
+      fontSize = 8.sp,
+      fontWeight = FontWeight.Medium,
+      maxLines = 1,
+      softWrap = false
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Text(
+        text = nextEpisodeBadge.airDateText,
+        color = Color.White,
+        fontSize = 10.5.sp,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        softWrap = false
+      )
+      Spacer(modifier = Modifier.width(2.dp))
+      Text(
+        text = nextEpisodeBadge.seasonEpisodeText,
+        color = Color.White.copy(alpha = 0.72f),
+        fontSize = 7.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        softWrap = false
+      )
+    }
+  }
+}
+
+/** Barra di progresso sottile condivisa dai tre layout. */
+@Composable
+private fun ContinueWatchingProgressBar(
+  media: MediaItem,
+  modifier: Modifier = Modifier
+) {
+  Box(
+    modifier = modifier
+      .height(3.dp)
+      .clip(RoundedCornerShape(2.dp))
+      .background(Color(0x55000000))
+  ) {
+    LinearProgressIndicator(
+      progress = { media.progressFraction },
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(3.dp),
+      color = NovaCyan,
+      trackColor = Color(0x3300A3FF)
+    )
+  }
+}
+
+/** Etichetta «S1 E2» (serie) oppure anno (film). */
+private fun continueWatchingEpisodeLabel(media: MediaItem): String =
+  if (media.type == MediaType.SERIE_TV && media.lastWatchedEpisode != null) {
+    "S${media.lastWatchedSeason ?: 1} E${media.lastWatchedEpisode}"
+  } else {
+    media.displayYear
+  }
+
+/**
+ * Layout «Larga»: immagine a sinistra, pannello testi a destra. Il focus resta quello
+ * della card intera (nessun secondo target D-pad).
+ */
+@Composable
+private fun ContinueWatchingWideLayout(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean,
+  @DrawableRes fallbackRes: Int?
+) {
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .clip(RoundedCornerShape(14.dp))
+      .background(NovaCardBg)
+      .testTag(continueWatchingLayoutTestTag(ContinueWatchingLayout.WIDE))
+  ) {
+    Row(modifier = Modifier.fillMaxSize()) {
+      Box(modifier = Modifier.width(148.dp).fillMaxHeight()) {
+        ContinueWatchingArtwork(
+          media = media,
+          artworkUrl = artworkUrl,
+          blurArtwork = blurArtwork,
+          fallbackRes = fallbackRes,
+          modifier = Modifier.fillMaxSize()
+        )
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(
+              Brush.horizontalGradient(
+                listOf(Color.Transparent, NovaCardBg.copy(alpha = 0.85f))
+              )
+            )
+        )
+        // I badge restano sopra l'immagine: il pannello testi a destra non viene coperto.
+        ContinueWatchingNextEpisodeBadge(
+          media = media,
+          modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+        )
+        ContinueWatchingRemainingBadge(
+          media = media,
+          modifier = Modifier.align(Alignment.BottomStart).padding(8.dp)
+        )
+      }
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxHeight()
+          .padding(start = 14.dp, top = 14.dp, end = 14.dp, bottom = 18.dp)
+      ) {
+        val label = continueWatchingEpisodeLabel(media)
+        if (label.isNotEmpty()) {
+          Text(
+            text = label,
+            color = NovaCyanBright.copy(alpha = 0.9f),
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+          )
+        }
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(
+          text = media.title,
+          color = NovaTextPrimary,
+          fontSize = 16.sp,
+          fontWeight = FontWeight.Bold,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+        val episodeTitle = remember(media, media.lastWatchedSeason, media.lastWatchedEpisode) {
+          media.episodes.find { ep ->
+            ep.seasonNumber == media.lastWatchedSeason && ep.episodeNumber == media.lastWatchedEpisode
+          }?.title
+        }
+        if (episodeTitle != null) {
+          Spacer(modifier = Modifier.height(3.dp))
+          Text(
+            text = episodeTitle,
+            color = NovaTextSecondary,
+            fontSize = 11.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+        Spacer(modifier = Modifier.weight(1f))
+      }
+    }
+    ContinueWatchingProgressBar(
+      media = media,
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .fillMaxWidth()
+        .padding(start = 148.dp, end = 14.dp, bottom = 8.dp)
+    )
+  }
+}
+
+/**
+ * Layout «Locandina»: poster 2:3 con testi sovrapposti in basso, stessa identità visiva
+ * della card 16:9 ma nel formato verticale.
+ */
+@Composable
+private fun ContinueWatchingPosterLayout(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean,
+  @DrawableRes fallbackRes: Int?
+) {
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .clip(RoundedCornerShape(14.dp))
+      .testTag(continueWatchingLayoutTestTag(ContinueWatchingLayout.POSTER))
+  ) {
+    ContinueWatchingArtwork(
+      media = media,
+      artworkUrl = artworkUrl,
+      blurArtwork = blurArtwork,
+      fallbackRes = fallbackRes,
+      modifier = Modifier.fillMaxSize()
+    )
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(
+          Brush.verticalGradient(
+            colors = listOf(
+              Color.Transparent,
+              Color.Transparent,
+              Color.Black.copy(alpha = 0.72f),
+              Color.Black.copy(alpha = 0.96f)
+            )
+          )
+        )
+    )
+    // Nella locandina (180 dp) i due badge non stanno affiancati: si impilano in alto
+    // a sinistra, senza coprire titolo e barra di progresso in basso.
+    Column(
+      modifier = Modifier
+        .align(Alignment.TopStart)
+        .padding(8.dp),
+      verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+      ContinueWatchingNextEpisodeBadge(media = media)
+      ContinueWatchingRemainingBadge(media = media)
+    }
+    Column(
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .fillMaxWidth()
+        .padding(start = 12.dp, end = 12.dp, bottom = 18.dp)
+    ) {
+      val label = continueWatchingEpisodeLabel(media)
+      if (label.isNotEmpty()) {
+        Text(
+          text = label,
+          color = Color.White.copy(alpha = 0.9f),
+          fontSize = 10.sp,
+          fontWeight = FontWeight.SemiBold,
+          maxLines = 1
+        )
+      }
+      Text(
+        text = media.title,
+        color = Color.White,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Bold,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+      )
+      val episodeTitle = remember(media, media.lastWatchedSeason, media.lastWatchedEpisode) {
+        media.episodes.find { ep ->
+          ep.seasonNumber == media.lastWatchedSeason && ep.episodeNumber == media.lastWatchedEpisode
+        }?.title
+      }
+      if (episodeTitle != null) {
+        Text(
+          text = episodeTitle,
+          color = Color.White.copy(alpha = 0.75f),
+          fontSize = 10.sp,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+    }
+    ContinueWatchingProgressBar(
+      media = media,
+      modifier = Modifier
+        .align(Alignment.BottomCenter)
+        .fillMaxWidth()
+        .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
+    )
   }
 }
 
@@ -526,6 +1005,8 @@ fun StandardMediaCard(
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
   val cardFocusRequester = focusRequester ?: internalFocusRequester
+  // Il consumo del target avviene solo su un ARRIVO reale del focus (vedi FocusArrivalTracker).
+  val focusArrival = remember { FocusArrivalTracker() }
 
   // Track whether we've successfully requested focus for the current token
   var focusRequestedToken by remember { mutableStateOf<Int?>(null) }
@@ -552,19 +1033,32 @@ fun StandardMediaCard(
     }
   }
 
+  // Durante uno step della riga ancorata (AnchoredFocusRow) il riquadro fisso è disegnato
+  // dall'overlay: la decorazione della card resta spenta finché la card non è ferma
+  // sull'ancora, così la cornice non "viaggia" con il poster.
+  val focusDecorationSuppressed = LocalAnchoredRowFocusDecorationSuppressed.current
+  val showFocusDecoration = isFocused && !focusDecorationSuppressed
+  // All'inizio dello step la decorazione della card che esce si spegne di colpo (snap):
+  // un fade della cornice mentre la card scorre sarebbe una seconda cornice in movimento.
+  val decorationSpec = if (focusDecorationSuppressed) {
+    snap<Float>()
+  } else {
+    tween(durationMillis = 180, easing = FastOutSlowInEasing)
+  }
+
   val scaleState = animateFloatAsState(
-    targetValue = if (isFocused) 1.06f else 1f,
-    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1.06f else 1f,
+    animationSpec = decorationSpec,
     label = "standardCardScale"
   )
   val glowState = animateFloatAsState(
-    targetValue = if (isFocused) 1f else 0f,
-    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1f else 0f,
+    animationSpec = decorationSpec,
     label = "standardCardGlow"
   )
   val specularState = animateFloatAsState(
-    targetValue = if (isFocused) 1f else 0f,
-    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1f else 0f,
+    animationSpec = decorationSpec,
     label = "standardCardSpecular"
   )
   val shape = RoundedCornerShape(NeonCardCorner)
@@ -585,8 +1079,11 @@ fun StandardMediaCard(
       }
       .onFocusChanged { focusState ->
         isFocused = focusState.isFocused
-        // Clear the target only when focus is actually gained
-        if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
+        val focusArrived = focusArrival.onFocusChanged(focusState.isFocused)
+        // Nelle righe della Home il target si consuma solo quando il focus ARRIVA davvero:
+        // una conferma duplicata sullo stesso nodo non deve rilasciarlo (vedi FocusArrivalTracker).
+        val consumesTarget = if (rowKey == null) focusState.isFocused else focusArrived && isRestoreTarget
+        if (consumesTarget) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }
@@ -672,7 +1169,7 @@ fun StandardMediaCard(
     ) {
       Text(
         text = media.title,
-        color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+        color = if (showFocusDecoration) NovaCyanBright else NovaTextPrimary,
         fontSize = 13.sp,
         fontWeight = FontWeight.Bold,
         maxLines = 1,
@@ -762,6 +1259,8 @@ fun PosterMediaCard(
   val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
   val internalFocusRequester = remember { FocusRequester() }
   val cardFocusRequester = focusRequester ?: internalFocusRequester
+  // Il consumo del target avviene solo su un ARRIVO reale del focus (vedi FocusArrivalTracker).
+  val focusArrival = remember { FocusArrivalTracker() }
 
   // Track whether we've requested focus for the current token
   var focusRequestedToken by remember { mutableStateOf<Int?>(null) }
@@ -827,22 +1326,31 @@ fun PosterMediaCard(
     }
   }
 
+  // Vedi la nota in StandardMediaCard: durante lo step ancorato la cornice è dell'overlay.
+  val focusDecorationSuppressed = LocalAnchoredRowFocusDecorationSuppressed.current
+  val showFocusDecoration = isFocused && !focusDecorationSuppressed
+  val decorationSpec = if (focusDecorationSuppressed) {
+    snap<Float>()
+  } else {
+    tween(durationMillis = 180, easing = FastOutSlowInEasing)
+  }
+
   // Stato di scala: 1.0 -> 1.06 al focus, con easing GPU-friendly.
   val scaleState = animateFloatAsState(
-    targetValue = if (isFocused) 1.06f else 1f,
-    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1.06f else 1f,
+    animationSpec = decorationSpec,
     label = "posterCardScale"
   )
   // Intensità dell'alone Neon (0 = spento, 1 = massimo).
   val glowState = animateFloatAsState(
-    targetValue = if (isFocused) 1f else 0f,
-    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1f else 0f,
+    animationSpec = decorationSpec,
     label = "posterCardGlow"
   )
   // Entrata delicata del riflesso speculare.
   val specularState = animateFloatAsState(
-    targetValue = if (isFocused) 1f else 0f,
-    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+    targetValue = if (showFocusDecoration) 1f else 0f,
+    animationSpec = decorationSpec,
     label = "posterCardSpecular"
   )
   val shape = RoundedCornerShape(NeonCardCorner)
@@ -865,8 +1373,11 @@ fun PosterMediaCard(
       .onFocusChanged { focusState ->
         isFocused = focusState.isFocused
         if (confirmFocusRestore) restoreConfirmation.onFocusChanged(focusState.isFocused)
-        // Clear the target only when focus is actually gained
-        if (focusState.isFocused && (isRestoreTarget || rowKey == null)) {
+        val focusArrived = focusArrival.onFocusChanged(focusState.isFocused)
+        // Nelle righe della Home il target si consuma solo quando il focus ARRIVA davvero:
+        // una conferma duplicata sullo stesso nodo non deve rilasciarlo (vedi FocusArrivalTracker).
+        val consumesTarget = if (rowKey == null) focusState.isFocused else focusArrived && isRestoreTarget
+        if (consumesTarget) {
           clearLastFocusedMedia?.invoke()
           focusRequestedToken = null
         }
@@ -961,4 +1472,85 @@ fun PosterMediaCard(
       )
     }
   }
+}
+
+/** Geometria condivisa del restyle Neon Glow delle poster card. */
+internal val NeonCardCorner = 14.dp
+internal val NeonCardGlowSpread = 10.dp
+internal val NeonCardBorderWidth = 2.5.dp
+
+/**
+ * Alpha delle tre passate dell'alone Neon (dall'esterno verso l'interno).
+ *
+ * Compensano la riduzione da 14 a 3 passate: la somma cumulativa resta quella del
+ * gradiente precedente, senza allocazioni per frame.
+ */
+private val NEON_GLOW_LAYER_ALPHA = floatArrayOf(0.11f, 0.169f, 0.169f)
+
+/**
+ * Alone Neon diffuso: layer di rounded-rect concentrici con alpha decrescente,
+ * disegnati anche oltre i bordi. Va richiamato in un [drawBehind] NON clippato: la somma
+ * dei layer produce una sfumatura morbida che si estende di [spreadPx] oltre la card.
+ */
+internal fun DrawScope.drawNeonGlow(
+  cornerRadiusPx: Float,
+  color: Color,
+  spreadPx: Float,
+  intensity: Float
+) {
+  if (intensity <= 0.01f || spreadPx <= 0f) return
+  // Il vecchio alone usava 14 rounded-rect (0.04 di alpha ciascuno). Tre passate con
+  // alpha compensati riproducono la stessa opacità cumulativa (≈0.44 al bordo della
+  // card, ≈0.19 a metà alone) riducendo di ~4,7× le draw call per frame.
+  val layers = 3
+  for (i in layers downTo 1) {
+    val t = i.toFloat() / layers
+    val inflate = spreadPx * t
+    drawRoundRect(
+      color = color.copy(alpha = NEON_GLOW_LAYER_ALPHA[layers - i] * intensity),
+      topLeft = Offset(-inflate, -inflate),
+      size = Size(size.width + inflate * 2f, size.height + inflate * 2f),
+      cornerRadius = CornerRadius(cornerRadiusPx + inflate, cornerRadiusPx + inflate)
+    )
+  }
+}
+
+/**
+ * Riflesso di vetro (specular highlight): gradiente lineare diagonale bianco sul terzo
+ * superiore dell'immagine. Disegnato SOPRA il contenuto, dentro il clip arrotondato.
+ */
+internal fun DrawScope.drawSpecularHighlight(intensity: Float) {
+  if (intensity <= 0.01f) return
+  val brush = Brush.linearGradient(
+    colors = listOf(
+      Color.White.copy(alpha = 0.22f * intensity),
+      Color.White.copy(alpha = 0.05f * intensity),
+      Color.Transparent
+    ),
+    start = Offset(0f, 0f),
+    end = Offset(size.width, size.height * 0.45f)
+  )
+  drawRect(brush = brush)
+}
+
+/** Bordo nitido luminescente lungo il perimetro, disegnato dentro il clip. */
+internal fun DrawScope.drawNeonBorder(
+  cornerRadiusPx: Float,
+  color: Color,
+  widthPx: Float,
+  intensity: Float
+) {
+  if (intensity <= 0.01f || widthPx <= 0f) return
+  val inset = widthPx / 2f
+  val innerRadius = (cornerRadiusPx - inset).coerceAtLeast(0f)
+  drawRoundRect(
+    color = color.copy(alpha = intensity),
+    topLeft = Offset(inset, inset),
+    size = Size(
+      (size.width - widthPx).coerceAtLeast(0f),
+      (size.height - widthPx).coerceAtLeast(0f)
+    ),
+    cornerRadius = CornerRadius(innerRadius, innerRadius),
+    style = Stroke(width = widthPx)
+  )
 }

@@ -14,7 +14,7 @@ class ProviderAliasRegistryTest {
   @Test
   fun `registry contains the expected providers in display order`() {
     assertEquals(
-      listOf("netflix", "hbo", "disney", "prime", "apple", "paramount", "crunchyroll"),
+      listOf("netflix", "hbo", "disney", "prime", "apple", "paramount", "nowtv", "crunchyroll"),
       ProviderAliasRegistry.ALL.map { it.providerId }
     )
   }

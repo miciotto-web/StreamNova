@@ -1,6 +1,7 @@
 package com.example.data.repository
 
 import android.util.Log
+import com.example.data.local.MEDIA_SOURCE_SIMKL
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.remote.simkl.SimklActivitiesSnapshot
@@ -88,9 +89,12 @@ object SimklSyncManager {
         finishedAtEpochMs = now
       )
     }
+    // Epoca di sessione catturata all'ingresso: una disconnessione avvenuta DOPO questo
+    // punto invalida ogni scrittura successiva di questa sincronizzazione (vedi i gate).
+    val epoch = SimklRepository.currentSessionEpoch()
     SimklRepository.setSyncing(true)
     return try {
-      runSync(force, now)
+      runSync(force, now, epoch)
     } catch (e: SimklAuthException) {
       // Il refresh può aver marcato la sessione come scaduta: il messaggio lo riflette.
       val expired = SimklRepository.accountState.value.sessionExpired
@@ -99,7 +103,9 @@ object SimklSyncManager {
         message = e.localizedMessage ?: "Sincronizzazione SIMKL non riuscita.",
         finishedAtEpochMs = now
       )
-      SimklRepository.saveLastSync(result)
+      gatedWrite({ SimklRepository.currentSessionEpoch() == epoch }) {
+        SimklRepository.saveLastSync(result)
+      }
       Log.w(TAG, "Sincronizzazione SIMKL non riuscita: ${e.message}")
       result
     } catch (e: Exception) {
@@ -108,7 +114,9 @@ object SimklSyncManager {
         "Sincronizzazione SIMKL non riuscita: ${e.localizedMessage ?: e.javaClass.simpleName}",
         finishedAtEpochMs = now
       )
-      SimklRepository.saveLastSync(result)
+      gatedWrite({ SimklRepository.currentSessionEpoch() == epoch }) {
+        SimklRepository.saveLastSync(result)
+      }
       Log.w(TAG, "Sincronizzazione SIMKL non riuscita", e)
       result
     } finally {
@@ -116,9 +124,41 @@ object SimklSyncManager {
     }
   }
 
-  private suspend fun runSync(force: Boolean, now: Long): SimklSyncResult {
+  /**
+   * Verifica l'epoca di sessione DENTRO il gate di [SimklRepository] ed esegue la
+   * scrittura solo se la sessione è ancora quella catturata all'ingresso: una scrittura
+   * di questa sincronizzazione finisce o interamente PRIMA della pulizia del logout
+   * (e ne viene rimossa) o dopo un controllo fallito (e non avviene mai). Restituisce
+   * `false` quando la sessione è stata disconnessa: il chiamante abortisce.
+   */
+  private suspend fun gatedWrite(sessionValid: () -> Boolean, block: suspend () -> Unit): Boolean =
+    SimklRepository.withSessionGate {
+      if (sessionValid()) {
+        block()
+        true
+      } else {
+        false
+      }
+    }
+
+  /**
+   * Esito di una sincronizzazione abortita dalla disconnessione: nessun dato pubblicato
+   * dopo il logout (le scritture precedenti sono state rimosse dalla pulizia) e nessun
+   * checkpoint salvato. `NOT_LOGGED_IN` perché l'account non è più collegato.
+   */
+  private fun abortedSync(now: Long) = SimklSyncResult(
+    SimklSyncStatus.NOT_LOGGED_IN,
+    "Sincronizzazione annullata: account SIMKL scollegato.",
+    finishedAtEpochMs = now
+  )
+
+  private suspend fun runSync(force: Boolean, now: Long, epoch: Int): SimklSyncResult {
+    val sessionValid: () -> Boolean = { SimklRepository.currentSessionEpoch() == epoch }
     val previous = SimklRepository.loadActivitiesSnapshot()
     val activities = SimklRepository.fetchActivities()
+    // La disconnessione può essere avvenuta durante la lettura delle attività: prima di
+    // toccare qualsiasi cosa, la sincronizzazione si ridichiara autorizzata.
+    if (!sessionValid()) return abortedSync(now)
     val pending = SimklRepository.loadPendingPlaybacks()
     val pendingAttempts = pending.associate { it.entry.resumeKey to it.attempts }
     // Una voce rimandata va riprovata anche se le attività non si sono mosse: il checkpoint
@@ -133,8 +173,10 @@ object SimklSyncManager {
         "Nessuna modifica da sincronizzare.",
         finishedAtEpochMs = now
       )
-      SimklRepository.saveActivitiesSnapshot(activities)
-      SimklRepository.saveLastSync(upToDate)
+      gatedWrite(sessionValid) {
+        SimklRepository.saveActivitiesSnapshot(activities)
+        SimklRepository.saveLastSync(upToDate)
+      }
       Log.i(TAG, "Sincronizzazione: ${upToDate.message}")
       return upToDate
     }
@@ -179,20 +221,37 @@ object SimklSyncManager {
       pendingEntries.filter { it.resumeKey !in freshKeys } +
       libraryEntries
     val playOutcome = if (freshPlaybacks != null || libraryEntries.isNotEmpty() || pendingEntries.isNotEmpty()) {
-      applyPlaybacks(entriesToApply, pendingAttempts, libraryEntries.map { it.resumeKey }.toSet())
+      // `null` = la disconnessione è avvenuta durante l'applicazione: nessun dato viene
+      // pubblicato, la sincronizzazione si ferma qui (la pulizia del logout è già passata
+      // o passerà — in entrambi i casi nessun dato SIMKL resta visibile per sua colpa).
+      applyPlaybacks(entriesToApply, pendingAttempts, libraryEntries.map { it.resumeKey }.toSet(), sessionValid)
+        ?: return abortedSync(now)
     } else {
       ApplyOutcome.EMPTY
     }
-    val watchOutcome = watchlist?.let { applyWatchlist(it) } ?: WatchlistOutcome.EMPTY
+    val watchOutcome: WatchlistOutcome
+    if (watchlist != null) {
+      watchOutcome = applyWatchlist(watchlist, sessionValid) ?: return abortedSync(now)
+    } else {
+      watchOutcome = WatchlistOutcome.EMPTY
+    }
 
     // L'elenco rimandato si riscrive solo se abbiamo davvero potuto riprovare TUTTE le voci:
     // con il pull del playback fallito, un insieme vuoto significherebbe "cancella tutto".
     // La libreria conta come fonte completa quando è stata scaricata (i suoi punti di
     // ripresa sono riprovabili in quel momento).
-    if (freshPlaybacks != null || watchedShows != null) SimklRepository.savePendingPlaybacks(playOutcome.pending)
+    if (freshPlaybacks != null || watchedShows != null) {
+      if (!gatedWrite(sessionValid) { SimklRepository.savePendingPlaybacks(playOutcome.pending) }) {
+        return abortedSync(now)
+      }
+    }
 
     val complete = failed.isEmpty()
-    if (complete) SimklRepository.saveActivitiesSnapshot(activities)
+    if (complete) {
+      if (!gatedWrite(sessionValid) { SimklRepository.saveActivitiesSnapshot(activities) }) {
+        return abortedSync(now)
+      }
+    }
 
     val unresolved = playOutcome.unresolvedTitles + watchOutcome.unresolved
     val status = when {
@@ -219,7 +278,7 @@ object SimklSyncManager {
       abandonedRecoveries = playOutcome.abandoned,
       finishedAtEpochMs = now
     )
-    SimklRepository.saveLastSync(result)
+    if (!gatedWrite(sessionValid) { SimklRepository.saveLastSync(result) }) return abortedSync(now)
     Log.i(TAG, "Sincronizzazione completata: ${result.message}")
     Log.i(
       TAG,
@@ -285,12 +344,17 @@ object SimklSyncManager {
    *        ([SimklPlaybackEntry.resumeKey]): il recupero è limitato, non un ciclo infinito.
    * @param libraryKeys chiavi delle voci che arrivano dalla libreria SIMKL: contate a parte
    *        nel report, perché non sono sessioni di pausa ma episodi visti.
+   * @param sessionValid verifica dell'epoca di sessione, eseguita dentro il gate prima di
+   *        ogni scrittura: se la disconnessione è avvenuta nel frattempo l'applicazione
+   *        si abortisce (ritorno `null`) senza pubblicare altro.
+   * @return l'esito dell'applicazione, o `null` se la sessione è stata disconnessa.
    */
   private suspend fun applyPlaybacks(
     entries: List<SimklPlaybackEntry>,
     previousAttempts: Map<String, Int> = emptyMap(),
-    libraryKeys: Set<String> = emptySet()
-  ): ApplyOutcome {
+    libraryKeys: Set<String> = emptySet(),
+    sessionValid: () -> Boolean
+  ): ApplyOutcome? {
     var movies = 0
     var episodes = 0
     var libraryEpisodes = 0
@@ -314,8 +378,11 @@ object SimklSyncManager {
       if (!SimklPlaybackParser.isResumable(entry)) {
         reason = SimklDecisionReason.INCOMPLETE_SESSION
       } else {
-        val target = resolveTarget(entry)
+        val target = resolveTarget(entry, sessionValid)
         if (target == null) {
+          // Il titolo può essere `null` perché non risolvibile oppure perché la sessione è
+          // stata disconnessa a metà risoluzione: il secondo caso abortisce TUTTO.
+          if (!sessionValid()) return null
           reason = SimklDecisionReason.UNRESOLVED_TITLE
           unresolved.add(entryLabel(entry))
         } else {
@@ -338,22 +405,33 @@ object SimklSyncManager {
             val episode = entry.episode
             when {
               entry.kind == SimklPlaybackKind.MOVIE -> {
-                MediaRepository.updateProgress(target.id, decision.progressMs, local.totalDurationMs, watchedAt)
-                movies++
+                val adopted = gatedWrite(sessionValid) {
+                  MediaRepository.updateProgress(
+                    target.id, decision.progressMs, local.totalDurationMs, watchedAt,
+                    source = MEDIA_SOURCE_SIMKL
+                  )
+                  movies++
+                }
+                if (!adopted) return null
               }
 
               season == null || episode == null -> reason = SimklDecisionReason.INCOMPLETE_SESSION
 
               else -> {
-                MediaRepository.updateEpisodeProgress(
-                  mediaId = target.id,
-                  seasonNumber = season,
-                  episodeNumber = episode,
-                  progressMs = decision.progressMs,
-                  durationMs = local.totalDurationMs,
-                  lastWatchedAtMs = watchedAt
-                )
-                if (entry.resumeKey in libraryKeys) libraryEpisodes++ else episodes++
+                val isLibraryEntry = entry.resumeKey in libraryKeys
+                val adopted = gatedWrite(sessionValid) {
+                  MediaRepository.updateEpisodeProgress(
+                    mediaId = target.id,
+                    seasonNumber = season,
+                    episodeNumber = episode,
+                    progressMs = decision.progressMs,
+                    durationMs = local.totalDurationMs,
+                    lastWatchedAtMs = watchedAt,
+                    source = MEDIA_SOURCE_SIMKL
+                  )
+                  if (isLibraryEntry) libraryEpisodes++ else episodes++
+                }
+                if (!adopted) return null
               }
             }
           }
@@ -382,15 +460,22 @@ object SimklSyncManager {
   }
 
   /** Titolo locale corrispondente alla sessione SIMKL, importandolo se non è in catalogo. */
-  private suspend fun resolveTarget(entry: SimklPlaybackEntry): MediaItem? {
+  private suspend fun resolveTarget(entry: SimklPlaybackEntry, sessionValid: () -> Boolean): MediaItem? {
     val matched = SimklLocalMatcher.find(MediaRepository.mediaList.value, entry)
       ?: run {
         val isTv = entry.kind == SimklPlaybackKind.EPISODE
         val tmdbId = entry.tmdbId?.takeIf { it > 0 }
           ?: entry.imdbId?.let { MediaRepository.resolveImdbToTmdbId(it, isTv) }
           ?: return null
+        // La rete (risoluzione IMDb, dettagli TMDB) resta FUORI dal gate: la disconnessione
+        // non deve restare in attesa di un titolo. Solo la scrittura dell'import è gateata.
         val built = MediaRepository.buildExternalItem(tmdbId, isTv, entry.season) ?: return null
-        MediaRepository.upsertExternalItem(built)
+        var imported: MediaItem? = null
+        val written = gatedWrite(sessionValid) {
+          imported = MediaRepository.upsertExternalItem(built, source = MEDIA_SOURCE_SIMKL)
+        }
+        if (!written) return null
+        imported
       }
       ?: return null
     // La posizione va sulla scheda con lo stato utente più recente del gruppo: è quella che
@@ -457,18 +542,28 @@ object SimklSyncManager {
    * sconosciuto viene importato da TMDB. Un titolo non risolvibile viene **registrato** e
    * saltato — mai inventato. La sincronizzazione non sfavorisce mai un titolo locale:
    * l'assenza di una voce dalla watchlist non toglie nulla.
+   *
+   * @return l'esito dell'importazione, o `null` se la sessione è stata disconnessa
+   *         durante l'applicazione (nessuna altra voce viene pubblicata).
    */
-  private suspend fun applyWatchlist(entries: List<SimklWatchlistEntry>): WatchlistOutcome {
+  private suspend fun applyWatchlist(
+    entries: List<SimklWatchlistEntry>,
+    sessionValid: () -> Boolean
+  ): WatchlistOutcome? {
     var imported = 0
     var alreadyFavorite = 0
     val unresolved = mutableListOf<String>()
     for (entry in entries) {
-      val targetId = resolveWatchlistTarget(entry)
+      val targetId = resolveWatchlistTarget(entry, sessionValid)
       if (targetId == null) {
+        if (!sessionValid()) return null
         unresolved.add(entry.title)
         continue
       }
-      if (MediaRepository.markFavorite(targetId)) imported++ else alreadyFavorite++
+      val written = gatedWrite(sessionValid) {
+        if (MediaRepository.markFavorite(targetId, source = MEDIA_SOURCE_SIMKL)) imported++ else alreadyFavorite++
+      }
+      if (!written) return null
     }
     if (unresolved.isNotEmpty()) {
       Log.i(TAG, "Watchlist: ${unresolved.size} titoli non riconosciuti, saltati.")
@@ -477,14 +572,19 @@ object SimklSyncManager {
   }
 
   /** Id locale del titolo in watchlist, importandolo da TMDB quando non è in catalogo. */
-  private suspend fun resolveWatchlistTarget(entry: SimklWatchlistEntry): String? {
+  private suspend fun resolveWatchlistTarget(entry: SimklWatchlistEntry, sessionValid: () -> Boolean): String? {
     SimklLocalMatcher.find(MediaRepository.mediaList.value, entry)?.let { return it.id }
     val isTv = entry.kind == SimklWatchlistKind.SHOW
     val tmdbId = entry.tmdbId?.takeIf { it > 0 }
       ?: entry.imdbId?.let { MediaRepository.resolveImdbToTmdbId(it, isTv) }
       ?: return null
     val built = MediaRepository.buildExternalItem(tmdbId, isTv) ?: return null
-    return MediaRepository.upsertExternalItem(built, markFavorite = true)?.id
+    var imported: MediaItem? = null
+    val written = gatedWrite(sessionValid) {
+      imported = MediaRepository.upsertExternalItem(built, markFavorite = true, source = MEDIA_SOURCE_SIMKL)
+    }
+    if (!written) return null
+    return imported?.id
   }
 
   private fun buildMessage(

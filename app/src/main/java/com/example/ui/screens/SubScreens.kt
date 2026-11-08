@@ -2,10 +2,15 @@ package com.example.ui.screens
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -15,8 +20,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,47 +35,46 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Extension
-import androidx.compose.material.icons.filled.HdrOn
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Opacity
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
-import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Subtitles
-import androidx.compose.material.icons.filled.SyncAlt
 import androidx.compose.material.icons.filled.Translate
-import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wallpaper
 import android.widget.Toast
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -102,17 +108,26 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.snapshotFlow
 import androidx.annotation.StringRes
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.example.R
 import com.example.BuildConfig
@@ -123,9 +138,12 @@ import com.example.data.repository.MediaIdentity
 import com.example.data.repository.SimklRepository
 import com.example.data.repository.SimklSyncManager
 import com.example.data.remote.simkl.SimklSyncStatus
+import com.example.data.model.SearchCategoryFilter
 import com.example.data.model.SearchTypeFilter
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.BackBufferOption
+import com.example.data.prefs.ContinueWatchingLayout
+import com.example.data.prefs.ContinueWatchingSort
 import com.example.data.prefs.DecoderFallbackMode
 import com.example.data.prefs.InitialBufferOption
 import com.example.data.prefs.LastStreamCacheDuration
@@ -133,11 +151,13 @@ import com.example.data.prefs.PlaybackSettings
 import com.example.data.prefs.PreferredResolution
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
+import com.example.data.prefs.SubtitleOpacity
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.TargetBufferOption
 import com.example.data.update.UpdateCheckState
 import com.example.data.update.UpdateDownloadState
+import androidx.media3.common.MediaLibraryInfo
 import com.example.ui.components.ContinueWatchingCard
 import com.example.ui.components.FOCUS_ROW_ANY
 import com.example.ui.components.LocalClearLastFocusedMedia
@@ -159,6 +179,9 @@ import com.example.ui.components.TextInputDialog
 import com.example.ui.components.TvPinDialog
 import com.example.ui.components.SimklLoginController
 import com.example.ui.components.SimklLoginDialog
+import com.example.ui.screens.player.subtitleBackgroundLabel
+import com.example.ui.screens.player.subtitleOpacityLabel
+import com.example.ui.screens.player.subtitleSizeLabel
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
 import com.example.ui.theme.NovaCardBgFocused
@@ -192,6 +215,10 @@ enum class CategoryCatalogFilter(
   PRIME_VIDEO("prime_video", brandName = "Prime Video", tmdbProviderId = 119, providerId = "prime"),
   APPLE_TV("apple_tv", brandName = "Apple TV+", tmdbProviderId = 350, providerId = "apple"),
   PARAMOUNT_PLUS("paramount_plus", brandName = "Paramount+", tmdbProviderId = 531, providerId = "paramount"),
+  // NOW TV (Sky): provider TMDB 39 verificato su watch_region=IT (Film e Serie TV).
+  // providerId = "nowtv" coincide con ProviderConstants.NOW_TV.id: il ViewModel lo usa
+  // per l'associazione Stremio (alias "now"/"nowtv") e per il tag dei titoli.
+  NOW_TV("now_tv", brandName = "NOW TV", tmdbProviderId = 39, providerId = "nowtv"),
   ACTION("action", labelRes = R.string.filter_action),
   SCI_FI("sci_fi", labelRes = R.string.filter_sci_fi),
   DRAMA("drama", labelRes = R.string.filter_drama),
@@ -748,7 +775,13 @@ data class GlobalSearchCategory(
   val accentColor: Color,
   val keywords: List<String>,
   val movieGenreId: Int? = null,
-  val tvGenreId: Int? = null
+  val tvGenreId: Int? = null,
+  /**
+   * Fonte della categoria. Default [SearchCategoryFilter.GENRE] per le categorie
+   * storiche; "Talk" usa [SearchCategoryFilter.TMDB_TV_GENRE] ed è servita
+   * nativamente da TMDB tramite [tvGenreId].
+   */
+  val contentFilter: SearchCategoryFilter = SearchCategoryFilter.GENRE
 )
 
 val GLOBAL_SEARCH_CATEGORIES = listOf(
@@ -775,7 +808,25 @@ val GLOBAL_SEARCH_CATEGORIES = listOf(
   GlobalSearchCategory("storia", R.string.search_cat_history, Color(0xFFD97706), Color(0xFF78350F), Color(0xFFFDE68A), listOf("Storia", "History", "Storico", "Biografia"), movieGenreId = 36, tvGenreId = 18),
   GlobalSearchCategory("thriller", R.string.search_cat_thriller, Color(0xFFEA580C), Color(0xFF9A3412), Color(0xFFFFEDD5), listOf("Thriller", "Suspense"), movieGenreId = 53, tvGenreId = 9648),
   GlobalSearchCategory("western", R.string.search_cat_western, Color(0xFFB45309), Color(0xFF713F12), Color(0xFFFEF3C7), listOf("Western"), movieGenreId = 37, tvGenreId = 37),
-  GlobalSearchCategory("televisione_film", R.string.search_cat_tv_movie, Color(0xFF38BDF8), Color(0xFF0369A1), Color(0xFFE0F2FE), listOf("Televisione Film", "Film TV", "TV Movie", "Cinema", "Film"), movieGenreId = 10770, tvGenreId = null)
+  /**
+   * "Talk" occupa il posto che era di "Televisione film" (genere TMDB 10770).
+   *
+   * È il genere TV ufficiale TMDB "Talk" (id 10767) e viene servita NATIVAMENTE da
+   * `discover/tv?with_genres=10767`, ordinata per popolarità e paginata. Non passa
+   * dai cataloghi degli addon e non richiede la modalità Debrid: funziona anche
+   * senza addon installati. Nessun filtro di lingua o paese: la categoria mostra
+   * talk show italiani e stranieri.
+   */
+  GlobalSearchCategory(
+    id = "talk",
+    labelRes = R.string.search_cat_talk,
+    gradientStart = Color(0xFF38BDF8),
+    gradientEnd = Color(0xFF0369A1),
+    accentColor = Color(0xFFE0F2FE),
+    keywords = listOf("Talk", "Talk Show"),
+    tvGenreId = 10767,
+    contentFilter = SearchCategoryFilter.TMDB_TV_GENRE
+  )
 )
 
 /**
@@ -988,6 +1039,63 @@ internal object SearchFocusDiagnostics {
   const val TAG = "SEARCH_FOCUS"
 }
 
+/** Direzione del movimento verticale D-pad in una griglia a righe. */
+internal enum class SearchGridVerticalDirection { UP, DOWN }
+
+/** Key stabile della card nella griglia dei risultati (identifica il contenuto). */
+internal fun searchResultGridItemKey(media: MediaItem): String = "search_${media.id}"
+
+/** Key stabile della card nella griglia di una categoria (tipo incluso: id grezzi condivisi). */
+internal fun searchCategoryGridItemKey(
+  cat: GlobalSearchCategory,
+  media: MediaItem
+): String = "cat_${cat.id}_${media.type}_${media.id}"
+
+/**
+ * Indice della cella da raggiungere con un movimento verticale del D-pad in una griglia a
+ * righe piene (LazyVerticalGrid senza span): la COLONNA corrente viene preservata.
+ *
+ * Se la riga di destinazione ha meno colonne (ultima riga parziale) si sceglie la cella
+ * valida più vicina alla colonna corrente; `null` quando il movimento non ha destinazione
+ * (prima riga in Su, ultima riga in Giù) e deve decidere il focus system.
+ */
+internal fun searchGridVerticalTargetIndex(
+  currentRow: Int,
+  currentColumn: Int,
+  itemCount: Int,
+  columns: Int,
+  direction: SearchGridVerticalDirection
+): Int? {
+  if (columns <= 0 || itemCount <= 0) return null
+  if (currentRow < 0 || currentColumn < 0 || currentColumn >= columns) return null
+  val targetRow = when (direction) {
+    SearchGridVerticalDirection.DOWN -> currentRow + 1
+    SearchGridVerticalDirection.UP -> currentRow - 1
+  }
+  if (targetRow < 0) return null
+  val rowStart = targetRow * columns
+  if (rowStart >= itemCount) return null
+  val rowLength = minOf(columns, itemCount - rowStart)
+  return rowStart + minOf(currentColumn, rowLength - 1)
+}
+
+/**
+ * Numero ESATTO di colonne letto dal layout reale della griglia.
+ *
+ * Un item delle righe successive alla prima dichiara riga e colonna: `index - column` è
+ * l'inizio della sua riga, quindi `(index - column) / row` è il numero di colonne. Quando è
+ * composta solo la prima riga, la si conta direttamente (occupa l'intera larghezza).
+ * `null` se il layout non espone ancora riga/colonna per nessun item.
+ */
+internal fun LazyGridState.exactColumnCount(): Int? {
+  val visible = layoutInfo.visibleItemsInfo.filter { it.row >= 0 && it.column >= 0 }
+  if (visible.isEmpty()) return null
+  visible.firstOrNull { it.row > 0 && it.index - it.column > 0 }?.let { info ->
+    return (info.index - info.column) / info.row
+  }
+  return visible.filter { it.row == 0 }.maxOfOrNull { it.column + 1 }
+}
+
 @OptIn(ExperimentalLayoutApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun SearchScreen(  viewModel: StreamNovaViewModel,
@@ -999,7 +1107,14 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
    * mantiene in vista la card corrente) senza passare dalla rete. In produzione resta `null`
    * e la schermata osserva [StreamNovaViewModel.filteredSearchResults].
    */
-  resultsOverride: List<MediaItem>? = null
+  resultsOverride: List<MediaItem>? = null,
+  /**
+   * Contenuti espliciti della categoria selezionata, con lo stesso scopo di [resultsOverride]:
+   * i test della griglia categoria (navigazione verticale e ripristino dal Dettaglio) non
+   * possono passare dalla rete. In produzione resta `null` e la schermata osserva
+   * [StreamNovaViewModel.categoryItems].
+   */
+  categoryItemsOverride: List<MediaItem>? = null
 ) {
   val query by viewModel.searchQuery.collectAsState()
   // Contesto applicativo al ViewModel: i messaggi della categoria sono risorse
@@ -1012,7 +1127,8 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
     viewModel.filteredSearchResults.collectAsState().value
   }
   val searchFilter by viewModel.searchFilter.collectAsState()
-  val categoryItems by viewModel.categoryItems.collectAsState()
+  val categoryItems = categoryItemsOverride
+    ?: viewModel.categoryItems.collectAsState().value
   val isCategoryLoading by viewModel.isCategoryLoading.collectAsState()
   val categoryState by viewModel.categoryState.collectAsState()
 
@@ -1026,14 +1142,6 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   }
 
   var isSearchSubmitted by remember { mutableStateOf(false) }
-
-  // Focus restoration: riceve il segnale dal ViewModel
-  val focusRestoreSignal = remember { mutableStateOf<String?>(null) }
-  LaunchedEffect(viewModel) {
-    viewModel.focusRestoreSignal?.collect { mediaId ->
-      focusRestoreSignal.value = mediaId
-    }
-  }
 
   val searchBarFocusRequester = remember { FocusRequester() }
   val tuttiFilterFocusRequester = remember { FocusRequester() }
@@ -1062,8 +1170,10 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
     SearchTypeFilter.SERIE_TV -> serieTvFilterFocusRequester
   }
 
-  // Consumer il segnale di focus restoration per ripristinare il focus sulla card corretta
-  val gridState = rememberLazyGridState()
+  // Stato di scroll della griglia dei risultati, PERSISTENTE attraverso la navigazione verso
+  // il Dettaglio: al BACK la griglia ritrova la posizione da cui si era entrati, quindi la
+  // card ripristinata resta visibile nella stessa riga.
+  val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
 
   // Requester PER IDENTITÀ di card dei risultati: il D-pad Giù dai filtri deve chiedere il
   // focus a una cella che è DAVVERO composta in questo momento (non alla cella 0, che può
@@ -1084,19 +1194,205 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
     }
   }
   // Stato di scroll della griglia categoria, definito FUORI dal ramo `when`: il Giù dai
-  // filtri in modalità categoria legge qui il viewport reale della griglia.
-  val categoryGridState = rememberLazyGridState()
+  // filtri in modalità categoria legge qui il viewport reale della griglia. Saveable come la
+  // griglia dei risultati: al BACK dal Dettaglio la sezione ritrova la posizione di scroll.
+  val categoryGridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
 
   val searchFocusScope = rememberCoroutineScope()
+
+  // Passo verticale tra le righe della griglia (16dp): serve alla navigazione verticale per
+  // far ENTRARE la riga di destinazione dal bordo del viewport quando non è ancora composta.
+  val gridRowSpacingPx = with(LocalDensity.current) { 16.dp.toPx() }
 
   // Stessa struttura per la griglia della CATEGORIA selezionata: la chiave replica la key
   // della griglia (una film e una serie possono condividere lo stesso id grezzo).
   val categoryResultFocusRequesters = remember { mutableMapOf<String, FocusRequester>() }
 
   fun categoryResultFocusRequester(cat: GlobalSearchCategory, media: MediaItem): FocusRequester =
-    categoryResultFocusRequesters.getOrPut("cat_${cat.id}_${media.type}_${media.id}") {
+    categoryResultFocusRequesters.getOrPut(searchCategoryGridItemKey(cat, media)) {
       FocusRequester()
     }
+
+  // ── Ripristino del focus al ritorno dal Dettaglio ─────────────────────────────────────
+  // Canali condivisi con le altre schermate (MainActivity/HomeScreen): target salvato al
+  // click, token dell'evento (riattiva il tentativo su ritorni consecutivi dalla STESSA
+  // card) e rilascio del target quando il focus è DAVVERO sulla card.
+  //
+  // Il vecchio percorso ascoltava un SharedFlow e chiedeva il focus a un requester FISSO
+  // (quello della cella 0 dei badge, non agganciato alle card): dopo un'attesa arbitraria
+  // il focus atterrava sui chip Film/Serie TV. Qui il ripristino è per IDENTITÀ della card,
+  // sulla griglia del contesto corrente (categoria o risultati della query).
+  val restoreMediaId = LocalLastFocusedMediaId.current
+  val focusRestoreToken = LocalFocusRestoreToken.current
+  val clearLastFocusedMedia = LocalClearLastFocusedMedia.current
+
+  // Card che QUESTA schermata ha aperto (salvata al click). Distingue una VERA richiesta di
+  // ripristino (si torna dal Dettaglio di una card della Ricerca) da un target lasciato da
+  // un'altra schermata o andato a vuoto: il secondo va solo rilasciato, senza spostare il
+  // focus, perché la schermata lo sta gestendo con il proprio ingresso naturale (barra,
+  // filtri). Saveable: sopravvive allo smontaggio della destinazione durante il Dettaglio.
+  var claimedRestoreId by rememberSaveable { mutableStateOf<String?>(null) }
+  val pendingRestoreForThisScreen = restoreMediaId != null && restoreMediaId == claimedRestoreId
+
+  // Card REALMENTE focalizzata in ciascuna griglia, espressa con la STESSA key usata dal
+  // lazy grid. La navigazione verticale risolve l'indice sulla lista corrente, quindi un
+  // filtro o un riordino non fanno atterrare il movimento sulla colonna sbagliata.
+  var focusedResultKey by remember { mutableStateOf<String?>(null) }
+  var focusedCategoryKey by remember { mutableStateOf<String?>(null) }
+
+  // Requester dell'ancora di recupero di un ripristino fallito. Vive in un effetto dedicato
+  // perché il rilascio del target (che apre il gate `canFocus` delle card) riavvia l'effetto
+  // di ripristino e ne cancellerebbe il corpo.
+  var recoveryFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
+  LaunchedEffect(recoveryFocusRequester) {
+    val requester = recoveryFocusRequester ?: return@LaunchedEffect
+    recoveryFocusRequester = null
+    requestFocusWhenAttached(requester, maxAttempts = 5)
+  }
+
+  /**
+   * UNICO punto di ingresso del ripristino dal Dettaglio: risolve la card per identità nella
+   * griglia del contesto corrente, la porta nel viewport se non è composta e le chiede il
+   * focus. Se la card non esiste più, il target viene rilasciato e il focus va alla prima
+   * card GIÀ visibile della stessa sezione; i chip dei filtri sono l'ultima risorsa, usata
+   * solo quando non esiste alcuna card su cui atterrare.
+   */
+  LaunchedEffect(
+    restoreMediaId,
+    focusRestoreToken,
+    selectedCategory,
+    searchFilter,
+    displayedCategoryMedia,
+    results
+  ) {
+    val mediaId = restoreMediaId ?: return@LaunchedEffect
+    if (mediaId != claimedRestoreId) {
+      // Target di un'altra schermata (o già andato a vuoto): va rilasciato subito, così i
+      // cancelletti `canFocus` delle card si riaprono, ma senza sottrarre il focus
+      // all'ingresso naturale della schermata (barra di ricerca / filtri).
+      if (BuildConfig.DEBUG) {
+        Log.d(
+          SearchFocusDiagnostics.TAG,
+          "stale restore target '$mediaId' not claimed by search screen: released"
+        )
+      }
+      clearLastFocusedMedia?.invoke()
+      return@LaunchedEffect
+    }
+    val cat = selectedCategory
+    val items = if (cat != null) displayedCategoryMedia else results
+    val grid = if (cat != null) categoryGridState else gridState
+    val index = items.indexOfFirst { it.id == mediaId }
+    if (index < 0) {
+      // Target non più disponibile (catalogo cambiato mentre il Dettaglio era aperto):
+      // nessuno scroll, nessuna card indovinata per posizione e nessun salto ai badge se
+      // esiste una card composta. Il rilascio del target riapre i cancelletti `canFocus`.
+      if (BuildConfig.DEBUG) {
+        Log.d(
+          SearchFocusDiagnostics.TAG,
+          "stale restore target '$mediaId' absent from current list: cleared"
+        )
+      }
+      var frames = 0
+      var firstVisibleIndex = grid.layoutInfo.visibleItemsInfo.firstOrNull()?.index
+      while (firstVisibleIndex == null && frames < 8) {
+        withFrameNanos { }
+        frames++
+        firstVisibleIndex = grid.layoutInfo.visibleItemsInfo.firstOrNull()?.index
+      }
+      val anchor = firstVisibleIndex?.let { items.getOrNull(it) }
+      recoveryFocusRequester = when {
+        anchor != null && cat != null -> categoryResultFocusRequester(cat, anchor)
+        anchor != null -> resultFocusRequester(anchor.id)
+        else -> activeFilterRequester
+      }
+      clearLastFocusedMedia?.invoke()
+      return@LaunchedEffect
+    }
+    // La visibilità del target si valuta solo su una griglia GIÀ misurata (almeno una cella
+    // in composizione): finché `visibleItemsInfo` è vuoto ogni verdetto sarebbe falso.
+    var measuredFrames = 0
+    while (grid.layoutInfo.visibleItemsInfo.isEmpty() && measuredFrames < 8) {
+      withFrameNanos { }
+      measuredFrames++
+    }
+    val targetVisible = grid.layoutInfo.visibleItemsInfo.any { it.index == index }
+    if (!targetVisible && !grid.isScrollInProgress) {
+      try {
+        grid.scrollToItemVerified(index)
+      } catch (_: Exception) {
+        // La richiesta di focus sotto attende comunque il montaggio della card.
+      }
+    }
+    requestFocusWhenAttached(
+      if (cat != null) {
+        categoryResultFocusRequester(cat, items[index])
+      } else {
+        resultFocusRequester(items[index].id)
+      },
+      maxAttempts = 5
+    )
+  }
+
+  /**
+   * Navigazione verticale ESPLICITA delle griglie della Ricerca.
+   *
+   * Il focus system di Compose, quando la riga successiva non è ancora composta (viewport TV
+   * alto quanto una riga), scorre la griglia e consegna il focus alla PRIMA cella composta
+   * della nuova riga: con la terza card selezionata il Giù "tornava" alla prima colonna. Qui
+   * la cella di destinazione è calcolata dalla riga/colonna REALI del layout (colonna
+   * preservata, in una riga più corta si sceglie la colonna valida più vicina), la riga viene
+   * portata in composizione e solo allora si chiede il focus a QUELLA card.
+   *
+   * @return `true` se il tasto è stato gestito (e consumato); `false` quando non esiste una
+   *   destinazione verticale valida: in quel caso decide il focus system (es. Su dalla prima
+   *   riga verso la riga dei filtri).
+   */
+  fun moveGridFocusVertically(
+    event: androidx.compose.ui.input.key.KeyEvent,
+    grid: LazyGridState,
+    items: List<MediaItem>,
+    keyOf: (MediaItem) -> String,
+    focusedKey: String?,
+    requesterOf: (MediaItem) -> FocusRequester
+  ): Boolean {
+    if (event.type != KeyEventType.KeyDown) return false
+    val direction = when (event.key) {
+      Key.DirectionDown -> SearchGridVerticalDirection.DOWN
+      Key.DirectionUp -> SearchGridVerticalDirection.UP
+      else -> return false
+    }
+    val currentIndex = items.indexOfFirst { keyOf(it) == focusedKey }
+    if (currentIndex < 0) return false
+    val current = grid.layoutInfo.visibleItemsInfo.firstOrNull { it.index == currentIndex }
+      ?: return false
+    val columns = grid.exactColumnCount() ?: return false
+    val targetIndex = searchGridVerticalTargetIndex(
+      currentRow = current.row,
+      currentColumn = current.column,
+      itemCount = items.size,
+      columns = columns,
+      direction = direction
+    ) ?: return false
+    val targetRequester = requesterOf(items[targetIndex])
+    searchFocusScope.launch {
+      if (grid.layoutInfo.visibleItemsInfo.none { it.index == targetIndex }) {
+        // La riga di destinazione non è composta: la si fa ENTRARE dal bordo del viewport
+        // (mezza riga) invece di incollarla in alto con `scrollToItem`. Così resta composta
+        // insieme a quella corrente (nessun frame senza focus) e il bring-into-view
+        // condiviso può centrarla esattamente come per il movimento nativo.
+        val halfRowPx = (current.size.height + gridRowSpacingPx) / 2f
+        val delta = if (direction == SearchGridVerticalDirection.DOWN) halfRowPx else -halfRowPx
+        try {
+          grid.scrollBy(delta)
+        } catch (_: Exception) {
+          // La richiesta di focus sotto attende comunque il montaggio della card.
+        }
+      }
+      requestFocusWhenAttached(targetRequester, maxAttempts = 8)
+    }
+    return true
+  }
 
   /**
    * Prima card delle categorie attualmente composta e visibile nella griglia (stesso
@@ -1129,7 +1425,6 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
     return item to resultFocusRequester(item.id)
   }
 
-  val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
   val focusManager = LocalFocusManager.current
   // Prova REALE che il focus è entrato nell'area contenuti: `hasFocus` del contenitore
   // (nella Box qui sotto) diventa true solo quando una sua discendente — cioè una card
@@ -1138,51 +1433,16 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   // focalizzabile (gate di ripristino chiuso) rifiuta la richiesta in silenzio.
   var contentAreaHasFocus by remember { mutableStateOf(false) }
 
-  // Un target di ripristino che NON appartiene alla lista corrente è STANTIO e va
-  // rilasciato. Le card della schermata possono prendere il focus solo se non c'è un
-  // target pendente di altro id (gate `canFocus` di PosterMediaCard): un id orfano —
-  // tipicamente l'ancora sintetica "home_content_anchor" scritta dalla MainActivity al
-  // rientro dal Dettaglio, o il target di una sezione precedente — renderebbe PERMANENTE
-  // l'annullamento del focus di TUTTE le card, lasciando morto il Giù dai filtri. Il
-  // rilascio avviene solo con la lista popolata: durante il caricamento non si decide.
-  LaunchedEffect(lastFocusedMediaId, results, categoryItems, selectedCategory, searchFilter) {
-    val pending = lastFocusedMediaId ?: return@LaunchedEffect
-    val visibleIds: Set<String> = if (selectedCategory != null) {
-      when (searchFilter) {
-        SearchTypeFilter.ALL -> categoryItems
-        SearchTypeFilter.FILM -> categoryItems.filter { it.type == MediaType.FILM }
-        SearchTypeFilter.SERIE_TV -> categoryItems.filter { it.type == MediaType.SERIE_TV }
-      }.map { it.id }.toSet()
-    } else {
-      results.map { it.id }.toSet()
-    }
-    if (visibleIds.isNotEmpty() && pending !in visibleIds) {
-      if (BuildConfig.DEBUG) {
-        Log.d(
-          SearchFocusDiagnostics.TAG,
-          "stale restore target '$pending' absent from current list: cleared"
-        )
-      }
-      viewModel.clearLastFocusedMedia()
-    }
-  }
-
-  LaunchedEffect(focusRestoreSignal.value, gridState) {
-    val mediaId = focusRestoreSignal.value ?: return@LaunchedEffect
-    focusRestoreSignal.value = null
-
-    // Cerca il mediaId tra i risultati visibili (query results o category results)
-    val index = results.indexOfFirst { it.id == mediaId }
-    if (index >= 0) {
-      gridState.scrollToItem(index)
-      kotlinx.coroutines.delay(100)
-      try {
-        contentFirstItemFocusRequester.requestFocus()
-      } catch (_: Exception) {}
-    }
-  }
+  // NOTA: il rilascio di un target STANTIO (id non più nella lista corrente — tipicamente
+  // l'ancora sintetica "home_content_anchor" scritta dalla MainActivity al rientro dal
+  // Dettaglio) è gestito dall'effetto di ripristino qui sopra, nello STESSO corpo che assegna
+  // l'ancora di recupero. Un effetto separato che chiamasse clearLastFocusedMedia() poteva
+  // cancellare l'effetto di ripristino a metà, lasciando la schermata senza focus.
 
   LaunchedEffect(savedCategoryId) {
+    // Al rientro dal Dettaglio il focus appartiene al ripristino della card (effetto sopra):
+    // portarlo qui sui badge sarebbe proprio il difetto "il focus finisce su Film/Serie TV".
+    if (pendingRestoreForThisScreen) return@LaunchedEffect
     if (savedCategoryId != null) {
       if (selectedCategory == null || selectedCategory?.id != savedCategoryId) {
         selectedCategory = GLOBAL_SEARCH_CATEGORIES.find { it.id == savedCategoryId }
@@ -1198,6 +1458,9 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   }
 
   LaunchedEffect(selectedCategory) {
+    // Stessa guardia del ripristino: al ritorno dal Dettaglio il focus deve andare alla card
+    // salvata, non ai chip dei filtri.
+    if (pendingRestoreForThisScreen) return@LaunchedEffect
     if (selectedCategory != null) {
       try {
         contentFirstItemFocusRequester.requestFocus()
@@ -1211,6 +1474,9 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
 
   // All'ingresso nella schermata Cerca porta il focus sulla barra di ricerca (a riposo, senza tastiera)
   LaunchedEffect(Unit) {
+    // Al rientro dal Dettaglio il focus appartiene al ripristino della card: la barra di
+    // ricerca non deve sottrarlo (difetto: il focus non tornava sulla card dei risultati).
+    if (pendingRestoreForThisScreen) return@LaunchedEffect
     if (savedCategoryId != null || selectedCategory != null) return@LaunchedEffect
     withFrameNanos { }
     try {
@@ -1559,8 +1825,18 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       R.string.search_category_desc_fallback,
                       stringResource(cat.labelRes)
                     )
+                    // Categoria nativa TMDB ("Talk"): fonte TMDB dichiarata, non un
+                    // fallback dovuto alla mancanza di un catalogo addon.
+                    SearchCategorySource.TMDB -> stringResource(
+                      R.string.search_category_desc_tmdb,
+                      stringResource(cat.labelRes)
+                    )
                     null -> if (isCategoryLoading) {
-                      stringResource(R.string.search_category_loading)
+                      if (cat.contentFilter == SearchCategoryFilter.TMDB_TV_GENRE) {
+                        stringResource(R.string.search_category_loading_tmdb)
+                      } else {
+                        stringResource(R.string.search_category_loading)
+                      }
                     } else {
                       ""
                     }
@@ -1642,11 +1918,24 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                     contentPadding = PaddingValues(bottom = 48.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.fillMaxSize()
+                    // Su/Giù espliciti: mantengono la COLONNA corrente anche quando la riga
+                    // successiva non è ancora composta (viewport TV alto quanto una riga).
+                    modifier = Modifier
+                      .fillMaxSize()
+                      .onPreviewKeyEvent { event ->
+                        moveGridFocusVertically(
+                          event = event,
+                          grid = categoryGridState,
+                          items = displayedCategoryMedia,
+                          keyOf = { searchCategoryGridItemKey(cat, it) },
+                          focusedKey = focusedCategoryKey,
+                          requesterOf = { categoryResultFocusRequester(cat, it) }
+                        )
+                      }
                   ) {
                     // La key include il tipo: film e serie possono condividere lo stesso
                     // id grezzo senza collidere (una key duplicata crasherebbe la griglia).
-                    itemsIndexed(displayedCategoryMedia, key = { _, item -> "cat_${cat.id}_${item.type}_${item.id}" }, contentType = { _, _ -> "media_poster" }) { index, item ->
+                    itemsIndexed(displayedCategoryMedia, key = { _, item -> searchCategoryGridItemKey(cat, item) }, contentType = { _, _ -> "media_poster" }) { index, item ->
                       Box(
                         modifier = Modifier
                           .fillMaxWidth()
@@ -1659,13 +1948,27 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       ) {
                         PosterMediaCard(
                           media = item,
-                          onClick = { onMediaClick(item) },
+                          onClick = {
+                            // Target di ripristino PRIMA del Dettaglio: al BACK il focus
+                            // torna su QUESTA card (identità, non posizione). La "claim"
+                            // distingue questo ripristino dai target di altre schermate.
+                            claimedRestoreId = item.id
+                            viewModel.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
+                            onMediaClick(item)
+                          },
                           // Requester per identità: è il nodo focalizzabile REALE della
                           // card, target del Giù dai filtri in modalità categoria. Le
                           // celle fuori viewport non sono composte: nessun requester
                           // fisso sulla cella 0.
                           focusRequester = categoryResultFocusRequester(cat, item),
+                          // Protocollo con CONFERMA reale del focus (tentativi a frame):
+                          // al rientro dal Dettaglio la card può non essere ancora pronta
+                          // quando arriva la richiesta.
+                          confirmFocusRestore = true,
                           modifier = Modifier.onFocusChanged { state ->
+                            if (state.isFocused) {
+                              focusedCategoryKey = searchCategoryGridItemKey(cat, item)
+                            }
                             if (BuildConfig.DEBUG && state.isFocused) {
                               Log.d(
                                 SearchFocusDiagnostics.TAG,
@@ -1731,9 +2034,22 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                     contentPadding = PaddingValues(bottom = 48.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.fillMaxSize()
+                    // Su/Giù espliciti: mantengono la COLONNA corrente anche quando la riga
+                    // successiva non è ancora composta (viewport TV alto quanto una riga).
+                    modifier = Modifier
+                      .fillMaxSize()
+                      .onPreviewKeyEvent { event ->
+                        moveGridFocusVertically(
+                          event = event,
+                          grid = gridState,
+                          items = results,
+                          keyOf = { searchResultGridItemKey(it) },
+                          focusedKey = focusedResultKey,
+                          requesterOf = { resultFocusRequester(it.id) }
+                        )
+                      }
                   ) {
-                    itemsIndexed(results, key = { _, item -> "search_${item.id}" }, contentType = { _, _ -> "media_poster" }) { index, item ->
+                    itemsIndexed(results, key = { _, item -> searchResultGridItemKey(item) }, contentType = { _, _ -> "media_poster" }) { index, item ->
                       Box(
                         modifier = Modifier
                           .fillMaxWidth()
@@ -1746,14 +2062,28 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       ) {
                         PosterMediaCard(
                           media = item,
-                          onClick = { onMediaClick(item) },
+                          onClick = {
+                            // Target di ripristino PRIMA del Dettaglio: al BACK il focus
+                            // torna su QUESTA card (identità, non posizione). La "claim"
+                            // distingue questo ripristino dai target di altre schermate.
+                            claimedRestoreId = item.id
+                            viewModel.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
+                            onMediaClick(item)
+                          },
                           // Requester per identità: è il nodo focalizzabile REALE della
                           // card (non un contenitore esterno), quindi il Giù dai filtri
                           // consegna il focus a una cella composta qualunque sia lo
                           // scroll. La Box-cella NON è un target di focus: agganciarci il
                           // requester produce richieste rifiute invisibili.
                           focusRequester = resultFocusRequester(item.id),
+                          // Protocollo con CONFERMA reale del focus (tentativi a frame):
+                          // al rientro dal Dettaglio la card può non essere ancora pronta
+                          // quando arriva la richiesta.
+                          confirmFocusRestore = true,
                           modifier = Modifier.onFocusChanged { state ->
+                            if (state.isFocused) {
+                              focusedResultKey = searchResultGridItemKey(item)
+                            }
                             if (BuildConfig.DEBUG && state.isFocused) {
                               Log.d(
                                 SearchFocusDiagnostics.TAG,
@@ -1836,7 +2166,8 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       categoryId = cat.id,
                       keywords = cat.keywords,
                       movieGenreId = cat.movieGenreId,
-                      tvGenreId = cat.tvGenreId
+                      tvGenreId = cat.tvGenreId,
+                      contentFilter = cat.contentFilter
                     )
                     selectedCategory = cat
                     isSearchSubmitted = false
@@ -1904,6 +2235,11 @@ fun SettingsScreen(
   val streamingEngineMode = AppSettingsRepository.streamingEngineMode.collectAsState().value ?: StreamingEngineMode.HTTP_WEB
   val autoplayEnabled = viewModel?.autoplayEnabled?.collectAsState()?.value ?: false
   val tmdbGenreFallbackEnabled = viewModel?.tmdbGenreFallbackEnabled?.collectAsState()?.value ?: true
+  val hideUnreleasedContent = viewModel?.hideUnreleasedContent?.collectAsState()?.value
+    ?: AppSettingsRepository.hideUnreleasedContent.collectAsState().value
+  // Sezione «Continua a guardare»: stessa sorgente di verità della riga Home.
+  val continueWatchingPreferences = viewModel?.continueWatchingPreferences?.collectAsState()?.value
+    ?: AppSettingsRepository.continueWatchingPreferences.collectAsState().value
   // Contesto al ViewModel: i messaggi della sezione Ricerca sono risorse localizzate
   // risolte lì (fuori dalla composizione). Operazione idempotente, nessun leak.
   LaunchedEffect(viewModel) { viewModel?.attachContext(context) }
@@ -1924,6 +2260,7 @@ fun SettingsScreen(
   var showSubtitleLanguageDialog by remember { mutableStateOf(false) }
   var showSubtitleSizeDialog by remember { mutableStateOf(false) }
   var showSubtitleBackgroundDialog by remember { mutableStateOf(false) }
+  var showSubtitleOpacityDialog by remember { mutableStateOf(false) }
   var showSubtitlePositionDialog by remember { mutableStateOf(false) }
   var showAudioLanguageDialog by remember { mutableStateOf(false) }
   var showAppLanguageDialog by remember { mutableStateOf(false) }
@@ -1940,6 +2277,11 @@ fun SettingsScreen(
   var showDecoderFallbackDialog by remember { mutableStateOf(false) }
   var isClearingCache by remember { mutableStateOf(false) }
   var showUpdateResultDialog by remember { mutableStateOf(false) }
+  // Sezione «Continua a guardare»: aperta di default (come nelle immagini di
+  // riferimento); lo stato vive solo nella composizione, le preferenze interne sono
+  // persistite singolarmente.
+  var continueWatchingExpanded by remember { mutableStateOf(true) }
+  var showContinueWatchingSortDialog by remember { mutableStateOf(false) }
   val simklAccount by SimklRepository.accountState.collectAsState()
   val simklSyncResult by SimklRepository.lastSyncResult.collectAsState()
   val simklSyncing by SimklRepository.isSyncing.collectAsState()
@@ -2244,12 +2586,10 @@ fun SettingsScreen(
             )
 
             // Toggle "Usa TorBox Instant Debrid"
-            SettingsRow(
-              icon = Icons.Default.Bolt,
+            SettingsSwitchRow(
               title = stringResource(R.string.settings_use_torbox_instant),
-              value = if (torBoxEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-              valueColor = if (torBoxEnabled) NovaGreen else NovaTextMuted,
-              onClick = { viewModel?.setTorBoxInstantDebridEnabled(!torBoxEnabled) }
+              checked = torBoxEnabled,
+              onCheckedChange = { viewModel?.setTorBoxInstantDebridEnabled(it) }
             )
           } else {
             // Spiegazione per modalità HTTP
@@ -2265,26 +2605,89 @@ fun SettingsScreen(
         }
       }
 
+      // ── HOME ────────────────────────────────────────────────────────────
+      // Subito dopo Motore di Riproduzione e prima di Ricerca e cataloghi:
+      // l'opzione riguarda ciò che la Home mostra, non la riproduzione né la ricerca.
+      item {
+        SettingsSection(title = stringResource(R.string.settings_home_section)) {
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_hide_unreleased),
+            subtitle = stringResource(R.string.settings_hide_unreleased_desc),
+            checked = hideUnreleasedContent,
+            onCheckedChange = { viewModel?.setHideUnreleasedContent(it) }
+          )
+        }
+      }
+
+      // ── CONTINUA A GUARDARE ─────────────────────────────────────────────
+      // Sezione espandibile dedicata alla riga omonima della Home. Tutte le opzioni
+      // modificano la presentazione della riga (visibilità, layout, immagine,
+      // sfocatura, ripresa, episodi futuri, ordinamento) tramite un unico policy
+      // condiviso; qui vive solo la UI delle preferenze.
+      item {
+        SettingsExpandableSection(
+          title = stringResource(R.string.settings_cw_section_title),
+          subtitle = stringResource(R.string.settings_cw_section_desc),
+          expanded = continueWatchingExpanded,
+          expandedLabel = stringResource(R.string.settings_cw_expanded),
+          collapsedLabel = stringResource(R.string.settings_cw_collapsed),
+          onToggle = { continueWatchingExpanded = !continueWatchingExpanded }
+        ) {
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_show),
+            subtitle = stringResource(R.string.settings_cw_show_desc),
+            checked = continueWatchingPreferences.showRow,
+            onCheckedChange = { viewModel?.setContinueWatchingShowRow(it) }
+          )
+          SettingsContinueWatchingLayoutSelector(
+            title = stringResource(R.string.settings_cw_layout),
+            selected = continueWatchingPreferences.layout,
+            onSelect = { layout -> viewModel?.setContinueWatchingLayout(layout) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_episode_thumbnails),
+            subtitle = stringResource(R.string.settings_cw_episode_thumbnails_desc),
+            checked = continueWatchingPreferences.useEpisodeThumbnails,
+            onCheckedChange = { viewModel?.setContinueWatchingEpisodeThumbnails(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_blur_unwatched),
+            subtitle = stringResource(R.string.settings_cw_blur_unwatched_desc),
+            checked = continueWatchingPreferences.blurUnwatched,
+            onCheckedChange = { viewModel?.setContinueWatchingBlurUnwatched(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_next_from_furthest),
+            subtitle = stringResource(R.string.settings_cw_next_from_furthest_desc),
+            checked = continueWatchingPreferences.nextEpisodeFromFurthest,
+            onCheckedChange = { viewModel?.setContinueWatchingNextEpisodeFromFurthest(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_cw_show_unaired),
+            subtitle = stringResource(R.string.settings_cw_show_unaired_desc),
+            checked = continueWatchingPreferences.showUnairedEpisodes,
+            onCheckedChange = { viewModel?.setContinueWatchingShowUnairedEpisodes(it) }
+          )
+          SettingsRow(
+            icon = Icons.AutoMirrored.Filled.Sort,
+            title = stringResource(R.string.settings_cw_sort),
+            value = continueWatchingSortLabel(continueWatchingPreferences.sort),
+            onClick = { showContinueWatchingSortDialog = true },
+            showChevron = true
+          )
+        }
+      }
+
       // ── RICERCA E CATALOGHI ─────────────────────────────────────────────
       // Lo switch più vicino alla sua area di effetto: la sezione Ricerca e i
-      // cataloghi. Riga D-pad focalizzabile come le altre (SettingsRow), descrizione
-      // esplicita sotto la riga per spiegare quando TMDB viene interrogato.
+      // cataloghi. La descrizione vive dentro la riga, sotto il titolo.
       item {
         SettingsSection(title = stringResource(R.string.settings_search_section)) {
-          SettingsRow(
-            icon = Icons.Default.Search,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_tmdb_genre_fallback),
-            value = if (tmdbGenreFallbackEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (tmdbGenreFallbackEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setTmdbGenreFallbackEnabled(!tmdbGenreFallbackEnabled) }
-          )
-          Text(
-            text = stringResource(R.string.settings_tmdb_genre_fallback_desc),
-            color = NovaTextSecondary,
-            fontSize = 12.sp,
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 16.dp, vertical = 8.dp)
+            subtitle = stringResource(R.string.settings_tmdb_genre_fallback_desc),
+            checked = tmdbGenreFallbackEnabled,
+            onCheckedChange = { viewModel?.setTmdbGenreFallbackEnabled(it) }
           )
         }
       }
@@ -2292,12 +2695,10 @@ fun SettingsScreen(
       // ── RIPRODUZIONE ────────────────────────────────────────────────────
       item {
         SettingsSection(title = stringResource(R.string.settings_sec_playback)) {
-          SettingsRow(
-            icon = Icons.Default.PlayArrow,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_autoplay),
-            value = if (autoplayEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (autoplayEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAutoplayEnabled(!autoplayEnabled) }
+            checked = autoplayEnabled,
+            onCheckedChange = { viewModel?.setAutoplayEnabled(it) }
           )
           SettingsRow(
             icon = Icons.Default.HighQuality,
@@ -2311,26 +2712,46 @@ fun SettingsScreen(
             value = audioLanguageLabel(playbackSettings.preferredAudioLanguage),
             onClick = { showAudioLanguageDialog = true }
           )
-          SettingsRow(
-            icon = Icons.Default.Language,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_prioritize_italian_audio),
-            value = if (playbackSettings.prioritizeItalianAudio) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.prioritizeItalianAudio) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setPrioritizeItalianAudio(!playbackSettings.prioritizeItalianAudio) }
+            subtitle = stringResource(R.string.settings_prioritize_italian_audio_desc),
+            checked = playbackSettings.prioritizeItalianAudio,
+            onCheckedChange = { viewModel?.setPrioritizeItalianAudio(it) }
           )
-          SettingsRow(
-            icon = Icons.Default.PlayArrow,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_autoplay_next_episode),
-            value = if (playbackSettings.autoPlayNextEpisodeEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.autoPlayNextEpisodeEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAutoPlayNextEpisode(!playbackSettings.autoPlayNextEpisodeEnabled) }
+            checked = playbackSettings.autoPlayNextEpisodeEnabled,
+            onCheckedChange = { viewModel?.setAutoPlayNextEpisode(it) }
           )
-          SettingsRow(
-            icon = Icons.Default.Replay,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_auto_resume),
-            value = if (playbackSettings.autoResume) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.autoResume) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAutoResume(!playbackSettings.autoResume) }
+            checked = playbackSettings.autoResume,
+            onCheckedChange = { viewModel?.setAutoResume(it) }
+          )
+          // Overlay e avvisi di riproduzione: quattro opzioni indipendenti tra loro.
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_loading_overlay),
+            subtitle = stringResource(R.string.settings_loading_overlay_desc),
+            checked = playbackSettings.loadingOverlayEnabled,
+            onCheckedChange = { viewModel?.setLoadingOverlayEnabled(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_loading_status),
+            subtitle = stringResource(R.string.settings_loading_status_desc),
+            checked = playbackSettings.loadingStatusEnabled,
+            onCheckedChange = { viewModel?.setLoadingStatusEnabled(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_pause_overlay),
+            subtitle = stringResource(R.string.settings_pause_overlay_desc),
+            checked = playbackSettings.pauseOverlayEnabled,
+            onCheckedChange = { viewModel?.setPauseOverlayEnabled(it) }
+          )
+          SettingsSwitchRow(
+            title = stringResource(R.string.settings_parental_guide),
+            subtitle = stringResource(R.string.settings_parental_guide_desc),
+            checked = playbackSettings.parentalGuideEnabled,
+            onCheckedChange = { viewModel?.setParentalGuideEnabled(it) }
           )
         }
       }
@@ -2338,20 +2759,11 @@ fun SettingsScreen(
       // ── SELEZIONE FLUSSO ────────────────────────────────────────────────
       item {
         SettingsSection(title = stringResource(R.string.settings_sec_stream_selection)) {
-          SettingsRow(
-            icon = Icons.Default.Restore,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_reuse_last_stream),
-            value = if (playbackSettings.reuseLastWorkingStreamEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.reuseLastWorkingStreamEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setReuseLastWorkingStreamEnabled(!playbackSettings.reuseLastWorkingStreamEnabled) }
-          )
-          Text(
-            text = stringResource(R.string.settings_reuse_last_stream_desc),
-            color = NovaTextSecondary,
-            fontSize = 12.sp,
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 16.dp, vertical = 4.dp)
+            subtitle = stringResource(R.string.settings_reuse_last_stream_desc),
+            checked = playbackSettings.reuseLastWorkingStreamEnabled,
+            onCheckedChange = { viewModel?.setReuseLastWorkingStreamEnabled(it) }
           )
           SettingsRow(
             icon = Icons.Default.Speed,
@@ -2365,12 +2777,10 @@ fun SettingsScreen(
       // ── SOTTOTITOLI ─────────────────────────────────────────────────────
       item {
         SettingsSection(title = stringResource(R.string.settings_sec_subtitles)) {
-          SettingsRow(
-            icon = Icons.Default.Subtitles,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_auto_subtitles),
-            value = if (playbackSettings.subtitlesEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.subtitlesEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setSubtitlesEnabled(!playbackSettings.subtitlesEnabled) }
+            checked = playbackSettings.subtitlesEnabled,
+            onCheckedChange = { viewModel?.setSubtitlesEnabled(it) }
           )
           SettingsRow(
             icon = Icons.Default.Translate,
@@ -2391,17 +2801,21 @@ fun SettingsScreen(
             onClick = { showSubtitleBackgroundDialog = true }
           )
           SettingsRow(
+            icon = Icons.Default.Opacity,
+            title = stringResource(R.string.settings_subtitle_opacity),
+            value = subtitleOpacityLabel(playbackSettings.subtitleOpacity),
+            onClick = { showSubtitleOpacityDialog = true }
+          )
+          SettingsRow(
             icon = Icons.Default.VerticalAlignBottom,
             title = stringResource(R.string.settings_subtitle_position),
             value = subtitlePositionLabel(playbackSettings.subtitlePosition),
             onClick = { showSubtitlePositionDialog = true }
           )
-          SettingsRow(
-            icon = Icons.Default.ClosedCaption,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_forced_subtitles),
-            value = if (playbackSettings.forcedSubtitlesEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.forcedSubtitlesEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setForcedSubtitlesEnabled(!playbackSettings.forcedSubtitlesEnabled) }
+            checked = playbackSettings.forcedSubtitlesEnabled,
+            onCheckedChange = { viewModel?.setForcedSubtitlesEnabled(it) }
           )
         }
       }
@@ -2498,21 +2912,17 @@ fun SettingsScreen(
           )
 
           // 4. Audio Passthrough
-          SettingsRow(
-            icon = Icons.AutoMirrored.Filled.VolumeUp,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_audio_passthrough),
-            value = if (playbackSettings.audioPassthroughEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.audioPassthroughEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAudioPassthroughEnabled(!playbackSettings.audioPassthroughEnabled) }
+            checked = playbackSettings.audioPassthroughEnabled,
+            onCheckedChange = { viewModel?.setAudioPassthroughEnabled(it) }
           )
 
           // 5. Audio Tunneling
-          SettingsRow(
-            icon = Icons.Default.SyncAlt,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_audio_tunneling),
-            value = if (playbackSettings.audioTunnelingEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.audioTunnelingEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAudioTunnelingEnabled(!playbackSettings.audioTunnelingEnabled) }
+            checked = playbackSettings.audioTunnelingEnabled,
+            onCheckedChange = { viewModel?.setAudioTunnelingEnabled(it) }
           )
 
           // 6. Decoder Fallback (FFmpeg)
@@ -2524,30 +2934,24 @@ fun SettingsScreen(
           )
 
           // 7. Auto Frame Rate Matching (AFR)
-          SettingsRow(
-            icon = Icons.Default.Tv,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_afr),
-            value = if (playbackSettings.autoFrameRateMatching) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.autoFrameRateMatching) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setAutoFrameRateMatching(!playbackSettings.autoFrameRateMatching) }
+            checked = playbackSettings.autoFrameRateMatching,
+            onCheckedChange = { viewModel?.setAutoFrameRateMatching(it) }
           )
 
           // 8. Dolby Vision Fallback
-          SettingsRow(
-            icon = Icons.Default.HdrOn,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_dolby_vision_fallback),
-            value = if (playbackSettings.dolbyVisionFallbackEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.dolbyVisionFallbackEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setDolbyVisionFallbackEnabled(!playbackSettings.dolbyVisionFallbackEnabled) }
+            checked = playbackSettings.dolbyVisionFallbackEnabled,
+            onCheckedChange = { viewModel?.setDolbyVisionFallbackEnabled(it) }
           )
 
           // 9. Stats for Nerds / Debug Info Overlay
-          SettingsRow(
-            icon = Icons.Default.Assessment,
+          SettingsSwitchRow(
             title = stringResource(R.string.settings_adv_stats_overlay),
-            value = if (playbackSettings.debugOverlayEnabled) stringResource(R.string.settings_value_on) else stringResource(R.string.settings_value_off),
-            valueColor = if (playbackSettings.debugOverlayEnabled) NovaGreen else NovaTextMuted,
-            onClick = { viewModel?.setDebugOverlayEnabled(!playbackSettings.debugOverlayEnabled) }
+            checked = playbackSettings.debugOverlayEnabled,
+            onCheckedChange = { viewModel?.setDebugOverlayEnabled(it) }
           )
 
           // 10. Clear Cache
@@ -2570,6 +2974,99 @@ fun SettingsScreen(
               }
             }
           )
+        }
+      }
+
+      // ── INFORMAZIONI ─────────────────────────────────────────────────────
+      // Identità dell'app: logo ufficiale (invariato), nome e versione effettiva
+      // della build (BuildConfig.VERSION_NAME tramite APP_VERSION_DISPLAY). Il
+      // contenuto è di sola lettura: nessun nuovo target del D-pad, il focus
+      // scorre oltre come nelle altre sezioni delle Impostazioni.
+      item {
+        SettingsStaticSection(title = stringResource(R.string.settings_sec_info)) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Image(
+              painter = painterResource(R.drawable.streamnova_logo),
+              contentDescription = stringResource(R.string.app_name),
+              contentScale = ContentScale.FillWidth,
+              // Rapporto d'aspetto nativo dell'asset (1006x588): larghezza fissa,
+              // altezza derivata, qualità originale del logo preservata.
+              modifier = Modifier
+                .width(200.dp)
+                .aspectRatio(1006f / 588f)
+            )
+            Text(
+              text = stringResource(R.string.app_name),
+              color = NovaTextPrimary,
+              fontSize = 17.sp,
+              fontWeight = FontWeight.SemiBold
+            )
+            Text(
+              text = stringResource(R.string.settings_info_version, appVersion),
+              color = NovaTextSecondary,
+              fontSize = 14.sp
+            )
+          }
+        }
+      }
+
+      // ── RICONOSCIMENTI ───────────────────────────────────────────────────
+      // TMDB: logo ufficiale e testi di attribuzione esatti, in inglese in tutte
+      // le localizzazioni come richiede l'attribuzione stessa. ExoPlayer: la
+      // versione mostrata è quella realmente compilata negli AAR Media3 usati
+      // dal progetto (costante MediaLibraryInfo.VERSION, inlined a compile-time).
+      item {
+        SettingsStaticSection(title = stringResource(R.string.settings_sec_acknowledgements)) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Image(
+              painter = painterResource(R.drawable.ic_logo_tmdb),
+              contentDescription = "TMDB",
+              contentScale = ContentScale.FillWidth,
+              // Rapporto d'aspetto nativo dell'asset (144x104).
+              modifier = Modifier
+                .width(104.dp)
+                .aspectRatio(144f / 104f)
+            )
+            Text(
+              text = stringResource(R.string.settings_info_tmdb_attribution),
+              color = NovaTextSecondary,
+              fontSize = 14.sp,
+              lineHeight = 20.sp
+            )
+            Text(
+              text = stringResource(R.string.settings_info_tmdb_url),
+              color = NovaCyanBright,
+              fontSize = 13.sp
+            )
+            Text(
+              text = stringResource(R.string.settings_info_legal_disclaimer),
+              color = NovaTextSecondary,
+              fontSize = 14.sp,
+              lineHeight = 20.sp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+              text = "ExoPlayer",
+              color = NovaTextPrimary,
+              fontSize = 15.sp,
+              fontWeight = FontWeight.SemiBold
+            )
+            Text(
+              text = stringResource(R.string.settings_info_version, MediaLibraryInfo.VERSION),
+              color = NovaTextSecondary,
+              fontSize = 14.sp
+            )
+          }
         }
       }
     }
@@ -2718,6 +3215,21 @@ fun SettingsScreen(
     )
   }
 
+  if (showSubtitleOpacityDialog) {
+    val opacityOptions = SubtitleOpacity.entries
+    val opacityLabels = opacityOptions.map { subtitleOpacityLabel(it) }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_subtitle_opacity),
+      options = opacityLabels,
+      selectedIndex = opacityOptions.indexOf(playbackSettings.subtitleOpacity).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setSubtitleOpacity(opacityOptions[idx])
+        showSubtitleOpacityDialog = false
+      },
+      onDismiss = { showSubtitleOpacityDialog = false }
+    )
+  }
+
   if (showSubtitlePositionDialog) {
     val positionOptions = SubtitlePosition.entries
     val positionLabels = positionOptions.map { subtitlePositionLabel(it) }
@@ -2776,6 +3288,24 @@ fun SettingsScreen(
         showAppLanguageDialog = false
       },
       onDismiss = { showAppLanguageDialog = false }
+    )
+  }
+
+  if (showContinueWatchingSortDialog) {
+    // Selettore dell'ordinamento: stesse righe focusabili degli altri dialoghi
+    // (TrackSelectionDialog), valore corrente già evidenziato. Ogni voce presente
+    // nell'enum è implementata dal policy della riga.
+    val sortOptions = ContinueWatchingSort.entries
+    val sortLabels = sortOptions.map { continueWatchingSortLabel(it) }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_cw_sort),
+      options = sortLabels,
+      selectedIndex = sortOptions.indexOf(continueWatchingPreferences.sort).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setContinueWatchingSort(sortOptions[idx])
+        showContinueWatchingSortDialog = false
+      },
+      onDismiss = { showContinueWatchingSortDialog = false }
     )
   }
 
@@ -3016,14 +3546,6 @@ private fun preferredResolutionLabel(res: PreferredResolution): String = when (r
   PreferredResolution.HD_720P -> "720p HD"
 }
 
-@Composable
-private fun subtitleSizeLabel(size: SubtitleSize): String = when (size) {
-  SubtitleSize.SMALL -> stringResource(R.string.sub_size_small)
-  SubtitleSize.MEDIUM -> stringResource(R.string.sub_size_medium)
-  SubtitleSize.LARGE -> stringResource(R.string.sub_size_large)
-  SubtitleSize.VERY_LARGE -> stringResource(R.string.sub_size_very_large)
-}
-
 /** Etichetta della durata cache dell'ultimo flusso ("Riusa l'ultimo link"). */
 @Composable
 private fun lastStreamCacheDurationLabel(hours: Int): String {
@@ -3036,13 +3558,6 @@ private fun lastStreamCacheDurationLabel(hours: Int): String {
     LastStreamCacheDuration.THREE_DAYS -> stringResource(R.string.reuse_cache_3d)
     LastStreamCacheDuration.SEVEN_DAYS -> stringResource(R.string.reuse_cache_7d)
   }
-}
-
-@Composable
-private fun subtitleBackgroundLabel(bg: SubtitleBackground): String = when (bg) {
-  SubtitleBackground.NONE -> stringResource(R.string.sub_bg_none)
-  SubtitleBackground.BLACK -> stringResource(R.string.sub_bg_black)
-  SubtitleBackground.SEMI_TRANSPARENT -> stringResource(R.string.sub_bg_semi_transparent)
 }
 
 @Composable
@@ -3133,6 +3648,355 @@ fun SettingsSection(
 }
 
 /**
+ * Variante statica di [SettingsSection]: stessa intestazione e stessa card, ma la card
+ * è un UNICO target del D-pad.
+ *
+ * Serve per i contenuti di sola lettura a fine lista (Informazioni / Riconoscimenti):
+ * senza un nodo focalizzabile la ricerca del focus non trova nulla sotto l'ultima riga
+ * azionabile, la LazyColumn non scorre e i contenuti resterebbero per sempre fuori
+ * schermo con il solo telecomando. OK non aziona nulla: il target esiste solo per
+ * portare la card in vista (bringIntoView) e mostrarne i confini con il bordo ciano,
+ * coerente con l'evidenziazione delle altre righe.
+ */
+@Composable
+private fun SettingsStaticSection(
+  title: String,
+  content: @Composable () -> Unit
+) {
+  Column(modifier = Modifier.fillMaxWidth()) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Box(
+        modifier = Modifier
+          .width(4.dp)
+          .height(18.dp)
+          .background(
+            Brush.verticalGradient(listOf(NovaCyan, NovaCyanBright)),
+            RoundedCornerShape(2.dp)
+          )
+      )
+      Spacer(modifier = Modifier.width(10.dp))
+      Text(
+        text = title.uppercase(),
+        color = NovaTextPrimary,
+        fontSize = 15.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.sp
+      )
+    }
+    Spacer(modifier = Modifier.height(12.dp))
+    TvFocusableBox(
+      shape = RoundedCornerShape(14.dp),
+      focusedScale = 1f,
+      onClick = {},
+      modifier = Modifier.fillMaxWidth()
+    ) { isFocused ->
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(if (isFocused) NovaCardBgFocused else NovaCardBg)
+          .border(1.dp, NovaDivider, RoundedCornerShape(14.dp))
+          .padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+      ) {
+        content()
+      }
+    }
+  }
+}
+
+/**
+ * Sezione espandibile delle Impostazioni.
+ *
+ * L'intestazione è un unico target del D-pad (OK apre/chiude); le opzioni interne sono
+ * righe focusabili normali. Usa gli stessi colori/card/bordi di [SettingsSection]: la
+ * sezione resta nativa StreamNova, senza un tema separato.
+ */
+@Composable
+fun SettingsExpandableSection(
+  title: String,
+  subtitle: String,
+  expanded: Boolean,
+  expandedLabel: String,
+  collapsedLabel: String,
+  onToggle: () -> Unit,
+  modifier: Modifier = Modifier,
+  content: @Composable () -> Unit
+) {
+  val stateLabel = if (expanded) expandedLabel else collapsedLabel
+  Column(modifier = modifier.fillMaxWidth()) {
+    TvFocusableBox(
+      shape = RoundedCornerShape(12.dp),
+      focusedScale = 1.01f,
+      onClick = onToggle,
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag(SETTINGS_CW_SECTION_HEADER_TAG)
+        .semantics {
+          role = Role.Button
+          stateDescription = stateLabel
+        }
+    ) { isFocused ->
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(
+            if (isFocused) NovaCardBgFocused else NovaCardBg,
+            RoundedCornerShape(12.dp)
+          )
+          .border(
+            1.dp,
+            if (isFocused) Color.Transparent else NovaDivider,
+            RoundedCornerShape(12.dp)
+          )
+          .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = title,
+            color = NovaTextPrimary,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+          Spacer(modifier = Modifier.height(3.dp))
+          Text(
+            text = subtitle,
+            color = NovaTextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(
+          text = stateLabel,
+          color = if (isFocused) NovaCyanBright else NovaTextSecondary,
+          fontSize = 12.sp,
+          fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Icon(
+          imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+          contentDescription = null,
+          tint = if (isFocused) NovaCyanBright else NovaTextMuted,
+          modifier = Modifier.size(20.dp)
+        )
+      }
+    }
+    if (expanded) {
+      Spacer(modifier = Modifier.height(10.dp))
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(NovaCardBg.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+          .border(1.dp, NovaDivider, RoundedCornerShape(14.dp))
+          .padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+      ) {
+        content()
+      }
+    }
+  }
+}
+
+/** Tag semantico dell'intestazione della sezione «Continua a guardare» (test UI). */
+internal const val SETTINGS_CW_SECTION_HEADER_TAG = "settings_cw_section_header"
+
+/** Tag semantico di una card del selettore di layout (Scheda/Larga/Locandina). */
+internal fun settingsCwLayoutOptionTestTag(layout: ContinueWatchingLayout): String =
+  "settings_cw_layout_option_${layout.name.lowercase()}"
+
+/**
+ * Selettore visuale del layout della riga «Continua a guardare»: tre card focusabili con
+ * anteprima schematica, bordo di selezione e segno di spunta negli stessi colori ufficiali
+ * delle altre Impostazioni. L'intera card è un unico target del D-pad.
+ */
+@Composable
+private fun SettingsContinueWatchingLayoutSelector(
+  title: String,
+  selected: ContinueWatchingLayout,
+  onSelect: (ContinueWatchingLayout) -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val selectedLabel = stringResource(R.string.settings_cw_layout_selected)
+  Column(
+    modifier = modifier
+      .fillMaxWidth()
+      .padding(horizontal = 8.dp, vertical = 4.dp)
+  ) {
+    Text(
+      text = title,
+      color = NovaTextPrimary,
+      fontSize = 15.sp,
+      fontWeight = FontWeight.SemiBold,
+      modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+    )
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+      ContinueWatchingLayout.entries.forEach { layout ->
+        val isSelected = layout == selected
+        val label = continueWatchingLayoutLabel(layout)
+        TvFocusableBox(
+          shape = RoundedCornerShape(12.dp),
+          focusedScale = 1.02f,
+          focusedBorderColor = NovaCyanBright,
+          unfocusedBorderColor = if (isSelected) NovaCyan else NovaDivider,
+          borderWidth = if (isSelected) 2.dp else 1.dp,
+          onClick = { onSelect(layout) },
+          modifier = Modifier
+            .weight(1f)
+            .testTag(settingsCwLayoutOptionTestTag(layout))
+            .semantics {
+              role = Role.RadioButton
+              this.selected = isSelected
+              if (isSelected) stateDescription = selectedLabel
+            }
+        ) { isFocused ->
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .background(
+                if (isFocused) NovaCardBgFocused else NovaCardBg.copy(alpha = 0.75f),
+                RoundedCornerShape(12.dp)
+              )
+              .padding(horizontal = 10.dp, vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+          ) {
+            ContinueWatchingLayoutPreview(layout = layout, highlighted = isSelected)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              if (isSelected) {
+                Icon(
+                  imageVector = Icons.Default.Check,
+                  contentDescription = null,
+                  tint = NovaCyanBright,
+                  modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+              }
+              Text(
+                text = label,
+                color = if (isSelected) NovaCyanBright else NovaTextSecondary,
+                fontSize = 12.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Anteprima schematica del layout, disegnata con la palette ufficiale (nessuna immagine
+ * o colore preso dai riferimenti): mostra solo la disposizione di immagine e testi.
+ */
+@Composable
+private fun ContinueWatchingLayoutPreview(
+  layout: ContinueWatchingLayout,
+  highlighted: Boolean
+) {
+  val accent = if (highlighted) NovaCyanBright else NovaTextMuted
+  val block = NovaTextMuted.copy(alpha = 0.55f)
+  val shape = RoundedCornerShape(5.dp)
+  val base = Modifier
+    .background(NovaCardBgFocused, shape)
+    .border(1.dp, accent.copy(alpha = 0.55f), shape)
+
+  when (layout) {
+    ContinueWatchingLayout.CARD -> Column(
+      modifier = Modifier
+        .width(78.dp)
+        .height(46.dp)
+        .then(base)
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .weight(1f)
+          .background(block)
+      )
+      Column(modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
+        Box(modifier = Modifier.width(42.dp).height(3.dp).background(accent, RoundedCornerShape(2.dp)))
+        Spacer(modifier = Modifier.height(3.dp))
+        Box(modifier = Modifier.width(30.dp).height(2.dp).background(NovaTextMuted, RoundedCornerShape(2.dp)))
+      }
+    }
+
+    ContinueWatchingLayout.WIDE -> Row(
+      modifier = Modifier
+        .width(96.dp)
+        .height(46.dp)
+        .then(base)
+    ) {
+      Box(
+        modifier = Modifier
+          .width(30.dp)
+          .fillMaxHeight()
+          .background(block)
+      )
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxHeight()
+          .padding(horizontal = 6.dp, vertical = 7.dp)
+      ) {
+        Box(modifier = Modifier.width(44.dp).height(3.dp).background(accent, RoundedCornerShape(2.dp)))
+        Spacer(modifier = Modifier.height(4.dp))
+        Box(modifier = Modifier.fillMaxWidth(0.8f).height(2.dp).background(NovaTextMuted, RoundedCornerShape(2.dp)))
+        Spacer(modifier = Modifier.height(3.dp))
+        Box(modifier = Modifier.fillMaxWidth(0.6f).height(2.dp).background(NovaTextMuted, RoundedCornerShape(2.dp)))
+      }
+    }
+
+    ContinueWatchingLayout.POSTER -> Box(
+      modifier = Modifier
+        .width(32.dp)
+        .height(48.dp)
+        .then(base)
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(block)
+      )
+      Column(
+        modifier = Modifier
+          .align(Alignment.BottomStart)
+          .padding(horizontal = 4.dp, vertical = 4.dp)
+      ) {
+        Box(modifier = Modifier.width(20.dp).height(2.dp).background(accent, RoundedCornerShape(1.dp)))
+        Spacer(modifier = Modifier.height(3.dp))
+        Box(modifier = Modifier.width(16.dp).height(2.dp).background(NovaTextMuted, RoundedCornerShape(1.dp)))
+      }
+    }
+  }
+}
+
+/** Etichetta localizzata di un layout della riga «Continua a guardare». */
+@Composable
+private fun continueWatchingLayoutLabel(layout: ContinueWatchingLayout): String = when (layout) {
+  ContinueWatchingLayout.CARD -> stringResource(R.string.settings_cw_layout_card)
+  ContinueWatchingLayout.WIDE -> stringResource(R.string.settings_cw_layout_wide)
+  ContinueWatchingLayout.POSTER -> stringResource(R.string.settings_cw_layout_poster)
+}
+
+/** Etichetta localizzata dell'ordinamento della riga «Continua a guardare». */
+@Composable
+private fun continueWatchingSortLabel(sort: ContinueWatchingSort): String = when (sort) {
+  ContinueWatchingSort.DEFAULT -> stringResource(R.string.settings_cw_sort_default)
+  ContinueWatchingSort.TITLE -> stringResource(R.string.settings_cw_sort_title)
+  ContinueWatchingSort.RATING -> stringResource(R.string.settings_cw_sort_rating)
+}
+
+/**
  * Riga di impostazione navigabile con D-pad.
  *
  * @param value valore reale mostrato a destra (es. versione app). Resta null per
@@ -3147,6 +4011,11 @@ fun SettingsRow(
   value: String? = null,
   valueColor: Color = NovaCyanBright,
   onClick: (() -> Unit)? = null,
+  /**
+   * Mostra la freccia di accesso a destra quando la riga apre un selettore/dialog.
+   * Default `false`: le righe esistenti mantengono esattamente l'aspetto di prima.
+   */
+  showChevron: Boolean = false,
   modifier: Modifier = Modifier
 ) {
   TvFocusableBox(
@@ -3193,6 +4062,161 @@ fun SettingsRow(
           maxLines = 1
         )
       }
+      if (showChevron && onClick != null) {
+        Spacer(modifier = Modifier.width(4.dp))
+        Icon(
+          imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+          contentDescription = null,
+          tint = if (isFocused) NovaCyanBright else NovaTextMuted,
+          modifier = Modifier.size(20.dp)
+        )
+      }
     }
+  }
+}
+
+/** Dimensioni dello switch comune: un solo punto di verità per tutte le Impostazioni. */
+private val SettingsSwitchTrackWidth = 46.dp
+private val SettingsSwitchTrackHeight = 26.dp
+private val SettingsSwitchKnobSize = 20.dp
+private val SettingsSwitchKnobInset = 3.dp
+
+/**
+ * Riga delle Impostazioni per un'opzione ON/OFF.
+ *
+ * Tutte le impostazioni booleane usano questo componente: titolo (e, quando prevista,
+ * descrizione) a sinistra, switch a destra. L'intera riga è un unico target del D-pad:
+ * il tasto OK alterna il valore una sola volta, senza un secondo click sullo switch.
+ * Lo switch è solo la rappresentazione grafica dello stato e non è un secondo nodo
+ * focalizzabile: la navigazione resta identica a quella delle altre righe.
+ */
+@Composable
+fun SettingsSwitchRow(
+  title: String,
+  checked: Boolean,
+  onCheckedChange: (Boolean) -> Unit,
+  subtitle: String? = null,
+  modifier: Modifier = Modifier
+) {
+  val stateOn = stringResource(R.string.settings_value_on)
+  val stateOff = stringResource(R.string.settings_value_off)
+  TvFocusableBox(
+    shape = RoundedCornerShape(12.dp),
+    focusedScale = 1.015f,
+    onClick = { onCheckedChange(!checked) },
+    modifier = modifier
+      .fillMaxWidth()
+      .padding(horizontal = 8.dp)
+      .semantics {
+        role = Role.Switch
+        stateDescription = if (checked) stateOn else stateOff
+        onClick(label = title) {
+          onCheckedChange(!checked)
+          true
+        }
+      }
+  ) { isFocused ->
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .background(
+          if (isFocused) NovaCardBgFocused else NovaCardBgFocused.copy(alpha = 0.55f),
+          RoundedCornerShape(12.dp)
+        )
+        .border(
+          1.dp,
+          if (isFocused) Color.Transparent else NovaDivider,
+          RoundedCornerShape(12.dp)
+        )
+        .padding(horizontal = 16.dp, vertical = 13.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = title,
+          color = NovaTextPrimary,
+          fontSize = 15.sp,
+          fontWeight = FontWeight.SemiBold,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+        if (!subtitle.isNullOrBlank()) {
+          Spacer(modifier = Modifier.height(3.dp))
+          Text(
+            text = subtitle,
+            color = NovaTextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+      }
+      Spacer(modifier = Modifier.width(16.dp))
+      SettingsSwitchIndicator(
+        checked = checked,
+        isFocused = isFocused
+      )
+    }
+  }
+}
+
+/**
+ * Switch grafico condiviso: pillola scura con knob a sinistra da spenta, pillola ciano
+ * con knob a destra da accesa. Il focus del D-pad aggiunge un bordo ciano alla pillola,
+ * coerente con il bordo della riga.
+ */
+@Composable
+private fun SettingsSwitchIndicator(
+  checked: Boolean,
+  isFocused: Boolean,
+  modifier: Modifier = Modifier
+) {
+  val knobOffset by animateDpAsState(
+    targetValue = if (checked) {
+      SettingsSwitchTrackWidth - SettingsSwitchKnobSize - SettingsSwitchKnobInset * 2
+    } else {
+      0.dp
+    },
+    animationSpec = tween(durationMillis = 160),
+    label = "SettingsSwitchKnobOffset"
+  )
+  val trackColor by animateColorAsState(
+    targetValue = when {
+      checked && isFocused -> NovaCyanBright
+      checked -> NovaCyan
+      isFocused -> NovaTextMuted.copy(alpha = 0.55f)
+      else -> NovaTextMuted.copy(alpha = 0.38f)
+    },
+    animationSpec = tween(durationMillis = 160),
+    label = "SettingsSwitchTrackColor"
+  )
+  val knobColor by animateColorAsState(
+    targetValue = if (checked) Color.White else NovaTextSecondary,
+    animationSpec = tween(durationMillis = 160),
+    label = "SettingsSwitchKnobColor"
+  )
+
+  Box(
+    modifier = modifier
+      .width(SettingsSwitchTrackWidth)
+      .height(SettingsSwitchTrackHeight)
+      .background(trackColor, RoundedCornerShape(50))
+      .then(
+        if (isFocused) {
+          Modifier.border(1.5.dp, NovaCyanBright, RoundedCornerShape(50))
+        } else {
+          Modifier
+        }
+      )
+      .padding(SettingsSwitchKnobInset),
+    contentAlignment = Alignment.CenterStart
+  ) {
+    Box(
+      modifier = Modifier
+        .offset(x = knobOffset)
+        .size(SettingsSwitchKnobSize)
+        .background(knobColor, CircleShape)
+    )
   }
 }

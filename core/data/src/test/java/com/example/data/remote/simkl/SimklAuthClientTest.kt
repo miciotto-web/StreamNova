@@ -292,6 +292,117 @@ class SimklAuthClientTest {
     assertEquals(0, server.requestCount)
   }
 
+  // ── Polling resiliente ────────────────────────────────────────────────────────
+  // Il polling gira mentre l'utente è nel browser o su un'altra app: la rete può
+  // saltare (passaggio Wi-Fi↔cellulare, copertura mobile, radio in risparmio) senza
+  // che il codice perda validità. Un fallimento transitorio non deve abortire il
+  // login ("Connessione a SIMKL non riuscita" osservata su telefono): si rallenta e
+  // si continua finché il codice è valido; solo la scadenza chiude il ciclo.
+
+  @Test
+  fun awaitLoginV2SopravviveAGuastiDiReteTransitoriDelPolling() = runBlocking {
+    val clock = VirtualClock()
+    val client = SimklAuthClient(api, now = { clock.now }, sleeper = clock.sleeper)
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+    enqueue(400, """{"error":"authorization_pending"}""")
+    enqueue(200, """{"access_token":"simkl_at_rete","scope":"media:read media:write"}""")
+
+    val bundle = client.awaitLogin(
+      "client-v2",
+      SimklLoginPrompt(
+        flow = SimklAuthFlow.V2_DEVICE,
+        userCode = "BDWP-HQPK",
+        verificationUri = "https://simkl.com/pin",
+        qrPayload = "https://simkl.com/pin?user_code=BDWP-HQPK",
+        deviceCode = "dev-code-1",
+        expiresAtEpochMs = clock.now + 900_000L,
+        intervalSeconds = 5L
+      )
+    )
+
+    assertEquals("simkl_at_rete", bundle.accessToken)
+    assertEquals(3, server.requestCount)
+    // Dopo il guasto di rete l'intervallo si allunga (5 s → 10 s) e il polling riparte.
+    assertEquals(listOf(5_000L, 10_000L, 10_000L), clock.waits)
+  }
+
+  @Test
+  fun awaitLoginV2RiprovaSuErroreServerTransitorio() = runBlocking {
+    val clock = VirtualClock()
+    val client = SimklAuthClient(api, now = { clock.now }, sleeper = clock.sleeper)
+    // Pagina d'errore di un intermedio di rete: nessun envelope RFC 6749, solo un 503.
+    enqueue(503, "<html><body>Service Unavailable</body></html>")
+    enqueue(200, """{"access_token":"simkl_at_5xx","scope":"media:read media:write"}""")
+
+    val bundle = client.awaitLogin(
+      "client-v2",
+      SimklLoginPrompt(
+        flow = SimklAuthFlow.V2_DEVICE,
+        userCode = "BDWP-HQPK",
+        verificationUri = "https://simkl.com/pin",
+        qrPayload = "https://simkl.com/pin?user_code=BDWP-HQPK",
+        deviceCode = "dev-code-1",
+        expiresAtEpochMs = clock.now + 900_000L,
+        intervalSeconds = 5L
+      )
+    )
+
+    assertEquals("simkl_at_5xx", bundle.accessToken)
+    assertEquals(listOf(5_000L, 10_000L), clock.waits)
+  }
+
+  @Test
+  fun awaitLoginV2TrattaIl429ComeGuastoTransitorio() = runBlocking {
+    val clock = VirtualClock()
+    val client = SimklAuthClient(api, now = { clock.now }, sleeper = clock.sleeper)
+    enqueue(429, """{"error":"rate_limited","error_description":"Too many requests"}""")
+    enqueue(200, """{"access_token":"simkl_at_429","scope":"media:read media:write"}""")
+
+    val bundle = client.awaitLogin(
+      "client-v2",
+      SimklLoginPrompt(
+        flow = SimklAuthFlow.V2_DEVICE,
+        userCode = "BDWP-HQPK",
+        verificationUri = "https://simkl.com/pin",
+        qrPayload = "https://simkl.com/pin?user_code=BDWP-HQPK",
+        deviceCode = "dev-code-1",
+        expiresAtEpochMs = clock.now + 900_000L,
+        intervalSeconds = 5L
+      )
+    )
+
+    assertEquals("simkl_at_429", bundle.accessToken)
+    assertEquals(2, server.requestCount)
+  }
+
+  @Test
+  fun awaitLoginV2RiprovaFinchéIlCodiceNonScade() = runBlocking {
+    val clock = VirtualClock()
+    val client = SimklAuthClient(api, now = { clock.now }, sleeper = clock.sleeper)
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+    // Rete mai più disponibile: con scadenza a 12 s il ciclo riprova (5 s → 10 s di
+    // backoff) e si ferma solo alla scadenza, come farebbe l'utente senza rete.
+
+    try {
+      client.awaitLogin(
+        "client-v2",
+        SimklLoginPrompt(
+          flow = SimklAuthFlow.V2_DEVICE,
+          userCode = "BDWP-HQPK",
+          verificationUri = "https://simkl.com/pin",
+          qrPayload = "https://simkl.com/pin?user_code=BDWP-HQPK",
+          deviceCode = "dev-code-1",
+          expiresAtEpochMs = clock.now + 12_000L,
+          intervalSeconds = 5L
+        )
+      )
+      fail("atteso SimklLoginExpiredException")
+    } catch (e: SimklLoginExpiredException) {
+      assertTrue(e.localizedMessage.orEmpty().contains("scaduto"))
+    }
+    assertEquals("un solo tentativo prima della scadenza", 1, server.requestCount)
+  }
+
   @Test
   fun awaitLoginV1InterpretaLaFormaPendingPoiIlToken() = runBlocking {
     val clock = VirtualClock()
@@ -343,6 +454,31 @@ class SimklAuthClientTest {
       assertTrue(e.localizedMessage.orEmpty().contains("non più valido"))
     }
     assertEquals(1, server.requestCount)
+  }
+
+  @Test
+  fun awaitLoginV1RiprovaDopoUnGuastoDiRete() = runBlocking {
+    val clock = VirtualClock()
+    val client = SimklAuthClient(api, now = { clock.now }, sleeper = clock.sleeper)
+    server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+    enqueue(200, """{"result":"OK","access_token":"simkl_at_v1_rete"}""")
+
+    val bundle = client.awaitLogin(
+      "client-v1",
+      SimklLoginPrompt(
+        flow = SimklAuthFlow.V1_PIN,
+        userCode = "ABCDE",
+        verificationUri = "https://simkl.com/pin",
+        qrPayload = "https://simkl.com/pin",
+        deviceCode = "DEVICE_CODE",
+        expiresAtEpochMs = clock.now + 900_000L,
+        intervalSeconds = 5L
+      )
+    )
+
+    assertEquals("simkl_at_v1_rete", bundle.accessToken)
+    assertEquals(2, server.requestCount)
+    assertEquals(listOf(5_000L, 10_000L), clock.waits)
   }
 
   @Test

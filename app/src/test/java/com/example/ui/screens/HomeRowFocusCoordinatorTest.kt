@@ -453,6 +453,77 @@ class HomeRowFocusCoordinatorTest {
     assertNull(c.pendingFocusIdentity)
   }
 
+  // ------------------------------------------- ancoraggio dopo la rimozione di una card
+
+  private fun coordinatorConRigaB() = coordinator(
+    keys = rowKeysAB,
+    counts = mapOf("row_a" to 20, "row_b" to 4),
+    identities = mapOf("row_a" to ids("a", 20), "row_b" to ids("b", 4))
+  )
+
+  /**
+   * Rimozione di una card INTERMEDIA: la richiesta di focus ancorata alla sua colonna ripiega
+   * sulla posizione (occupata dalla card successiva, traslata a sinistra) e dimentica
+   * l'identità del contenuto eliminato: nessun riferimento alla card rimossa resta nel
+   * coordinatore.
+   */
+  @Test
+  fun rimozioneDiUnaCardIntermediaAncoraAllaCardCheNePrendeIlPosto() {
+    val c = coordinatorConRigaB()
+    c.registerCell("row_b", 2)
+    c.onCellFocused("row_b", 2)
+    c.requestPendingFocus("row_b", 2)
+    assertEquals("b2", c.pendingFocusIdentity)
+
+    c.updateRows(
+      rowKeysAB,
+      mapOf("row_a" to 20, "row_b" to 3),
+      mapOf("row_a" to ids("a", 20), "row_b" to listOf("b0", "b1", "b3"))
+    )
+
+    assertEquals("row_b" to 2, c.pendingFocusRequest)
+    assertNull("la richiesta non deve più puntare all'identità eliminata", c.pendingFocusIdentity)
+    assertEquals(listOf("b0", "b1", "b3"), c.rowItemIdentities("row_b"))
+    assertFalse("b2" in c.rowItemIdentities("row_b"))
+  }
+
+  /** Rimozione dell'ULTIMA card: la colonna viene clampata alla card precedente. */
+  @Test
+  fun rimozioneDellUltimaCardAncoraAllaCardPrecedente() {
+    val c = coordinatorConRigaB()
+    c.requestPendingFocus("row_b", 3)
+
+    c.updateRows(
+      rowKeysAB,
+      mapOf("row_a" to 20, "row_b" to 3),
+      mapOf("row_a" to ids("a", 20), "row_b" to listOf("b0", "b1", "b2"))
+    )
+
+    assertEquals("row_b" to 2, c.pendingFocusRequest)
+    assertNull(c.pendingFocusIdentity)
+  }
+
+  /** Rimozione dell'UNICA card: la riga si svuota e la richiesta è annullata (ancora alla Home). */
+  @Test
+  fun rimozioneDellUnicaCardAnnullaLaRichiesta() {
+    val c = coordinator(
+      keys = rowKeysAB,
+      counts = mapOf("row_a" to 20, "row_b" to 1),
+      identities = mapOf("row_a" to ids("a", 20), "row_b" to listOf("b0"))
+    )
+    c.requestPendingFocus("row_b", 0)
+
+    c.updateRows(
+      rowKeysAB,
+      mapOf("row_a" to 20, "row_b" to 0),
+      mapOf("row_a" to ids("a", 20), "row_b" to emptyList())
+    )
+
+    assertNull(c.pendingFocusRequest)
+    assertNull(c.pendingFocusIdentity)
+    assertFalse(c.hasItems("row_b"))
+  }
+
   @Test
   fun rigaAccorciataConTargetAncoraPresenteLIndiceRestaValido() {
     val c = coordinator(

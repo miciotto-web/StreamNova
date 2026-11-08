@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar" />
+    <!-- Sfondo finestra allineato al fondo del video d'intro: tra lo splash
+         nativo e il primo frame del filmato non compare un lampo bianco/nero.
+         Il video resta gestito dalla schermata interna (SplashVideoScreen), non
+         dallo splash di sistema. -->
+    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash_native</item>
+    </style>
 </resources>

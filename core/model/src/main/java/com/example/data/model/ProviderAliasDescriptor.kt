@@ -34,6 +34,7 @@ object ProviderAliasRegistry {
     DefaultProviderAlias("prime", "Prime Video", setOf("prime", "prime video", "amazon", "amazon prime")),
     DefaultProviderAlias("apple", "Apple TV+", setOf("apple", "apple tv", "apple tv+", "appletv")),
     DefaultProviderAlias("paramount", "Paramount+", setOf("paramount", "paramount+", "paramount plus")),
+    DefaultProviderAlias("nowtv", "NOW TV", setOf("now", "now tv", "nowtv")),
     DefaultProviderAlias("crunchyroll", "Crunchyroll", setOf("crunchyroll"))
   )
 

@@ -40,7 +40,14 @@ object SettingsRepository {
   private val KEY_PREFERRED_SUBTITLE_LANGUAGE = stringPreferencesKey("preferred_subtitle_language")
   private val KEY_SUBTITLE_SIZE = stringPreferencesKey("subtitle_size")
   private val KEY_SUBTITLE_BACKGROUND = stringPreferencesKey("subtitle_background")
+  private val KEY_SUBTITLE_OPACITY = stringPreferencesKey("subtitle_opacity")
   private val KEY_SUBTITLE_POSITION = stringPreferencesKey("subtitle_position")
+
+  // Overlay e avvisi di riproduzione
+  private val KEY_LOADING_OVERLAY_ENABLED = booleanPreferencesKey("loading_overlay_enabled")
+  private val KEY_LOADING_STATUS_ENABLED = booleanPreferencesKey("loading_status_enabled")
+  private val KEY_PAUSE_OVERLAY_ENABLED = booleanPreferencesKey("pause_overlay_enabled")
+  private val KEY_PARENTAL_GUIDE_ENABLED = booleanPreferencesKey("parental_guide_enabled")
 
   // Avanzate
   private val KEY_TARGET_BUFFER = stringPreferencesKey("adv_target_buffer")
@@ -60,12 +67,49 @@ object SettingsRepository {
 
   private var dataStore: DataStore<Preferences>? = null
 
+  /**
+   * Migrazione una-tantum dell'aspetto sottotitoli.
+   *
+   * Il vecchio modello salvava solo lo sfondo (con "Nero semi-trasparente" come default);
+   * il nuovo separa colore e opacità. Se l'opacità non è ancora persistita, il valore
+   * derivato da [resolveSubtitleAppearance] viene scritto al primo caricamento: così una
+   * successiva scelta di sfondo non può più cambiare implicitamente anche l'opacità
+   * (il valore derivato dipende dallo sfondo storico finché la chiave manca).
+   */
+  private var subtitleAppearanceMigrated = false
+
   fun init(context: Context) {
     if (dataStore != null) return
     val store = context.applicationContext.settingsDataStore
     dataStore = store
     scope.launch {
       store.data.collect { prefs ->
+        // Aspetto dei sottotitoli: la coppia sfondo/opacità viene risolta insieme per
+        // applicare la migrazione dal vecchio "Nero semi-trasparente" (vedi
+        // [resolveSubtitleAppearance]) senza alterare l'aspetto già scelto.
+        val storedBackground = prefs[KEY_SUBTITLE_BACKGROUND]
+        val storedOpacity = prefs[KEY_SUBTITLE_OPACITY]
+        val (subtitleBackground, subtitleOpacity) = resolveSubtitleAppearance(
+          storedBackground = storedBackground,
+          storedOpacity = storedOpacity
+        )
+        if (!subtitleAppearanceMigrated) {
+          subtitleAppearanceMigrated = true
+          // Persistenza una-tantum della migrazione: da qui in poi le due chiavi sono
+          // indipendenti e cambiare sfondo non tocca l'opacità (e viceversa).
+          if (storedBackground == null || storedOpacity == null) {
+            scope.launch {
+              dataStore?.edit { prefsToWrite ->
+                if (prefsToWrite[KEY_SUBTITLE_BACKGROUND] == null) {
+                  prefsToWrite[KEY_SUBTITLE_BACKGROUND] = subtitleBackground.name
+                }
+                if (prefsToWrite[KEY_SUBTITLE_OPACITY] == null) {
+                  prefsToWrite[KEY_SUBTITLE_OPACITY] = subtitleOpacity.name
+                }
+              }
+            }
+          }
+        }
         _settings.value = PlaybackSettings(
           preferredResolution = prefs[KEY_PREFERRED_RESOLUTION]
             ?.let { name -> PreferredResolution.entries.firstOrNull { it.name == name } }
@@ -82,12 +126,17 @@ object SettingsRepository {
           subtitleSize = prefs[KEY_SUBTITLE_SIZE]
             ?.let { name -> SubtitleSize.entries.firstOrNull { it.name == name } }
             ?: SubtitleSize.MEDIUM,
-          subtitleBackground = prefs[KEY_SUBTITLE_BACKGROUND]
-            ?.let { name -> SubtitleBackground.entries.firstOrNull { it.name == name } }
-            ?: SubtitleBackground.SEMI_TRANSPARENT,
+          subtitleBackground = subtitleBackground,
+          subtitleOpacity = subtitleOpacity,
           subtitlePosition = prefs[KEY_SUBTITLE_POSITION]
             ?.let { name -> SubtitlePosition.entries.firstOrNull { it.name == name } }
             ?: SubtitlePosition.BOTTOM,
+
+          // Overlay e avvisi di riproduzione
+          loadingOverlayEnabled = prefs[KEY_LOADING_OVERLAY_ENABLED] ?: true,
+          loadingStatusEnabled = prefs[KEY_LOADING_STATUS_ENABLED] ?: true,
+          pauseOverlayEnabled = prefs[KEY_PAUSE_OVERLAY_ENABLED] ?: false,
+          parentalGuideEnabled = prefs[KEY_PARENTAL_GUIDE_ENABLED] ?: false,
 
           // Avanzate
           targetBuffer = prefs[KEY_TARGET_BUFFER]
@@ -158,6 +207,26 @@ object SettingsRepository {
 
   fun setSubtitleBackground(value: SubtitleBackground) {
     scope.launch { dataStore?.edit { it[KEY_SUBTITLE_BACKGROUND] = value.name } }
+  }
+
+  fun setSubtitleOpacity(value: SubtitleOpacity) {
+    scope.launch { dataStore?.edit { it[KEY_SUBTITLE_OPACITY] = value.name } }
+  }
+
+  fun setLoadingOverlayEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_LOADING_OVERLAY_ENABLED] = value } }
+  }
+
+  fun setLoadingStatusEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_LOADING_STATUS_ENABLED] = value } }
+  }
+
+  fun setPauseOverlayEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_PAUSE_OVERLAY_ENABLED] = value } }
+  }
+
+  fun setParentalGuideEnabled(value: Boolean) {
+    scope.launch { dataStore?.edit { it[KEY_PARENTAL_GUIDE_ENABLED] = value } }
   }
 
   fun setSubtitlePosition(value: SubtitlePosition) {

@@ -16,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -85,6 +86,27 @@ object AppSettingsRepository {
    */
   private val KEY_TMDB_GENRE_FALLBACK_ENABLED = booleanPreferencesKey("tmdb_genre_fallback_enabled")
 
+  /**
+   * Switch "Nascondi contenuti non rilasciati" (sezione Home).
+   *
+   * Default OFF: la Home continua a mostrare esattamente ciò che mostrava prima
+   * dell'introduzione dell'opzione. Chiave stabile per non perdere la scelta
+   * dell'utente negli aggiornamenti.
+   */
+  private val KEY_HIDE_UNRELEASED_ENABLED = booleanPreferencesKey("home_hide_unreleased_enabled")
+
+  // ── «Continua a guardare» (sezione Impostazioni dedicata) ─────────────────
+  // Chiavi stabili e unite per area: cambiarle farebbe perdere le scelte dell'utente
+  // dopo un aggiornamento. I default sono quelli documentati in
+  // [ContinueWatchingPreferences] (comportamento storico dell'app).
+  private val KEY_CW_SHOW_ROW = booleanPreferencesKey("continue_watching_show_row")
+  private val KEY_CW_LAYOUT = stringPreferencesKey("continue_watching_layout")
+  private val KEY_CW_EPISODE_THUMBNAILS = booleanPreferencesKey("continue_watching_episode_thumbnails")
+  private val KEY_CW_BLUR_UNWATCHED = booleanPreferencesKey("continue_watching_blur_unwatched")
+  private val KEY_CW_NEXT_FROM_FURTHEST = booleanPreferencesKey("continue_watching_next_from_furthest")
+  private val KEY_CW_SHOW_UNAIRED = booleanPreferencesKey("continue_watching_show_unaired")
+  private val KEY_CW_SORT = stringPreferencesKey("continue_watching_sort")
+
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   private val _torBoxApiKey = MutableStateFlow<String?>(null)
@@ -149,6 +171,26 @@ object AppSettingsRepository {
    */
   val tmdbGenreFallbackEnabled: StateFlow<Boolean> = _tmdbGenreFallbackEnabled.asStateFlow()
 
+  private val _hideUnreleasedContent = MutableStateFlow(false)
+  /**
+   * Switch "Nascondi contenuti non rilasciati" (sezione Home), default OFF.
+   *
+   * Con OFF la Home non cambia. Con ON il data layer nasconde i contenuti con data
+   * di uscita TMDB futura (metadati assenti/non validi → contenuto mantenuto).
+   */
+  val hideUnreleasedContent: StateFlow<Boolean> = _hideUnreleasedContent.asStateFlow()
+
+  private val _continueWatchingPreferences = MutableStateFlow(ContinueWatchingPreferences())
+  /**
+   * Preferenze della riga «Continua a guardare», in un unico snapshot osservabile.
+   *
+   * Un solo [StateFlow] (invece di sette flussi separati) evita ricomposizioni multiple
+   * della Home a ogni modifica e tiene i default in un unico punto. La persistenza resta
+   * su chiavi DataStore separate, così ogni opzione è indipendente sul disco.
+   */
+  val continueWatchingPreferences: StateFlow<ContinueWatchingPreferences> =
+    _continueWatchingPreferences.asStateFlow()
+
   private var dataStore: DataStore<Preferences>? = null
 
   /**
@@ -186,6 +228,14 @@ object AppSettingsRepository {
   @Volatile private var parentalPinLocalWrite = false
   @Volatile private var parentalLevelLocalWrite = false
   @Volatile private var tmdbGenreFallbackLocalWrite = false
+  @Volatile private var hideUnreleasedLocalWrite = false
+  @Volatile private var cwShowRowLocalWrite = false
+  @Volatile private var cwLayoutLocalWrite = false
+  @Volatile private var cwEpisodeThumbnailsLocalWrite = false
+  @Volatile private var cwBlurUnwatchedLocalWrite = false
+  @Volatile private var cwNextFromFurthestLocalWrite = false
+  @Volatile private var cwShowUnairedLocalWrite = false
+  @Volatile private var cwSortLocalWrite = false
 
   fun init(context: Context, cipher: ApiKeyCipher = AndroidKeystoreApiKeyCipher()) {
     if (dataStore != null) return
@@ -248,6 +298,49 @@ object AppSettingsRepository {
         if (!tmdbGenreFallbackLocalWrite) {
           _tmdbGenreFallbackEnabled.value = prefs[KEY_TMDB_GENRE_FALLBACK_ENABLED] ?: true
         }
+        if (!hideUnreleasedLocalWrite) {
+          _hideUnreleasedContent.value = prefs[KEY_HIDE_UNRELEASED_ENABLED] ?: false
+        }
+        // «Continua a guardare»: ogni campo è protetto dal proprio flag di scrittura
+        // locale. L'aggiornamento è ATOMICO (`update`): se una preferenza viene scritta
+        // mentre il read-back sta applicando i valori di disco, il confronto e scambio
+        // rilegge lo stato corrente, così la scelta dell'utente non può essere
+        // sovrascritta da uno snapshot precedente.
+        _continueWatchingPreferences.update { current ->
+          current.copy(
+            showRow = if (cwShowRowLocalWrite) current.showRow else prefs[KEY_CW_SHOW_ROW] ?: true,
+            layout = if (cwLayoutLocalWrite) {
+              current.layout
+            } else {
+              ContinueWatchingLayout.fromStorage(prefs[KEY_CW_LAYOUT])
+            },
+            useEpisodeThumbnails = if (cwEpisodeThumbnailsLocalWrite) {
+              current.useEpisodeThumbnails
+            } else {
+              prefs[KEY_CW_EPISODE_THUMBNAILS] ?: false
+            },
+            blurUnwatched = if (cwBlurUnwatchedLocalWrite) {
+              current.blurUnwatched
+            } else {
+              prefs[KEY_CW_BLUR_UNWATCHED] ?: false
+            },
+            nextEpisodeFromFurthest = if (cwNextFromFurthestLocalWrite) {
+              current.nextEpisodeFromFurthest
+            } else {
+              prefs[KEY_CW_NEXT_FROM_FURTHEST] ?: false
+            },
+            showUnairedEpisodes = if (cwShowUnairedLocalWrite) {
+              current.showUnairedEpisodes
+            } else {
+              prefs[KEY_CW_SHOW_UNAIRED] ?: true
+            },
+            sort = if (cwSortLocalWrite) {
+              current.sort
+            } else {
+              ContinueWatchingSort.fromStorage(prefs[KEY_CW_SORT])
+            }
+          )
+        }
         loaded.complete(Unit)
       }
     }
@@ -285,6 +378,8 @@ object AppSettingsRepository {
     _parentalControlPin.value = ""
     _parentalControlLevel.value = "18"
     _tmdbGenreFallbackEnabled.value = true
+    _hideUnreleasedContent.value = false
+    _continueWatchingPreferences.value = ContinueWatchingPreferences()
     apiKeyLocalWrite = false
     openSubtitlesApiKeyLocalWrite = false
     simklClientIdLocalWrite = false
@@ -298,6 +393,14 @@ object AppSettingsRepository {
     parentalPinLocalWrite = false
     parentalLevelLocalWrite = false
     tmdbGenreFallbackLocalWrite = false
+    hideUnreleasedLocalWrite = false
+    cwShowRowLocalWrite = false
+    cwLayoutLocalWrite = false
+    cwEpisodeThumbnailsLocalWrite = false
+    cwBlurUnwatchedLocalWrite = false
+    cwNextFromFurthestLocalWrite = false
+    cwShowUnairedLocalWrite = false
+    cwSortLocalWrite = false
     loaded = CompletableDeferred()
   }
 
@@ -422,6 +525,73 @@ object AppSettingsRepository {
     tmdbGenreFallbackLocalWrite = true
     _tmdbGenreFallbackEnabled.value = enabled
     scope.launch { dataStore?.edit { it[KEY_TMDB_GENRE_FALLBACK_ENABLED] = enabled } }
+  }
+
+  /**
+   * Abilita o disabilita "Nascondi contenuti non rilasciati" nella Home.
+   *
+   * La scelta è persistita (DataStore) e sopravvive alla chiusura e al riavvio
+   * dell'app. Lo [StateFlow] viene aggiornato subito, così la Home può riflettere
+   * il cambiamento senza riavvio.
+   */
+  fun setHideUnreleasedContent(enabled: Boolean) {
+    hideUnreleasedLocalWrite = true
+    _hideUnreleasedContent.value = enabled
+    scope.launch { dataStore?.edit { it[KEY_HIDE_UNRELEASED_ENABLED] = enabled } }
+  }
+
+  /**
+   * Mostra/nasconde l'intera riga «Continua a guardare» nella Home.
+   *
+   * Lo [StateFlow] è aggiornato subito: la Home nasconde la riga senza riavvio e senza
+   * una nuova risoluzione dei cataloghi (i dati restano quelli già in memoria).
+   */
+  fun setContinueWatchingShowRow(enabled: Boolean) {
+    cwShowRowLocalWrite = true
+    _continueWatchingPreferences.update { it.copy(showRow = enabled) }
+    scope.launch { dataStore?.edit { it[KEY_CW_SHOW_ROW] = enabled } }
+  }
+
+  /** Layout delle card della riga «Continua a guardare». */
+  fun setContinueWatchingLayout(layout: ContinueWatchingLayout) {
+    cwLayoutLocalWrite = true
+    _continueWatchingPreferences.update { it.copy(layout = layout) }
+    scope.launch { dataStore?.edit { it[KEY_CW_LAYOUT] = layout.name } }
+  }
+
+  /** Immagine delle card: miniatura dell'episodio (ON) oppure backdrop (OFF). */
+  fun setContinueWatchingEpisodeThumbnails(enabled: Boolean) {
+    cwEpisodeThumbnailsLocalWrite = true
+    _continueWatchingPreferences.update { it.copy(useEpisodeThumbnails = enabled) }
+    scope.launch { dataStore?.edit { it[KEY_CW_EPISODE_THUMBNAILS] = enabled } }
+  }
+
+  /** Sfocatura delle immagini degli episodi non ancora visti. */
+  fun setContinueWatchingBlurUnwatched(enabled: Boolean) {
+    cwBlurUnwatchedLocalWrite = true
+    _continueWatchingPreferences.update { it.copy(blurUnwatched = enabled) }
+    scope.launch { dataStore?.edit { it[KEY_CW_BLUR_UNWATCHED] = enabled } }
+  }
+
+  /** ON: episodio di ripresa calcolato dal punto più avanzato della visione. */
+  fun setContinueWatchingNextEpisodeFromFurthest(enabled: Boolean) {
+    cwNextFromFurthestLocalWrite = true
+    _continueWatchingPreferences.update { it.copy(nextEpisodeFromFurthest = enabled) }
+    scope.launch { dataStore?.edit { it[KEY_CW_NEXT_FROM_FURTHEST] = enabled } }
+  }
+
+  /** Inclusione degli episodi non ancora trasmessi nella riga «Continua a guardare». */
+  fun setContinueWatchingShowUnairedEpisodes(enabled: Boolean) {
+    cwShowUnairedLocalWrite = true
+    _continueWatchingPreferences.update { it.copy(showUnairedEpisodes = enabled) }
+    scope.launch { dataStore?.edit { it[KEY_CW_SHOW_UNAIRED] = enabled } }
+  }
+
+  /** Ordinamento della riga «Continua a guardare». */
+  fun setContinueWatchingSort(sort: ContinueWatchingSort) {
+    cwSortLocalWrite = true
+    _continueWatchingPreferences.update { it.copy(sort = sort) }
+    scope.launch { dataStore?.edit { it[KEY_CW_SORT] = sort.name } }
   }
 
   /** Converte il codice lingua app ("it", "en", ecc.) nel formato ISO regionale per TMDB ("it-IT", "en-US", ecc.). */

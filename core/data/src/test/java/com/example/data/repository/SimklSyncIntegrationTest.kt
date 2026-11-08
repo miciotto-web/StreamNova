@@ -148,7 +148,11 @@ class SimklSyncIntegrationTest {
     movieRuntimeCalls.clear()
     // Anche in uscita: un test che lascia di proposito una voce rimandata non deve cambiare
     // l'esito del test successivo (che può appartenere a un'altra classe dello stesso JVM).
-    runBlocking { pulisciVociRimandate() }
+    runBlocking {
+      // Il singleton/DataStore non deve lasciare l'account fittizio alla successiva app Robolectric.
+      SimklRepository.signOut()
+      pulisciVociRimandate()
+    }
     server.shutdown()
     db.close()
   }

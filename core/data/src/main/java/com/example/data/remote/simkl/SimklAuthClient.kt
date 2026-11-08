@@ -5,6 +5,7 @@ import com.squareup.moshi.JsonEncodingException
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import java.io.EOFException
+import java.io.IOException
 import kotlinx.coroutines.delay
 import retrofit2.Response
 
@@ -223,6 +224,14 @@ class SimklAuthClient(
     value?.takeIf { it.isNotBlank() }
       ?: throw SimklInvalidResponseException("Risposta SIMKL senza il campo $field.")
 
+  /**
+   * Intervallo di polling dopo un fallimento transitorio (rete caduta, 5xx, 429):
+   * +5 s a ogni guasto, con tetto a 30 s. La scadenza resta l'unico limite duro:
+   * il ciclo chiamante interrompe comunque il login quando il codice non è più valido.
+   */
+  private fun transientBackoff(intervalMs: Long): Long =
+    (intervalMs + 5_000L).coerceAtMost(30_000L)
+
   /** Attende l'autorizzazione dell'utente, rispettando `interval` e la scadenza del codice. */
   suspend fun awaitLogin(clientId: String, prompt: SimklLoginPrompt): SimklTokenBundle =
     when (prompt.flow) {
@@ -241,7 +250,17 @@ class SimklAuthClient(
       if (now() > prompt.expiresAtEpochMs) {
         throw SimklLoginExpiredException("Codice SIMKL scaduto. Richiedine uno nuovo.")
       }
-      val response = oauthCall { api.exchangeDeviceCode(clientId = clientId, deviceCode = prompt.deviceCode) }
+      val response = try {
+        oauthCall { api.exchangeDeviceCode(clientId = clientId, deviceCode = prompt.deviceCode) }
+      } catch (network: IOException) {
+        // Il polling gira mentre l'utente è su un altro schermo o app: una rete che
+        // salta (passaggio Wi-Fi↔cellulare, copertura mobile, radio in risparmio
+        // energetico) non invalida il codice. Si rallenta e si continua finché è valido;
+        // la scadenza è gestita dal ciclo, quindi il login non muore per un singolo
+        // tentativo fallito.
+        intervalMs = transientBackoff(intervalMs)
+        continue
+      }
       if (response.isSuccessful) {
         val body = response.body()
         val token = body?.accessToken
@@ -258,12 +277,14 @@ class SimklAuthClient(
       }
       // Il body d'errore si legge una sola volta: si parsa qui e si decide sul codice.
       val error = parseError(response.errorBody()?.string())
-      when (error?.error) {
+      when {
         // L'utente non ha ancora approvato: si continua a interrogare allo stesso intervallo.
-        "authorization_pending" -> Unit
+        error?.error == "authorization_pending" -> Unit
         // Il server chiede di rallentare: +5 s e si attende (ritentare subito resta rate-limited).
-        "slow_down" -> intervalMs += 5_000L
-        "expired_token" -> throw SimklLoginExpiredException("Codice SIMKL scaduto. Richiedine uno nuovo.")
+        error?.error == "slow_down" -> intervalMs += 5_000L
+        error?.error == "expired_token" -> throw SimklLoginExpiredException("Codice SIMKL scaduto. Richiedine uno nuovo.")
+        // Server sovraccarico (5xx) o rate limit (429): guasti transitori, come la rete.
+        response.code() == 429 || response.code() >= 500 -> intervalMs = transientBackoff(intervalMs)
         else -> throw SimklAuthException(
           error?.errorDescription ?: "Autorizzazione SIMKL non riuscita (${response.code()})."
         )
@@ -273,7 +294,7 @@ class SimklAuthClient(
 
   /** PIN V1: `GET /oauth/pin/{user_code}` con le due forme di risposta documentate. */
   private suspend fun awaitPinAuthorization(clientId: String, prompt: SimklLoginPrompt): SimklTokenBundle {
-    val intervalMs = prompt.intervalSeconds.coerceAtLeast(5L) * 1000L
+    var intervalMs = prompt.intervalSeconds.coerceAtLeast(5L) * 1000L
     while (true) {
       if (now() >= prompt.expiresAtEpochMs) {
         throw SimklLoginExpiredException("Codice SIMKL scaduto. Richiedine uno nuovo.")
@@ -282,7 +303,14 @@ class SimklAuthClient(
       if (now() > prompt.expiresAtEpochMs) {
         throw SimklLoginExpiredException("Codice SIMKL scaduto. Richiedine uno nuovo.")
       }
-      val response = oauthCall { api.pollPin(prompt.userCode, clientId) }
+      // Stessa resilienza del device flow V2: una rete che salta durante l'attesa
+      // non deve uccidere il login (vedi commento in awaitDeviceAuthorization).
+      val response = try {
+        oauthCall { api.pollPin(prompt.userCode, clientId) }
+      } catch (network: IOException) {
+        intervalMs = transientBackoff(intervalMs)
+        continue
+      }
       val body = response.body()
       val token = body?.accessToken
       if (!token.isNullOrBlank()) {
@@ -306,6 +334,11 @@ class SimklAuthClient(
         throw SimklAuthException(body?.message ?: "Autorizzazione SIMKL rifiutata.")
       }
       if (!response.isSuccessful) {
+        // Server sovraccarico (5xx) o rate limit (429): transitori, si riprova più tardi.
+        if (response.code() == 429 || response.code() >= 500) {
+          intervalMs = transientBackoff(intervalMs)
+          continue
+        }
         throw SimklAuthException("Autorizzazione SIMKL non riuscita (${response.code()}).")
       }
     }

@@ -1,7 +1,9 @@
 package com.aistudio.streamnova.mobile.ui.screens
 
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -94,6 +96,7 @@ import com.example.data.prefs.LastStreamCacheDuration
 import com.example.data.prefs.PreferredResolution
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
+import com.example.data.prefs.SubtitleOpacity
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.TargetBufferOption
@@ -146,6 +149,7 @@ fun SettingsScreen(onBack: () -> Unit) {
   var showSubtitleLanguageDialog by remember { mutableStateOf(false) }
   var showSubtitleSizeDialog by remember { mutableStateOf(false) }
   var showSubtitleBackgroundDialog by remember { mutableStateOf(false) }
+  var showSubtitleOpacityDialog by remember { mutableStateOf(false) }
   var showSubtitlePositionDialog by remember { mutableStateOf(false) }
   var showTargetBufferDialog by remember { mutableStateOf(false) }
   var showInitialBufferDialog by remember { mutableStateOf(false) }
@@ -431,6 +435,12 @@ fun SettingsScreen(onBack: () -> Unit) {
             onClick = { showSubtitleBackgroundDialog = true }
           )
           MobileSettingsRow(
+            icon = Icons.Default.HdrOn,
+            title = stringResource(R.string.sub_opacity),
+            value = subtitleOpacityLabel(state.playback.subtitleOpacity),
+            onClick = { showSubtitleOpacityDialog = true }
+          )
+          MobileSettingsRow(
             icon = Icons.Default.VerticalAlignBottom,
             title = stringResource(R.string.settings_subtitle_position),
             value = subtitlePositionLabel(state.playback.subtitlePosition),
@@ -698,6 +708,19 @@ fun SettingsScreen(onBack: () -> Unit) {
     )
   }
 
+  if (showSubtitleOpacityDialog) {
+    val options = SubtitleOpacity.entries
+    MobileChoiceDialog(
+      title = stringResource(R.string.sub_opacity),
+      options = options.map { subtitleOpacityLabel(it) },
+      selectedIndex = options.indexOf(state.playback.subtitleOpacity).coerceAtLeast(0),
+      onSelect = { index ->
+        viewModel.setSubtitleOpacity(options[index])
+        showSubtitleOpacityDialog = false
+      },
+      onDismiss = { showSubtitleOpacityDialog = false }
+    )
+  }
   if (showSubtitleBackgroundDialog) {
     val options = SubtitleBackground.entries
     MobileChoiceDialog(
@@ -958,7 +981,9 @@ fun SettingsScreen(onBack: () -> Unit) {
       statusMessage = status,
       onRetry = { viewModel.retrySimklLogin() },
       onOpenLink = {
-        prompt?.let { openSimklLink(context, it.qrPayload.ifBlank { it.verificationUri }) }
+        // Il pulsante apre sempre la pagina web base di verifica. Il qrPayload
+        // puo' includere il codice completo e resta riservato al contenuto del QR.
+        prompt?.let { openSimklLink(context, it.verificationUri) }
       },
       onDismiss = { viewModel.cancelSimklLogin() }
     )
@@ -1121,13 +1146,39 @@ private fun simklLoginErrorLabel(error: MobileSimklLoginError): String = when (e
 }
 
 private fun openSimklLink(context: Context, url: String) {
-  if (url.isBlank()) return
-  val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-  try {
-    context.startActivity(intent)
-  } catch (_: ActivityNotFoundException) {
-    Toast.makeText(context, url, Toast.LENGTH_LONG).show()
+  val uri = runCatching { Uri.parse(url.trim()) }.getOrNull() ?: return
+  if (uri.scheme !in setOf("https", "http") || uri.host.isNullOrBlank()) {
+    Toast.makeText(context, "Indirizzo SIMKL non valido", Toast.LENGTH_LONG).show()
+    return
   }
+
+  val intent = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
+  // Il context della composizione è quello localizzato creato in MainActivity con
+  // createConfigurationContext: avvolge l'Activity ma non è un'Activity, quindi
+  // startActivity su di esso lancia AndroidRuntimeException ("outside of an Activity
+  // context", crash osservato su telefono). Si parte dall'Activity host; solo se
+  // mancante si ricade su un context qualsiasi con il flag NEW_TASK.
+  val host = context.hostActivity()
+  try {
+    if (host != null) {
+      host.startActivity(intent)
+    } else {
+      context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+  } catch (_: ActivityNotFoundException) {
+    Toast.makeText(context, "Nessun browser disponibile per aprire SIMKL", Toast.LENGTH_LONG).show()
+  } catch (_: SecurityException) {
+    Toast.makeText(context, "Impossibile aprire il collegamento SIMKL", Toast.LENGTH_LONG).show()
+  } catch (_: IllegalArgumentException) {
+    Toast.makeText(context, "Indirizzo SIMKL non valido", Toast.LENGTH_LONG).show()
+  }
+}
+
+/** Risale la catena di wrapper (localizzazione, tema) fino all'Activity, se c'è. */
+private tailrec fun Context.hostActivity(): Activity? = when (this) {
+  is Activity -> this
+  is ContextWrapper -> baseContext?.hostActivity()
+  else -> null
 }
 
 @Composable
@@ -1170,6 +1221,7 @@ private fun resolutionLabel(resolution: PreferredResolution): String = when (res
 
 @Composable
 private fun subtitleSizeLabel(size: SubtitleSize): String = when (size) {
+  SubtitleSize.EXTRA_SMALL -> stringResource(R.string.sub_size_extra_small)
   SubtitleSize.SMALL -> stringResource(R.string.sub_size_small)
   SubtitleSize.MEDIUM -> stringResource(R.string.sub_size_medium)
   SubtitleSize.LARGE -> stringResource(R.string.sub_size_large)
@@ -1180,8 +1232,20 @@ private fun subtitleSizeLabel(size: SubtitleSize): String = when (size) {
 private fun subtitleBackgroundLabel(background: SubtitleBackground): String = when (background) {
   SubtitleBackground.NONE -> stringResource(R.string.sub_bg_none)
   SubtitleBackground.BLACK -> stringResource(R.string.sub_bg_black)
-  SubtitleBackground.SEMI_TRANSPARENT -> stringResource(R.string.sub_bg_semi_transparent)
+  SubtitleBackground.WHITE -> stringResource(R.string.sub_bg_white)
+  SubtitleBackground.BLUE -> stringResource(R.string.sub_bg_blue)
 }
+
+@Composable
+private fun subtitleOpacityLabel(opacity: SubtitleOpacity): String =
+  stringResource(R.string.sub_opacity) + ": " + stringResource(
+    when (opacity) {
+      SubtitleOpacity.FULL -> R.string.sub_opacity_100
+      SubtitleOpacity.SEVENTY_FIVE -> R.string.sub_opacity_75
+      SubtitleOpacity.FIFTY -> R.string.sub_opacity_50
+      SubtitleOpacity.TWENTY_FIVE -> R.string.sub_opacity_25
+    }
+  )
 
 @Composable
 private fun subtitlePositionLabel(position: SubtitlePosition): String = when (position) {

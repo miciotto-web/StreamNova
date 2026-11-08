@@ -40,11 +40,17 @@ import okio.Buffer
  * @param addonName nome display dell'addon (per il badge sorgente).
  * @param baseUrl base normalizzata dell'addon.
  * @param item stream grezzo restituito dall'addon.
+ * @param addonId identità del manifest dell'addon (es. `community.ilcorsaroviola.ita`).
+ *        NON è il provider Debrid: serve a riconoscere l'addon di origine.
+ * @param addonLogo logo ufficiale dichiarato dal manifest (`manifest.logo`), se presente.
+ *        Identità grafica dell'ADDON, mai il logo del servizio Debrid.
  */
 data class StremioStreamCandidate(
   val addonName: String,
   val baseUrl: String,
-  val item: StremioStreamItem
+  val item: StremioStreamItem,
+  val addonId: String? = null,
+  val addonLogo: String? = null
 ) {
   val addonNameFromStream: String
     get() = item.name?.lines()?.firstOrNull()?.trim() ?: addonName
@@ -401,6 +407,7 @@ object StremioAddonRepository {
     "apple" to setOf("apple"),
     "prime" to setOf("prime", "amazon"),
     "paramount" to setOf("paramount"),
+    "nowtv" to setOf("now", "nowtv"),
     "hbo" to setOf("hbo", "max")
   )
 
@@ -760,7 +767,9 @@ object StremioAddonRepository {
                 StremioStreamCandidate(
                   addonName = addon.manifest.displayTitle,
                   baseUrl = addon.baseUrl,
-                  item = item
+                  item = item,
+                  addonId = addon.manifest.id,
+                  addonLogo = addon.manifest.logo
                 )
               }
             }
@@ -861,7 +870,9 @@ object StremioAddonRepository {
           StremioStreamCandidate(
             addonName = addon.manifest.displayTitle,
             baseUrl = addon.baseUrl,
-            item = item
+            item = item,
+            addonId = addon.manifest.id,
+            addonLogo = addon.manifest.logo
           )
         }
       }

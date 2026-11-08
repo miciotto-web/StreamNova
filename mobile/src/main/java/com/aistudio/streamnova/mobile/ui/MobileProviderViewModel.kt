@@ -138,37 +138,27 @@ class MobileProviderViewModel : ViewModel() {
   }
 
   /**
-   * Cataloghi nativi TMDB della prima pagina, con la stessa eccezione HBO
-   * della TV (network per le serie, provider US per i film).
+   * Cataloghi nativi TMDB della prima pagina.
+   *
+   * Allineato alla TV 1.0.5: HBO non ha più un percorso dedicato (network ID e
+   * watch_region=US producevano un catalogo incompleto e non rappresentativo del
+   * catalogo italiano). Tutti i provider usano la stessa query
+   * (`with_watch_providers` + `watch_region=IT`), vedi [MediaRepository.providerTmdbQuery].
    */
   private suspend fun loadTmdbProviderItems(provider: StreamingProvider): List<MediaItem> {
     if (provider.tmdbProviderId <= 0) return emptyList()
     return try {
-      if (MediaRepository.isHboProvider(provider.id)) {
-        val movies = MediaRepository.discoverMoviesByProvider(
-          providerId = "384|1899|1825",
-          isTv = false,
-          page = 1,
-          watchRegion = "US"
-        )
-        val series = MediaRepository.discoverTvByNetwork(
-          networkIds = MediaRepository.HBO_NETWORK_IDS,
-          page = 1
-        )
-        movies + series
-      } else {
-        val movies = MediaRepository.loadProviderCatalog(
-          providerId = provider.tmdbProviderId,
-          isTv = false,
-          page = 1
-        ).first().items
-        val series = MediaRepository.loadProviderCatalog(
-          providerId = provider.tmdbProviderId,
-          isTv = true,
-          page = 1
-        ).first().items
-        movies + series
-      }
+      val movies = MediaRepository.loadProviderCatalog(
+        providerId = provider.tmdbProviderId,
+        isTv = false,
+        page = 1
+      ).first().items
+      val series = MediaRepository.loadProviderCatalog(
+        providerId = provider.tmdbProviderId,
+        isTv = true,
+        page = 1
+      ).first().items
+      movies + series
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {

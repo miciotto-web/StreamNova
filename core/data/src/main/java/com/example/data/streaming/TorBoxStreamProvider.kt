@@ -123,12 +123,15 @@ open class TorBoxStreamProvider(
   suspend fun resolveItems(candidates: List<StremioStreamCandidate>): List<StreamSource> {
     if (candidates.isEmpty() || !torBox.isConfigured()) return emptyList()
 
-    // Deduplica per coppia (infoHash, fileIdx) per preservare file differenti
-    // all'interno dello stesso torrent (es. 1080p vs 720p dello stesso episodio).
+    // Deduplica per installazione + coppia (infoHash, fileIdx): preserva file
+    // differenti dello stesso torrent (1080p vs 720p) e, soprattutto, i risultati
+    // di due CONFIGURAZIONI dello stesso addon (Torrentio globale e Torrentio IT),
+    // che condividono `manifest.id` e possono restituire gli stessi torrent.
+    // Deduplicare solo per hash scarterebbe sistematicamente la seconda.
     val distinct = candidates.distinctBy {
-      "${it.item.infoHash?.trim()?.lowercase()}_${it.item.fileIdx ?: -1}"
+      "${it.baseUrl.trimEnd('/')}|${it.item.infoHash?.trim()?.lowercase()}_${it.item.fileIdx ?: -1}"
     }
-    val hashes = distinct.mapNotNull { it.item.infoHash?.trim()?.lowercase() }
+    val hashes = distinct.mapNotNull { it.item.infoHash?.trim()?.lowercase() }.distinct()
 
     // DIAG TEMPORANEO (B): prima/dopo la deduplicazione per addon INTERROGATO.
     candidates.groupBy { it.baseUrl }.forEach { (baseUrl, items) ->
@@ -194,9 +197,12 @@ open class TorBoxStreamProvider(
       val details = candidate.sizeAndPeers
       val codec = candidate.codec
       val releaseType = candidate.releaseType
-      // Rilevazione "italiano" invariata (resta sulla riga dello stream): così
-      // ordinamento e selezione non cambiano.
-      val isItalian = StreamSource.isItalianSource(addonNameFromStream)
+      // Rilevazione "italiano": la prima riga dello stream spesso non contiene
+      // il nome release (dove sono indicati ITA/MULTI), quindi va inclusa anche
+      // la releaseTitle. Stessa regola già usata per le sorgenti dirette.
+      val isItalian = StreamSource.isItalianSource(
+        listOfNotNull(addonNameFromStream, releaseTitle).joinToString(" ")
+      )
       // Sottotitoli dichiarati dallo stream (`stream.subtitles[]`): gia' allineati alla
       // release riprodotta, quindi hanno precedenza. Il bridge non esegue alcuna
       // richiesta di rete, quindi qui non viene introdotto alcun lavoro di rete.
@@ -220,6 +226,16 @@ open class TorBoxStreamProvider(
           isProgressive = true,
           isItalian = isItalian,
           addonName = providerName,
+          // Identità dell'ADDON di origine (manifest id + logo ufficiale), distinta
+          // dal servizio Debrid che sbloccherà il torrent: la card usa questi campi
+          // per mostrare il logo corretto.
+          addonId = candidate.addonId?.trim()?.takeIf { it.isNotBlank() },
+          addonLogo = candidate.addonLogo?.trim()?.takeIf { it.isNotBlank() },
+          // Identità dell'installazione (baseUrl con configurazione): attribuisce
+          // la sorgente alla configurazione corretta e la rende distinta nella
+          // deduplica di StreamManager anche quando un'altra installazione
+          // restituisce lo stesso infoHash/fileIdx.
+          addonInstallId = candidate.baseUrl.trimEnd('/'),
           instantTag = instantTag,
           releaseTitle = releaseTitle,
           details = details,

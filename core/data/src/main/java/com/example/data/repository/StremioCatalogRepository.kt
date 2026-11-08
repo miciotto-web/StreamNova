@@ -335,10 +335,10 @@ object StremioCatalogRepository {
    * Non va chiamata quando si svuota la cache HTTP degli addon: in quel caso le righe
    * a schermo devono restare finché la nuova risoluzione non le sostituisce.
    */
-  internal fun resetHomeSectionMemory() = homeSectionMemory.reset()
+  fun resetHomeSectionMemory() = homeSectionMemory.reset()
 
   /** Snapshot delle sezioni Home conservate, per test e diagnostica. */
-  internal fun homeSectionMemorySnapshot(): List<CatalogSection> = homeSectionMemory.snapshot()
+  fun homeSectionMemorySnapshot(): List<CatalogSection> = homeSectionMemory.snapshot()
 
   /** Separatore dei segmenti alfanumerici usato per confrontare keyword e manifest. */
   private val NON_ALNUM = Regex("[^a-z0-9]+")
@@ -415,10 +415,10 @@ object StremioCatalogRepository {
    * i test possono puntarla a un server locale per verificare URL e risposte reali
    * senza dipendere dalla rete.
    */
-  internal var cinemetaBaseUrlProvider: () -> String = { CinemetaAddon.BASE_URL }
+  var cinemetaBaseUrlProvider: () -> String = { CinemetaAddon.BASE_URL }
 
   /** Ripristina la base URL ufficiale di Cinemeta (solo test). */
-  internal fun resetCinemetaBaseUrl() {
+  fun resetCinemetaBaseUrl() {
     cinemetaBaseUrlProvider = { CinemetaAddon.BASE_URL }
   }
 
@@ -1646,7 +1646,7 @@ object StremioCatalogRepository {
    * (`hasCustomCatalogMovies`/`Series`, soppressione delle righe stock, hero e
    * `allMovies`/`allSeries`) restano coerenti con le righe realmente mostrate.
    */
-  internal suspend fun resolveHomeCatalogs(
+  suspend fun resolveHomeCatalogs(
     tmdbMedia: List<MediaItem>,
     defaultSectionsLoader: suspend (List<MediaType>) -> List<CatalogSection>
   ): HomeCatalogs = withContext(Dispatchers.IO) {

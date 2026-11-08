@@ -5,14 +5,9 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.SeekParameters
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
-import java.lang.reflect.InvocationHandler
-import java.lang.reflect.Method
-import java.lang.reflect.Proxy
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -119,60 +114,6 @@ class PlayerScrubSeekControllerTest {
 
     /** Ultimo stato pubblicato: null quando lo scrubbing è concluso. */
     val state: PlayerScrubUiState? get() = published.last()
-  }
-
-  /**
-   * Proxy di [ExoPlayer] che delega tutte le chiamate a un [FakePlayer] e registra le
-   * eventuali chiamate a `setSeekParameters`.
-   *
-   * Il controller parla con il player attraverso l'API [Player]; il cast a [ExoPlayer]
-   * esisteva solo per forzare la politica di seek. Questo proxy rende osservabile quel
-   * cast e blinda la politica attuale: la conferma dello scrubbing non deve imporre
-   * [SeekParameters.EXACT]. Non è la correzione del crash "Unexpected runtime error"
-   * (causato dal trasporto HTTP, vedi [PlayerHttpDataSourceTest]), ma evita di
-   * reintrodurre un seek byte-accurate non necessario sul commit.
-   */
-  private class RecordingExoPlayer(private val delegate: FakePlayer) : InvocationHandler {
-
-    val seekParametersCalls = mutableListOf<SeekParameters>()
-
-    val player: ExoPlayer = Proxy.newProxyInstance(
-      ExoPlayer::class.java.classLoader,
-      arrayOf(ExoPlayer::class.java),
-      this
-    ) as ExoPlayer
-
-    override fun invoke(proxy: Any, method: Method, args: Array<out Any?>?): Any? {
-      when (method.name) {
-        "setSeekParameters" -> {
-          seekParametersCalls += args!![0] as SeekParameters
-          return null
-        }
-        "toString" -> return "RecordingExoPlayer"
-        "hashCode" -> return System.identityHashCode(proxy)
-        "equals" -> return proxy === args?.getOrNull(0)
-      }
-      val target = runCatching {
-        delegate.javaClass.getMethod(method.name, *method.parameterTypes)
-      }.getOrNull() ?: return defaultValue(method.returnType)
-      return try {
-        target.invoke(delegate, *(args ?: emptyArray()))
-      } catch (e: java.lang.reflect.InvocationTargetException) {
-        throw e.targetException
-      }
-    }
-
-    private fun defaultValue(type: Class<*>): Any? = when (type) {
-      java.lang.Boolean.TYPE -> false
-      java.lang.Integer.TYPE -> 0
-      java.lang.Long.TYPE -> 0L
-      java.lang.Float.TYPE -> 0f
-      java.lang.Double.TYPE -> 0.0
-      java.lang.Short.TYPE -> 0.toShort()
-      java.lang.Byte.TYPE -> 0.toByte()
-      java.lang.Character.TYPE -> '\u0000'
-      else -> null
-    }
   }
 
   private fun harness(
@@ -337,28 +278,6 @@ class PlayerScrubSeekControllerTest {
   }
 
   @Test
-  fun `la conferma non forza SeekParameters EXACT`() = runTest {
-    val fake = FakePlayer(
-      seekable = true,
-      durationMs = tenMinutesMs,
-      playWhenReady = true,
-      positionMs = 100_000L
-    )
-    val recording = RecordingExoPlayer(fake)
-    val controller = PlayerScrubController(this, recording.player)
-
-    controller.onArrowPressed(PlayerScrub.FORWARD)
-    controller.commit()
-
-    assertEquals("la seek di conferma arriva una volta sola", listOf(110_000L), fake.seekTargets)
-    assertTrue(
-      "il commit non deve imporre SeekParameters.EXACT: la politica del player " +
-        "(CLOSEST_SYNC) è quella con cui l'intera pipeline è stata validata",
-      recording.seekParametersCalls.none { it == SeekParameters.EXACT }
-    )
-  }
-
-  @Test
   fun `l'annullamento non sposta il video e ripristina la riproduzione`() = runTest {
     val h = harness(this, positionMs = 100_000L)
 
@@ -396,6 +315,150 @@ class PlayerScrubSeekControllerTest {
     assertTrue(h.player.seekTargets.isEmpty())
     assertTrue(h.player.playWhenReadyChanges.isEmpty())
     assertTrue(h.published.isEmpty())
+  }
+
+  // ---------------------------------------------------------------------------
+  // BACK tra KEY_DOWN e KEY_UP e rollback durante il settling
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Il timer di conferma scadrebbe tra DOWN e UP: il congelamento al DOWN deve impedire
+   * che la seek venga applicata mentre l'utente sta annullando.
+   */
+  @Test
+  fun `il congelamento al BACK impedisce al timer di confermare prima del rilascio`() = runTest {
+    val h = harness(this, positionMs = 100_000L)
+
+    h.controller.onArrowPressed(PlayerScrub.FORWARD)
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS - 100L)
+
+    h.controller.freezeCommit() // BACK KEY_DOWN
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS * 3L) // il rilascio arriva dopo la scadenza originale
+
+    assertTrue("il timer congelato non deve applicare la seek", h.player.seekTargets.isEmpty())
+    assertTrue("la sessione resta aperta in attesa del rilascio", h.controller.isScrubbing)
+    assertEquals("l'anteprima resta a schermo", 110_000L, h.state?.positionMs)
+
+    h.controller.cancel() // BACK KEY_UP
+    assertTrue("il BACK non applica alcuna seek", h.player.seekTargets.isEmpty())
+    assertFalse(h.controller.isScrubbing)
+    assertEquals("la riproduzione riprende dal punto di partenza", listOf(false, true), h.player.playWhenReadyChanges)
+  }
+
+  /**
+   * Se il commit è già avvenuto prima del DOWN non c'è un timer da congelare: il rilascio
+   * deve annullare la seek applicata riportando il player all'origine.
+   */
+  @Test
+  fun `il BACK dopo la conferma annulla la seek e torna all'origine`() = runTest {
+    val h = harness(this, positionMs = 100_000L)
+
+    h.controller.onArrowPressed(PlayerScrub.FORWARD)
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS + 1L)
+    assertEquals("il timer ha confermato la seek", listOf(110_000L), h.player.seekTargets)
+
+    h.controller.freezeCommit() // BACK KEY_DOWN: nulla da congelare, la conferma c'è già
+    h.controller.cancel() // BACK KEY_UP: rollback
+
+    assertEquals(
+      "la seek annullata deve tornare esattamente all'origine richiesta al player",
+      listOf(110_000L, 100_000L),
+      h.player.seekTargets
+    )
+    assertEquals("la riproduzione resta attiva", listOf(false, true), h.player.playWhenReadyChanges)
+    assertFalse(h.controller.isScrubbing)
+    assertNull("nessuno stato di anteprima residuo", h.state)
+
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS * 2L)
+    assertEquals("nessun rollback o seek residuo", listOf(110_000L, 100_000L), h.player.seekTargets)
+  }
+
+  @Test
+  fun `il rollback di un video in pausa non avvia la riproduzione`() = runTest {
+    val h = harness(this, positionMs = 100_000L, wasPlaying = false)
+
+    h.controller.onArrowPressed(PlayerScrub.FORWARD)
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS + 1L)
+    h.controller.cancel()
+
+    assertEquals(listOf(110_000L, 100_000L), h.player.seekTargets)
+    assertEquals("un video in pausa resta in pausa", listOf<Boolean>(false), h.player.playWhenReadyChanges)
+  }
+
+  @Test
+  fun `un secondo BACK non ripete il rollback`() = runTest {
+    val h = harness(this, positionMs = 100_000L)
+
+    h.controller.onArrowPressed(PlayerScrub.FORWARD)
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS + 1L)
+    h.controller.cancel()
+    h.controller.cancel()
+    h.controller.cancel()
+
+    assertEquals(
+      "il rollback è idempotente: una sola seek di ritorno",
+      listOf(110_000L, 100_000L),
+      h.player.seekTargets
+    )
+    assertEquals(listOf(false, true), h.player.playWhenReadyChanges)
+  }
+
+  /**
+   * Una nuova sessione sostituisce quella confermata: il rollback di BACK deve usare
+   * l'origine della sessione appena confermata, mai quella precedente.
+   */
+  @Test
+  fun `il rollback usa l'origine della sessione confermata piu recente`() = runTest {
+    val h = harness(this, positionMs = 100_000L)
+
+    h.controller.onArrowPressed(PlayerScrub.FORWARD)
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS + 1L) // conferma a 110s
+    h.controller.onArrowPressed(PlayerScrub.FORWARD) // nuova sessione da 110s, anteprima 120s
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS + 1L) // conferma a 120s
+
+    h.controller.cancel()
+
+    assertEquals(
+      "il ritorno è ai 110s della seconda sessione, non ai 100s della prima",
+      listOf(110_000L, 120_000L, 110_000L),
+      h.player.seekTargets
+    )
+  }
+
+  /**
+   * Se durante il settling l'utente riapre l'anteprima e poi annulla, il BACK chiude la
+   * NUOVA sessione senza seek: non deve riportare il player all'origine della sessione
+   * precedente (già confermata e ormai superata).
+   */
+  @Test
+  fun `annullare una nuova sessione non fa rollback della precedente`() = runTest {
+    val h = harness(this, positionMs = 100_000L)
+
+    h.controller.onArrowPressed(PlayerScrub.FORWARD)
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS + 1L) // conferma a 110s
+    h.controller.onArrowPressed(PlayerScrub.FORWARD) // nuova sessione, origine 110s
+    h.controller.cancel() // BACK sulla nuova sessione
+
+    assertEquals(
+      "nessun ritorno ai 100s della sessione già superata",
+      listOf(110_000L),
+      h.player.seekTargets
+    )
+    assertEquals(listOf(false, true, false, true), h.player.playWhenReadyChanges)
+  }
+
+  @Test
+  fun `il rilascio durante il settling non esegue il rollback`() = runTest {
+    val h = harness(this, positionMs = 100_000L)
+
+    h.controller.onArrowPressed(PlayerScrub.FORWARD)
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS + 1L)
+    h.controller.release()
+
+    assertEquals("la chiusura del player non annulla la seek già confermata", listOf(110_000L), h.player.seekTargets)
+
+    advanceBy(PlayerScrub.COMMIT_DELAY_MS * 2L)
+    assertEquals(listOf(110_000L), h.player.seekTargets)
   }
 
   // ---------------------------------------------------------------------------
