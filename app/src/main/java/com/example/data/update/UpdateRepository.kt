@@ -323,10 +323,18 @@ object UpdateRepository {
     }
 
     val appContext = context.applicationContext
+    // Diagnostica del download: versioni dal dialog che ha offerto l'aggiornamento
+    // (manuale in Impostazioni o automatico di avvio), dati di trasporto raccolti
+    // dal downloader e una sola riga strutturata su Logcat per ogni tentativo.
+    val available = (_state.value as? UpdateCheckState.UpdateAvailable) ?: _startupPrompt.value
+    val diagnostics = DownloadDiagnostics(
+      installedVersion = available?.currentVersion,
+      requestedVersion = available?.newVersion ?: asset.version?.toString()
+    )
     downloadJob = scope.launch {
       _downloadState.value = UpdateDownloadState.Downloading(null)
       _downloadState.value = try {
-        val file = downloader.download(appContext, asset) { percent ->
+        val file = downloader.download(appContext, asset, diagnostics) { percent ->
           if (!isActive) throw CancellationException("Download annullato")
           _downloadState.value = UpdateDownloadState.Downloading(percent)
         }

@@ -631,8 +631,34 @@ private fun downloadErrorText(reason: DownloadErrorReason): String = when (reaso
     stringResource(R.string.settings_update_dl_error_no_apk)
   DownloadErrorReason.NO_NETWORK ->
     stringResource(R.string.settings_update_dl_error_network)
+  DownloadErrorReason.DNS_FAILURE ->
+    stringResource(R.string.settings_update_dl_error_dns)
+  DownloadErrorReason.CONNECTION_FAILED ->
+    stringResource(R.string.settings_update_dl_error_connection)
+  DownloadErrorReason.SSL_ERROR ->
+    stringResource(R.string.settings_update_dl_error_ssl)
   DownloadErrorReason.TIMEOUT ->
     stringResource(R.string.settings_update_dl_error_timeout)
+  DownloadErrorReason.HTTP_BAD_REQUEST ->
+    stringResource(R.string.settings_update_dl_error_http_400)
+  DownloadErrorReason.HTTP_UNAUTHORIZED ->
+    stringResource(R.string.settings_update_dl_error_http_401)
+  DownloadErrorReason.HTTP_FORBIDDEN ->
+    stringResource(R.string.settings_update_dl_error_http_403)
+  DownloadErrorReason.HTTP_NOT_FOUND ->
+    stringResource(R.string.settings_update_dl_error_http_404)
+  DownloadErrorReason.HTTP_REQUEST_TIMEOUT ->
+    stringResource(R.string.settings_update_dl_error_http_408)
+  DownloadErrorReason.HTTP_RATE_LIMITED ->
+    stringResource(R.string.settings_update_dl_error_http_429)
+  DownloadErrorReason.HTTP_SERVER ->
+    stringResource(R.string.settings_update_dl_error_http_500)
+  DownloadErrorReason.HTTP_BAD_GATEWAY ->
+    stringResource(R.string.settings_update_dl_error_http_502)
+  DownloadErrorReason.HTTP_SERVICE_UNAVAILABLE ->
+    stringResource(R.string.settings_update_dl_error_http_503)
+  DownloadErrorReason.HTTP_GATEWAY_TIMEOUT ->
+    stringResource(R.string.settings_update_dl_error_http_504)
   DownloadErrorReason.HTTP_ERROR ->
     stringResource(R.string.settings_update_dl_error_http)
   DownloadErrorReason.HOST_NOT_ALLOWED ->

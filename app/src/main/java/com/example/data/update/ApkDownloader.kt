@@ -1,8 +1,10 @@
 package com.example.data.update
 
 import android.content.Context
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -11,12 +13,49 @@ import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 /** Motivo di errore del download, mappato dalla UI sulle stringhe localizzate. */
 enum class DownloadErrorReason {
   NO_APK_IN_RELEASE,
   NO_NETWORK,
+  DNS_FAILURE,
+  CONNECTION_FAILED,
+  SSL_ERROR,
   TIMEOUT,
+
+  /** HTTP 400: richiesta rifiutata dal server. */
+  HTTP_BAD_REQUEST,
+
+  /** HTTP 401: accesso al file non autorizzato. */
+  HTTP_UNAUTHORIZED,
+
+  /** HTTP 403: il server nega l'accesso al file (limite o protezione). */
+  HTTP_FORBIDDEN,
+
+  /** HTTP 404: asset assente (release ritirata o rinominata). */
+  HTTP_NOT_FOUND,
+
+  /** HTTP 408: il server è stato troppo lento ad accettare la richiesta. */
+  HTTP_REQUEST_TIMEOUT,
+
+  /** HTTP 429: troppe richieste a GitHub. */
+  HTTP_RATE_LIMITED,
+
+  /** HTTP 500: errore interno del server. */
+  HTTP_SERVER,
+
+  /** HTTP 502: risposta non valida dalla rete di distribuzione. */
+  HTTP_BAD_GATEWAY,
+
+  /** HTTP 503: server temporaneamente non disponibile. */
+  HTTP_SERVICE_UNAVAILABLE,
+
+  /** HTTP 504: il server intermedio non ha risposto in tempo. */
+  HTTP_GATEWAY_TIMEOUT,
+
+  /** Codice HTTP non classificato (o corpo di risposta assente). */
   HTTP_ERROR,
   HOST_NOT_ALLOWED,
   INTERRUPTED,
@@ -30,6 +69,27 @@ enum class DownloadErrorReason {
   CHECKSUM_MISMATCH,
 
   UNKNOWN
+}
+
+/**
+ * Traduce un codice HTTP della risposta finale in un motivo tipizzato: i codici
+ * ricorrenti nelle Releases di GitHub hanno tutti un motivo proprio, così la UI
+ * distingue un limite di richieste (429) da un asset rimosso (404) o da un
+ * disservizio temporaneo del CDN (502/503/504). I codici non elencati restano
+ * su [DownloadErrorReason.HTTP_ERROR].
+ */
+internal fun downloadErrorReasonForHttpCode(code: Int): DownloadErrorReason = when (code) {
+  400 -> DownloadErrorReason.HTTP_BAD_REQUEST
+  401 -> DownloadErrorReason.HTTP_UNAUTHORIZED
+  403 -> DownloadErrorReason.HTTP_FORBIDDEN
+  404 -> DownloadErrorReason.HTTP_NOT_FOUND
+  408 -> DownloadErrorReason.HTTP_REQUEST_TIMEOUT
+  429 -> DownloadErrorReason.HTTP_RATE_LIMITED
+  500 -> DownloadErrorReason.HTTP_SERVER
+  502 -> DownloadErrorReason.HTTP_BAD_GATEWAY
+  503 -> DownloadErrorReason.HTTP_SERVICE_UNAVAILABLE
+  504 -> DownloadErrorReason.HTTP_GATEWAY_TIMEOUT
+  else -> DownloadErrorReason.HTTP_ERROR
 }
 
 /**
@@ -372,138 +432,165 @@ class ApkDownloader(
    * della dimensione dichiarata e con il digest SHA-256 atteso se fornito).
    * [onProgress] viene invocato con la percentuale (0-100) o null se ignota;
    * la progressione è monotona crescente.
+   * [diagnostics], quando fornito, viene completato con i dati di trasporto
+   * (codice HTTP, catena dei redirect, durata, byte ricevuti, esito SHA-256)
+   * ed emette una sola riga di log strutturato: di successo, di fallimento con
+   * il motivo tipizzato, o di annullamento. È prima di [onProgress] così le
+   * chiamate con lambda trailing continuano a agganciarsi alla progressione.
    * Eccezioni normalizzate in [DownloadException]: nessun crash.
    */
   fun download(
     context: Context,
     asset: ReleaseAsset,
+    diagnostics: DownloadDiagnostics? = null,
     onProgress: (Int?) -> Unit
   ): File {
-    if (!isAllowedReleaseUrl(asset.downloadUrl, policy)) {
-      throw DownloadException(
-        DownloadErrorReason.HOST_NOT_ALLOWED,
-        "Host asset non consentito: ${safeHostForLog(asset.downloadUrl)}"
-      )
-    }
-
-    val fileName = asset.name.substringAfterLast('/').ifBlank { "app-release.apk" }
-    val dir = File(context.cacheDir, UPDATE_DIR)
-    if (!dir.exists() && !dir.mkdirs()) {
-      throw DownloadException(
-        DownloadErrorReason.INSUFFICIENT_SPACE,
-        "Impossibile creare la directory di download"
-      )
-    }
-
-    val request = Request.Builder()
-      .url(asset.downloadUrl)
-      .header("Accept", "application/octet-stream")
-      .header("User-Agent", "StreamNova-Updater")
-      .get()
-      .build()
-
-    val target = File(dir, fileName)
-    onProgress(null)
+    diagnostics?.assetName = asset.name
+    diagnostics?.declaredSizeBytes = asset.size
+    val startedAtMs = System.currentTimeMillis()
+    var phase = DownloadDiagnostics.PHASE_PREPARAZIONE
+    var downloaded = 0L
+    var target: File? = null
 
     try {
-      httpClient.newCall(request).execute().use { response ->
-        if (!response.isSuccessful) {
-          throw DownloadException(
-            DownloadErrorReason.HTTP_ERROR,
-            "HTTP ${response.code}"
-          )
-        }
-        val body = response.body
-          ?: throw DownloadException(DownloadErrorReason.HTTP_ERROR, "Risposta vuota")
-        // Dimensione attesa: prima il Content-Length della risposta, poi la
-        // dimensione dichiarata dall'asset. Senza né l'una né l'altra la
-        // percentuale resta ignota, ma il download procede comunque.
-        val total = body.contentLength().takeIf { it > 0L }
-          ?: asset.size?.takeIf { it > 0L }
-          ?: -1L
-        val expectedSize = total.takeIf { it > 0L }
+      if (!isAllowedReleaseUrl(asset.downloadUrl, policy)) {
+        throw DownloadException(
+          DownloadErrorReason.HOST_NOT_ALLOWED,
+          "Host asset non consentito: ${safeHostForLog(asset.downloadUrl)}"
+        )
+      }
 
-        val usable = dir.usableSpace
-        if (expectedSize != null && usable > 0L) {
-          // Margine prudente (10% + 16 MB) per scrittura del file e installazione.
-          val required = expectedSize + expectedSize / 10 + MIN_FREE_MARGIN_BYTES
-          if (usable < required) {
+      val fileName = asset.name.substringAfterLast('/').ifBlank { "app-release.apk" }
+      val dir = File(context.cacheDir, UPDATE_DIR)
+      if (!dir.exists() && !dir.mkdirs()) {
+        throw DownloadException(
+          DownloadErrorReason.INSUFFICIENT_SPACE,
+          "Impossibile creare la directory di download"
+        )
+      }
+
+      val request = Request.Builder()
+        .url(asset.downloadUrl)
+        .header("Accept", "application/octet-stream")
+        .header("User-Agent", "StreamNova-Updater")
+        .get()
+        .build()
+
+      val file = File(dir, fileName)
+      target = file
+      onProgress(null)
+      phase = DownloadDiagnostics.PHASE_RICHIESTA
+
+      try {
+        httpClient.newCall(request).execute().use { response ->
+          // Diagnostica sulla risposta FINALE, qualunque redirect abbia subito:
+          // la catena iniziale/finale ricostruisce il percorso reale visto dalla
+          // rete del dispositivo.
+          diagnostics?.httpCode = response.code
+          val (initial, final, redirects) = responseHopInfo(response)
+          diagnostics?.initialEndpoint = initial
+          diagnostics?.finalEndpoint = final
+          diagnostics?.redirectCount = redirects
+          if (!response.isSuccessful) {
+            phase = DownloadDiagnostics.PHASE_RISPOSTA_HTTP
             throw DownloadException(
-              DownloadErrorReason.INSUFFICIENT_SPACE,
-              "Spazio insufficiente per $expectedSize byte"
+              downloadErrorReasonForHttpCode(response.code),
+              "HTTP ${response.code}"
             )
           }
-        }
+          val body = response.body
+            ?: throw DownloadException(DownloadErrorReason.HTTP_ERROR, "Risposta vuota")
+          // Dimensione attesa: prima il Content-Length della risposta, poi la
+          // dimensione dichiarata dall'asset. Senza né l'una né l'altra la
+          // percentuale resta ignota, ma il download procede comunque.
+          val total = body.contentLength().takeIf { it > 0L }
+            ?: asset.size?.takeIf { it > 0L }
+            ?: -1L
+          val expectedSize = total.takeIf { it > 0L }
 
-        if (target.exists()) target.delete()
-        var downloaded = 0L
-        var lastPercent = -1
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        body.byteStream().use { input ->
-          FileOutputStream(target).use { output ->
-            while (true) {
-              val read = input.read(buffer)
-              if (read == -1) break
-              output.write(buffer, 0, read)
-              downloaded += read
-              if (total > 0L) {
-                val percent = ((downloaded * 100) / total).toInt().coerceIn(0, 100)
-                // Monotona: mai un valore uguale o inferiore al precedente.
-                if (percent > lastPercent) {
-                  lastPercent = percent
-                  onProgress(percent)
+          val usable = dir.usableSpace
+          if (expectedSize != null && usable > 0L) {
+            // Margine prudente (10% + 16 MB) per scrittura del file e installazione.
+            val required = expectedSize + expectedSize / 10 + MIN_FREE_MARGIN_BYTES
+            if (usable < required) {
+              throw DownloadException(
+                DownloadErrorReason.INSUFFICIENT_SPACE,
+                "Spazio insufficiente per $expectedSize byte"
+              )
+            }
+          }
+
+          if (file.exists()) file.delete()
+          var lastPercent = -1
+          val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+          phase = DownloadDiagnostics.PHASE_LETTURA
+          body.byteStream().use { input ->
+            FileOutputStream(file).use { output ->
+              while (true) {
+                val read = input.read(buffer)
+                if (read == -1) break
+                output.write(buffer, 0, read)
+                downloaded += read
+                if (total > 0L) {
+                  val percent = ((downloaded * 100) / total).toInt().coerceIn(0, 100)
+                  // Monotona: mai un valore uguale o inferiore al precedente.
+                  if (percent > lastPercent) {
+                    lastPercent = percent
+                    onProgress(percent)
+                  }
                 }
               }
+              output.flush()
             }
-            output.flush()
           }
         }
+        diagnostics?.downloadedBytes = downloaded
+
+        // Verifica finale: un file troncato, vuoto o con digest errato viene
+        // eliminato e segnalato, e l'installer non viene mai avviato.
+        phase = DownloadDiagnostics.PHASE_VERIFICA
+        verifyDownloadedApk(
+          file = file,
+          expectedSize = asset.size,
+          expectedDigest = asset.digest
+        )
+        diagnostics?.checksum = if (parseSha256Digest(asset.digest) != null) {
+          DownloadDiagnostics.CHECKSUM_OK
+        } else {
+          DownloadDiagnostics.CHECKSUM_SKIPPED
+        }
+      } catch (e: DownloadException) {
+        throw e
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        throw mapToDownloadException(e)
       }
 
-      // Verifica finale: un file troncato, vuoto o con digest errato viene
-      // eliminato e segnalato, e l'installer non viene mai avviato.
-      verifyDownloadedApk(
-        file = target,
-        expectedSize = asset.size,
-        expectedDigest = asset.digest
-      )
-    } catch (e: DownloadException) {
-      target.delete()
-      throw e
+      onProgress(100)
+      diagnostics?.durationMs = System.currentTimeMillis() - startedAtMs
+      diagnostics?.logSuccess()
+      return target
+        ?: throw DownloadException(DownloadErrorReason.FILE_MISSING, "File non creato")
     } catch (e: CancellationException) {
-      target.delete()
+      // Annullamento richiesto dall'utente: traccia informativa, non errore.
+      target?.delete()
+      diagnostics?.downloadedBytes = downloaded
+      diagnostics?.durationMs = System.currentTimeMillis() - startedAtMs
+      diagnostics?.logCancelled(phase)
       throw e
     } catch (e: Exception) {
-      target.delete()
-      throw mapToDownloadException(e)
-    }
-
-    onProgress(100)
-    return target
-  }
-
-  private fun mapToDownloadException(error: Exception): DownloadException = when (error) {
-    is DownloadException -> error
-    is UnknownHostException -> DownloadException(
-      DownloadErrorReason.NO_NETWORK, "Rete assente", error
-    )
-    is java.net.SocketTimeoutException -> DownloadException(
-      DownloadErrorReason.TIMEOUT, "Timeout", error
-    )
-    is ConnectException -> DownloadException(
-      DownloadErrorReason.NO_NETWORK, "Connessione fallita", error
-    )
-    is IOException -> {
-      val message = error.message.orEmpty()
-      if (message.contains("space", ignoreCase = true) ||
-        message.contains("ENOSPC", ignoreCase = true)
-      ) {
-        DownloadException(DownloadErrorReason.INSUFFICIENT_SPACE, message, error)
-      } else {
-        DownloadException(DownloadErrorReason.INTERRUPTED, message, error)
+      if (e is DownloadException && e.reason == DownloadErrorReason.CHECKSUM_MISMATCH) {
+        diagnostics?.checksum = DownloadDiagnostics.CHECKSUM_MISMATCH
       }
+      diagnostics?.failedPhase = phase
+      diagnostics?.exceptionType = e::class.java.simpleName
+      diagnostics?.downloadedBytes = downloaded
+      diagnostics?.durationMs = System.currentTimeMillis() - startedAtMs
+      diagnostics?.logFailure((e as? DownloadException)?.reason ?: DownloadErrorReason.UNKNOWN)
+      target?.delete()
+      throw e
     }
-    else -> DownloadException(DownloadErrorReason.UNKNOWN, error.message ?: "Errore", error)
   }
 
   companion object {
@@ -513,3 +600,61 @@ class ApkDownloader(
     private const val MIN_FREE_MARGIN_BYTES = 16L * 1024L * 1024L
   }
 }
+
+/**
+ * Normalizza un'eccezione del percorso di download in [DownloadException] con
+ * motivo tipizzato. I casi di rete hanno tutti un motivo proprio: TLS, DNS e
+ * connessione rifiutata non devono finire nel generico "download interrotto",
+ * perché la correzione (e la spiegazione all'utente) sono diverse.
+ * L'ordine dei rami conta: le eccezioni più specifiche prima di [IOException].
+ */
+internal fun mapToDownloadException(error: Exception): DownloadException = when (error) {
+  is DownloadException -> error
+  is SSLHandshakeException -> DownloadException(
+    DownloadErrorReason.SSL_ERROR, "Handshake TLS fallito", error
+  )
+  is SSLPeerUnverifiedException -> DownloadException(
+    DownloadErrorReason.SSL_ERROR, "Identità del server non verificabile", error
+  )
+  is UnknownHostException -> DownloadException(
+    DownloadErrorReason.DNS_FAILURE, "DNS non risolvibile", error
+  )
+  is java.net.SocketTimeoutException -> DownloadException(
+    DownloadErrorReason.TIMEOUT, "Timeout", error
+  )
+  is ConnectException -> DownloadException(
+    DownloadErrorReason.CONNECTION_FAILED, "Connessione fallita", error
+  )
+  is IOException -> {
+    val message = error.message.orEmpty()
+    if (message.contains("space", ignoreCase = true) ||
+      message.contains("ENOSPC", ignoreCase = true)
+    ) {
+      DownloadException(DownloadErrorReason.INSUFFICIENT_SPACE, message, error)
+    } else {
+      DownloadException(DownloadErrorReason.INTERRUPTED, message, error)
+    }
+  }
+  else -> DownloadException(DownloadErrorReason.UNKNOWN, error.message ?: "Errore", error)
+}
+
+/**
+ * Catena dei redirect osservata su una risposta: endpoint iniziale, endpoint
+ * finale e numero di salti. Gli endpoint sono anonimizzati a
+ * `protocollo://host` per il log: niente path, niente query string firmate.
+ */
+internal fun responseHopInfo(response: Response): Triple<String, String, Int> {
+  var redirects = 0
+  var initial: String? = null
+  var prior = response.priorResponse
+  while (prior != null) {
+    redirects++
+    initial = prior.request.url.redactedForLog()
+    prior = prior.priorResponse
+  }
+  val final = response.request.url.redactedForLog()
+  return Triple(initial ?: final, final, redirects)
+}
+
+/** Endpoint anonimizzato per il log: solo protocollo e hostname. */
+internal fun HttpUrl.redactedForLog(): String = "$scheme://$host"
