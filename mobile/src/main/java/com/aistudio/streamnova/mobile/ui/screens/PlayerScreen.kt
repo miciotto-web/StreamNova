@@ -7,6 +7,10 @@ import android.graphics.Color as AndroidColor
 import android.util.Log
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -95,6 +99,11 @@ import com.aistudio.streamnova.mobile.ui.MobileSourcePresentation
 import com.aistudio.streamnova.mobile.ui.MobilePlayerViewModel
 import com.aistudio.streamnova.mobile.ui.MobileSettingsPolicy
 import com.aistudio.streamnova.mobile.ui.MobileVideoScale
+import com.aistudio.streamnova.mobile.ui.player.MobileParentalGuideOverlay
+import com.aistudio.streamnova.mobile.ui.player.MobilePauseInfoOverlay
+import com.aistudio.streamnova.mobile.ui.player.MobilePauseOverlayPolicy
+import com.aistudio.streamnova.mobile.ui.player.MobilePlayerLoadingPhase
+import com.aistudio.streamnova.mobile.ui.player.MobilePlayerLoadingStatus
 import com.aistudio.streamnova.mobile.ui.next
 import com.aistudio.streamnova.mobile.ui.player.MobileAudioTrack
 import com.aistudio.streamnova.mobile.ui.player.MobilePlayerActions
@@ -117,6 +126,8 @@ import com.example.data.prefs.SettingsRepository
 import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.TargetBufferOption
 import com.example.data.repository.MediaRepository
+import com.example.data.repository.ParentalGuideRepository
+import com.example.data.repository.ParentalGuideSummary
 import com.example.data.streaming.CacheState
 import com.example.data.streaming.StreamSource
 import com.example.ui.screens.player.CustomDefaultTrackNameProvider
@@ -125,6 +136,7 @@ import com.example.data.prefs.StreamingEngineMode
 import com.example.ui.screens.player.DebridLoadingScreen
 import com.example.ui.screens.player.DebridLoadingOverlay
 import com.example.ui.screens.player.NuvioTrackSelector
+import com.example.ui.screens.player.PlayerBufferingOverlay
 import com.example.ui.screens.player.PlayerHttpDataSource
 import com.example.ui.screens.player.PlayerLoadErrorHandlingPolicy
 import com.example.ui.screens.player.PlayerRuntimeControllerTrackSelection
@@ -144,6 +156,21 @@ import com.example.ui.theme.NovaTextSecondary
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+/** Durata di visualizzazione dell'overlay Parental Guide ("Avvisi sui contenuti"). */
+private const val PARENTAL_GUIDE_DISPLAY_MS = 7_500L
+
+/** Etichetta localizzata della fase di caricamento reale (opzione "Mostra stato"). */
+@Composable
+private fun mobilePlayerLoadingPhaseLabel(phase: MobilePlayerLoadingPhase): String = when (phase) {
+  MobilePlayerLoadingPhase.PREPARING_SOURCE ->
+    stringResource(R.string.player_status_preparing_source)
+  MobilePlayerLoadingPhase.CONNECTING -> stringResource(R.string.player_status_connecting)
+  MobilePlayerLoadingPhase.LOADING_CONTENT ->
+    stringResource(R.string.player_status_loading_content)
+  MobilePlayerLoadingPhase.BUFFERING -> stringResource(R.string.player_status_buffering)
+  MobilePlayerLoadingPhase.READY -> stringResource(R.string.player_status_ready)
+}
 
 /**
  * Player mobile: rendering Media3 con controlli Compose proprietari e motore
@@ -230,9 +257,11 @@ fun MobilePlayerScreen(
           val engineMode by AppSettingsRepository.streamingEngineMode.collectAsStateWithLifecycle()
           val loadingMedia = state.media
           // Percorso Debrid: schermata cinematografica (poster a tutto schermo + logo
-          // pulsante), stessa esperienza della TV 1.0.5. Selezione manuale o percorso
-          // HTTP: indicatore compatto come prima.
+          // pulsante), stessa esperienza della TV. Con l'opzione "Mostra overlay di
+          // caricamento" OFF (o con selezione manuale / percorso HTTP) resta
+          // l'indicatore compatto come prima.
           val debridStartup = !manualSelection &&
+            settings.loadingOverlayEnabled &&
             engineMode == StreamingEngineMode.DEBRID_TORBOX &&
             loadingMedia != null
           if (debridStartup && loadingMedia != null) {
@@ -248,9 +277,14 @@ fun MobilePlayerScreen(
               backgroundUrl = artwork.backgroundUrl,
               logoUrl = artwork.logoUrl,
               fallbackTitle = artwork.fallbackTitle,
-              statusText = stringResource(
-                if (state.source == null) R.string.player_sources_searching else R.string.player_loading
-              )
+              statusText = if (settings.loadingStatusEnabled) {
+                // Risoluzione sorgente in corso: la fase reale è la preparazione.
+                stringResource(R.string.player_status_preparing_source)
+              } else {
+                stringResource(
+                  if (state.source == null) R.string.player_sources_searching else R.string.player_loading
+                )
+              }
             )
           } else {
             Column(
@@ -261,9 +295,13 @@ fun MobilePlayerScreen(
               CircularProgressIndicator(color = NovaCyan)
               Spacer(modifier = Modifier.height(12.dp))
               Text(
-                text = stringResource(
-                  if (manualSelection) R.string.player_sources_searching else R.string.player_loading
-                ),
+                text = if (settings.loadingStatusEnabled && !manualSelection) {
+                  stringResource(R.string.player_status_preparing_source)
+                } else {
+                  stringResource(
+                    if (manualSelection) R.string.player_sources_searching else R.string.player_loading
+                  )
+                },
                 color = NovaTextMuted,
                 fontSize = 14.sp
               )
@@ -710,6 +748,9 @@ private fun MobilePlayerSurface(
   var isBuffering by remember(exoPlayer) {
     mutableStateOf(exoPlayer.playbackState == Player.STATE_BUFFERING)
   }
+  // Primo READY del caricamento corrente: distingue l'avvio iniziale dai buffering
+  // successivi (stessa semantica della TV per schermata cinematografica e pausa).
+  var playerReady by remember(exoPlayer) { mutableStateOf(false) }
   var playbackEnded by remember(exoPlayer) {
     mutableStateOf(exoPlayer.playbackState == Player.STATE_ENDED)
   }
@@ -734,6 +775,114 @@ private fun MobilePlayerSurface(
   // sotto il messaggio solo quando l'overlay debug è attivo.
   var playbackError by remember(exoPlayer) { mutableStateOf<Int?>(null) }
   var playbackErrorDetail by remember(exoPlayer) { mutableStateOf<String?>(null) }
+
+  // ── OPZIONI "OVERLAY E AVVISI DI RIPRODUZIONE" (stesse della TV) ──
+  // Fase REALE del caricamento: solo eventi di ExoPlayer, nessuna percentuale
+  // o tempo simulato.
+  val playerLoadingPhase = MobilePlayerLoadingStatus.resolvePhase(
+    hasPlaybackError = playbackError != null,
+    hasSourceUrl = true,
+    isPlayerReady = playerReady,
+    isBuffering = isBuffering
+  )
+
+  // Schermata cinematografica Debrid anche durante il PRIMO caricamento del flusso
+  // (opzione "Mostra overlay di caricamento"), stessa semantica della TV: solo avvio
+  // Debrid, solo prima del primo READY, fuori schermo con errori e scrubbing.
+  val engineMode by AppSettingsRepository.streamingEngineMode.collectAsStateWithLifecycle()
+  val isDebridStartupSource = remember(source, engineMode) {
+    DebridLoadingScreen.isDebridStartup(source, engineMode)
+  }
+  val debridLoadingArtwork = remember(
+    media?.id,
+    media?.logoUrl,
+    media?.backdropUrl,
+    media?.posterUrl,
+    media?.originalTitle,
+    media?.title
+  ) { media?.let { DebridLoadingScreen.artworkOf(it) } }
+  val showDebridLoadingScreen = settings.loadingOverlayEnabled &&
+    debridLoadingArtwork != null &&
+    DebridLoadingScreen.shouldShow(
+      isDebridSource = isDebridStartupSource,
+      isBuffering = isBuffering,
+      isPlayerReady = playerReady,
+      hasPlaybackError = playbackError != null,
+      isScrubbing = isScrubbing
+    )
+
+  // Overlay "Caricamento" compatto con la STESSA isteresi della TV (600 ms):
+  // assorbe i cambi rendition e i micro-stalli senza far lampeggiare lo spinner.
+  var showBufferingOverlay by remember { mutableStateOf(false) }
+  LaunchedEffect(isBuffering, isScrubbing, playbackError) {
+    if (PlayerBufferingOverlay.isCandidate(
+        isBuffering = isBuffering,
+        isScrubbing = isScrubbing,
+        hasErrorMessage = playbackError != null
+      )
+    ) {
+      delay(PlayerBufferingOverlay.REVEAL_DELAY_MS)
+      showBufferingOverlay = true
+    } else {
+      showBufferingOverlay = false
+    }
+  }
+
+  // Overlay in pausa (opzione "Overlay in pausa"): un solo timer, riavviato a ogni
+  // cambio dei criteri — annulla la comparsa alla ripresa e nasconde all'istante.
+  val pauseOverlayTimerActive = MobilePauseOverlayPolicy.shouldStartTimer(
+    enabled = settings.pauseOverlayEnabled,
+    isPaused = !isPlaying,
+    isPlayerReady = playerReady,
+    isBuffering = isBuffering,
+    hasPlaybackError = playbackError != null,
+    playbackEnded = playbackEnded,
+    isScrubbing = isScrubbing
+  )
+  var showPauseOverlay by remember { mutableStateOf(false) }
+  LaunchedEffect(pauseOverlayTimerActive, media?.id, episode) {
+    if (!pauseOverlayTimerActive) {
+      showPauseOverlay = false
+      return@LaunchedEffect
+    }
+    delay(MobilePauseOverlayPolicy.REVEAL_DELAY_MS)
+    showPauseOverlay = true
+  }
+
+  // Avvisi sui contenuti (opzione "Parental Guide"): dati Tiffara via IMDb ID
+  // (dell'episodio se presente, altrimenti del titolo), una sola visualizzazione
+  // per contenuto/episodio al primo avvio REALE della riproduzione.
+  val parentalGuideKey = "${media?.id.orEmpty()}:${episode?.seasonNumber ?: -1}" +
+    "x${episode?.episodeNumber ?: -1}"
+  var parentalGuide by remember { mutableStateOf<ParentalGuideSummary?>(null) }
+  var parentalGuideVisible by remember { mutableStateOf(false) }
+  var parentalGuideShownFor by remember { mutableStateOf<String?>(null) }
+
+  LaunchedEffect(media?.id, episode, settings.parentalGuideEnabled) {
+    parentalGuide = null
+    parentalGuideVisible = false
+    parentalGuideShownFor = null
+    if (!settings.parentalGuideEnabled) return@LaunchedEffect
+    val guideImdbId = episode?.effectiveImdbId ?: media?.effectiveImdbId
+    if (guideImdbId.isNullOrBlank()) return@LaunchedEffect
+    parentalGuide = ParentalGuideRepository.getParentalGuide(guideImdbId)
+  }
+
+  LaunchedEffect(parentalGuide, playerReady, isPlaying, isBuffering) {
+    val guide = parentalGuide
+    if (guide == null || !guide.hasVisibleCategories) return@LaunchedEffect
+    if (parentalGuideShownFor == parentalGuideKey) return@LaunchedEffect
+    if (!playerReady || !isPlaying || isBuffering) return@LaunchedEffect
+    parentalGuideShownFor = parentalGuideKey
+    parentalGuideVisible = true
+    delay(PARENTAL_GUIDE_DISPLAY_MS)
+    parentalGuideVisible = false
+  }
+
+  // Pausa o buffering nascondono subito l'avviso senza farlo riapparire.
+  LaunchedEffect(isPlaying, isBuffering) {
+    if (!isPlaying || isBuffering) parentalGuideVisible = false
+  }
 
   fun noteInteraction() {
     controlsVisible = true
@@ -796,6 +945,7 @@ private fun MobilePlayerSurface(
       override fun onPlaybackStateChanged(playbackState: Int) {
         isBuffering = playbackState == Player.STATE_BUFFERING
         playbackEnded = playbackState == Player.STATE_ENDED
+        if (playbackState == Player.STATE_READY) playerReady = true
         durationMs = exoPlayer.duration.coerceAtLeast(0L)
         if (playbackState == Player.STATE_ENDED) {
           positionMs = exoPlayer.duration.coerceAtLeast(0L)
@@ -1189,6 +1339,80 @@ private fun MobilePlayerSurface(
         modifier = Modifier
           .align(Alignment.BottomStart)
           .padding(12.dp)
+      )
+    }
+
+    // Overlay "Caricamento" compatto: spinner + fase reale (o messaggio storico).
+    // Soppresso mentre è a video la schermata cinematografica Debrid.
+    if (showBufferingOverlay && !showDebridLoadingScreen && playbackError == null) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(Color.Black.copy(alpha = 0.45f)),
+        contentAlignment = Alignment.Center
+      ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+          CircularProgressIndicator(color = NovaCyan)
+          Spacer(modifier = Modifier.height(12.dp))
+          Text(
+            text = if (settings.loadingStatusEnabled) {
+              mobilePlayerLoadingPhaseLabel(playerLoadingPhase)
+            } else {
+              stringResource(R.string.player_loading_stream)
+            },
+            color = NovaTextMuted,
+            fontSize = 14.sp
+          )
+        }
+      }
+    }
+
+    // Schermata cinematografica Debrid: poster/logo del titolo + stato reale.
+    AnimatedVisibility(
+      visible = showDebridLoadingScreen,
+      enter = fadeIn(animationSpec = tween(durationMillis = 200)),
+      exit = fadeOut(animationSpec = tween(durationMillis = 120)),
+      modifier = Modifier.fillMaxSize()
+    ) {
+      DebridLoadingOverlay(
+        backgroundUrl = debridLoadingArtwork?.backgroundUrl,
+        logoUrl = debridLoadingArtwork?.logoUrl,
+        fallbackTitle = debridLoadingArtwork?.fallbackTitle.orEmpty(),
+        statusText = if (settings.loadingStatusEnabled) {
+          mobilePlayerLoadingPhaseLabel(playerLoadingPhase)
+        } else {
+          stringResource(R.string.player_loading_stream)
+        }
+      )
+    }
+
+    // Overlay in pausa: poster, titolo, episodio e sinossi dopo 5 secondi di pausa.
+    AnimatedVisibility(
+      visible = showPauseOverlay,
+      enter = fadeIn(animationSpec = tween(durationMillis = 300)),
+      exit = fadeOut(animationSpec = tween(durationMillis = 150)),
+      modifier = Modifier.align(Alignment.TopStart)
+    ) {
+      MobilePauseInfoOverlay(
+        posterUrl = media?.posterUrl,
+        title = media?.originalTitle?.takeIf { it.isNotBlank() } ?: media?.title.orEmpty(),
+        episodeSubtitle = episode?.let {
+          "S${it.seasonNumber}E${it.episodeNumber} • ${it.title}"
+        },
+        synopsis = episode?.synopsis?.takeIf { it.isNotBlank() } ?: media?.synopsis.orEmpty(),
+        modifier = Modifier.padding(start = 24.dp, top = 72.dp)
+      )
+    }
+
+    // Avvisi sui contenuti: solo testo con ombra, in alto a sinistra sotto la barra.
+    val guide = parentalGuide
+    if (guide != null && guide.hasVisibleCategories) {
+      MobileParentalGuideOverlay(
+        visible = parentalGuideVisible,
+        categories = guide.categories,
+        modifier = Modifier
+          .align(Alignment.TopStart)
+          .padding(start = 16.dp, top = 72.dp)
       )
     }
 

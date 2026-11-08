@@ -259,6 +259,15 @@ class MobileSettingsViewModel : ViewModel() {
 
   fun setAutoResume(enabled: Boolean) = SettingsRepository.setAutoResume(enabled)
 
+  // Overlay e avvisi di riproduzione: stesse preferenze e stessa persistenza della TV.
+  fun setLoadingOverlay(enabled: Boolean) = SettingsRepository.setLoadingOverlayEnabled(enabled)
+
+  fun setLoadingStatus(enabled: Boolean) = SettingsRepository.setLoadingStatusEnabled(enabled)
+
+  fun setPauseOverlay(enabled: Boolean) = SettingsRepository.setPauseOverlayEnabled(enabled)
+
+  fun setParentalGuide(enabled: Boolean) = SettingsRepository.setParentalGuideEnabled(enabled)
+
   /** «Avvio automatico (Autoplay)»: controllo del dialog di selezione sorgente. */
   fun setAutoplayEnabled(enabled: Boolean) = AppSettingsRepository.setAutoplayEnabled(enabled)
 

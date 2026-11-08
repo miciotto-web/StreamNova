@@ -209,6 +209,16 @@
     <string name="settings_autoplay_next_unavailable_desc">Quando è attivo, al termine di un episodio parte automaticamente il successivo disponibile. Vale solo per le serie TV; non viene avviato nulla se non esiste un episodio successivo.</string>
     <string name="settings_auto_resume">Riprendi automaticamente la riproduzione</string>
 
+    <!-- Overlay e avvisi di riproduzione (stesse opzioni e default della TV) -->
+    <string name="settings_loading_overlay">Mostra overlay di caricamento</string>
+    <string name="settings_loading_overlay_desc">Mostra la schermata con poster e logo durante l\'avvio del contenuto. Disattiva per usare l\'indicatore di caricamento compatto.</string>
+    <string name="settings_loading_status">Mostra stato di caricamento</string>
+    <string name="settings_loading_status_desc">Mostra la fase reale del caricamento (preparazione della sorgente, connessione, buffering) durante l\'avvio e la preparazione.</string>
+    <string name="settings_pause_overlay">Overlay in pausa</string>
+    <string name="settings_pause_overlay_desc">Dopo qualche secondo di pausa mostra poster, titolo e sinossi del contenuto in visione.</string>
+    <string name="settings_parental_guide">Avvisi sui contenuti</string>
+    <string name="settings_parental_guide_desc">Mostra brevi avvisi su volgarità, violenza, paura e alcol/droghe all\'avvio di film e serie.</string>
+
     <string name="settings_sec_stream_selection">Selezione Flusso</string>
     <string name="settings_reuse_last_stream">Riusa l\'ultimo link</string>
     <string name="settings_reuse_last_stream_desc">Riproduci automaticamente l\'ultimo flusso funzionante per lo stesso film/episodio se la cache è ancora valida.</string>
@@ -371,6 +381,23 @@
 
     <!-- Player -->
     <string name="player_loading">Preparazione del flusso…</string>
+    <string name="player_loading_stream">Caricamento flusso video…</string>
+    <string name="player_status_preparing_source">Preparazione della sorgente…</string>
+    <string name="player_status_connecting">Connessione…</string>
+    <string name="player_status_loading_content">Caricamento del contenuto…</string>
+    <string name="player_status_buffering">Buffering…</string>
+    <string name="player_status_ready">Pronto per la riproduzione</string>
+    <string name="player_pause_overlay_paused">In pausa</string>
+
+    <!-- Parental Guide (avvisi sui contenuti) -->
+    <string name="parental_guide_title">Avvisi sui contenuti</string>
+    <string name="parental_guide_category_profanity">Volgarità</string>
+    <string name="parental_guide_category_violence">Violenza</string>
+    <string name="parental_guide_category_fear">Paura</string>
+    <string name="parental_guide_category_alcohol_drugs">Alcol/Droghe</string>
+    <string name="parental_guide_severity_mild">Lieve</string>
+    <string name="parental_guide_severity_moderate">Moderata</string>
+    <string name="parental_guide_severity_severe">Grave</string>
     <string name="player_error_title">Riproduzione non disponibile</string>
     <string name="player_error_body">Nessuna sorgente riproducibile è stata trovata. Verifica la connessione o riprova.</string>
     <string name="player_playback_error_connection">Connessione al flusso non riuscita. Controlla la rete e riprova.</string>

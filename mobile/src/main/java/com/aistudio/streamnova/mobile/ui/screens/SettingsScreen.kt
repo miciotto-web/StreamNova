@@ -29,7 +29,11 @@ import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.FamilyRestroom
 import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.HdrOn
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Info
@@ -385,6 +389,36 @@ fun SettingsScreen(onBack: () -> Unit) {
             checked = state.playback.autoResume,
             onCheckedChange = viewModel::setAutoResume
           )
+
+          // Overlay e avvisi di riproduzione: stesse opzioni e stessi default della TV.
+          MobileSettingsSwitchRow(
+            icon = Icons.Default.Movie,
+            title = stringResource(R.string.settings_loading_overlay),
+            checked = state.playback.loadingOverlayEnabled,
+            onCheckedChange = viewModel::setLoadingOverlay
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_loading_overlay_desc))
+          MobileSettingsSwitchRow(
+            icon = Icons.Default.HourglassTop,
+            title = stringResource(R.string.settings_loading_status),
+            checked = state.playback.loadingStatusEnabled,
+            onCheckedChange = viewModel::setLoadingStatus
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_loading_status_desc))
+          MobileSettingsSwitchRow(
+            icon = Icons.Default.Pause,
+            title = stringResource(R.string.settings_pause_overlay),
+            checked = state.playback.pauseOverlayEnabled,
+            onCheckedChange = viewModel::setPauseOverlay
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_pause_overlay_desc))
+          MobileSettingsSwitchRow(
+            icon = Icons.Default.FamilyRestroom,
+            title = stringResource(R.string.settings_parental_guide),
+            checked = state.playback.parentalGuideEnabled,
+            onCheckedChange = viewModel::setParentalGuide
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_parental_guide_desc))
         }
       }
 
