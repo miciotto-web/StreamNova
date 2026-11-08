@@ -78,7 +78,8 @@ android {
 
       storeFile = keystoreFile
       storePassword = storeSecret
-      keyAlias = "mobile"
+      // Alias configurabile: il keystore di upload StreamNova usa "upload".
+      keyAlias = System.getenv("MOBILE_KEY_ALIAS") ?: "mobile"
       keyPassword = keySecret
       enableV1Signing = true
       enableV2Signing = true
