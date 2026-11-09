@@ -90,7 +90,9 @@ class StreamNovaApplication : Application(), ImageLoaderFactory {
       // sia in memoria, altrimenti i titoli già presenti verrebbero reimportati.
       if (SimklRepository.accountState.value.isLoggedIn) {
         withTimeoutOrNull(15_000L) { MediaRepository.mediaList.first { it.isNotEmpty() } }
-        runCatching { SimklSyncManager.sync() }
+        // Stesso debounce del ritorno in primo piano: un riavvio ravvicinato non deve
+        // produrre una seconda sincronizzazione completa.
+        runCatching { SimklSyncManager.syncOnForeground() }
       }
     }
   }

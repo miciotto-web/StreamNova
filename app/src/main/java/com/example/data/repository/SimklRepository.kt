@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.BuildConfig
+import com.example.data.remote.simkl.SIMKL_MIN_PROGRESS
 import com.example.data.remote.simkl.SIMKL_STATUS_PLAN_TO_WATCH
 import com.example.data.remote.simkl.SIMKL_TYPE_ANIME
 import com.example.data.remote.simkl.SIMKL_TYPE_MOVIES
@@ -21,6 +22,8 @@ import com.example.data.remote.simkl.SimklAuthException
 import com.example.data.remote.simkl.SimklAuthFlow
 import com.example.data.remote.simkl.SimklClientConfigException
 import com.example.data.remote.simkl.SimklClientIdMissingException
+import com.example.data.remote.simkl.SimklCompletedKind
+import com.example.data.remote.simkl.SimklCompletedTitle
 import com.example.data.remote.simkl.SimklLoginPrompt
 import com.example.data.remote.simkl.SimklPlaybackEntry
 import com.example.data.remote.simkl.SimklPlaybackParser
@@ -48,10 +51,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.Response
 
 private val Context.simklDataStore by preferencesDataStore(name = "simkl_preferences")
@@ -86,6 +91,13 @@ object SimklRepository {
    * saltata irrecuperabile, perché il checkpoint avanzava comunque.
    */
   private val KEY_PENDING_PLAYBACKS = stringPreferencesKey("pending_playbacks")
+
+  /**
+   * Outbox persistente degli scrobble: eventi non ancora consegnati a SIMKL, legati ad
+   * account e sessione. Vive per processo e per riavvio; viene svuotata alla disconnessione
+   * (insieme al resto delle credenziali).
+   */
+  private val KEY_SCROBBLE_OUTBOX = stringPreferencesKey("scrobble_outbox")
 
   /**
    * Il refresh V2 è proattivo: un access token dura 7 giorni, quindi si rinnova quando
@@ -186,6 +198,9 @@ object SimklRepository {
       loginFlowCache.set(parseFlow(first[KEY_AUTH_FLOW]))
       hydrateSyncMetadata(first)
       accountMutable.value = first.toAccountState()
+      // Ora l'account è idratato: il worker può distinguere gli eventi della sessione
+      // corrente da quelli rimasti da una sessione precedente.
+      ensureScrobbleWorkerStarted()
       store.data.collect {
         loginFlowCache.set(parseFlow(it[KEY_AUTH_FLOW]))
         hydrateSyncMetadata(it)
@@ -342,6 +357,7 @@ object SimklRepository {
     accountMutable.value = state
     loginFlowCache.set(bundle.flow)
     invalidateWatchedCache()
+    ensureScrobbleWorkerStarted()
     return state
   }
 
@@ -389,6 +405,9 @@ object SimklRepository {
       appContext?.simklDataStore?.edit { prefs -> prefs.clear() }
       accountMutable.value = SimklAccountState()
       lastSyncMutable.value = null
+      // Gli eventi non consegnati appartengono all'account disconnesso: non devono
+      // sopravvivere né essere spediti con una sessione futura.
+      scrobblePending.set(0)
       // Gli snapshot non-Flow di sincronizzazione non devono sopravvivere alla
       // disconnessione: altrimenti la prossima sync del nuovo collegamento partirebbe
       // da un checkpoint della sessione precedente.
@@ -538,34 +557,60 @@ object SimklRepository {
     val isSuccess: Boolean get() = outcome == SimklScrobbleOutcome.SUCCESS
   }
 
-  private class ScrobbleRequest(
-    val event: SimklScrobbleEvent,
-    val media: SimklMediaPayload,
-    val progressPercent: Double
-  )
-
   /**
-   * Coda delle scritture verso SIMKL.
+   * Outbox PERSISTENTE delle scritture verso SIMKL.
    *
-   * Gli eventi nascono da callback del player e devono **sopravvivere alla schermata che li
-   * ha prodotti**: la chiusura del player cancella lo scope della composizione
-   * (`rememberCoroutineScope`), quindi una richiesta lanciata lì viene annullata a metà — ed
-   * è esattamente il caso del `stop` di uscita, cioè il punto di ripresa da salvare.
+   * Gli eventi nascono da callback del player e devono sopravvivere **sia alla schermata
+   * sia al processo**: la chiusura del player cancellava la coroutine che aveva in volo lo
+   * `stop`, e un riavvio dell'app perdeva gli eventi rimasti in memoria. Ogni evento viene
+   * quindi scritto su DataStore prima di essere inviato, con `accountId` e `sessionEpoch`:
+   * un evento di una sessione precedente non viene mai spedito con le credenziali nuove.
    *
-   * La coda vive su [scope] (durata di processo), ha **un solo consumatore** (l'ordine
-   * start → pause → stop dello stesso titolo resta quello prodotto) e ritenta una volta le
-   * scritture che possono riuscire più tardi (5xx, rete). Un 4xx non viene ritentato: la
-   * richiesta non diventerà valida da sola.
+   * Un solo worker consuma l'outbox in ordine FIFO (start → pause → stop). Il lock di 20
+   * secondi di SIMKL (`400 RATE_LIMIT`, non 429) non fa perdere lo STOP: l'evento resta
+   * nell'outbox e viene ritentato dopo il lock, senza consumare il budget degli errori di
+   * rete. Anche un 409 su `stop` (già registrato entro un'ora) è un successo: il watch è
+   * già nella cronologia.
    */
-  private val scrobbleQueue = Channel<ScrobbleRequest>(capacity = SCROBBLE_QUEUE_CAPACITY)
+  private val scrobbleOutboxMutex = Mutex()
+  private val scrobbleWake = Channel<Unit>(Channel.CONFLATED)
   private val scrobbleWorkerStarted = AtomicBoolean(false)
   private val scrobblePending = AtomicInteger(0)
   private val scrobbleReports = java.util.Collections.synchronizedList(mutableListOf<SimklScrobbleReport>())
 
   private const val SCROBBLE_QUEUE_CAPACITY = 64
   private const val SCROBBLE_MAX_ATTEMPTS = 2
+  private const val SCROBBLE_MAX_LOCK_RETRIES = 12
   private const val SCROBBLE_RETRY_DELAY_MS = 750L
   private const val SCROBBLE_REPORT_HISTORY = 20
+
+  /**
+   * Ritardo dopo un lock SIMKL. La documentazione indica 20 s; è `internal var` per i test,
+   * che non devono attendere venti secondi reali.
+   */
+  internal var lockRetryDelayMs: Long = 20_000L
+
+  private sealed interface ScrobbleAttempt {
+    data class Done(
+      val code: Int,
+      val action: String?,
+      val detail: String = ""
+    ) : ScrobbleAttempt
+
+    data class Retry(
+      val delayMs: Long,
+      val outcome: SimklScrobbleOutcome,
+      val code: Int = 0,
+      val detail: String = "",
+      val isLock: Boolean = false
+    ) : ScrobbleAttempt
+
+    data class Permanent(
+      val outcome: SimklScrobbleOutcome,
+      val code: Int = 0,
+      val detail: String = ""
+    ) : ScrobbleAttempt
+  }
 
   /**
    * Accoda una scrittura scrobble e ritorna subito: non sospende, non blocca e non lancia.
@@ -573,7 +618,7 @@ object SimklRepository {
    * @param progressPercent percentuale corrente, **`null` quando la durata non è nota**.
    *        Un payload senza identificativi o con una percentuale non calcolabile viene
    *        rifiutato e registrato in [scrobbleDiagnostics], invece di essere spedito.
-   * @return `true` se l'evento è entrato in coda (non se ha già avuto successo).
+   * @return `true` se l'evento è entrato nell'outbox (non se ha già avuto successo).
    */
   fun enqueueScrobble(
     event: SimklScrobbleEvent,
@@ -593,159 +638,311 @@ object SimklRepository {
       Log.w(TAG, "Scrobble ${event.endpoint}: non inviato per $label (${rejection.label}).")
       return false
     }
-    ensureScrobbleWorkerStarted()
-    scrobblePending.incrementAndGet()
-    val accepted = scrobbleQueue.trySend(
-      ScrobbleRequest(event, media, progressPercent!!)
-    ).isSuccess
-    if (!accepted) {
-      scrobblePending.decrementAndGet()
+    val account = accountMutable.value
+    if (!account.isLoggedIn) {
+      recordScrobbleReport(
+        SimklScrobbleReport(event, SimklScrobbleOutcome.NOT_LOGGED_IN, label, progressPercent)
+      )
+      Log.i(TAG, "Scrobble ${event.endpoint}: account SIMKL non collegato, $label ignorato.")
+      return false
+    }
+    if (scrobblePending.get() >= SCROBBLE_QUEUE_CAPACITY) {
       recordScrobbleReport(
         SimklScrobbleReport(event, SimklScrobbleOutcome.QUEUE_FULL, label, progressPercent)
       )
-      Log.w(TAG, "Scrobble ${event.endpoint}: coda piena, evento non accodato per $label.")
+      Log.w(TAG, "Scrobble ${event.endpoint}: outbox piena, evento non accodato per $label.")
+      return false
     }
-    return accepted
+    val entry = SimklOutboxEntry(
+      id = java.util.UUID.randomUUID().toString(),
+      accountId = account.accountId,
+      sessionEpoch = currentSessionEpoch(),
+      event = event,
+      media = media,
+      progressPercent = progressPercent!!.coerceIn(0.0, 100.0),
+      createdAt = System.currentTimeMillis()
+    )
+    ensureScrobbleWorkerStarted()
+    scrobblePending.incrementAndGet()
+    scope.launch {
+      scrobbleOutboxMutex.withLock { appendOutboxEntry(entry) }
+      scrobbleWake.trySend(Unit)
+    }
+    return true
   }
 
   private fun ensureScrobbleWorkerStarted() {
     if (!scrobbleWorkerStarted.compareAndSet(false, true)) return
     scope.launch {
-      for (request in scrobbleQueue) {
-        try {
-          performScrobble(request)
-        } catch (e: CancellationException) {
-          throw e
-        } catch (e: Exception) {
-          // Ultima rete di sicurezza: un guasto inatteso non deve fermare la coda.
-          Log.w(TAG, "Scrobble ${request.event.endpoint}: errore inatteso in coda", e)
-        } finally {
-          scrobblePending.decrementAndGet()
+      // Gli eventi rimasti da un processo precedente sono già nell'outbox.
+      scrobblePending.set(loadOutbox().size)
+      while (isActive) {
+        val now = System.currentTimeMillis()
+        val entry = scrobbleOutboxMutex.withLock { loadOutbox().minByOrNull { it.createdAt } }
+        if (entry == null) {
+          withTimeoutOrNull(60_000L) { scrobbleWake.receive() }
+          continue
+        }
+        if (!isEntryForCurrentSession(entry)) {
+          removeOutboxEntry(entry.id)
+          continue
+        }
+        if (entry.nextAttemptAt > now) {
+          delay((entry.nextAttemptAt - now).coerceAtMost(60_000L))
+          continue
+        }
+        when (val attempt = attemptScrobble(entry)) {
+          is ScrobbleAttempt.Done -> {
+            removeOutboxEntry(entry.id)
+            onScrobbleSucceeded(entry, attempt)
+          }
+          is ScrobbleAttempt.Permanent -> {
+            removeOutboxEntry(entry.id)
+            recordScrobbleReport(
+              SimklScrobbleReport(
+                entry.event, attempt.outcome, entry.media.scrobbleLabel(),
+                entry.progressPercent, attempt.code, entry.attempts + 1,
+                detail = attempt.detail.take(200)
+              )
+            )
+            Log.w(
+              TAG,
+              "Scrobble ${entry.event.endpoint} NON riuscito per ${entry.media.scrobbleLabel()}: " +
+                "${attempt.outcome}${if (attempt.code > 0) " HTTP ${attempt.code}" else ""} " +
+                attempt.detail
+            )
+          }
+          is ScrobbleAttempt.Retry -> {
+            if (attempt.isLock) {
+              val lockRetries = entry.lockRetries + 1
+              if (lockRetries > SCROBBLE_MAX_LOCK_RETRIES) {
+                removeOutboxEntry(entry.id)
+                recordScrobbleReport(
+                  SimklScrobbleReport(
+                    entry.event, SimklScrobbleOutcome.HTTP_ERROR, entry.media.scrobbleLabel(),
+                    entry.progressPercent, attempt.code, entry.attempts + 1,
+                    detail = "lock SIMKL: ${attempt.detail}".take(200)
+                  )
+                )
+                Log.w(
+                  TAG,
+                  "Scrobble ${entry.event.endpoint}: lock SIMKL persistente per " +
+                    "${entry.media.scrobbleLabel()}, evento abbandonato dopo $lockRetries tentativi."
+                )
+              } else {
+                updateOutboxEntry(
+                  entry.copy(
+                    lockRetries = lockRetries,
+                    nextAttemptAt = System.currentTimeMillis() + attempt.delayMs
+                  )
+                )
+                Log.i(
+                  TAG,
+                  "Scrobble ${entry.event.endpoint}: lock SIMKL per ${entry.media.scrobbleLabel()}, " +
+                    "ritento tra ${attempt.delayMs} ms (tentativo lock $lockRetries)."
+                )
+              }
+            } else {
+              val attempts = entry.attempts + 1
+              if (attempts >= SCROBBLE_MAX_ATTEMPTS) {
+                removeOutboxEntry(entry.id)
+                recordScrobbleReport(
+                  SimklScrobbleReport(
+                    entry.event, attempt.outcome, entry.media.scrobbleLabel(),
+                    entry.progressPercent, attempt.code, attempts, detail = attempt.detail.take(200)
+                  )
+                )
+                Log.w(
+                  TAG,
+                  "Scrobble ${entry.event.endpoint} NON riuscito per ${entry.media.scrobbleLabel()} " +
+                    "dopo $attempts tentativi: ${attempt.detail}"
+                )
+              } else {
+                updateOutboxEntry(
+                  entry.copy(
+                    attempts = attempts,
+                    nextAttemptAt = System.currentTimeMillis() + attempt.delayMs
+                  )
+                )
+              }
+            }
+          }
         }
       }
     }
   }
 
-  private suspend fun performScrobble(request: ScrobbleRequest) {
-    val label = request.media.scrobbleLabel()
+  private suspend fun attemptScrobble(entry: SimklOutboxEntry): ScrobbleAttempt {
+    val label = entry.media.scrobbleLabel()
     if (!accountMutable.value.isLoggedIn) {
-      recordScrobbleReport(
-        SimklScrobbleReport(request.event, SimklScrobbleOutcome.NOT_LOGGED_IN, label, request.progressPercent)
-      )
-      Log.i(TAG, "Scrobble ${request.event.endpoint}: account SIMKL non collegato, $label ignorato.")
-      return
+      return ScrobbleAttempt.Permanent(SimklScrobbleOutcome.NOT_LOGGED_IN)
     }
-    var attempts = 0
-    var lastCode = 0
-    var lastError: Throwable? = null
-    while (attempts < SCROBBLE_MAX_ATTEMPTS) {
-      attempts++
-      lastCode = 0
-      lastError = null
-      try {
-        val response = postScrobble(request.event, request.media, request.progressPercent)
-        if (response.isSuccessful) {
-          if (request.event == SimklScrobbleEvent.STOP && request.progressPercent >= 80.0) {
-            invalidateWatchedCache()
-          }
-          recordScrobbleReport(
-            SimklScrobbleReport(
-              request.event, SimklScrobbleOutcome.SUCCESS, label,
-              request.progressPercent, response.code(), attempts
-            )
-          )
-          Log.i(
-            TAG,
-            "Scrobble ${request.event.endpoint} riuscito per $label " +
-              "(${percentText(request.progressPercent)}%, tentativo $attempts)."
-          )
-          return
+    return try {
+      val response = postScrobble(entry.event, entry.media, entry.progressPercent)
+      val action = response.body()?.get("action")?.toString()
+      if (response.isSuccessful) {
+        if (entry.event == SimklScrobbleEvent.STOP && action == "scrobble") {
+          markWatchedFromResponse(entry)
+          invalidateWatchedCache()
         }
-        lastCode = response.code()
-        Log.w(
-          TAG,
-          "Scrobble ${request.event.endpoint} rifiutato per $label: " +
-            "HTTP ${response.code()} al tentativo $attempts."
-        )
-        // 4xx: token senza `media:write`, payload rifiutato, sessione revocata. Riprovare
-        // la stessa richiesta non la rende valida.
-        if (response.code() < 500) break
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: SimklClientConfigException) {
-        recordScrobbleReport(
-          SimklScrobbleReport(
-            request.event, SimklScrobbleOutcome.NOT_CONFIGURED, label,
-            request.progressPercent, attempts = attempts, detail = e.javaClass.simpleName
+        ScrobbleAttempt.Done(response.code(), action)
+      } else if (entry.event == SimklScrobbleEvent.STOP && response.code() == 409) {
+        // Già registrato entro l'ora: il watch esiste, non è un errore da ritentare.
+        markWatchedFromResponse(entry)
+        ScrobbleAttempt.Done(response.code(), "already_watched")
+      } else {
+        val errorBody = runCatching { response.errorBody()?.string().orEmpty() }.getOrDefault("")
+        val rateLimited = response.code() == 429 ||
+          (response.code() == 400 && errorBody.contains("RATE_LIMIT", ignoreCase = true))
+        if (rateLimited) {
+          val retryAfterMs = parseRetryAfterMs(response.headers()["Retry-After"])
+            ?: lockRetryDelayMs
+          ScrobbleAttempt.Retry(
+            delayMs = retryAfterMs,
+            outcome = SimklScrobbleOutcome.HTTP_ERROR,
+            code = response.code(),
+            detail = "RATE_LIMIT",
+            isLock = true
           )
-        )
-        Log.w(
-          TAG,
-          "Scrobble ${request.event.endpoint} non inviato per $label: " +
-            "configurazione del client SIMKL assente (${e.javaClass.simpleName})."
-        )
-        return
-      } catch (e: SimklRefreshException) {
-        // Un refresh rifiutato richiede una nuova autorizzazione; un errore di rete no.
-        val outcome = if (e.needsReauthorization) SimklScrobbleOutcome.NOT_LOGGED_IN
-        else SimklScrobbleOutcome.NETWORK_ERROR
-        recordScrobbleReport(
-          SimklScrobbleReport(
-            request.event, outcome, label,
-            request.progressPercent, attempts = attempts, detail = e.javaClass.simpleName
+        } else if (response.code() >= 500) {
+          ScrobbleAttempt.Retry(
+            delayMs = SCROBBLE_RETRY_DELAY_MS,
+            outcome = SimklScrobbleOutcome.HTTP_ERROR,
+            code = response.code(),
+            detail = "HTTP ${response.code()}"
           )
-        )
-        Log.w(TAG, "Scrobble ${request.event.endpoint} non eseguito per $label: ${e.localizedMessage}")
-        return
-      } catch (e: SimklAuthException) {
-        recordScrobbleReport(
-          SimklScrobbleReport(
-            request.event, SimklScrobbleOutcome.NOT_LOGGED_IN, label,
-            request.progressPercent, attempts = attempts, detail = e.javaClass.simpleName
+        } else {
+          // 4xx: token senza media:write, payload rifiutato, sessione revocata.
+          ScrobbleAttempt.Permanent(
+            SimklScrobbleOutcome.HTTP_ERROR,
+            response.code(),
+            "HTTP ${response.code()} $label"
           )
-        )
-        Log.w(
-          TAG,
-          "Scrobble ${request.event.endpoint} non eseguito per $label: " +
-            "autorizzazione SIMKL non disponibile (${e.localizedMessage})."
-        )
-        return
-      } catch (e: Exception) {
-        lastError = e
-        Log.w(
-          TAG,
-          "Scrobble ${request.event.endpoint} fallito per $label " +
-            "(tentativo $attempts): ${e.javaClass.simpleName} ${e.message}"
-        )
-        // Solo un guasto di trasporto può risolversi riprovando: un payload che Retrofit
-        // rifiuta di costruire o una serializzazione impossibile no.
-        if (e !is java.io.IOException) break
+        }
       }
-      if (attempts < SCROBBLE_MAX_ATTEMPTS) delay(SCROBBLE_RETRY_DELAY_MS)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: SimklClientConfigException) {
+      ScrobbleAttempt.Permanent(SimklScrobbleOutcome.NOT_CONFIGURED, detail = e.javaClass.simpleName)
+    } catch (e: SimklRefreshException) {
+      if (e.needsReauthorization) {
+        ScrobbleAttempt.Permanent(SimklScrobbleOutcome.NOT_LOGGED_IN, detail = e.javaClass.simpleName)
+      } else {
+        ScrobbleAttempt.Retry(
+          delayMs = SCROBBLE_RETRY_DELAY_MS,
+          outcome = SimklScrobbleOutcome.NETWORK_ERROR,
+          detail = e.javaClass.simpleName
+        )
+      }
+    } catch (e: SimklAuthException) {
+      ScrobbleAttempt.Permanent(SimklScrobbleOutcome.NOT_LOGGED_IN, detail = e.javaClass.simpleName)
+    } catch (e: java.io.IOException) {
+      ScrobbleAttempt.Retry(
+        delayMs = SCROBBLE_RETRY_DELAY_MS,
+        outcome = SimklScrobbleOutcome.NETWORK_ERROR,
+        detail = "${e.javaClass.simpleName}: ${e.message.orEmpty()}"
+      )
+    } catch (e: Exception) {
+      // Errore di costruzione/serializzazione: riprovare non lo rende valido.
+      ScrobbleAttempt.Permanent(
+        SimklScrobbleOutcome.REQUEST_ERROR,
+        detail = "${e.javaClass.simpleName}: ${e.message.orEmpty()}"
+      )
     }
-    val lastFailure = lastError
-    val outcome = when {
-      lastCode > 0 -> SimklScrobbleOutcome.HTTP_ERROR
-      lastFailure is java.io.IOException -> SimklScrobbleOutcome.NETWORK_ERROR
-      else -> SimklScrobbleOutcome.REQUEST_ERROR
-    }
+  }
+
+  private fun onScrobbleSucceeded(entry: SimklOutboxEntry, attempt: ScrobbleAttempt.Done) {
+    val actionSuffix = attempt.action?.let { " action=$it" }.orEmpty()
     recordScrobbleReport(
       SimklScrobbleReport(
-        request.event, outcome, label, request.progressPercent, lastCode, attempts,
-        detail = lastFailure?.let { "${it.javaClass.simpleName}: ${it.message.orEmpty()}" }
-          .orEmpty()
-          .take(200)
+        entry.event, SimklScrobbleOutcome.SUCCESS, entry.media.scrobbleLabel(),
+        entry.progressPercent, attempt.code, entry.attempts + 1,
+        detail = (attempt.detail + actionSuffix).trim()
       )
     )
-    Log.w(
+    Log.i(
       TAG,
-      "Scrobble ${request.event.endpoint} NON riuscito per $label dopo $attempts tentativi: " +
-        when {
-          lastCode > 0 -> "HTTP $lastCode."
-          lastFailure is java.io.IOException -> "errore di rete (${lastFailure.javaClass.simpleName})."
-          else -> "richiesta non costruibile (${lastFailure?.javaClass?.simpleName}: ${lastFailure?.message})."
-        }
+      "Scrobble ${entry.event.endpoint} riuscito per ${entry.media.scrobbleLabel()} " +
+        "(${percentText(entry.progressPercent)}%$actionSuffix)."
     )
+  }
+
+  /**
+   * Verifica la risposta effettiva di SIMKL: un `action: "scrobble"` (o un 409 su stop)
+   * significa che il watch è stato registrato. Solo allora il film viene marcato concluso
+   * localmente e, per un episodio, viene consolidata la posizione finale.
+   */
+  private suspend fun markWatchedFromResponse(entry: SimklOutboxEntry) {
+    // La risposta può arrivare dopo una disconnessione: un completamento della sessione
+    // precedente non deve essere scritto nello stato locale della sessione nuova.
+    if (!isEntryForCurrentSession(entry)) return
+    val mediaId = entry.media.mediaId ?: return
+    val episode = entry.media.episode
+    if (episode == null) {
+      MediaRepository.markCompletedFromSimkl(
+        mediaId = mediaId,
+        // Istante in cui l'utente ha prodotto l'evento, non l'ora della consegna: un
+        // ritentativo dopo il lock non deve spostare la card come se fosse più recente.
+        completedAtMs = entry.createdAt,
+        setProgressToEnd = true
+      )
+    } else {
+      MediaRepository.markEpisodeCompletedFromSimkl(
+        mediaId = mediaId,
+        seasonNumber = episode.season,
+        episodeNumber = episode.number,
+        completedAtMs = entry.createdAt
+      )
+    }
+  }
+
+  private fun parseRetryAfterMs(raw: String?): Long? {
+    val seconds = raw?.trim()?.toLongOrNull() ?: return null
+    return (seconds * 1_000L).coerceIn(1_000L, 120_000L)
+  }
+
+  // ── Persistenza dell'outbox ────────────────────────────────────────────────
+
+  private suspend fun loadOutbox(): List<SimklOutboxEntry> {
+    val store = appContext?.simklDataStore ?: return emptyList()
+    return SimklScrobbleOutboxStore.decode(store.data.first()[KEY_SCROBBLE_OUTBOX])
+  }
+
+  private suspend fun appendOutboxEntry(entry: SimklOutboxEntry) {
+    val store = appContext?.simklDataStore ?: return
+    store.edit { prefs ->
+      val current = SimklScrobbleOutboxStore.decode(prefs[KEY_SCROBBLE_OUTBOX])
+      prefs[KEY_SCROBBLE_OUTBOX] = SimklScrobbleOutboxStore.encode(current + entry)
+    }
+  }
+
+  private suspend fun updateOutboxEntry(entry: SimklOutboxEntry) {
+    val store = appContext?.simklDataStore ?: return
+    store.edit { prefs ->
+      val current = SimklScrobbleOutboxStore.decode(prefs[KEY_SCROBBLE_OUTBOX])
+      val updated = current.map { if (it.id == entry.id) entry else it }
+      prefs[KEY_SCROBBLE_OUTBOX] = SimklScrobbleOutboxStore.encode(updated)
+    }
+  }
+
+  private suspend fun removeOutboxEntry(id: String) {
+    val store = appContext?.simklDataStore ?: return
+    var removed = false
+    store.edit { prefs ->
+      val current = SimklScrobbleOutboxStore.decode(prefs[KEY_SCROBBLE_OUTBOX])
+      val updated = current.filterNot { it.id == id }
+      removed = updated.size != current.size
+      if (updated.isEmpty()) prefs.remove(KEY_SCROBBLE_OUTBOX)
+      else prefs[KEY_SCROBBLE_OUTBOX] = SimklScrobbleOutboxStore.encode(updated)
+    }
+    if (removed) scrobblePending.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
+  }
+
+  private fun isEntryForCurrentSession(entry: SimklOutboxEntry): Boolean {
+    val account = accountMutable.value
+    if (!account.isLoggedIn) return false
+    if (entry.sessionEpoch != currentSessionEpoch()) return false
+    return entry.accountId == null || account.accountId == null || entry.accountId == account.accountId
   }
 
   /** Richiesta autenticata dell'endpoint dello scrobble, con autorecupero del token. */
@@ -758,9 +955,12 @@ object SimklRepository {
     val authorization = "Bearer $token"
     val payload = media.toPayload(progressPercent)
     when (event) {
-      SimklScrobbleEvent.START -> api.startScrobble(clientId, authorization, payload)
-      SimklScrobbleEvent.PAUSE -> api.pauseScrobble(clientId, authorization, payload)
-      SimklScrobbleEvent.STOP -> api.stopScrobble(clientId, authorization, payload)
+      SimklScrobbleEvent.START ->
+        api.startScrobble(clientId, SIMKL_MIN_PROGRESS, authorization, payload)
+      SimklScrobbleEvent.PAUSE ->
+        api.pauseScrobble(clientId, SIMKL_MIN_PROGRESS, authorization, payload)
+      SimklScrobbleEvent.STOP ->
+        api.stopScrobble(clientId, SIMKL_MIN_PROGRESS, authorization, payload)
     }
   }
 
@@ -784,15 +984,147 @@ object SimklRepository {
 
   private fun percentText(percent: Double): String = String.format(java.util.Locale.US, "%.1f", percent)
 
-  suspend fun markWatched(media: SimklMediaPayload) = withContext(Dispatchers.IO) {
-    if (!accountMutable.value.isLoggedIn) return@withContext
+  /**
+   * Invia «visto» a SIMKL (`POST /sync/history`).
+   *
+   * SOLO i film viaggiano senza coordinate episodio: per una serie SIMKL espanderebbe la
+   * marcatura a TUTTI gli episodi (comportamento documentato), quindi le marcature a
+   * livello di serie vengono rifiutate — i singoli episodi arrivano già a SIMKL come
+   * scrobble del player (`stop` a fine visione).
+   *
+   * Non lancia: la marcatura LOCALE è già avvenuta quando qui si arriva, e un guasto
+   * SIMKL non deve farla regredire. Restituisce `false` con log su HTTP non riuscito o
+   * su `not_found` (un titolo che il resolver SIMKL non riconosce non è un salvataggio).
+   *
+   * @return true se SIMKL ha confermato la cronologia.
+   */
+  suspend fun markWatched(media: SimklMediaPayload): Boolean = withContext(Dispatchers.IO) {
+    if (!accountMutable.value.isLoggedIn) return@withContext false
+    if (!media.hasIdentifiers) return@withContext false
+    if (media.episode == null && media.kind == SimklMediaKind.SERIES) {
+      Log.w(TAG, "Marcatura «intera serie» non inviata a SIMKL per ${media.title}: espanderebbe tutti gli episodi.")
+      return@withContext false
+    }
     val item = media.toHistoryItem()
     val payload = if (media.episode == null) mapOf("movies" to listOf(item)) else mapOf("shows" to listOf(item))
-    val response = withAuthorizedToken { token ->
-      api.addHistory(requireClientId(), "Bearer $token", payload)
+    try {
+      val response = withAuthorizedToken { token ->
+        api.addHistory(requireClientId(), "Bearer $token", payload)
+      }
+      if (!response.isSuccessful) {
+        Log.w(TAG, "Salvataggio cronologia SIMKL fallito per ${media.scrobbleLabel()} (${response.code()}).")
+        return@withContext false
+      }
+      // Non basta il 2xx: la risposta documenta `not_found` per gli item che il resolver
+      // non ha riconosciuto. Un titolo "non trovato" non è un salvataggio riuscito.
+      val notFound = (response.body()?.get("not_found") as? Map<*, *>)
+      val notFoundCount = listOf("movies", "shows", "episodes").sumOf { key ->
+        (notFound?.get(key) as? List<*>)?.size ?: 0
+      }
+      if (notFoundCount > 0) {
+        Log.w(TAG, "SIMKL non ha riconosciuto $notFoundCount elemento/i per ${media.scrobbleLabel()}.")
+        return@withContext false
+      }
+      invalidateWatchedCache()
+      true
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Salvataggio cronologia SIMKL fallito per ${media.scrobbleLabel()}: ${e.message}")
+      false
     }
-    check(response.isSuccessful) { "Salvataggio cronologia SIMKL fallito (${response.code()})." }
-    invalidateWatchedCache()
+  }
+
+  /**
+   * Invia «non visto» a SIMKL (`POST /sync/history/remove`): la stessa forma del body di
+   * [markWatched] ma SENZA `watched_at`, così il server rimuove la cronologia invece di
+   * fissarla a un momento nuovo. Come [markWatched] non lancia e vale solo per i film.
+   *
+   * @return true se SIMKL ha confermato la rimozione.
+   */
+  suspend fun unmarkWatched(media: SimklMediaPayload): Boolean = withContext(Dispatchers.IO) {
+    if (!accountMutable.value.isLoggedIn) return@withContext false
+    if (!media.hasIdentifiers) return@withContext false
+    if (media.episode != null) {
+      Log.w(TAG, "Rimozione cronologia SIMKL non supportata per un singolo episodio (${media.scrobbleLabel()}).")
+      return@withContext false
+    }
+    val item = media.toHistoryItem()
+    val payload = mapOf("movies" to listOf(item))
+    try {
+      val response = withAuthorizedToken { token ->
+        api.removeHistory(requireClientId(), "Bearer $token", payload)
+      }
+      if (!response.isSuccessful) {
+        Log.w(TAG, "Rimozione cronologia SIMKL fallita per ${media.scrobbleLabel()} (${response.code()}).")
+        return@withContext false
+      }
+      invalidateWatchedCache()
+      true
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Rimozione cronologia SIMKL fallita per ${media.scrobbleLabel()}: ${e.message}")
+      false
+    }
+  }
+
+  /**
+   * Chiude sul server le sessioni di pausa SIMKL del titolo (ogni episodio ha la sua
+   * sessione): è ciò che rende PERSISTENTE la rimozione di una card da «Continua a
+   * guardare» — senza questa chiamata la sessione resta aperta lato SIMKL e la card
+   * rientra alla sincronizzazione successiva. Il match usa gli stessi identificativi
+   * della sincronizzazione (TMDB, poi IMDb, poi titolo+anno normalizzato).
+   *
+   * Best-effort: la rimozione LOCALE è già avvenuta quando qui si arriva; un guasto SIMKL
+   * non la invalida. Se nessuna sessione corrisponde (es. è solo un `next_to_watch`),
+   * non c'è nulla da chiudere e la rimozione locale è già definitiva perché il flag
+   * locale protegge la card.
+   *
+   * @return numero di sessioni effettivamente chiuse sul server.
+   */
+  suspend fun deletePlaybackSessionsFor(
+    title: String,
+    year: Int?,
+    tmdbId: Int?,
+    imdbId: String?
+  ): Int = withContext(Dispatchers.IO) {
+    if (!accountMutable.value.isLoggedIn) return@withContext 0
+    val sessions = try {
+      fetchPlaybackSessions()
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Rimozione CW: lettura sessioni SIMKL fallita: ${e.message}")
+      return@withContext 0
+    }
+    val normalizedTitle = MediaIdentity.normalizeTitle(title)
+    var deleted = 0
+    for (session in sessions) {
+      val matches = when {
+        tmdbId != null && tmdbId > 0 && session.tmdbId == tmdbId -> true
+        !imdbId.isNullOrBlank() && session.imdbId?.equals(imdbId, ignoreCase = true) == true -> true
+        else -> {
+          val sessionTitle = MediaIdentity.normalizeTitle(session.title)
+          val yearMatches = session.year == null || year == null || session.year == year
+          sessionTitle.isNotEmpty() && sessionTitle == normalizedTitle && yearMatches
+        }
+      }
+      val playbackId = session.playbackId ?: continue
+      if (!matches) continue
+      try {
+        withAuthorizedToken { token ->
+          api.deletePlaybackSession(playbackId, requireClientId(), "Bearer $token")
+        }
+        deleted++
+        Log.i(TAG, "Sessione SIMKL chiusa (#$playbackId) per ${session.title}.")
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Chiusura sessione SIMKL #$playbackId fallita: ${e.message}")
+      }
+    }
+    deleted
   }
 
   // ── LETTURE PER LA SINCRONIZZAZIONE ────────────────────────────────────────
@@ -864,22 +1196,71 @@ object SimklRepository {
   }
 
   /**
-   * Libreria/history completa: episodi visti per serie e stagione (badge "Visto su SIMKL")
-   * **più le serie in visione con l'ultimo episodio visto** (`status=watching`), che sono
-   * l'unica fonte dei progressi episodici quando il titolo non ha una sessione di pausa
-   * attiva (`GET /sync/playback` non contiene alcun episodio in quel caso). Una sola
-   * chiamata: i due dati arrivano dalla stessa risposta.
+   * Libreria/history completa: episodi visti per serie e stagione (badge "Visto su SIMKL"),
+   * serie in visione con `next_to_watch` e titoli `completed`.
+   *
+   * Le due letture (serie e anime) sono entrambe necessarie: un anime può vivere solo nel
+   * bucket `anime` e senza questa chiamata i suoi episodi non avrebbero né badge né punto
+   * di ripresa. Gli anime sono letti con `extended=full_anime_seasons`, che porta la
+   * coordinata `tvdb.season`/`tvdb.episode` per mappare `E2` sulla stagione locale.
+   *
+   * Il fallimento di una delle due letture propaga: dichiarare completa una libreria a cui
+   * manca metà dei dati sarebbe peggio di un errore visibile.
    */
   suspend fun fetchWatchedLibrary(): SimklWatchedLibraryData = withContext(Dispatchers.IO) {
-    val response = withAuthorizedToken { token ->
+    val showsResponse = withAuthorizedToken { token ->
       api.getWatchedShows(requireClientId(), "Bearer $token")
     }
-    val parsed = SimklWatchedLibrary.parse(
-      response.requireBody("Lettura cronologia SIMKL")
+    val shows = SimklWatchedLibrary.parse(
+      showsResponse.requireBody("Lettura cronologia SIMKL")
     )
-    watchedLibrary.set(parsed.watchedEpisodesByShow)
+    val animeResponse = withAuthorizedToken { token ->
+      api.getWatchedAnime(requireClientId(), "Bearer $token")
+    }
+    val anime = SimklWatchedLibrary.parse(
+      animeResponse.requireBody("Lettura cronologia anime SIMKL")
+    )
+    val merged = SimklWatchedLibraryData(
+      watchedEpisodesByShow = mergeWatchedEpisodes(shows.watchedEpisodesByShow, anime.watchedEpisodesByShow),
+      watchingResumes = shows.watchingResumes + anime.watchingResumes,
+      watchingTmdbIds = shows.watchingTmdbIds + anime.watchingTmdbIds,
+      completedTitles = shows.completedTitles + anime.completedTitles
+    )
+    watchedLibrary.set(merged.watchedEpisodesByShow)
     invalidateWatchedCache()
-    parsed
+    merged
+  }
+
+  /**
+   * Completamenti dei FILM verificati direttamente su SIMKL (`GET /sync/all-items/movies`,
+   * tutti gli stati). Le serie/anime arrivano dalla libreria già letta.
+   */
+  suspend fun fetchCompletedMovies(): List<SimklCompletedTitle> = withContext(Dispatchers.IO) {
+    val response = withAuthorizedToken { token ->
+      api.getWatchedMovies(requireClientId(), "Bearer $token")
+    }
+    SimklWatchedLibrary.parseCompletedTitles(
+      response.requireBody("Lettura libreria film SIMKL")
+    ).filter { it.kind == SimklCompletedKind.MOVIE }
+  }
+
+  /** Unione per titolo/stagione/episodio delle mappe serie+anime (nessun dato perso). */
+  internal fun mergeWatchedEpisodes(
+    first: Map<Int, Map<Int, Set<Int>>>,
+    second: Map<Int, Map<Int, Set<Int>>>
+  ): Map<Int, Map<Int, Set<Int>>> {
+    if (first.isEmpty()) return second
+    if (second.isEmpty()) return first
+    val merged = LinkedHashMap<Int, MutableMap<Int, MutableSet<Int>>>()
+    for (source in listOf(first, second)) {
+      for ((tmdbId, seasons) in source) {
+        val target = merged.getOrPut(tmdbId) { LinkedHashMap() }
+        for ((season, episodes) in seasons) {
+          target.getOrPut(season) { LinkedHashSet() }.addAll(episodes)
+        }
+      }
+    }
+    return merged
   }
 
   /**
@@ -973,12 +1354,22 @@ object SimklRepository {
   private const val TAG = "SimklRepository"
 }
 
+/**
+ * Tipo di contenuto del payload: decide il bucket SIMKL per le scritture senza
+ * coordinate episodio. Una SERIES senza episodio NON viene mai inviata a
+ * `/sync/history` (SIMKL la espanderebbe a tutti gli episodi).
+ */
+enum class SimklMediaKind { MOVIE, SERIES }
+
 data class SimklMediaPayload(
   val title: String,
   val year: Int?,
   val tmdbId: Int?,
   val imdbId: String?,
-  val episode: SimklEpisodePayload? = null
+  val episode: SimklEpisodePayload? = null,
+  val kind: SimklMediaKind = SimklMediaKind.MOVIE,
+  /** Id locale della scheda: serve a marcare un completamento verificato dalla risposta. */
+  val mediaId: String? = null
 ) {
   /**
    * true se c'è almeno un identificativo con cui SIMKL possa agganciare il titolo: senza di
@@ -1005,17 +1396,38 @@ data class SimklMediaPayload(
       put("progress", progress.coerceIn(0.0, 100.0))
       if (episode == null) put("movie", item) else {
         put("show", item)
-        put("episode", mapOf("season" to episode.season, "episode" to episode.number))
+        // Schema documentato: `episode.season` + `episode.number`. La vecchia chiave
+        // `episode.episode` non esiste e faceva scartare/agganciare male il payload.
+        put("episode", mapOf("season" to episode.season, "number" to episode.number))
       }
     }
   }
 
+  /**
+   * Item per `POST /sync/history`. La forma è DIVERSA dallo scrobble: qui `shows[]` e
+   * `movies[]` contengono l'item con `ids` al primo livello (non un wrapper `show`), e
+   * l'episodio usa `seasons[].episodes[].number`.
+   */
   fun toHistoryItem(): Map<String, Any> {
     val payload = toPayload(100.0)
-    return if (episode == null) payload.getValue("movie") as Map<String, Any>
-    else buildMap {
-      put("show", payload.getValue("show"))
-      put("seasons", listOf(mapOf("number" to episode.season, "episodes" to listOf(mapOf("number" to episode.number)))))
+    return if (episode == null) {
+      payload.getValue("movie") as Map<String, Any>
+    } else {
+      buildMap {
+        putAll(payload.getValue("show") as Map<String, Any>)
+        put(
+          "seasons",
+          listOf(
+            mapOf(
+              "number" to episode.season,
+              "episodes" to listOf(mapOf("number" to episode.number))
+            )
+          )
+        )
+        // App TMDB-primary: Simkl mappa la coordinata TVDB/TMDB sull'eventuale record
+        // anime corretto. Per le serie non-anime il flag è un no-op documentato.
+        put("use_tvdb_anime_seasons", true)
+      }
     }
   }
 }

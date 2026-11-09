@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -52,6 +53,7 @@ import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.prefs.StreamingEngineMode
+import com.example.data.repository.SimklSyncManager
 import com.example.data.streaming.StreamResult
 import com.example.data.update.UpdateRepository
 import com.example.data.update.shouldShowStartupUpdatePrompt
@@ -92,6 +94,7 @@ import com.example.ui.viewmodel.StreamNovaViewModel
 import com.example.ui.viewmodel.StreamResolutionState
 import com.example.ui.viewmodel.TrailerPlaybackState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** Finestra temporale del doppio Back sulla Home per uscire dall'app (feedback breve). */
 private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
@@ -231,6 +234,18 @@ class MainActivity : ComponentActivity() {
       StartupTrace.mark("compose_content_exit")
     }
     StartupTrace.mark("main_activity_oncreate_exit")
+  }
+
+  /**
+   * Sync leggero al ritorno in primo piano: debounce di 5 minuti e gate su
+   * `GET /sync/activities`. Non blocca la UI e non fa polling: se nulla è cambiato sul
+   * server, l'unica richiesta è quella delle attività.
+   */
+  override fun onResume() {
+    super.onResume()
+    lifecycleScope.launch {
+      runCatching { SimklSyncManager.syncOnForeground() }
+    }
   }
 }
 

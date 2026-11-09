@@ -118,7 +118,9 @@ class ContinueWatchingContextMenuFocusTest {
       tmdbId = 7000 + index,
       currentProgressMs = progressMs,
       totalDurationMs = 100 * 60_000L,
-      lastWatchedAt = lastWatchedAt
+      lastWatchedAt = lastWatchedAt,
+      // Card di «Continua a guardare»: dalla v12 il default del flag è `false`.
+      inContinueWatching = true
     )
 
   private fun cwItems(progressMs: Long = 10 * 60_000L): List<MediaItem> = listOf(

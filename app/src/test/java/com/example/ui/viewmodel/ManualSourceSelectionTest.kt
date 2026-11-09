@@ -73,6 +73,12 @@ class ManualSourceSelectionTest {
     }
     com.example.data.stremio.StremioAddonRepository.clearCaches()
     AppSettingsRepository.setTorBoxApiKey(null)
+    // Il singleton AppSettingsRepository è condiviso fra le classi della stessa JVM:
+    // si riportano ai default anche i campi toccati da setUp e dai test, altrimenti
+    // l'esito delle classi successive dipende dall'ordine di esecuzione.
+    AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.HTTP_WEB)
+    AppSettingsRepository.setTorBoxInstantDebridEnabled(true)
+    AppSettingsRepository.setAutoplayEnabled(false)
     Dispatchers.resetMain()
   }
 

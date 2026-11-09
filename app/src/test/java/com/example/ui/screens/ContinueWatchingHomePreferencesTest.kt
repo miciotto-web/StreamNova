@@ -53,6 +53,9 @@ class ContinueWatchingHomePreferencesTest {
     currentProgressMs = 20 * 60_000L,
     totalDurationMs = 100 * 60_000L,
     lastWatchedAt = lastWatchedAt,
+    // Card di «Continua a guardare» con posizione reale: dalla v12 il default del flag
+    // è `false` (una scheda TMDB fresca non è candidata) e va esplicitato.
+    inContinueWatching = true,
     backdropUrl = "https://img.example/$id-backdrop.jpg",
     posterUrl = "https://img.example/$id-poster.jpg",
     rating = rating
@@ -139,8 +142,9 @@ class ContinueWatchingHomePreferencesTest {
 
     rule.runOnIdle { preferences = preferences.copy(sort = ContinueWatchingSort.TITLE) }
     rule.waitForIdle()
-    assertTrue(x("film_alfa") < x("film_bravo"))
+    // La preferenza TITLE non scavalca la cronologia: l'ultima visione resta la prima.
     assertTrue(x("film_bravo") < x("film_charlie"))
+    assertTrue(x("film_charlie") < x("film_alfa"))
   }
 
   @Test
@@ -156,6 +160,9 @@ class ContinueWatchingHomePreferencesTest {
       lastWatchedSeason = 2,
       lastWatchedEpisode = 4,
       lastWatchedAt = 5_000L,
+      // Card di «Continua a guardare» con episodio corrente salvato: il flag va esplicito
+      // dalla v12 (il default `false` descrive una scheda TMDB fresca).
+      inContinueWatching = true,
       backdropUrl = "https://img.example/serie-backdrop.jpg"
     )
     rule.setContent {

@@ -22,6 +22,7 @@ import com.example.data.local.CachedMediaItemEntity
 import com.example.data.local.CatalogProgressEntity
 import com.example.data.local.EpisodeProgressEntity
 import com.example.data.local.MEDIA_SOURCE_SIMKL
+import com.example.data.local.MEDIA_SOURCE_SIMKL_NEXT_UP
 import com.example.data.local.MediaCacheMapper
 import com.example.data.local.MediaCacheMapper.toEntity
 import com.example.data.local.MediaCacheMapper.toMediaItem
@@ -885,7 +886,9 @@ object MediaRepository {
           isFavorite = entity.isFavorite,
           currentProgressMs = if (entity.currentProgressMs > 0) entity.currentProgressMs else initItem.currentProgressMs,
           lastWatchedSeason = entity.lastWatchedSeason ?: initItem.lastWatchedSeason,
-          lastWatchedEpisode = entity.lastWatchedEpisode ?: initItem.lastWatchedEpisode
+          lastWatchedEpisode = entity.lastWatchedEpisode ?: initItem.lastWatchedEpisode,
+          inContinueWatching = entity.inContinueWatching,
+          completedAt = entity.completedAt
         )
       } else {
         base
@@ -1094,12 +1097,17 @@ object MediaRepository {
               isFavorite = prev.isFavorite,
               lastWatchedSeason = prev.lastWatchedSeason ?: item.lastWatchedSeason,
               lastWatchedEpisode = prev.lastWatchedEpisode ?: item.lastWatchedEpisode,
+              lastWatchedAt = prev.lastWatchedAt ?: item.lastWatchedAt,
               totalDurationMs = if (prev.totalDurationMs > 0) prev.totalDurationMs else item.totalDurationMs,
               // La provenienza dello stato utente sopravvive alla riparazione: un preferito
               // o un progresso di SIMKL non diventano locali per un refresh delle immagini.
               favoriteSource = prev.favoriteSource,
               progressSource = prev.progressSource,
-              importedFromSimkl = prev.importedFromSimkl
+              importedFromSimkl = prev.importedFromSimkl,
+              // Riparare le immagini NON cambia l'appartenenza a «Continua a guardare» né
+              // lo stato di completamento: sono dati dell'utente, non del catalogo.
+              inContinueWatching = prev.inContinueWatching,
+              completedAt = prev.completedAt ?: item.completedAt
             )
           } else {
             item
@@ -1183,23 +1191,6 @@ object MediaRepository {
     val generation = stateGeneration.get()
     val db = database ?: return
     loadEpisodeProgressFromRoom(db, generation)
-  }
-
-  /**
-   * Trasferisce lo stato utente (preferito, progresso di visione, episodio visto,
-   * durata totale) dalla riga Room preesistente al media aggiornato.
-   * Usato durante ogni refresh/remoto e ogni reset: lo stato utente NON viene mai sovrascritto.
-   */
-  private fun CachedMediaItemEntity.preserveUserStateInto(item: MediaItem): MediaItem {
-    return item.copy(
-      isFavorite = this.isFavorite,
-      currentProgressMs = if (this.currentProgressMs > 0) this.currentProgressMs else item.currentProgressMs,
-      totalDurationMs = if (this.totalDurationMs > 0) this.totalDurationMs else item.totalDurationMs,
-      lastWatchedSeason = this.lastWatchedSeason ?: item.lastWatchedSeason,
-      lastWatchedEpisode = this.lastWatchedEpisode ?: item.lastWatchedEpisode,
-      lastWatchedAt = this.lastWatchedAt ?: item.lastWatchedAt,
-      ageRating = this.ageRating ?: item.ageRating
-    )
   }
 
   suspend fun clearCache() = withContext(Dispatchers.IO) {
@@ -1656,7 +1647,10 @@ object MediaRepository {
             currentProgressMs = progressMs,
             totalDurationMs = WatchProgress.resolveDuration(item.totalDurationMs, durationMs),
             lastWatchedAt = now,
-            progressSource = source
+            progressSource = source,
+            // Una nuova visione riporta il titolo in «Continua a guardare» anche dopo una
+            // rimozione manuale: la rimozione non è una cancellazione definitiva.
+            inContinueWatching = true
           )
         } else {
           item
@@ -1670,7 +1664,8 @@ object MediaRepository {
           currentProgressMs = progressMs,
           totalDurationMs = WatchProgress.resolveDuration(currentDetail.media.totalDurationMs, durationMs),
           lastWatchedAt = now,
-          progressSource = source
+          progressSource = source,
+          inContinueWatching = true
         )
       )
     }
@@ -1695,7 +1690,8 @@ object MediaRepository {
                   currentProgressMs = progressMs,
                   totalDurationMs = WatchProgress.resolveDuration(item.totalDurationMs, durationMs),
                   lastWatchedAt = now,
-                  progressSource = source
+                  progressSource = source,
+                  inContinueWatching = true
                 ).toEntity()
               )
             }
@@ -1779,6 +1775,8 @@ object MediaRepository {
             lastWatchedEpisode = episodeNumber,
             lastWatchedAt = now,
             progressSource = source,
+            // Include il caso `next_to_watch` di SIMKL: episodio noto con progresso 0.
+            inContinueWatching = true,
             episodes = updatedEpisodes
           )
         } else {
@@ -1805,6 +1803,7 @@ object MediaRepository {
           lastWatchedEpisode = episodeNumber,
           lastWatchedAt = now,
           progressSource = source,
+          inContinueWatching = true,
           episodes = updatedEpisodes
         )
       )
@@ -1849,6 +1848,77 @@ object MediaRepository {
           )
         } catch (e: Exception) {
           Log.w("MediaRepository", "Failed to update episode progress in Room: ${e.message}")
+        } finally {
+          pendingProgressWrites.decrementAndGet()
+        }
+      }
+    }
+  }
+
+  /**
+   * Punto di ripresa «prossimo episodio» adottato da SIMKL (`next_to_watch` della
+   * libreria): aggiorna stagione/episodio corrente e data dell'ultima visione, azzera la
+   * posizione del prossimo episodio e RIPORTA la scheda in «Continua a guardare».
+   *
+   * È la riga che il sito SIMKL mostra come "Continua a guardare": le serie `watching`
+   * ferme al prossimo episodio, con la card sull'episodio successivo a posizione 0.
+   * Diversamente da [updateEpisodeProgress] qui non esiste né una sessione di pausa né
+   * una posizione raggiunta: il valore serve anche al pulsante
+   * «Riproduci/Riprendi S…E…» del Dettaglio.
+   *
+   * La rimozione manuale della card resta rispettata: una voce già allineata viene
+   * saltata dalla politica di merge (`ALREADY_IN_SYNC`), quindi un next-up nascosto
+   * dall'utente non rientra finché SIMKL non muove davvero quel titolo.
+   *
+   * Nessuna riga `episode_progress` viene scritta: il prossimo episodio non ha progresso.
+   *
+   * @param source provenienza della scrittura: la sincronizzazione SIMKL passa
+   *        [com.example.data.local.MEDIA_SOURCE_SIMKL_NEXT_UP].
+   */
+  suspend fun updateNextUpFromSimkl(
+    mediaId: String,
+    seasonNumber: Int,
+    episodeNumber: Int,
+    lastWatchedAtMs: Long,
+    source: String
+  ) {
+    val now = lastWatchedAtMs
+    _mediaList.update { list ->
+      list.map { item ->
+        if (item.id == mediaId) {
+          item.copy(
+            // Il PROSSIMO episodio parte da zero: la posizione dell'episodio precedente
+            // resta nella sua riga `episode_progress`.
+            currentProgressMs = 0L,
+            lastWatchedSeason = seasonNumber,
+            lastWatchedEpisode = episodeNumber,
+            lastWatchedAt = now,
+            progressSource = source,
+            inContinueWatching = true
+          )
+        } else item
+      }
+    }
+    val currentDetail = _detailUiState.value
+    if (currentDetail is MediaDetailUiState.Success && currentDetail.media.id == mediaId) {
+      _detailUiState.value = currentDetail.copy(
+        media = currentDetail.media.copy(
+          currentProgressMs = 0L,
+          lastWatchedSeason = seasonNumber,
+          lastWatchedEpisode = episodeNumber,
+          lastWatchedAt = now,
+          progressSource = source,
+          inContinueWatching = true
+        )
+      )
+    }
+    database?.let { db ->
+      pendingProgressWrites.incrementAndGet()
+      repoScope.launch(progressWriteDispatcher) {
+        try {
+          db.cachedMediaDao().updateNextUp(mediaId, seasonNumber, episodeNumber, now, source)
+        } catch (e: Exception) {
+          Log.w("MediaRepository", "Failed to update next-up in Room: ${e.message}")
         } finally {
           pendingProgressWrites.decrementAndGet()
         }
@@ -1905,6 +1975,16 @@ object MediaRepository {
     episodeNumber: Int
   ): Boolean {
     if (item.type != MediaType.SERIE_TV) return false
+    // Già conclusa sullo stesso episodio: nessuna nuova verifica di rete. Se arriva un
+    // nuovo episodio, `updateEpisodeProgress` riporta il titolo in «Continua a guardare»
+    // e azzera di fatto questa condizione (`inContinueWatching = true`).
+    if (!item.inContinueWatching &&
+      item.completedAt != null &&
+      item.lastWatchedSeason == seasonNumber &&
+      item.lastWatchedEpisode == episodeNumber
+    ) {
+      return false
+    }
     // Lo stato salvato deve riguardare ancora proprio questo episodio: nel frattempo
     // l'utente può aver iniziato (o ripreso) un'altra puntata. Lo stato in memoria è
     // aggiornato in modo sincrono da [updateEpisodeProgress]; la riga Room è il
@@ -1949,13 +2029,15 @@ object MediaRepository {
   }
 
   /**
-   * Rimozione persistente della card «Continua a guardare» per la serie.
+   * Conclusione verificata della serie: la toglie da «Continua a guardare» in modo **NON
+   * distruttivo**.
    *
    * L'unità è il TITOLO: tutte le schede dello stesso contenuto (id TMDB e id
-   * IMDb/Stremio) vengono azzerate, altrimenti la gemella con il progresso rimasto
-   * farebbe riapparire la card al riavvio. La posizione viene azzerata anche nella
-   * riga Room, così la rimozione sopravvive al riavvio; stagione/episodio visti e
-   * durata dell'episodio restano (badge e scheda dettaglio invariati).
+   * IMDb/Stremio) vengono marcate, altrimenti la gemella farebbe riapparire la card al
+   * riavvio. Posizione, stagione/episodio, durata e tutte le righe `episode_progress`
+   * restano: lo storico e i badge "visto" non vengono mai cancellati. `completedAt`
+   * registra il completamento; una nuova visione (nuovo episodio o rewatch) riporta
+   * `inContinueWatching = true` tramite [updateEpisodeProgress].
    */
   private suspend fun clearContinueWatchingForCompletedTitle(
     mediaId: String,
@@ -1974,31 +2056,28 @@ object MediaRepository {
 
     _mediaList.update { list ->
       list.map { item ->
-        if (item.id in ids) item.copy(currentProgressMs = 0L) else item
+        if (item.id in ids) {
+          item.copy(inContinueWatching = false, completedAt = item.completedAt ?: now)
+        } else {
+          item
+        }
       }
     }
     val detail = _detailUiState.value
     if (detail is MediaDetailUiState.Success && detail.media.id in ids) {
-      _detailUiState.value = detail.copy(media = detail.media.copy(currentProgressMs = 0L))
+      _detailUiState.value = detail.copy(
+        media = detail.media.copy(
+          inContinueWatching = false,
+          completedAt = detail.media.completedAt ?: now
+        )
+      )
     }
 
     val db = database ?: return
     try {
-      ids.forEach { id -> db.cachedMediaDao().clearContinueWatchingProgress(id, now) }
-      // La scrittura del progresso appena salvato può essere ancora in volo: si
-      // verifica il valore finale e, solo se riguarda ancora questo episodio, si
-      // azzera di nuovo. Mai una card "risorta" dopo il riavvio.
-      ids.forEach { id ->
-        val row = db.cachedMediaDao().getMediaById(id) ?: return@forEach
-        if (row.currentProgressMs > 0L &&
-          row.lastWatchedSeason == seasonNumber &&
-          row.lastWatchedEpisode == episodeNumber
-        ) {
-          db.cachedMediaDao().clearContinueWatchingProgress(id, now)
-        }
-      }
+      ids.forEach { id -> db.cachedMediaDao().markCompleted(id, now) }
     } catch (e: Exception) {
-      Log.w(TAG_CW, "Rimozione persistente da Continua a guardare fallita per $mediaId: ${e.message}")
+      Log.w(TAG_CW, "Completamento serie non persistito per $mediaId: ${e.message}")
     }
   }
 
@@ -2014,6 +2093,8 @@ object MediaRepository {
   internal suspend fun reconcileCompletedSeries(items: List<MediaItem> = _mediaList.value) {
     val candidates = items.filter { item ->
       item.type == MediaType.SERIE_TV &&
+        item.inContinueWatching &&
+        item.completedAt == null &&
         item.currentProgressMs > 0L &&
         item.lastWatchedSeason != null &&
         item.lastWatchedEpisode != null &&
@@ -2039,6 +2120,8 @@ object MediaRepository {
     val candidates = persisted
       .filter { entity ->
         entity.type == MediaType.SERIE_TV.name &&
+          entity.inContinueWatching &&
+          entity.completedAt == null &&
           entity.currentProgressMs > 0L &&
           entity.lastWatchedSeason != null &&
           entity.lastWatchedEpisode != null &&
@@ -2183,6 +2266,8 @@ object MediaRepository {
         lastWatchedSeason = existing.lastWatchedSeason ?: item.lastWatchedSeason,
         lastWatchedEpisode = existing.lastWatchedEpisode ?: item.lastWatchedEpisode,
         lastWatchedAt = existing.lastWatchedAt,
+        inContinueWatching = existing.inContinueWatching,
+        completedAt = existing.completedAt,
         isFavorite = existing.isFavorite || markFavorite,
         // Provenienza: su schede esistenti vale lo stato già scritto (locale o SIMKL che
         // sia); il flag "importata" resta quello della riga storica.
@@ -2654,12 +2739,23 @@ object MediaRepository {
   }
 
   /**
-   * Rimuove un titolo da «Continua a guardare».
+   * Rimuove un titolo da «Continua a guardare» in modo **NON distruttivo**.
+   *
+   * La documentazione SIMKL raccomanda esattamente questo: la rimozione dalla schermata è
+   * una scelta locale, ottenuta filtrando il titolo, e non deve cancellare cronologia,
+   * progressi o righe del database. Viene quindi impostato `inContinueWatching = false`
+   * su tutte le schede dello stesso titolo (una gemella con il progresso rimasto
+   * farebbe riapparire la card), lasciando intatti:
+   * - la scheda e i metadati;
+   * - `currentProgressMs`, `lastWatchedAt`, stagione/episodio;
+   * - ogni riga di `episode_progress` (storico e ripresa dei singoli episodi).
+   *
+   * Una nuova visione riporta automaticamente il titolo nella riga (vedi
+   * [updateProgress] e [updateEpisodeProgress]).
    *
    * L'unità della rimozione è il TITOLO, non la riga: quando il catalogo contiene due schede
-   * dello stesso contenuto (una con id TMDB, una con id IMDb/Stremio) vanno rimosse entrambe,
-   * altrimenti la gemella — che conserva il proprio progresso — fa riapparire la card al giro
-   * successivo. Le varianti di id storiche (`tmdb_m_…`, `movie_…`, id nudo) restano coperte
+   * dello stesso contenuto (una con id TMDB, una con id IMDb/Stremio) vanno nascoste
+   * entrambe. Le varianti di id storiche (`tmdb_m_…`, `movie_…`, id nudo) restano coperte
    * perché la card può arrivare qui con qualsiasi di esse.
    */
   suspend fun removeFromContinueWatching(mediaId: String) {
@@ -2668,32 +2764,190 @@ object MediaRepository {
       val raw = id.removePrefix("tmdb_m_").removePrefix("tmdb_tv_").removePrefix("movie_").removePrefix("tv_")
       return setOf(id, raw, "tmdb_m_$raw", "tmdb_tv_$raw", "movie_$raw", "tv_$raw")
     }
-    val idsToRemove = (family.map { it.id } + mediaId).flatMapTo(LinkedHashSet()) { variantsOf(it) }
-    val rawIds = (idsToRemove.mapNotNull { it.toIntOrNull() } + family.mapNotNull { it.tmdbId }).distinct()
+    val idsToHide = (family.map { it.id } + mediaId).flatMapTo(LinkedHashSet()) { variantsOf(it) }
 
-    Log.d("REMOVE_CW", "Removing mediaId=$mediaId family=${family.map { it.id }} idsToRemove=$idsToRemove rawIds=$rawIds")
-    Log.d("REMOVE_CW", "Before filter: _mediaList size=${_mediaList.value.size}")
+    Log.d(
+      "REMOVE_CW",
+      "Hide (non-destructive) mediaId=$mediaId family=${family.map { it.id }} ids=$idsToHide"
+    )
 
     _mediaList.update { list ->
-      list.filterNot { item -> idsToRemove.contains(item.id) }
+      list.map { item ->
+        if (item.id in idsToHide) item.copy(inContinueWatching = false) else item
+      }
     }
-
-    Log.d("REMOVE_CW", "After filter: _mediaList size=${_mediaList.value.size}")
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id in idsToHide) {
+      _detailUiState.value = detail.copy(
+        media = detail.media.copy(inContinueWatching = false)
+      )
+    }
 
     database?.let { db ->
       try {
-        Log.d("REMOVE_CW", "Deleting from CachedMediaDao for ids: $idsToRemove rawIds: $rawIds")
-        val deletedCount = db.cachedMediaDao().deleteByIds(idsToRemove.toList(), rawIds)
-        Log.d("REMOVE_CW", "Deleted $deletedCount rows from cached_media_items")
-
-        Log.d("REMOVE_CW", "Clearing EpisodeProgressDao for ids: $idsToRemove")
-        idsToRemove.forEach { id ->
-          db.episodeProgressDao().clearProgressForMedia(id)
-        }
-        Log.d("REMOVE_CW", "Database deletion completed")
+        idsToHide.forEach { id -> db.cachedMediaDao().hideFromContinueWatching(id) }
+        // Le righe episodio NON vengono toccate: la rimozione è reversibile e lo storico
+        // (badge "visto", ripresa del singolo episodio) resta disponibile.
+        Log.d("REMOVE_CW", "Hidden ${idsToHide.size} rows; episode progress preserved")
       } catch (e: Exception) {
-        Log.e("REMOVE_CW", "Failed to remove from continue watching in Room: ${e.message}", e)
+        Log.e("REMOVE_CW", "Failed to hide from continue watching in Room: ${e.message}", e)
       }
+    }
+  }
+
+  /**
+   * Conclusione verificata di un **film** (posizione alla fine reale, oppure
+   * `action: "scrobble"`/`status=completed` di SIMKL). Lo toglie dalla riga e registra
+   * `completedAt`, senza cancellare la posizione, la durata o la scheda.
+   *
+   * @param setProgressToEnd true quando il completamento arriva da SIMKL senza una
+   *        posizione locale: porta la posizione alla durata nota per riflettere lo stato
+   *        "visto". Non inventa nulla se la durata è sconosciuta.
+   */
+  suspend fun markCompletedFromSimkl(
+    mediaId: String,
+    completedAtMs: Long,
+    setProgressToEnd: Boolean
+  ) {
+    val seed = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    if (seed.type != MediaType.FILM) return
+    // Già concluso e già fuori dalla riga: nessuna scrittura ripetuta a ogni salvataggio.
+    if (!seed.inContinueWatching && seed.completedAt != null) return
+    val ids = MediaIdentity.groupById(_mediaList.value, mediaId)
+      .ifEmpty { listOf(seed) }
+      .map { it.id }
+      .toSet()
+    val now = completedAtMs.coerceAtLeast(1L)
+
+    _mediaList.update { list ->
+      list.map { item ->
+        if (item.id !in ids) item
+        else item.copy(
+          inContinueWatching = false,
+          completedAt = item.completedAt ?: now,
+          currentProgressMs = if (setProgressToEnd && item.totalDurationMs > 0L) {
+            item.totalDurationMs
+          } else {
+            item.currentProgressMs
+          }
+        )
+      }
+    }
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id in ids) {
+      val target = detail.media
+      _detailUiState.value = detail.copy(
+        media = target.copy(
+          inContinueWatching = false,
+          completedAt = target.completedAt ?: now,
+          currentProgressMs = if (setProgressToEnd && target.totalDurationMs > 0L) {
+            target.totalDurationMs
+          } else {
+            target.currentProgressMs
+          }
+        )
+      )
+    }
+
+    val db = database ?: return
+    try {
+      ids.forEach { id ->
+        val row = db.cachedMediaDao().getMediaById(id) ?: return@forEach
+        val progress = if (setProgressToEnd && row.totalDurationMs > 0L) {
+          row.totalDurationMs
+        } else {
+          row.currentProgressMs
+        }
+        db.cachedMediaDao().markMovieCompleted(id, now, progress)
+      }
+    } catch (e: Exception) {
+      Log.w(TAG_CW, "Completamento film non persistito per $mediaId: ${e.message}")
+    }
+  }
+
+  /**
+   * Completamento verificato di una **serie** arrivato da SIMKL (`status=completed`):
+   * registra `completedAt` e nasconde la card, conservando episodio corrente, posizione e
+   * tutte le righe `episode_progress`. Non viene mai usato per un singolo episodio visto,
+   * che è invece un avanzamento (la serie resta in «Continua a guardare»).
+   */
+  suspend fun markSeriesCompletedFromSimkl(mediaId: String, completedAtMs: Long) {
+    val seed = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    if (seed.type != MediaType.SERIE_TV) return
+    if (!seed.inContinueWatching && seed.completedAt != null) return
+    val ids = MediaIdentity.groupById(_mediaList.value, mediaId)
+      .ifEmpty { listOf(seed) }
+      .map { it.id }
+      .toSet()
+    val now = completedAtMs.coerceAtLeast(1L)
+
+    _mediaList.update { list ->
+      list.map { item ->
+        if (item.id in ids) item.copy(inContinueWatching = false, completedAt = item.completedAt ?: now)
+        else item
+      }
+    }
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id in ids) {
+      _detailUiState.value = detail.copy(
+        media = detail.media.copy(
+          inContinueWatching = false,
+          completedAt = detail.media.completedAt ?: now
+        )
+      )
+    }
+    val db = database ?: return
+    try {
+      ids.forEach { id -> db.cachedMediaDao().markCompleted(id, now) }
+    } catch (e: Exception) {
+      Log.w(TAG_CW, "Completamento serie non persistito per $mediaId: ${e.message}")
+    }
+  }
+
+  /**
+   * Un episodio risulta concluso dalla risposta effettiva di SIMKL (`action: "scrobble"`).
+   * Consolida la posizione alla durata **reale già misurata** per quell'episodio, senza
+   * inventare nulla: se la durata non è nota non tocca la posizione. Non passa da
+   * `MEDIA_SOURCE_SIMKL` perché descrive una visione reale, non un'importazione: lo
+   * storico deve sopravvivere alla disconnessione.
+   */
+  fun markEpisodeCompletedFromSimkl(
+    mediaId: String,
+    seasonNumber: Int,
+    episodeNumber: Int,
+    completedAtMs: Long
+  ) {
+    val item = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    val duration = getEpisodeDurationMs(mediaId, seasonNumber, episodeNumber)
+      .takeIf { it > 0L }
+      ?: item.episodes
+        .firstOrNull { it.seasonNumber == seasonNumber && it.episodeNumber == episodeNumber }
+        ?.totalDurationMs
+        ?.takeIf { it > 0L }
+      ?: 0L
+    if (duration <= 0L) return
+    updateEpisodeProgress(
+      mediaId = mediaId,
+      seasonNumber = seasonNumber,
+      episodeNumber = episodeNumber,
+      progressMs = duration,
+      durationMs = duration,
+      lastWatchedAtMs = completedAtMs,
+      source = null
+    )
+    maybeCompleteSeries(mediaId, seasonNumber, episodeNumber, duration, duration)
+  }
+
+  /**
+   * Conclusione di un film misurata dal player: una posizione entro la tolleranza di fine
+   * sulla durata REALE. Non cancella nulla e non usa durate stimate.
+   */
+  fun maybeCompleteMovie(mediaId: String, positionMs: Long, durationMs: Long) {
+    if (!WatchProgress.isAtEnd(positionMs, durationMs)) return
+    repoScope.launch {
+      runCatching {
+        markCompletedFromSimkl(mediaId, System.currentTimeMillis(), setProgressToEnd = true)
+      }.onFailure { Log.w(TAG_CW, "Completamento film fallito per $mediaId: ${it.message}") }
     }
   }
 
@@ -2763,7 +3017,11 @@ object MediaRepository {
         if (updated.favoriteSource == MEDIA_SOURCE_SIMKL) {
           updated = updated.copy(isFavorite = false, favoriteSource = null)
         }
-        if (updated.progressSource == MEDIA_SOURCE_SIMKL) {
+        // Anche il next-up (`simkl_nextup`) è stato di SIMKL: al logout la stagione/episodio
+        // di ripresa adottata dalla libreria torna "sconosciuta" salvo punti locali.
+        if (updated.progressSource == MEDIA_SOURCE_SIMKL ||
+          updated.progressSource == MEDIA_SOURCE_SIMKL_NEXT_UP
+        ) {
           val localPoint = localPointsByMedia[updated.id]?.maxByOrNull { it.updatedAt }
           updated = if (localPoint != null) {
             updated.copy(
@@ -2772,7 +3030,8 @@ object MediaRepository {
               lastWatchedSeason = localPoint.seasonNumber,
               lastWatchedEpisode = localPoint.episodeNumber,
               lastWatchedAt = localPoint.updatedAt,
-              progressSource = null
+              progressSource = null,
+              inContinueWatching = true
             )
           } else {
             updated.copy(
@@ -2780,7 +3039,8 @@ object MediaRepository {
               lastWatchedSeason = null,
               lastWatchedEpisode = null,
               lastWatchedAt = null,
-              progressSource = null
+              progressSource = null,
+              inContinueWatching = false
             )
           }
         }
@@ -2811,7 +3071,9 @@ object MediaRepository {
           if (updated.favoriteSource == MEDIA_SOURCE_SIMKL) {
             updated = updated.copy(isFavorite = false, favoriteSource = null)
           }
-          if (updated.progressSource == MEDIA_SOURCE_SIMKL) {
+          if (updated.progressSource == MEDIA_SOURCE_SIMKL ||
+            updated.progressSource == MEDIA_SOURCE_SIMKL_NEXT_UP
+          ) {
             val localPoint = localPointsByMedia[item.id]?.maxByOrNull { it.updatedAt }
             updated = if (localPoint != null) {
               updated.copy(
@@ -2820,7 +3082,8 @@ object MediaRepository {
                 lastWatchedSeason = localPoint.seasonNumber,
                 lastWatchedEpisode = localPoint.episodeNumber,
                 lastWatchedAt = localPoint.updatedAt,
-                progressSource = null
+                progressSource = null,
+                inContinueWatching = true
               )
             } else {
               updated.copy(
@@ -2828,7 +3091,8 @@ object MediaRepository {
                 lastWatchedSeason = null,
                 lastWatchedEpisode = null,
                 lastWatchedAt = null,
-                progressSource = null
+                progressSource = null,
+                inContinueWatching = false
               )
             }
           }
@@ -2865,6 +3129,35 @@ object MediaRepository {
    * - Restituisce null se non esiste alcun risultato.
    * - Non lancia eccezioni per un IMDb non risolvibile.
    */
+  /**
+   * Risolve un TVDB ID nel corrispondente TMDB ID (`/find/{id}?external_source=tvdb_id`).
+   * Gli anime spesso espongono `ids.tvdb` anche quando manca `ids.tmdb`; senza questa
+   * risoluzione il punto di ripresa resterebbe "titolo non riconosciuto".
+   * Best-effort: `null` se non risolvibile o senza credenziale TMDB.
+   */
+  suspend fun resolveTvdbToTmdbId(tvdbId: Int?, isTv: Boolean): Int? = withContext(Dispatchers.IO) {
+    if (tvdbId == null || tvdbId <= 0) return@withContext null
+    val cacheKey = "tvdb:$tvdbId:${if (isTv) "tv" else "movie"}"
+    imdbToTmdbCache[cacheKey]?.let { return@withContext it }
+    runCatching {
+      val apiKey = getEffectiveApiKey()
+      if (apiKey.isBlank()) return@runCatching null
+      val result = TmdbApiClient.service.findByExternalId(
+        externalId = tvdbId.toString(),
+        apiKey = apiKey,
+        externalSource = "tvdb_id"
+      )
+      val movies = result.movieResults.orEmpty()
+      val tvs = result.tvResults.orEmpty()
+      val resolved = if (isTv) {
+        tvs.firstOrNull()?.id ?: movies.firstOrNull()?.id
+      } else {
+        movies.firstOrNull()?.id ?: tvs.firstOrNull()?.id
+      }
+      resolved?.takeIf { it > 0 }?.also { imdbToTmdbCache[cacheKey] = it }
+    }.getOrNull()
+  }
+
   suspend fun resolveImdbToTmdbId(imdbId: String?, isTv: Boolean): Int? = withContext(Dispatchers.IO) {
     val cleanId = imdbId?.trim().orEmpty().substringBefore(":")
     if (!cleanId.startsWith("tt", ignoreCase = true)) {
@@ -4388,7 +4681,7 @@ object MediaRepository {
       isTrending = existing?.isTrending ?: false,
       isTop10 = existing?.isTop10 ?: false,
       ageRating = existing?.ageRating
-    )
+    ).withUserStateFrom(existing)
   }
 
   private fun multiSearchTvToMediaItem(
@@ -4441,7 +4734,7 @@ object MediaRepository {
       isTop10 = existing?.isTop10 ?: false,
       episodes = eps,
       ageRating = existing?.ageRating
-    )
+    ).withUserStateFrom(existing)
   }
 
   /**
@@ -4780,7 +5073,7 @@ object MediaRepository {
       isTrending = isTrending || (existing?.isTrending ?: false),
       isTop10 = isTop10 || (existing?.isTop10 ?: false),
       ageRating = existing?.ageRating
-    )
+    ).withUserStateFrom(existing)
   }
 
   private fun tvToMediaItem(
@@ -4837,7 +5130,7 @@ object MediaRepository {
       isTop10 = isTop10 || (existing?.isTop10 ?: false),
       episodes = eps,
       ageRating = existing?.ageRating
-    )
+    ).withUserStateFrom(existing)
   }
 
   /** Evita refresh concorrenti: il caricamento è incrementale ma controllato. */
@@ -6521,8 +6814,61 @@ object MediaRepository {
 
 
 /**
- * Regola pura di avanzamento del crawl dei cataloghi provider.
+ * Trasferisce lo stato utente (preferito, progresso di visione, episodio visto,
+ * durata totale, PROVENIENZA) dalla riga Room preesistente al media aggiornato.
+ * Usato durante ogni refresh/remoto e ogni reset: lo stato utente NON viene mai sovrascritto.
  *
+ * La provenienza (`progressSource`, `favoriteSource`, `importedFromSimkl`) fa parte
+ * dello stato: senza di essa un preferito o un progresso scritto da SIMKL diventava
+ * "locale" al primo refresh TMDB e la pulizia al logout non lo riconosceva più.
+ */
+internal fun CachedMediaItemEntity.preserveUserStateInto(item: MediaItem): MediaItem {
+  return item.copy(
+    isFavorite = this.isFavorite,
+    currentProgressMs = if (this.currentProgressMs > 0) this.currentProgressMs else item.currentProgressMs,
+    totalDurationMs = if (this.totalDurationMs > 0) this.totalDurationMs else item.totalDurationMs,
+    lastWatchedSeason = this.lastWatchedSeason ?: item.lastWatchedSeason,
+    lastWatchedEpisode = this.lastWatchedEpisode ?: item.lastWatchedEpisode,
+    lastWatchedAt = this.lastWatchedAt ?: item.lastWatchedAt,
+    inContinueWatching = this.inContinueWatching,
+    completedAt = this.completedAt ?: item.completedAt,
+    ageRating = this.ageRating ?: item.ageRating,
+    favoriteSource = this.favoriteSource ?: item.favoriteSource,
+    progressSource = this.progressSource ?: item.progressSource,
+    importedFromSimkl = this.importedFromSimkl || item.importedFromSimkl
+  )
+}
+
+/**
+ * Trasferisce lo stato utente da una scheda già nota a quella appena costruita dai
+ * dati TMDB. È il gemello in-memory di [preserveUserStateInto] (che lavora sulle righe
+ * Room) ed è applicato da OGNI builder TMDB (`movieToMediaItem`, `tvToMediaItem`,
+ * multi-search): senza questo passaggio una scheda ri-fetchata perdeva
+ * stagione/episodio di ripresa, `completedAt` e la provenienza SIMKL, e il refresh del
+ * catalogo finiva per cancellare lo stato della sincronizzazione.
+ *
+ * I campi di identità/metadati restano quelli appena fetchati (titolo, immagini,
+ * rating): qui si presidiano SOLO i dati dell'utente.
+ */
+internal fun MediaItem.withUserStateFrom(existing: MediaItem?): MediaItem {
+  if (existing == null) return this
+  return copy(
+    isFavorite = existing.isFavorite,
+    currentProgressMs = if (existing.currentProgressMs > 0) existing.currentProgressMs else currentProgressMs,
+    totalDurationMs = if (existing.totalDurationMs > 0) existing.totalDurationMs else totalDurationMs,
+    lastWatchedSeason = existing.lastWatchedSeason ?: lastWatchedSeason,
+    lastWatchedEpisode = existing.lastWatchedEpisode ?: lastWatchedEpisode,
+    lastWatchedAt = existing.lastWatchedAt ?: lastWatchedAt,
+    inContinueWatching = existing.inContinueWatching,
+    completedAt = existing.completedAt ?: completedAt,
+    ageRating = existing.ageRating ?: ageRating,
+    favoriteSource = existing.favoriteSource ?: favoriteSource,
+    progressSource = existing.progressSource ?: progressSource,
+    importedFromSimkl = existing.importedFromSimkl || importedFromSimkl
+  )
+}
+
+/**
  * Separa la POLICY (quante pagine chiedere) dall'esecuzione di rete: la Home
  * carica solo la prima pagina per provider/tipo, mentre la ProviderScreen usa la
  * paginazione on-demand di MediaRepository.loadProviderCatalog.

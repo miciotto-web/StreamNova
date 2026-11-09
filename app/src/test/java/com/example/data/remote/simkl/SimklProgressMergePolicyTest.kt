@@ -190,6 +190,90 @@ class SimklProgressMergePolicyTest {
   }
 
   @Test
+  fun unNextToWatchAvviaLEpisodioSuccessivoSenzaInventareUnaPercentuale() {
+    val entry = episodeEntry(0.0, season = 1, episode = 8).copy(
+      isNextToWatch = true,
+      origin = SimklResumeOrigin.LIBRARY
+    )
+    val local = SimklLocalProgress(
+      mediaId = "tmdb_tv_1396",
+      totalDurationMs = 0L,
+      progressMs = 0L,
+      lastWatchedAtMs = null
+    )
+
+    val decision = SimklProgressMergePolicy.decide(entry, local)
+
+    assertTrue("il prossimo episodio è applicabile a 0%", decision.adopt)
+    assertEquals(0L, decision.progressMs)
+  }
+
+  @Test
+  fun unNextToWatchGiaApplicatoEIdempotente() {
+    val entry = episodeEntry(0.0, season = 1, episode = 8).copy(
+      isNextToWatch = true,
+      origin = SimklResumeOrigin.LIBRARY
+    )
+    val local = SimklLocalProgress(
+      mediaId = "tmdb_tv_1396",
+      totalDurationMs = 0L,
+      progressMs = 0L,
+      lastWatchedAtMs = entry.pausedAtEpochMs
+    )
+
+    val decision = SimklProgressMergePolicy.decide(entry, local)
+
+    assertFalse(decision.adopt)
+    assertEquals(SimklDecisionReason.ALREADY_IN_SYNC, decision.reason)
+  }
+
+  @Test
+  fun unaSessioneObsoletaNonRiportaIndietroLaSerie() {
+    // In locale la serie è a S1E5, vista il 1 giugno; SIMKL ha una pausa vecchia su S1E2
+    // del 14 maggio. La card non deve tornare a S1E2.
+    val entry = episodeEntry(45.0, pausedAt = 1_716_000_000_000L, season = 1, episode = 2)
+    val local = SimklLocalProgress(
+      mediaId = "tmdb_tv_1396",
+      totalDurationMs = 45 * 60_000L,
+      progressMs = 0L,
+      lastWatchedAtMs = null
+    )
+    val series = SimklSeriesState(
+      season = 1,
+      episode = 5,
+      lastWatchedAtMs = 1_717_000_000_000L
+    )
+
+    val decision = SimklProgressMergePolicy.decide(entry, local, series)
+
+    assertFalse(decision.adopt)
+    assertEquals(SimklDecisionReason.LOCAL_NEWER, decision.reason)
+  }
+
+  @Test
+  fun unaRiVisionePiuRecenteDiUnEpisodioPrecedenteVieneAdottata() {
+    // La pausa su S1E2 è del 1 giugno, più recente del locale su S1E5 (14 maggio):
+    // è l'ultima visione effettiva e deve vincere.
+    val entry = episodeEntry(45.0, pausedAt = 1_717_000_000_000L, season = 1, episode = 2)
+    val local = SimklLocalProgress(
+      mediaId = "tmdb_tv_1396",
+      totalDurationMs = 45 * 60_000L,
+      progressMs = 0L,
+      lastWatchedAtMs = null
+    )
+    val series = SimklSeriesState(
+      season = 1,
+      episode = 5,
+      lastWatchedAtMs = 1_716_000_000_000L
+    )
+
+    val decision = SimklProgressMergePolicy.decide(entry, local, series)
+
+    assertTrue(decision.adopt)
+    assertEquals((45 * 60_000L * 0.45).toLong(), decision.progressMs)
+  }
+
+  @Test
   fun unaPosizioneMoltoVicinaAllInizioRestaAlmenoUnMillisecondo() {
     val local = SimklLocalProgress("id", 60 * 60_000L, 0L, null)
 

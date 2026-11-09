@@ -99,6 +99,9 @@ import androidx.compose.ui.input.key.nativeKeyCode
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -457,7 +460,10 @@ fun PlayerScreen(
       year = media.year.takeIf { it > 0 },
       tmdbId = media.tmdbId,
       imdbId = currentEp?.effectiveImdbId ?: media.effectiveImdbId,
-      episode = currentEp?.let { SimklEpisodePayload(it.seasonNumber, it.episodeNumber) }
+      episode = currentEp?.let { SimklEpisodePayload(it.seasonNumber, it.episodeNumber) },
+      // Id locale della scheda: la risposta effettiva di SIMKL (`action: "scrobble"`)
+      // permette di consolidare il completamento senza cercare di nuovo il titolo.
+      mediaId = media.id
     )
   }
   val simklScrobbler = remember(simklMedia) { SimklScrobbler(simklMedia) }
@@ -2558,12 +2564,25 @@ fun PlayerScreen(
   // Bucket (posizione/5s) dell'ultimo log [NextEpisode] negli ultimi 40s: throttling
   // a ~5 secondi per non spammare il logcat durante la finestra di fine episodio.
   var lastNextEpLogBucket by remember { mutableLongStateOf(-1L) }
+  // Ultimo salvataggio periodico: il progresso locale non deve dipendere solo dalla
+  // chiusura del player. Ogni 15 s di riproduzione viene persistito in Room. Si usa il
+  // tempo MONOTONO, non la posizione: un seek all'indietro non deve rimandare il salvataggio.
+  var lastPeriodicProgressSaveElapsedMs by remember { mutableLongStateOf(0L) }
 
   // Lavoro NON grafico di ogni campione (ViewModel, diagnostica, risoluzione, intro).
   // Posizione e durata arrivano come PARAMETRI: nessuna lettura di stato nel corpo della
   // schermata, così l'isolamento della ricomposizione resta effettivo.
   val onPlaybackSample: (Long, Long) -> Unit = { positionMs, durationMs ->
     viewModel.updatePlaybackPosition(positionMs, durationMs, exoPlayer.bufferedPosition)
+    // Salvataggio periodico LOCALE (nessuna chiamata SIMKL: la documentazione vieta gli
+    // heartbeat di scrobble). Se il processo viene ucciso, la posizione non si perde.
+    if (isPlaying && positionMs > 0L) {
+      val elapsed = android.os.SystemClock.elapsedRealtime()
+      if (elapsed - lastPeriodicProgressSaveElapsedMs >= 15_000L) {
+        lastPeriodicProgressSaveElapsedMs = elapsed
+        viewModel.saveCurrentPlaybackProgress(positionMs)
+      }
+    }
     // [NextEpisode] diagnostica negli ultimi 40 secondi (log throttled a ~5s).
     val remaining = durationMs - positionMs
     if (isTvShow && nextEpisode != null && remaining in 0L..40_000L) {
@@ -2602,6 +2621,22 @@ fun PlayerScreen(
     clock = playbackClock,
     onSample = onPlaybackSample
   )
+
+  // Lifecycle Android: quando l'app va in background (HOME, chiamata, spegnimento dello
+  // schermo) il player può non ricevere un `onDispose`. Il progresso locale viene salvato
+  // qui, con la posizione reale del clock condiviso, così la ripresa non dipende dal
+  // percorso di chiusura della schermata.
+  val lifecycleOwner = LocalLifecycleOwner.current
+  DisposableEffect(lifecycleOwner, exoPlayer) {
+    val observer = LifecycleEventObserver { _, event ->
+      if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+        val position = playbackClock.positionMs
+        if (position > 0L) viewModel.saveCurrentPlaybackProgress(position)
+      }
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+  }
 
 
   // ---------------------------------------------------------------------------

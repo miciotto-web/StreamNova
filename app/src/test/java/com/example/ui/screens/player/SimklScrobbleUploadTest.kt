@@ -57,7 +57,7 @@ class SimklScrobbleUploadTest {
   private lateinit var server: MockWebServer
   private lateinit var api: SimklApi
 
-  private class RecordedScrobble(val path: String, val body: String)
+  private class RecordedScrobble(val path: String, val url: String, val body: String)
 
   /** Richieste di scrittura ricevute dal server di prova, in ordine di arrivo. */
   private val received = java.util.Collections.synchronizedList(mutableListOf<RecordedScrobble>())
@@ -67,6 +67,9 @@ class SimklScrobbleUploadTest {
 
   /** Ritardo della risposta per le scritture: serve a tenere la richiesta "in volo". */
   private var scrobbleResponseDelayMs: Long = 0L
+
+  /** Simula il lock di 20 s di SIMKL: il primo stop risponde 400 RATE_LIMIT. */
+  private var rateLimitNextStop = false
 
   @Before
   fun setUp() = runBlocking {
@@ -80,7 +83,11 @@ class SimklScrobbleUploadTest {
         val path = request.path.orEmpty().substringBefore("?")
         val body = request.body.readUtf8()
         if (path.startsWith("/scrobble/")) {
-          received.add(RecordedScrobble(path, body))
+          received.add(RecordedScrobble(path, request.path.orEmpty(), body))
+          if (path == "/scrobble/stop" && rateLimitNextStop) {
+            rateLimitNextStop = false
+            return MockResponse().setResponseCode(400).setBody("""{"error":"RATE_LIMIT"}""")
+          }
           failureCodes[path]?.let { code ->
             return MockResponse().setResponseCode(code).setBody("""{"error":"guasto simulato"}""")
           }
@@ -109,6 +116,8 @@ class SimklScrobbleUploadTest {
     )
     SimklRepository.init(context, api)
     SimklRepository.clearScrobbleDiagnostics()
+    // Il lock reale dura 20 s: nei test il ritentativo non deve bloccare la suite.
+    SimklRepository.lockRetryDelayMs = 50L
     received.clear()
     // Le voci rimandate vivono su DataStore, che è un singleton di processo: senza questa
     // pulizia l'esito di un test dipenderebbe dall'ordine di esecuzione.
@@ -120,6 +129,7 @@ class SimklScrobbleUploadTest {
   fun tearDown() {
     // Isola le credenziali OAuth di prova dagli altri test Robolectric.
     runBlocking { SimklRepository.signOut() }
+    SimklRepository.lockRetryDelayMs = 20_000L
     server.shutdown()
   }
 
@@ -213,7 +223,23 @@ class SimklScrobbleUploadTest {
     assertEquals("5502", show.getJSONObject("ids").getString("tmdb"))
     val episode = body.getJSONObject("episode")
     assertEquals(2, episode.getInt("season"))
-    assertEquals(4, episode.getInt("episode"))
+    assertEquals(
+      "lo schema SIMKL usa episode.number, non episode.episode",
+      4,
+      episode.getInt("number")
+    )
+  }
+
+  @Test
+  fun ogniScrobbleInviaMinProgressCentoNellaQuery() = runBlocking {
+    val scrobbler = SimklScrobbler(film())
+    scrobbler.onPlay(10.0)
+    assertTrue(attendi { paths().contains("/scrobble/start") })
+    assertTrue(
+      "min_progress è solo URL e deve valere il default SIMKL 80 (100 trasformava in pausa " +
+        "ogni stop non perfettamente al 100%): ${received.first().url}",
+      received.first().url.contains("min_progress=80")
+    )
   }
 
   @Test
@@ -238,6 +264,27 @@ class SimklScrobbleUploadTest {
     )
     assertEquals(1, paths().count { it == "/scrobble/stop" })
     assertEquals(64.0, bodyOf("/scrobble/stop").getDouble("progress"), 0.0001)
+  }
+
+  @Test
+  fun ilLockDiVentiSecondiNonFaPerdereLoStop() = runBlocking {
+    // SIMKL risponde 400 RATE_LIMIT (non 429) quando una seconda chiamata arriva entro il
+    // lock di 20 s. Lo STOP deve restare nell'outbox e ripartire, non sparire.
+    rateLimitNextStop = true
+    val scrobbler = SimklScrobbler(serie())
+
+    scrobbler.onPlay(40.0)
+    assertTrue(attendi { paths().contains("/scrobble/start") })
+    scrobbler.onStop(72.0)
+
+    assertTrue(
+      "lo STOP deve essere ritentato dopo il lock: ${SimklRepository.scrobbleDiagnostics()}",
+      attendi(10_000L) {
+        SimklRepository.scrobbleDiagnostics().any { it.event == SimklScrobbleEvent.STOP && it.isSuccess }
+      }
+    )
+    assertEquals("prima risposta RATE_LIMIT, poi consegna", 2, paths().count { it == "/scrobble/stop" })
+    assertTrue(attesaCodaScrobble())
   }
 
   @Test

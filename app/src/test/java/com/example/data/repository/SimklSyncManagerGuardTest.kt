@@ -3,6 +3,7 @@ package com.example.data.repository
 import com.example.data.remote.simkl.SimklSyncStatus
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
@@ -18,5 +19,11 @@ class SimklSyncManagerGuardTest {
     assertEquals(SimklSyncStatus.NOT_LOGGED_IN, result.status)
     assertEquals(0, result.adoptedTotal)
     assertEquals(0, result.unresolvedTitles.size)
+  }
+
+  @Test
+  fun senzaAccountIlRitornoInPrimoPianoNonSincronizza() = runBlocking {
+    // Nessuna richiesta e nessun risultato: il debounce non deve "inventare" una sync.
+    assertNull(SimklSyncManager.syncOnForeground())
   }
 }

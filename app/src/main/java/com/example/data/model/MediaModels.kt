@@ -174,6 +174,24 @@ data class MediaItem(
   val lastWatchedSeason: Int? = null,
   val lastWatchedEpisode: Int? = null,
   val lastWatchedAt: Long? = null,
+  /**
+   * true solo quando esiste uno stato di ripresa REALE (posizione > 0, oppure
+   * stagione/episodio corrente scritti dal player o da una sessione di pausa SIMKL).
+   *
+   * Il default è `false`: una scheda appena costruita dai dati TMDB (search, discover,
+   * refresh del catalogo) NON appartiene a «Continua a guardare» finché qualcosa non la
+   * porta lì davvero. Il default `true` storico rendeva il flag inutile — ogni scheda
+   * re-cacheata rientrava nella riga — e la rimozione manuale non persistente.
+   * La rimozione resta NON distruttiva: scheda, progressi e storico degli episodi
+   * restano; una nuova visione riporta il titolo nella riga.
+   */
+  val inContinueWatching: Boolean = false,
+  /**
+   * Istante di completamento (film finito, serie conclusa o `status=completed` su SIMKL).
+   * Distinto da [lastWatchedAt]: non è una data di visione e non viene mai impostato
+   * all'importazione di un titolo.
+   */
+  val completedAt: Long? = null,
   val isFavorite: Boolean = false,
   /**
    * Provenienza dello stato "preferito": `null` = scritto dal locale (utente o dati

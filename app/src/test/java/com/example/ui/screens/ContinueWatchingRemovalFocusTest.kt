@@ -118,7 +118,9 @@ class ContinueWatchingRemovalFocusTest {
     tmdbId = 7000 + index,
     currentProgressMs = 10 * 60_000L,
     totalDurationMs = 100 * 60_000L,
-    lastWatchedAt = lastWatchedAt
+    lastWatchedAt = lastWatchedAt,
+    // Card di «Continua a guardare»: dalla v12 il default del flag è `false`.
+    inContinueWatching = true
   )
 
   private fun cwItems(count: Int = 4): List<MediaItem> =

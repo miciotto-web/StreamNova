@@ -3,6 +3,7 @@ package com.example.data.repository
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.local.MEDIA_SOURCE_SIMKL_NEXT_UP
 import com.example.data.local.MediaCacheMapper.toEntity
 import com.example.data.local.StreamNovaDatabase
 import com.example.data.model.MediaItem
@@ -65,6 +66,7 @@ class SimklSyncIntegrationTest {
   private var playbackBody: String = "[]"
   private var watchlistBodies: Map<String, String> = emptyMap()
   private var libraryBody: String = "{}"
+  private var moviesLibraryBody: String = "{}"
 
   /** Se non `null`, l'endpoint logico risponde con questo codice invece del corpo. */
   private var failureCodes: Map<String, Int> = emptyMap()
@@ -181,6 +183,7 @@ class SimklSyncIntegrationTest {
       endpoint == "/sync/playback" -> playbackBody
       endpoint.endsWith("/plantowatch") -> watchlistBodies[endpoint].orEmpty().ifEmpty { "{}" }
       endpoint.startsWith("/sync/all-items/shows") -> libraryBody
+      endpoint.startsWith("/sync/all-items/movies") -> moviesLibraryBody
       else -> "{}"
     }
     return MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(body)
@@ -621,7 +624,7 @@ class SimklSyncIntegrationTest {
   fun unEpisodioAvviatoSuStreamNovaTornaSulloStessoEpisodio() = runBlocking {
     val media = SimklMediaPayload("La Casa in Due Direzioni", 2020, 5805, null, SimklEpisodePayload(3, 5))
     val inviato = media.toPayload(64.0)
-    assertEquals(mapOf("season" to 3, "episode" to 5), inviato["episode"])
+    assertEquals(mapOf("season" to 3, "number" to 5), inviato["episode"])
     assertEquals("5805", ((inviato["show"] as Map<*, *>)["ids"] as Map<*, *>)["tmdb"])
 
     catalogo("tmdb_tv_5805", 5805, "La Casa in Due Direzioni", MediaType.SERIE_TV, episodiTemporada = 0)
@@ -913,24 +916,28 @@ class SimklSyncIntegrationTest {
     assertEquals(1, result.adoptedLibraryEpisodes)
     assertTrue(
       "il report deve dire da dove arriva la posizione: ${result.message}",
-      result.message.contains("ultimo episodio visto")
+      result.message.contains("prossimo episodio")
     )
 
     val item = inCatalogo("tmdb_tv_5505")
     assertEquals(1, item?.lastWatchedSeason)
-    assertEquals(2, item?.lastWatchedEpisode)
-    assertEquals("episodio visto = posizione al 100% della durata reale nota", 40 * 60_000L, item?.currentProgressMs)
+    assertEquals("il target è next_to_watch, non l'episodio già finito", 3, item?.lastWatchedEpisode)
+    assertEquals("nessuna posizione inventata per il prossimo episodio", 0L, item?.currentProgressMs)
     assertEquals(
       "la data è quella di SIMKL",
       SimklPlaybackParser.parseIsoUtcToEpochMs("2026-05-14T10:00:00Z"),
       item?.lastWatchedAt
     )
     assertEquals(
-      "una sola card in Continua a guardare",
+      "il next-up è la riga «Continua a guardare» del sito SIMKL: una card per la serie",
       1,
       MediaRepository.getContinueWatching().count { it.tmdbId == 5505 }
     )
-    assertTrue("posizione persistita", attendi { rigaRoom("tmdb_tv_5505")?.lastWatchedEpisode == 2 })
+    assertTrue("posizione persistita", attendi { rigaRoom("tmdb_tv_5505")?.lastWatchedEpisode == 3 })
+    assertTrue(
+      "provenienza next-up persistita",
+      attendi { rigaRoom("tmdb_tv_5505")?.progressSource == MEDIA_SOURCE_SIMKL_NEXT_UP }
+    )
   }
 
   @Test
@@ -947,10 +954,12 @@ class SimklSyncIntegrationTest {
     val result = SimklSyncManager.sync(force = true)
 
     assertEquals(1, result.adoptedLibraryEpisodes)
-    assertEquals("la durata dell'episodio è chiesta a TMDB", listOf(Triple(5506, 1, 9)), episodeRuntimeCalls.toList())
+    // Il target è `next_to_watch` (S1E10): il prossimo episodio parte da 0 e non richiede
+    // una durata. Nessuna chiamata TMDB per una posizione che non esiste.
+    assertEquals("nessuna conversione per un episodio a 0%", emptyList<Triple<Int, Int, Int>>(), episodeRuntimeCalls.toList())
     val item = inCatalogo("tmdb_tv_5506")
-    assertEquals(9, item?.lastWatchedEpisode)
-    assertEquals("45 minuti reali, non una stima", 45 * 60_000L, item?.currentProgressMs)
+    assertEquals(10, item?.lastWatchedEpisode)
+    assertEquals("45 minuti reali, non una stima", 0L, item?.currentProgressMs)
   }
 
   @Test
@@ -983,6 +992,55 @@ class SimklSyncIntegrationTest {
   }
 
   @Test
+  fun unFilmCompletatoSuSimklVieneMarcatoSenzaCancellareNulla() = runBlocking {
+    catalogo("tmdb_m_5901", 5901, "Film Finito", MediaType.FILM)
+    playbackBody = "[]"
+    libraryBody = "{}"
+    moviesLibraryBody = """
+      {"movies":[{"status":"completed","last_watched_at":"2026-05-20T10:00:00Z",
+        "movie":{"title":"Film Finito","year":2020,"ids":{"tmdb":"5901","imdb":"tt5901000"}}}]}
+    """.trimIndent()
+
+    val result = SimklSyncManager.sync(force = true)
+
+    assertEquals(1, result.completedTitlesMarked)
+    val item = inCatalogo("tmdb_m_5901")
+    assertEquals("card fuori dalla riga", false, item?.inContinueWatching)
+    assertTrue("completedAt registrato", (item?.completedAt ?: 0L) > 0L)
+    assertEquals(
+      "il film completato risulta visto, senza cancellare la scheda",
+      item?.totalDurationMs,
+      item?.currentProgressMs
+    )
+    assertTrue("il titolo resta in catalogo", MediaRepository.mediaList.value.any { it.tmdbId == 5901 })
+  }
+
+  @Test
+  fun unCompletamentoRemotoPiuVecchioNonScavalcaUnaVisioneLocalePiuRecente() = runBlocking {
+    catalogo("tmdb_m_5902", 5902, "Film Rivisto", MediaType.FILM)
+    MediaRepository.updateProgress(
+      "tmdb_m_5902",
+      progressMs = 600_000L,
+      durationMs = 7_200_000L,
+      lastWatchedAtMs = SimklPlaybackParser.parseIsoUtcToEpochMs("2026-06-10T10:00:00Z")!!
+    )
+    playbackBody = "[]"
+    libraryBody = "{}"
+    moviesLibraryBody = """
+      {"movies":[{"status":"completed","last_watched_at":"2026-05-20T10:00:00Z",
+        "movie":{"title":"Film Rivisto","year":2020,"ids":{"tmdb":"5902"}}}]}
+    """.trimIndent()
+
+    val result = SimklSyncManager.sync(force = true)
+
+    assertEquals("un dato remoto più vecchio non vince", 0, result.completedTitlesMarked)
+    val item = inCatalogo("tmdb_m_5902")
+    assertEquals(600_000L, item?.currentProgressMs)
+    assertEquals(true, item?.inContinueWatching)
+    assertEquals(null, item?.completedAt)
+  }
+
+  @Test
   fun unaSerieConclusaDellaLibreriaNonToccaLoStatoLocale() = runBlocking {
     catalogo("tmdb_tv_5508", 5508, "Serie Finita", MediaType.SERIE_TV, episodiTemporada = 5)
     playbackBody = "[]"
@@ -995,7 +1053,11 @@ class SimklSyncIntegrationTest {
     val result = SimklSyncManager.sync(force = true)
 
     assertEquals("una serie conclusa non è un punto di ripresa", 0, result.adoptedLibraryEpisodes)
-    assertEquals(0L, inCatalogo("tmdb_tv_5508")?.currentProgressMs)
+    assertEquals("completamento verificato su SIMKL", 1, result.completedTitlesMarked)
+    val item = inCatalogo("tmdb_tv_5508")
+    assertEquals(0L, item?.currentProgressMs)
+    assertEquals("la card esce dalla riga", false, item?.inContinueWatching)
+    assertTrue("completedAt registrato", (item?.completedAt ?: 0L) > 0L)
     assertEquals("i badge 'visto' restano disponibili", 1, result.watchedShowsUpdated)
   }
 
@@ -1021,7 +1083,11 @@ class SimklSyncIntegrationTest {
         (seconda.skipped[SimklDecisionReason.LOCAL_NEWER] ?: 0)
     )
     assertEquals("una sola riga in catalogo", 1, MediaRepository.mediaList.value.count { it.tmdbId == 5509 })
-    assertEquals("una sola card", 1, MediaRepository.getContinueWatching().count { it.tmdbId == 5509 })
+    assertEquals(
+      "una sola card, e resta in riga (è il «Continua a guardare» del sito SIMKL)",
+      1,
+      MediaRepository.getContinueWatching().count { it.tmdbId == 5509 }
+    )
     assertEquals("niente in attesa: la voce è applicata", 0, seconda.deferredForRetry)
   }
 
@@ -1160,12 +1226,23 @@ class SimklSyncIntegrationTest {
       attendi { MediaRepository.getContinueWatching().none { it.id in setOf("tmdb_m_1288069", "tt6262770") } }
     )
     assertTrue(
-      "entrambe le schede sono fuori dal catalogo",
-      attendi { MediaRepository.mediaList.value.none { it.id in setOf("tmdb_m_1288069", "tt6262770") } }
+      "le schede restano in catalogo: la rimozione non è distruttiva",
+      MediaRepository.mediaList.value.any { it.id in setOf("tmdb_m_1288069", "tt6262770") }
     )
     assertTrue(
-      "nessuna riga orfana in Room",
-      attendi { rigaRoom("tmdb_m_1288069") == null && rigaRoom("tt6262770") == null }
+      "entrambe le schede sono fuori dalla riga",
+      MediaRepository.mediaList.value
+        .filter { it.id in setOf("tmdb_m_1288069", "tt6262770") }
+        .all { !it.inContinueWatching }
+    )
+    assertTrue(
+      "le righe Room restano, con i progressi intatti",
+      attendi {
+        val a = rigaRoom("tmdb_m_1288069")
+        val b = rigaRoom("tt6262770")
+        a != null && b != null && !a.inContinueWatching && !b.inContinueWatching &&
+          (a.currentProgressMs > 0L || b.currentProgressMs > 0L)
+      }
     )
   }
 

@@ -45,6 +45,9 @@ import com.example.data.prefs.PersistentSubtitleStore
 import com.example.data.image.ImageCache
 import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
+import com.example.data.repository.SimklMediaKind
+import com.example.data.repository.SimklMediaPayload
+import com.example.data.repository.SimklRepository
 import com.example.data.repository.HomeCatalogs
 import com.example.data.repository.LastWorkingStreamRepository
 import com.example.data.repository.ProviderCoverage
@@ -3827,6 +3830,14 @@ class StreamNovaViewModel(
       }
     } else {
       MediaRepository.updateProgress(session.mediaId, finalPos, current.durationMs)
+      // Conclusione di un FILM: posizione alla fine della durata MISURATA. Non cancella
+      // nulla: registra `completedAt` e toglie la card dalla riga, conservando la scheda.
+      val measuredDuration = if (lastMeasuredDurationMs > 0L) {
+        lastMeasuredDurationMs
+      } else {
+        current.durationMs
+      }
+      MediaRepository.maybeCompleteMovie(session.mediaId, finalPos, measuredDuration)
     }
   }
 
@@ -6048,12 +6059,51 @@ fun backToBrowsing() {
   fun toggleWatched(media: MediaItem) {
     val current = MediaRepository.getMediaById(media.id) ?: media
     val targetProgress = if (current.isWatched) 0L else current.totalDurationMs.coerceAtLeast(1L)
+    val becomingWatched = !current.isWatched
     MediaRepository.updateProgress(current.id, targetProgress)
     if (_selectedMedia.value?.id == current.id) {
       _selectedMedia.update { it?.copy(currentProgressMs = targetProgress) }
     }
     syncSourceDialogMedia { target ->
       if (target.id == current.id) target.copy(currentProgressMs = targetProgress) else target
+    }
+    broadcastWatchedToggleToSimkl(current, becomingWatched)
+  }
+
+  /**
+   * Trasmette la marcatura «visto» anche a SIMKL (`/sync/history` e
+   * `/sync/history/remove`), come fa Nuvio: una marcatura locale deve esistere anche
+   * sull'account, non solo nel catalogo locale.
+   *
+   * SOLO i film viaggiano: per una serie SIMKL espanderebbe la marcatura a TUTTI gli
+   * episodi, e i singoli episodi arrivano comunque come scrobble del player. Il fallimento
+   * (rete, `not_found`) non tocca lo stato locale, che è già stato scritto.
+   */
+  private fun broadcastWatchedToggleToSimkl(media: MediaItem, becomingWatched: Boolean) {
+    if (media.type != MediaType.FILM) return
+    val hasIdentifiers = (media.tmdbId ?: 0) > 0 || !media.effectiveImdbId.isNullOrBlank()
+    if (!hasIdentifiers) return
+    val payload = SimklMediaPayload(
+      title = media.title,
+      year = media.year,
+      tmdbId = media.tmdbId,
+      imdbId = media.effectiveImdbId,
+      episode = null,
+      kind = SimklMediaKind.MOVIE,
+      mediaId = media.id
+    )
+    viewModelScope.launch {
+      val delivered = if (becomingWatched) {
+        SimklRepository.markWatched(payload)
+      } else {
+        SimklRepository.unmarkWatched(payload)
+      }
+      if (delivered) {
+        Log.i(
+          "SimklWatched",
+          "Marcatura ${if (becomingWatched) "«visto»" else "«da vedere»"} confermata da SIMKL: ${media.title}."
+        )
+      }
     }
   }
 
@@ -6116,8 +6166,20 @@ fun backToBrowsing() {
   fun removeFromContinueWatching(mediaId: String) {
     Log.d("REMOVE_CW", "ViewModel.removeFromContinueWatching called with mediaId=$mediaId")
     viewModelScope.launch {
+      val media = MediaRepository.getMediaById(mediaId)
       MediaRepository.removeFromContinueWatching(mediaId)
       Log.d("REMOVE_CW", "ViewModel: MediaRepository.removeFromContinueWatching completed")
+      // Rimozione PERSISTENTE lato SIMKL: chiude le sessioni di pausa del titolo
+      // (`DELETE /sync/playback/{id}`), altrimenti la card rientra alla sincronizzazione
+      // successiva. Best-effort: il fallimento non invalida la rimozione locale.
+      if (media != null) {
+        SimklRepository.deletePlaybackSessionsFor(
+          title = media.title,
+          year = media.year,
+          tmdbId = media.tmdbId,
+          imdbId = media.effectiveImdbId
+        )
+      }
     }
   }
 

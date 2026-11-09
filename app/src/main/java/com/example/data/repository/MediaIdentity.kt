@@ -117,6 +117,29 @@ object MediaIdentity {
     .maxWithOrNull(compareBy({ it.lastWatchedAt ?: 0L }, { it.currentProgressMs }))
 
   /**
+   * true se la scheda può stare in «Continua a guardare»: l'utente non l'ha rimossa e
+   * esiste uno stato di ripresa. Per una serie vale anche l'episodio successivo non
+   * ancora iniziato (`next_to_watch` di SIMKL, provenienza
+   * [com.example.data.local.MEDIA_SOURCE_SIMKL_NEXT_UP]): posizione 0 ma episodio
+   * corrente noto — è la riga che il sito SIMKL mostra.
+   */
+  fun isContinueWatchingCandidate(item: MediaItem): Boolean =
+    item.inContinueWatching &&
+      (item.currentProgressMs > 0L ||
+        (item.type == com.example.data.model.MediaType.SERIE_TV &&
+          item.lastWatchedSeason != null &&
+          item.lastWatchedEpisode != null))
+
+  /**
+   * La scheda di «Continua a guardare» con lo stato più recente: data di visione, poi
+   * posizione. A differenza di [newestState] considera anche una serie ferma
+   * sull'episodio successivo con progresso 0.
+   */
+  fun newestContinueWatchingState(items: List<MediaItem>): MediaItem? = items
+    .filter { isContinueWatchingCandidate(it) }
+    .maxWithOrNull(compareBy({ it.lastWatchedAt ?: 0L }, { it.currentProgressMs }))
+
+  /**
    * La scheda dello stesso contenuto con lo stato utente più recente, a partire da un id:
    * la riga su cui scrivere il progresso che la UI mostrerà. Quando nessuna scheda del
    * gruppo ha un progresso si conserva la scheda indicata (nessuna riga viene spostata a
@@ -124,16 +147,20 @@ object MediaIdentity {
    */
   fun newestStateById(items: List<MediaItem>, id: String): MediaItem? {
     val seed = items.firstOrNull { it.id == id } ?: return null
-    return newestState(strongGroup(items, seed)) ?: seed
+    val group = strongGroup(items, seed)
+    return newestContinueWatchingState(group) ?: newestState(group) ?: seed
   }
 
   /**
-   * Deduplicazione di «Continua a guardare»: una scheda per titolo, quella con il progresso
-   * più recente. Le schede senza progresso non entrano nell'elenco e l'ordine della lista
+   * Deduplicazione di «Continua a guardare»: una scheda per titolo, quella con lo stato di
+   * ripresa più recente. Le schede rimosse manualmente (`inContinueWatching = false`) e
+   * quelle senza alcuno stato di ripresa non entrano nell'elenco; l'ordine della lista
    * d'ingresso è preservato (il consumatore ordina poi per data di visione).
    */
   fun dedupeByProgress(items: List<MediaItem>): List<MediaItem> {
-    val winners = identityGroups(items).mapNotNull { newestState(it)?.id }.toSet()
+    val winners = identityGroups(items)
+      .mapNotNull { newestContinueWatchingState(it)?.id }
+      .toSet()
     return items.filter { it.id in winners }
   }
 

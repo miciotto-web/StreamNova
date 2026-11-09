@@ -56,7 +56,10 @@ class ContinueWatchingRowPolicyTest {
     posterUrl: String? = "https://img.example/poster.jpg",
     rating: Float = 8.0f,
     lastWatchedAt: Long = 1_000L,
-    tmdbId: Int = 100
+    tmdbId: Int = 100,
+    // Le card di questi scenari hanno uno stato di ripresa reale: dalla v12 il default
+    // del flag è `false` (una scheda TMDB fresca non è candidata), quindi va esplicitato.
+    inContinueWatching: Boolean = true
   ) = MediaItem(
     id = id,
     title = title,
@@ -70,6 +73,7 @@ class ContinueWatchingRowPolicyTest {
     lastWatchedSeason = lastSeason,
     lastWatchedEpisode = lastEpisode,
     lastWatchedAt = lastWatchedAt,
+    inContinueWatching = inContinueWatching,
     episodes = episodes,
     seasonEpisodesCount = seasonEpisodesCount,
     nextEpisode = nextEpisode,
@@ -83,7 +87,8 @@ class ContinueWatchingRowPolicyTest {
     title: String = "Film Uno",
     progressMs: Long = 20 * 60_000L,
     lastWatchedAt: Long = 2_000L,
-    rating: Float = 7.0f
+    rating: Float = 7.0f,
+    inContinueWatching: Boolean = true
   ) = MediaItem(
     id = id,
     title = title,
@@ -93,6 +98,7 @@ class ContinueWatchingRowPolicyTest {
     currentProgressMs = progressMs,
     totalDurationMs = 100 * 60_000L,
     lastWatchedAt = lastWatchedAt,
+    inContinueWatching = inContinueWatching,
     backdropUrl = "https://img.example/film_backdrop.jpg",
     posterUrl = "https://img.example/film_poster.jpg",
     rating = rating
@@ -338,9 +344,26 @@ class ContinueWatchingRowPolicyTest {
       todayIso = today
     ).map { it.media.id }
 
+    // La visione più recente vince SEMPRE: TITLE/RATING non possono scavalcare la
+    // cronologia (riprendere un titolo lo porta in prima posizione).
     assertEquals(listOf("b", "c", "a"), ids(ContinueWatchingSort.DEFAULT))
-    assertEquals(listOf("a", "b", "c"), ids(ContinueWatchingSort.TITLE))
+    assertEquals(listOf("b", "c", "a"), ids(ContinueWatchingSort.TITLE))
     assertEquals(listOf("b", "c", "a"), ids(ContinueWatchingSort.RATING))
+  }
+
+  @Test
+  fun titleERatingRestanoSoloComeSpareggio() {
+    val a = movie(id = "a", title = "Alfa", lastWatchedAt = 1_000L, rating = 6f)
+    val b = movie(id = "b", title = "Bravo", lastWatchedAt = 1_000L, rating = 9f)
+
+    fun ids(sort: ContinueWatchingSort) = ContinueWatchingRowPolicy.build(
+      items = listOf(b, a),
+      preferences = ContinueWatchingPreferences(sort = sort),
+      todayIso = today
+    ).map { it.media.id }
+
+    assertEquals("a parità di data vince il titolo", listOf("a", "b"), ids(ContinueWatchingSort.TITLE))
+    assertEquals("a parità di data vince il voto", listOf("b", "a"), ids(ContinueWatchingSort.RATING))
   }
 
   @Test
