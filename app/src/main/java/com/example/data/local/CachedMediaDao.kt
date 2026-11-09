@@ -112,6 +112,14 @@ interface CachedMediaDao {
   @Query("UPDATE cached_media_items SET inContinueWatching = 0, completedAt = :completedAt, currentProgressMs = :progressMs WHERE id = :id")
   suspend fun markMovieCompleted(id: String, completedAt: Long, progressMs: Long)
 
+  /**
+   * Ritiro del "visto" da parte dell'utente: annulla il completamento locale. Nulla
+   * tocca la posizione né il flag «Continua a guardare»: la scheda rientra se ha uno
+   * stato di ripresa.
+   */
+  @Query("UPDATE cached_media_items SET completedAt = NULL WHERE id = :id")
+  suspend fun clearCompleted(id: String)
+
   @Query("SELECT COUNT(*) FROM cached_media_items")
   suspend fun count(): Int
 

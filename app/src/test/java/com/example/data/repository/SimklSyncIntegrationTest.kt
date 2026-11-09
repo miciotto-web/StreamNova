@@ -1091,6 +1091,48 @@ class SimklSyncIntegrationTest {
     assertEquals("niente in attesa: la voce è applicata", 0, seconda.deferredForRetry)
   }
 
+  @Test
+  fun unaSerieConclusaInLocaleNonRientraDallaRigaENotificaSimkl() = runBlocking {
+    catalogo("tmdb_tv_5510", 5510, "La Casa Senza Fine 10", MediaType.SERIE_TV, episodiTemporada = 3)
+    // Conclusione LOCALE (toggle dell'utente o ultimo episodio verificato): la card esce
+    // dalla riga e il sink dei completamenti trasmette `status=completed` a SIMKL.
+    MediaRepository.markWatchedManually("tmdb_tv_5510")
+    assertTrue(
+      "il completamento locale deve arrivare a SIMKL: $recorded",
+      recorded.any { it.startsWith("/sync/history?") }
+    )
+    assertEquals("la card esce dalla riga", 0, MediaRepository.getContinueWatching().count { it.tmdbId == 5510 })
+    assertTrue(
+      "completedAt persistito",
+      attendi { rigaRoom("tmdb_tv_5510")?.completedAt != null }
+    )
+
+    // SIMKL però dice ancora "watching" con un next_to_watch: senza guard la card
+    // rientrerebbe nella riga, cancellando la conclusione dell'utente.
+    playbackBody = "[]"
+    libraryBody = libreriaSerieInVisione(
+      titolo = "La Casa Senza Fine 10", tmdbId = 5510, imdbId = "tt5510000",
+      stagione = 1, episodio = 2, vistoIl = "2026-05-14T10:00:00Z"
+    )
+
+    val result = SimklSyncManager.sync(force = true)
+
+    assertEquals("il next-up non resuscita una card conclusa in locale", 0, result.adoptedLibraryEpisodes)
+    assertEquals(
+      "il salto è spiegato: ${result.skipped}",
+      1,
+      result.skipped[SimklDecisionReason.LOCALLY_COMPLETED] ?: 0
+    )
+    assertTrue(
+      "la card resta fuori dalla riga",
+      MediaRepository.getContinueWatching().none { it.tmdbId == 5510 }
+    )
+    assertTrue(
+      "il completamento locale resta registrato",
+      rigaRoom("tmdb_tv_5510")?.completedAt != null
+    )
+  }
+
   // ── Titolo in due schede: TMDB + Stremio/IMDb ──────────────────────────────
 
   /**

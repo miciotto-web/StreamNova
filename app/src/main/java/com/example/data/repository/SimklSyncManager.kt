@@ -492,6 +492,12 @@ object SimklSyncManager {
           if (!sessionValid()) return null
           reason = SimklDecisionReason.UNRESOLVED_TITLE
           unresolved.add(entryLabel(entry))
+        } else if (target.completedAt != null) {
+          // Concluso in LOCALE (fine riproduzione verificata o toggle dell'utente) e già
+          // notificato a SIMKL: le voci di playback e `next_to_watch` non devono
+          // resuscitare la card dalla riga. Se SIMKL conferma lo stato `completed`, la
+          // riconciliazione dei completamenti lo ribadisce senza riaccendere nulla.
+          reason = SimklDecisionReason.LOCALLY_COMPLETED
         } else {
           val local = localProgressFor(entry, target)
           val decision = SimklProgressMergePolicy.decide(

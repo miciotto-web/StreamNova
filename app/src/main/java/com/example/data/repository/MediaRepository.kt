@@ -2079,6 +2079,9 @@ object MediaRepository {
     } catch (e: Exception) {
       Log.w(TAG_CW, "Completamento serie non persistito per $mediaId: ${e.message}")
     }
+    // Conclusione verificata in LOCALE (ultimo episodio davvero finito): va trasmessa a
+    // SIMKL (`status=completed`), così la serie esce anche dalla riga del sito.
+    announceLocalCompletion(mediaId)
   }
 
   /**
@@ -2807,7 +2810,8 @@ object MediaRepository {
   suspend fun markCompletedFromSimkl(
     mediaId: String,
     completedAtMs: Long,
-    setProgressToEnd: Boolean
+    setProgressToEnd: Boolean,
+    announceToLocalSink: Boolean = false
   ) {
     val seed = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
     if (seed.type != MediaType.FILM) return
@@ -2863,6 +2867,74 @@ object MediaRepository {
     } catch (e: Exception) {
       Log.w(TAG_CW, "Completamento film non persistito per $mediaId: ${e.message}")
     }
+    // Il completamento nato in LOCALE (fine riproduzione o toggle dell'utente) va
+    // trasmesso a SIMKL: è ciò che toglie il film dalla "Continua a guardare" del sito.
+    // I completamenti arrivati da SIMKL non si notificano (eco).
+    if (announceToLocalSink) announceLocalCompletion(mediaId)
+  }
+
+  /**
+   * Destinatario dei completamenti nati in LOCALE (player, toggle dell'utente): la
+   * sincronizzazione SIMKL si registra qui in [com.example.data.repository.SimklRepository.init]
+   * e trasmette il completamento all'account. I completamenti originati da SIMKL non
+   * passano da qui: sarebbero un eco della sincronizzazione su se stessa.
+   */
+  fun interface LocalCompletionSink {
+    suspend fun onLocalCompletion(media: MediaItem)
+  }
+
+  @Volatile
+  var localCompletionSink: LocalCompletionSink? = null
+
+  private suspend fun announceLocalCompletion(mediaId: String) {
+    val sink = localCompletionSink ?: return
+    val media = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    runCatching { sink.onLocalCompletion(media) }
+      .onFailure { Log.w(TAG_CW, "Notifica completamento a SIMKL fallita per ${media.title}: ${it.message}") }
+  }
+
+  /**
+   * Marcatura manuale "visto" dell'utente: è una conclusione LOCALE — nasconde la card
+   * dalla riga, registra `completedAt` e notifica SIMKL tramite [localCompletionSink]
+   * (serie: `status=completed`; film: cronologia vista).
+   */
+  suspend fun markWatchedManually(mediaId: String) {
+    val seed = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    when (seed.type) {
+      MediaType.SERIE_TV ->
+        markSeriesCompletedFromSimkl(mediaId, System.currentTimeMillis(), announceToLocalSink = true)
+      else ->
+        markCompletedFromSimkl(mediaId, System.currentTimeMillis(), setProgressToEnd = true, announceToLocalSink = true)
+    }
+  }
+
+  /**
+   * Annullamento del "visto" da parte dell'utente: il completamento locale viene
+   * ritirato (la notifica a SIMKL del ritiro è a carico del chiamante, che conosce il
+   * tipo e usa `history/remove`).
+   */
+  suspend fun clearCompletedManually(mediaId: String) {
+    val seed = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    val ids = MediaIdentity.groupById(_mediaList.value, mediaId)
+      .ifEmpty { listOf(seed) }
+      .map { it.id }
+      .toSet()
+    _mediaList.update { list ->
+      list.map { item ->
+        if (item.id in ids && item.completedAt != null) item.copy(completedAt = null) else item
+      }
+    }
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id in ids) {
+      _detailUiState.value = detail.copy(media = detail.media.copy(completedAt = null))
+    }
+    database?.let { db ->
+      try {
+        ids.forEach { id -> db.cachedMediaDao().clearCompleted(id) }
+      } catch (e: Exception) {
+        Log.w(TAG_CW, "Ritiro completamento non persistito per $mediaId: ${e.message}")
+      }
+    }
   }
 
   /**
@@ -2871,7 +2943,7 @@ object MediaRepository {
    * tutte le righe `episode_progress`. Non viene mai usato per un singolo episodio visto,
    * che è invece un avanzamento (la serie resta in «Continua a guardare»).
    */
-  suspend fun markSeriesCompletedFromSimkl(mediaId: String, completedAtMs: Long) {
+  suspend fun markSeriesCompletedFromSimkl(mediaId: String, completedAtMs: Long, announceToLocalSink: Boolean = false) {
     val seed = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
     if (seed.type != MediaType.SERIE_TV) return
     if (!seed.inContinueWatching && seed.completedAt != null) return
@@ -2902,6 +2974,9 @@ object MediaRepository {
     } catch (e: Exception) {
       Log.w(TAG_CW, "Completamento serie non persistito per $mediaId: ${e.message}")
     }
+    // Vedi `markCompletedFromSimkl`: solo le conclusioni nate in LOCALE (ultimo episodio
+    // verificato o toggle dell'utente) vengono trasmesse a SIMKL.
+    if (announceToLocalSink) announceLocalCompletion(mediaId)
   }
 
   /**
@@ -2946,7 +3021,9 @@ object MediaRepository {
     if (!WatchProgress.isAtEnd(positionMs, durationMs)) return
     repoScope.launch {
       runCatching {
-        markCompletedFromSimkl(mediaId, System.currentTimeMillis(), setProgressToEnd = true)
+        // Completamento nato in LOCALE: viene annunciato a SIMKL (`/sync/history`),
+        // così il film esce anche dalla "Continua a guardare" del sito.
+        markCompletedFromSimkl(mediaId, System.currentTimeMillis(), setProgressToEnd = true, announceToLocalSink = true)
       }.onFailure { Log.w(TAG_CW, "Completamento film fallito per $mediaId: ${it.message}") }
     }
   }

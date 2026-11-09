@@ -36,6 +36,7 @@ import com.example.data.remote.simkl.SimklWatchlistEntry
 import com.example.data.remote.simkl.SimklWatchlistParser
 import com.example.data.remote.simkl.SimklWatchedLibrary
 import com.example.data.remote.simkl.SimklWatchedLibraryData
+import com.example.data.model.MediaType
 import com.example.data.prefs.AppSettingsRepository
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -189,6 +190,25 @@ object SimklRepository {
     if (appContext === applicationContext && apiOverride === simklApi) return
     appContext = applicationContext
     apiOverride = simklApi
+    // I completamenti nati in LOCALE (player, toggle dell'utente) vengono trasmessi
+    // all'account: è ciò che fa sparire film e serie concluse anche da SIMKL, non solo
+    // dalla riga locale. I completamenti originati da SIMKL NON passano dal sink
+    // (sarebbero un eco della sincronizzazione su se stessa).
+    MediaRepository.localCompletionSink = MediaRepository.LocalCompletionSink { media ->
+      val payload = SimklMediaPayload(
+        title = media.title,
+        year = media.year,
+        tmdbId = media.tmdbId,
+        imdbId = media.effectiveImdbId,
+        episode = null,
+        kind = if (media.type == MediaType.SERIE_TV) SimklMediaKind.SERIES else SimklMediaKind.MOVIE,
+        mediaId = media.id
+      )
+      when (media.type) {
+        MediaType.SERIE_TV -> markSeriesCompleted(payload)
+        else -> markWatched(payload)
+      }
+    }
     // Con un'API iniettata il client va ricostruito subito attorno a quella (i test
     // usano un MockWebServer). Con il default resta differito al primo uso reale.
     authClientInstance = simklApi?.let { SimklAuthClient(it) }
@@ -1070,6 +1090,78 @@ object SimklRepository {
   }
 
   /**
+   * Dichiara CONCLUSA un'intera serie su SIMKL (`POST /sync/history` con
+   * `shows[].status = "completed"`): è ciò che fa sparire la serie dalla "Continua a
+   * guardare" del sito quando StreamNova la conclude — ultimo episodio verificato o
+   * marcatura manuale dell'utente.
+   *
+   * Non lancia (la conclusione LOCALE è già avvenuta): restituisce `false` con log su
+   * HTTP non riuscito o `not_found`.
+   *
+   * @return true se SIMKL ha confermato lo stato `completed`.
+   */
+  suspend fun markSeriesCompleted(media: SimklMediaPayload): Boolean = withContext(Dispatchers.IO) {
+    if (!accountMutable.value.isLoggedIn) return@withContext false
+    if (!media.hasIdentifiers) return@withContext false
+    val payload = mapOf("shows" to listOf(media.toShowItem(status = "completed")))
+    try {
+      val response = withAuthorizedToken { token ->
+        api.addHistory(requireClientId(), "Bearer $token", payload)
+      }
+      if (!response.isSuccessful) {
+        Log.w(TAG, "Conclusione serie SIMKL fallita per ${media.title} (${response.code()}).")
+        return@withContext false
+      }
+      // Anche qui vale `not_found`: un titolo che il resolver SIMKL non riconosce non è
+      // un completamento riuscito.
+      val notFound = (response.body()?.get("not_found") as? Map<*, *>)
+      val notFoundCount = listOf("movies", "shows", "episodes").sumOf { key ->
+        (notFound?.get(key) as? List<*>)?.size ?: 0
+      }
+      if (notFoundCount > 0) {
+        Log.w(TAG, "SIMKL non ha riconosciuto $notFoundCount elemento/i per ${media.title}.")
+        return@withContext false
+      }
+      invalidateWatchedCache()
+      true
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Conclusione serie SIMKL fallita per ${media.title}: ${e.message}")
+      false
+    }
+  }
+
+  /**
+   * Annulla la cronologia di un'intera serie su SIMKL (`POST /sync/history/remove` con
+   * la voce show SENZA `status` e SENZA episodi): l'inverso di [markSeriesCompleted].
+   * Non lancia.
+   *
+   * @return true se SIMKL ha confermato la rimozione.
+   */
+  suspend fun removeSeriesHistory(media: SimklMediaPayload): Boolean = withContext(Dispatchers.IO) {
+    if (!accountMutable.value.isLoggedIn) return@withContext false
+    if (!media.hasIdentifiers) return@withContext false
+    val payload = mapOf("shows" to listOf(media.toShowItem()))
+    try {
+      val response = withAuthorizedToken { token ->
+        api.removeHistory(requireClientId(), "Bearer $token", payload)
+      }
+      if (!response.isSuccessful) {
+        Log.w(TAG, "Rimozione cronologia serie SIMKL fallita per ${media.title} (${response.code()}).")
+        return@withContext false
+      }
+      invalidateWatchedCache()
+      true
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Rimozione cronologia serie SIMKL fallita per ${media.title}: ${e.message}")
+      false
+    }
+  }
+
+  /**
    * Chiude sul server le sessioni di pausa SIMKL del titolo (ogni episodio ha la sua
    * sessione): è ciò che rende PERSISTENTE la rimozione di una card da «Continua a
    * guardare» — senza questa chiamata la sessione resta aperta lato SIMKL e la card
@@ -1401,6 +1493,28 @@ data class SimklMediaPayload(
         put("episode", mapOf("season" to episode.season, "number" to episode.number))
       }
     }
+  }
+
+  /**
+   * Item a livello SERIE per `/sync/history` e `/sync/history/remove`: `title`, `year`,
+   * `ids` al primo livello e — solo nella marcatura — `status: "completed"`.
+   *
+   * È la forma documentata per dichiarare CONCLUSA un'intera serie: senza
+   * `seasons`/`episodes` il server registra lo stato show-level (e la cronologia degli
+   * episodi la espande per conto suo), che è ciò che fa sparire la serie dalla
+   * "Continua a guardare" del sito. Nella rimozione `status` NON va inviato.
+   */
+  fun toShowItem(status: String? = null): Map<String, Any> = buildMap {
+    put("title", title)
+    year?.takeIf { it > 0 }?.let { put("year", it) }
+    put(
+      "ids",
+      buildMap<String, String> {
+        tmdbId?.takeIf { it > 0 }?.let { put("tmdb", it.toString()) }
+        imdbId?.takeIf { it.isNotBlank() }?.let { put("imdb", it) }
+      }
+    )
+    status?.takeIf { it.isNotBlank() }?.let { put("status", it) }
   }
 
   /**

@@ -183,6 +183,42 @@ class SimklHistoryAndPlaybackRemovalTest {
   // ── Rimozione da «Continua a guardare» → chiusura sessioni ───────────────
 
   @Test
+  fun laConclusioneDiUnaSerieInviaStatusCompletedAShowLevel() = runBlocking {
+    val consegnata = SimklRepository.markSeriesCompleted(serie())
+
+    assertTrue("la conclusione deve arrivare a SIMKL", consegnata)
+    val richiesta = received.single { it.path == "/sync/history" }
+    assertEquals("POST", richiesta.method)
+    val body = JSONObject(richiesta.body)
+    val show = body.getJSONArray("shows").getJSONObject(0)
+    assertEquals(
+      "`status=completed` è la forma documentata per dichiarare conclusa una serie intera",
+      "completed",
+      show.getString("status")
+    )
+    assertEquals("5502", show.getJSONObject("ids").getString("tmdb"))
+    assertFalse(
+      "senza `seasons`/`episodes`: SIMKL espande la cronologia da solo e non serve un watched_at",
+      show.has("seasons") || show.has("episodes") || show.has("watched_at")
+    )
+  }
+
+  @Test
+  fun ilRitiroDellaSerieInviaHistoryRemoveSenzaStatus() = runBlocking {
+    val consegnata = SimklRepository.removeSeriesHistory(serie())
+
+    assertTrue(consegnata)
+    val richiesta = received.single { it.path == "/sync/history/remove" }
+    assertEquals("POST", richiesta.method)
+    val show = JSONObject(richiesta.body).getJSONArray("shows").getJSONObject(0)
+    assertEquals("5502", show.getJSONObject("ids").getString("tmdb"))
+    assertFalse(
+      "la rimozione NON porta `status`: cancella la cronologia invece di fissarne una nuova",
+      show.has("status")
+    )
+  }
+
+  @Test
   fun laRimozioneDellaCardChiudeSoloLeSessioniDelTitolo() = runBlocking {
     val chiuse = SimklRepository.deletePlaybackSessionsFor(
       title = "Matrix", year = 1999, tmdbId = 603, imdbId = "tt0133093"
@@ -225,6 +261,12 @@ class SimklHistoryAndPlaybackRemovalTest {
 
   private fun film(): SimklMediaPayload =
     SimklMediaPayload("Matrix", 1999, 603, "tt0133093")
+
+  private fun serie(): SimklMediaPayload =
+    SimklMediaPayload(
+      "La Casa Senza Fine", 2020, 5502, "tt5502000",
+      episode = null, kind = SimklMediaKind.SERIES
+    )
 
   private companion object {
     val OAUTH_DEVICE = """

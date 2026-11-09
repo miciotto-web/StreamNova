@@ -342,6 +342,11 @@ enum class SimklDecisionReason(val label: String) {
   UNKNOWN_TIMESTAMP("data di pausa assente"),
   /** Già allineati: nessuna scrittura necessaria. */
   ALREADY_IN_SYNC("già allineati"),
+  /**
+   * Concluso in LOCALE (fine riproduzione verificata o toggle dell'utente, già notificato
+   * a SIMKL): le voci di playback e `next_to_watch` non devono resuscitarlo dalla riga.
+   */
+  LOCALLY_COMPLETED("già concluso in locale"),
   /** Nessun titolo locale corrispondente e importazione non riuscita. */
   UNRESOLVED_TITLE("titolo non riconosciuto"),
   /** Tentativi di recupero esauriti: la voce non viene più riprovata. */
