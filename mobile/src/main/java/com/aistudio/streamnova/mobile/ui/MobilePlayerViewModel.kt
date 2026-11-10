@@ -276,7 +276,13 @@ class MobilePlayerViewModel : ViewModel() {
         return@launch
       }
 
-      val chosen = ordered.firstNotNullOfOrNull { resolvePlayable(it) }
+      val chosen = ordered.firstNotNullOfOrNull {
+        resolvePlayable(
+          source = it,
+          season = resolvedEpisode?.seasonNumber,
+          episode = resolvedEpisode?.episodeNumber
+        )
+      }
       if (chosen == null) {
         publish(baseState.copy(
           sources = ordered,
@@ -304,7 +310,13 @@ class MobilePlayerViewModel : ViewModel() {
       // Sblocco Debrid in corso: il selettore resta aperto ma mostra il
       // caricamento, cosi' il tap dell'utente non sembra perso.
       _state.value = MobileManualSourcePolicy.stateAfterSelectionStart(current)
-      val playable = resolvePlayable(source)
+      // Stagione/episodio della puntata correntemente in riproduzione: vincolano
+      // lo sblocco al file dell'episodio scelto (stesso criterio della TV).
+      val playable = resolvePlayable(
+        source = source,
+        season = current.episode?.seasonNumber,
+        episode = current.episode?.episodeNumber
+      )
       _state.value = MobileManualSourcePolicy.stateAfterSelection(current, playable)
     }
   }
@@ -430,11 +442,25 @@ class MobilePlayerViewModel : ViewModel() {
     return NextEpisodePromptUtils.resolveNextEpisode(merged, current)
   }
 
-  /** Sblocca un candidato Debrid e restituisce la sorgente riproducibile. */
-  private suspend fun resolvePlayable(source: StreamSource): StreamSource? {    if (!source.streamUrl.isNullOrBlank()) return source
+  /**
+   * Sblocca un candidato Debrid e restituisce la sorgente riproducibile.
+   *
+   * Stagione ed episodio arrivano ESPLICITAMENTE dallo stato del player (stessa
+   * regola della TV): lo sblocco deve riguardare il file di QUESTO episodio e la
+   * cache dei link resta per-episodio; senza questi parametri un torrent di
+   * stagione sbloccava il primo file (risoluzione/episodio arbitrari) e riusava
+   * il link di un altro episodio per tutto il TTL.
+   */
+  private suspend fun resolvePlayable(source: StreamSource, season: Int?, episode: Int?): StreamSource? {
+    if (!source.streamUrl.isNullOrBlank()) return source
     val infoHash = source.infoHash?.takeIf { it.isNotBlank() } ?: return null
     val unlocked = runCatching {
-      TorBoxRepository.resolveInfoHash(infoHash, source.fileIdx)
+      TorBoxRepository.resolveInfoHash(
+        infoHash = infoHash,
+        fileIdx = source.fileIdx,
+        season = season,
+        episode = episode
+      )
     }.getOrNull()
     return if (unlocked.isNullOrBlank()) {
       null

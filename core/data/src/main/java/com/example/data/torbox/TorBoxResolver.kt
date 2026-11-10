@@ -27,7 +27,8 @@ object TorBoxResolver {
         filename: String?,
         season: Int?,
         episode: Int?,
-        sources: List<String>? = null
+        sources: List<String>? = null,
+        fileIdx: Int? = null
     ): ResolveResult {
         val apiKey = AppSettingsRepository.torBoxApiKey.value?.trim()
         if (apiKey.isNullOrBlank()) {
@@ -40,7 +41,7 @@ object TorBoxResolver {
         val authorization = "Bearer $apiKey"
 
         return try {
-            Log.i("[StreamNova-TorBox-Debug]", "1. DATI STREAM DALL'ADDON (resolve): infoHash=$infoHash, filename=$filename, season=$season, episode=$episode")
+            Log.i("[StreamNova-TorBox-Debug]", "1. DATI STREAM DALL'ADDON (resolve): infoHash=$infoHash, filename=$filename, season=$season, episode=$episode, fileIdx=$fileIdx")
             Log.d(TAG, "resolve: createTorrent hash=${infoHash.take(12)}...")
             val createStartMs = System.currentTimeMillis()
             val createResponse = TorBoxApiClient.api.createTorrent(
@@ -73,11 +74,8 @@ object TorBoxResolver {
 
             val files = torrentResponse.body()?.data?.files.orEmpty()
             Log.i("[StreamNova-TorBox-Debug]", "2. DATI TORBOX (getTorrent id=$torrentId restituisce ${files.size} file):")
-            val videoExtensions = listOf(".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts", ".m2ts", ".wmv", ".flv")
             for (f in files) {
-                val isVideo = f.mimeType.orEmpty().startsWith("video/", ignoreCase = true) ||
-                    videoExtensions.any { f.displayName().endsWith(it, ignoreCase = true) }
-                if (isVideo) {
+                if (f.isPlayableVideo()) {
                     Log.i(
                         "[StreamNova-TorBox-Debug]",
                         "   - [VIDEO FILE] file.id=${f.id}, name='${f.name}', shortName='${f.shortName}', absolutePath='${f.absolutePath}', mimeType='${f.mimeType}', size=${f.size}"
@@ -85,9 +83,32 @@ object TorBoxResolver {
                 }
             }
 
-            val file = TorBoxFileSelector.selectFile(files, filename, season, episode)
+            // Ordine di selezione del file:
+            //  1. Con stagione/episodio noti il match SxxExx è AUTOREVOLE (stessa
+            //     regola della TV): il fileIdx dichiarato dall'addon NON viene usato,
+            //     perché l'indice del metadata torrent di addon come Torrentio NON
+            //     coincide con l'ordinamento dell'array file di TorBox (verificato
+            //     sul campo: fileIdx=6 dichiarato per S2E1 puntava al file 2x07).
+            //     A parità di episodio vince il file più grande (qualità più alta).
+            //  2. Senza episodio (film) il fileIdx dichiarato è il segnale migliore
+            //     della card scelta (es. variante 1080p di un torrent multi-file):
+            //     usato solo se punta a un video reale, altrimenti si ricade sul
+            //     selettore per nome/dimensione.
+            val file = if (season != null && episode != null) {
+                TorBoxFileSelector.selectFile(files, filename, season, episode)
+            } else {
+                files.getOrNull(fileIdx ?: -1)
+                    ?.takeIf { it.isPlayableVideo() }
+                    ?.also {
+                        Log.i(
+                            "[StreamNova-TorBox-Debug]",
+                            "3. FILE SELEZIONATO (fileIdx=$fileIdx): file.id=${it.id}, nome='${it.displayName()}', size=${it.size}"
+                        )
+                    }
+                    ?: TorBoxFileSelector.selectFile(files, filename, season, episode)
+            }
                 ?: run {
-                    Log.w("[StreamNova-TorBox-Debug]", "3. FILE SELEZIONATO: NESSUN FILE corrisponde ai criteri per filename='$filename' (S${season}E${episode})")
+                    Log.w("[StreamNova-TorBox-Debug]", "3. FILE SELEZIONATO: NESSUN FILE corrisponde ai criteri per filename='$filename' (S${season}E${episode}, fileIdx=$fileIdx)")
                     return ResolveResult.Stale
                 }
             val fileId = file.id ?: return ResolveResult.Stale
@@ -162,4 +183,15 @@ object TorBoxResolver {
 
     private fun encode(value: String): String =
         URLEncoder.encode(value, "UTF-8")
+
+    /** Estensioni video accettate per i file torrent (stesso insieme del selettore Debrid). */
+    private val videoExtensions = setOf(
+        ".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v",
+        ".ts", ".m2ts", ".wmv", ".flv"
+    )
+
+    /** true se il file è un video riproducibile (mime `video/` o estensione video nota). */
+    private fun TorboxTorrentFileDto.isPlayableVideo(): Boolean =
+        mimeType.orEmpty().startsWith("video/", ignoreCase = true) ||
+            videoExtensions.any { displayName().endsWith(it, ignoreCase = true) }
 }

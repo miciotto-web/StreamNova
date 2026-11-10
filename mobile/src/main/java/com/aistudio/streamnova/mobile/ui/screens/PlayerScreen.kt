@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -135,6 +136,7 @@ import com.example.ui.screens.player.NuvioRenderersFactory
 import com.example.data.prefs.StreamingEngineMode
 import com.example.ui.screens.player.DebridLoadingScreen
 import com.example.ui.screens.player.DebridLoadingOverlay
+import com.example.ui.screens.player.NuvioExoPlayerPerformanceHelper
 import com.example.ui.screens.player.NuvioTrackSelector
 import com.example.ui.screens.player.PlayerBufferingOverlay
 import com.example.ui.screens.player.PlayerHttpDataSource
@@ -552,8 +554,13 @@ private fun MobileSourcePicker(
         }
       }
     } else {
+      // Chiavi univoche per riga: due INSTALLAZIONI addon diverse (addonInstallId)
+      // o file differenti (fileIdx) dello stesso torrent sono sorgenti distinte, e
+      // la stessa identità può comparire due volte nella lista. Una chiave ripetuta
+      // nel LazyColumn fa crashare il selettore (IllegalArgumentException).
+      val sourceKeys = remember(sources) { uniqueSourceKeys(sources) }
       LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(sources, key = { "${it.serverName}-${it.streamUrl}-${it.infoHash}" }) { source ->
+        itemsIndexed(sources, key = { index, _ -> sourceKeys[index] }) { _, source ->
           SourceCard(source = source, onClick = { onSelect(source) })
         }
       }
@@ -1532,6 +1539,29 @@ private fun MobilePlayerSurface(
 
 // ─── Helper di tracce e impostazioni ───────────────────────────────────────
 
+/**
+ * Chiavi univoche e stabili per le righe del selettore sorgenti.
+ *
+ * L'identità comprende nome server, URL, infoHash, fileIdx e installazione addon
+ * di provenienza (due configurazioni dello stesso addon sono sorgenti distinte).
+ * I residui duplicati esatti vengono disambiguati con un suffisso progressivo:
+ * una chiave ripetuta in un LazyColumn solleva `IllegalArgumentException`.
+ */
+internal fun uniqueSourceKeys(sources: List<StreamSource>): List<String> {
+  val counts = HashMap<String, Int>(sources.size)
+  return sources.map { source ->
+    val base = listOfNotNull(
+      source.serverName,
+      source.streamUrl,
+      source.infoHash,
+      source.fileIdx?.toString(),
+      source.addonInstallId
+    ).joinToString("-")
+    val occurrence = counts.merge(base, 1) { current, _ -> current + 1 }
+    if (occurrence == 1) base else "$base#$occurrence"
+  }
+}
+
 private fun collectAudioTracks(tracks: Tracks): List<MobileAudioTrack> {
   val result = mutableListOf<MobileAudioTrack>()
   var index = 0
@@ -1707,9 +1737,22 @@ private fun buildMobilePlayer(
       }
   }
 
+  // Nuvio BandwidthMeter, come la TV: stima iniziale a 50 Mbps così la SELEZIONE
+  // AUTOMATICA della traccia video (HLS dei provider HTTP) parte dal profilo a
+  // bitrate più alto (es. 1080p) invece che dal più basso (480p) imposto dalla
+  // stima di default di ExoPlayer (~1 Mbps). La discesa adattiva resta attiva:
+  // se la banda reale non regge, AdaptiveTrackSelection scende di rendition.
+  val bandwidthMeter = NuvioExoPlayerPerformanceHelper.buildBandwidthMeter(context)
+  Log.i(
+    PLAYER_ERROR_TAG,
+    "BandwidthMeter mobile: stima iniziale=${bandwidthMeter.bitrateEstimate / 1_000_000} Mbps " +
+      "(preferredResolution=${effectiveSettings.preferredResolution})"
+  )
+
   val player = ExoPlayer.Builder(context, renderersFactory)
     .setTrackSelector(trackSelector)
     .setLoadControl(buildPlayerLoadControl(effectiveSettings))
+    .setBandwidthMeter(bandwidthMeter)
     .setVideoChangeFrameRateStrategy(
       if (effectiveSettings.autoFrameRateMatching) {
         C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
@@ -1718,6 +1761,18 @@ private fun buildMobilePlayer(
       }
     )
     .build()
+
+  // Diagnostica selezione automatica: risoluzione della traccia video selezionata
+  // e stima di banda corrente a ogni variazione (solo log, nessun comportamento).
+  player.addListener(object : Player.Listener {
+    override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+      Log.i(
+        PLAYER_ERROR_TAG,
+        "Selezione video: ${videoSize.width}x${videoSize.height}, " +
+          "banda stimata=${bandwidthMeter.bitrateEstimate / 1_000_000} Mbps"
+      )
+    }
+  })
 
   val mediaItem = PlayerSubtitleMediaItemBuilder.buildMediaItem(streamUrl, source.subtitles)
   player.setMediaSource(mediaSourceFactory.createMediaSource(mediaItem))

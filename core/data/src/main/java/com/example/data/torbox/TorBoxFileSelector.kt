@@ -53,7 +53,12 @@ object TorBoxFileSelector {
             val matches = playable.filter {
                 episodePattern.containsMatchIn(path(it).normalizedPath().substringAfterLast('/'))
             }
-            if (matches.isNotEmpty()) return matches.singleOrNull()
+            if (matches.isNotEmpty()) {
+                // Più file per lo stesso episodio (pack multi-qualità, es. 720p+1080p):
+                // vince il più grande, che è la qualità più alta — non un sample/trailer
+                // (sempre più piccoli). `singleOrNull` falliva l'intero sblocco.
+                return matches.maxByOrNull(size)
+            }
             // Torrent con un solo file video: è il contenuto richiesto anche quando il
             // nome non riporta stagione/episodio (release rinominata). Se però il nome
             // dichiara un ALTRO episodio, non va usato: meglio nessun file che quello

@@ -127,14 +127,22 @@ object TorBoxRepository : TorBoxGateway {
    * restituito anche per S01E02 (per tutto il TTL di 15 minuti): il prossimo episodio
    * partiva con il file dell'episodio precedente. La chiave include quindi stagione ed
    * episodio quando sono noti; per film e richieste senza episodio resta l'hash.
+   *
+   * La chiave include anche [fileIdx]: lo stesso torrent può esporre più card con
+   * risoluzioni diverse (es. 720p e 1080p, stesso hash, fileIdx differenti). Senza
+   * il fileIdx nella chiave il link sbloccato per la card 720p veniva restituito
+   * anche alla selezione della card 1080p (TTL 15 minuti): il player mostrava
+   * 720p pur avendo scelto 1080p.
    */
-  internal fun linkCacheKey(infoHash: String, season: Int?, episode: Int?): String {
+  internal fun linkCacheKey(infoHash: String, season: Int?, episode: Int?, fileIdx: Int? = null): String {
     val hash = normalizeHash(infoHash)
-    return if (season != null && season > 0 && episode != null && episode > 0) {
-      "$hash:s${season}e$episode"
+    val episodeKey = if (season != null && season > 0 && episode != null && episode > 0) {
+      ":s${season}e${episode}"
     } else {
-      hash
+      ""
     }
+    val fileKey = fileIdx?.let { ":f$it" } ?: ""
+    return "$hash$episodeKey$fileKey"
   }
 
   /**
@@ -509,14 +517,16 @@ object TorBoxRepository : TorBoxGateway {
     val hash = infoHash.trim().lowercase()
     if (hash.isEmpty() || !isConfigured()) return null
     val (reqSeason, reqEpisode) = requestedEpisode(season, episode)
-    val key = linkCacheKey(hash, reqSeason, reqEpisode)
+    val key = linkCacheKey(hash, reqSeason, reqEpisode, fileIdx)
     linkCache[key]?.let { cached ->
       if (System.currentTimeMillis() - cached.at < LINK_TTL_MS) return cached.url
       linkCache.remove(key)
     }
     // Single-flight: richieste concorrenti dello stesso hash PER LO STESSO EPISODIO
-    // condividono un'unica sequenza checkcached/requestdl. La chiave include
-    // l'episodio: due episodi dello stesso torrent non devono condividere il file.
+    // (e lo stesso fileIdx) condividono un'unica sequenza checkcached/requestdl.
+    // La chiave include l'episodio: due episodi dello stesso torrent non devono
+    // condividere il file; include il fileIdx: due card (720p/1080p) dello stesso
+    // torrent non devono condividere il link.
     return resolveFlight.run(key) { resolveInternal(hash, fileIdx, reqSeason, reqEpisode) }
   }
 
@@ -526,7 +536,7 @@ object TorBoxRepository : TorBoxGateway {
     season: Int?,
     episode: Int?
   ): String? {
-    val key = linkCacheKey(hash, season, episode)
+    val key = linkCacheKey(hash, season, episode, fileIdx)
     linkCache[key]?.let { cached ->
       if (System.currentTimeMillis() - cached.at < LINK_TTL_MS) return cached.url
       linkCache.remove(key)
@@ -630,7 +640,7 @@ object TorBoxRepository : TorBoxGateway {
     val hash = normalizeHash(infoHash)
     if (hash.isEmpty() || !isConfigured() || !entry.cached) return null
     val (reqSeason, reqEpisode) = requestedEpisode(season, episode)
-    val key = linkCacheKey(hash, reqSeason, reqEpisode)
+    val key = linkCacheKey(hash, reqSeason, reqEpisode, fileIdx)
     linkCache[key]?.let { cached ->
       if (System.currentTimeMillis() - cached.at < LINK_TTL_MS) return cached.url
       linkCache.remove(key)
@@ -776,7 +786,7 @@ object TorBoxRepository : TorBoxGateway {
     season: Int?,
     episode: Int?
   ): String? {
-    val key = linkCacheKey(hash, season, episode)
+    val key = linkCacheKey(hash, season, episode, fileIdx)
     linkCache[key]?.let { cached ->
       if (System.currentTimeMillis() - cached.at < LINK_TTL_MS) return cached.url
       linkCache.remove(key)
@@ -787,6 +797,9 @@ object TorBoxRepository : TorBoxGateway {
     // stagione/episodio. Il nome del primo file del torrent (hint usato per i film
     // e per i torrent a file singolo) non è l'episodio richiesto: passarlo come
     // `filename` faceva vincere quel file prima del match SxxExx.
+    // Il fileIdx viene passato al resolver ma è usato SOLO senza episodio (film):
+    // per i season pack l'indice dell'addon non coincide con l'ordinamento file di
+    // TorBox e prendere l'indice selezionava l'episodio sbagliato.
     val hasEpisode = season != null && episode != null
     val filename = if (hasEpisode) null else entry.files.firstOrNull()?.name
     val result = TorBoxResolver.resolve(
@@ -794,7 +807,8 @@ object TorBoxRepository : TorBoxGateway {
       filename = filename,
       season = season,
       episode = episode,
-      sources = null
+      sources = null,
+      fileIdx = fileIdx
     )
 
     return when (result) {
@@ -824,16 +838,26 @@ object TorBoxRepository : TorBoxGateway {
   }
 
   /**
-   * Rimuove il link memorizzato per `infoHash` + episodio.
+   * Rimuove i link memorizzati per `infoHash` (+ episodio se noto), per QUALSIASI fileIdx.
    *
    * Chiamato quando un link è appena fallito in riproduzione: senza questa
    * invalidazione la risoluzione successiva riproporrebbe lo stesso URL scaduto
-   * per tutto il TTL di 15 minuti. Le altre voci restano intatte.
+   * per tutto il TTL di 15 minuti. Le altre voci restano intatte. La chiave ora
+   * include il fileIdx (720p/1080p dello stesso torrent sono voci distinte): la
+   * rimozione a prefisso invalida tutte le varianti di file dello stesso torrent.
    */
   fun invalidateResolvedLink(infoHash: String, season: Int?, episode: Int?) {
     val hash = normalizeHash(infoHash)
     if (hash.isEmpty()) return
     val (reqSeason, reqEpisode) = requestedEpisode(season, episode)
-    linkCache.remove(linkCacheKey(hash, reqSeason, reqEpisode))
+    if (reqSeason != null && reqSeason > 0 && reqEpisode != null && reqEpisode > 0) {
+      // Episodio noto: invalida solo le varianti fileIdx di QUESTO episodio.
+      val episodeKey = "$hash:s${reqSeason}e${reqEpisode}"
+      linkCache.keys.removeAll { it == episodeKey || it.startsWith("$episodeKey:") }
+    } else {
+      // Senza episodio (film): invalida solo le voci senza episodio dello stesso
+      // torrent (esatte o per fileIdx); le chiavi degli episodi restano intatte.
+      linkCache.keys.removeAll { it == hash || it.startsWith("$hash:f") }
+    }
   }
 }
