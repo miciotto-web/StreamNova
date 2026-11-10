@@ -22,5 +22,8 @@ internal fun mobileClientConfig(
   // Mobile non ha un catalogo demo: senza sorgenti reali mostra lo stato
   // vuoto/errore, non titoli o episodi inventati.
   includeDemoCatalog = false,
-  generateSyntheticEpisodes = false
+  generateSyntheticEpisodes = false,
+  // Canale release dedicato all'app Mobile: l'updater in-app non deve mai
+  // vedere le release della TV (repo: miciotto-web/StreamNova-Mobile).
+  updateRepoSlug = "miciotto-web/StreamNova-Mobile"
 )

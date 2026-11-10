@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Percorsi esposti al FileProvider per l'installer degli aggiornamenti:
+     l'APK scaricato vive in cache/updates (vedi ApkDownloader). -->
+<paths>
+    <cache-path
+        name="apk_updates"
+        path="updates/" />
+</paths>

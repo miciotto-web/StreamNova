@@ -85,8 +85,8 @@ import com.aistudio.streamnova.mobile.ui.MobileSimklLoginError
 import com.aistudio.streamnova.mobile.ui.MobileSimklNotice
 import com.aistudio.streamnova.mobile.ui.MobileTorBoxAccountState
 import com.aistudio.streamnova.mobile.ui.components.MobileChoiceDialog
-import com.aistudio.streamnova.mobile.ui.components.MobileInfoDialog
 import com.aistudio.streamnova.mobile.ui.components.MobilePinDialog
+import com.aistudio.streamnova.mobile.ui.components.MobileUpdateResultDialog
 import com.aistudio.streamnova.mobile.ui.components.MobileSettingsNote
 import com.aistudio.streamnova.mobile.ui.components.MobileSettingsRow
 import com.aistudio.streamnova.mobile.ui.components.MobileSettingsSection
@@ -107,6 +107,7 @@ import com.example.data.prefs.TargetBufferOption
 import com.example.data.remote.simkl.SimklSyncResult
 import com.example.data.remote.simkl.SimklSyncStatus
 import com.example.data.opensubtitles.OpenSubtitlesVerifyError
+import com.example.data.update.UpdateCheckState
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
@@ -144,6 +145,8 @@ fun SettingsScreen(onBack: () -> Unit) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
   val isClearingCache by viewModel.isClearingCache.collectAsStateWithLifecycle()
   val simklLoginState by viewModel.simklLoginState.collectAsStateWithLifecycle()
+  val updateCheckState by viewModel.updateCheckState.collectAsStateWithLifecycle()
+  val updateDownloadState by viewModel.updateDownloadState.collectAsStateWithLifecycle()
   val context = LocalContext.current
   val expanded = LocalWindowWidthExpanded.current
 
@@ -163,7 +166,6 @@ fun SettingsScreen(onBack: () -> Unit) {
   var showReuseCacheDialog by remember { mutableStateOf(false) }
   var showTorBoxKeyDialog by remember { mutableStateOf(false) }
   var showOpenSubtitlesKeyDialog by remember { mutableStateOf(false) }
-  var showUpdatesInfoDialog by remember { mutableStateOf(false) }
 
   var parentalStep by remember { mutableStateOf<MobileParentalStep?>(null) }
   var parentalError by remember { mutableStateOf<String?>(null) }
@@ -252,11 +254,12 @@ fun SettingsScreen(onBack: () -> Unit) {
           MobileSettingsRow(
             icon = Icons.Default.Refresh,
             title = stringResource(R.string.settings_check_updates),
-            value = stringResource(R.string.settings_updates_unavailable),
-            onClick = { showUpdatesInfoDialog = true }
+            value = updateCheckStateValue(updateCheckState),
+            valueColor = updateCheckStateValueColor(updateCheckState),
+            onClick = { viewModel.checkForUpdates() }
           )
           MobileSettingsNote(
-            text = stringResource(R.string.settings_updates_unavailable_desc),
+            text = stringResource(R.string.settings_updates_channel_desc),
             color = NovaTextMuted
           )
           MobileSettingsRow(
@@ -966,11 +969,14 @@ fun SettingsScreen(onBack: () -> Unit) {
     )
   }
 
-  if (showUpdatesInfoDialog) {
-    MobileInfoDialog(
-      title = stringResource(R.string.settings_check_updates),
-      body = stringResource(R.string.settings_updates_unavailable_desc),
-      onDismiss = { showUpdatesInfoDialog = false }
+  // Dialog del controllo aggiornamenti MANUALE: in scena dal momento in cui il
+  // controllo parte (Checking) fino alla chiusura dell'esito (torna Idle).
+  if (updateCheckState != UpdateCheckState.Idle) {
+    MobileUpdateResultDialog(
+      state = updateCheckState,
+      downloadState = updateDownloadState,
+      onDownload = { viewModel.downloadUpdate(context) },
+      onDismiss = { viewModel.dismissUpdateResult() }
     )
   }
 
@@ -1022,6 +1028,29 @@ fun SettingsScreen(onBack: () -> Unit) {
       onDismiss = { viewModel.cancelSimklLogin() }
     )
   }
+}
+
+/** Valore della riga «Controlla aggiornamenti» per lo stato corrente del controllo. */
+@Composable
+private fun updateCheckStateValue(state: UpdateCheckState): String = when (state) {
+  UpdateCheckState.Idle -> stringResource(R.string.settings_update_check_now)
+  UpdateCheckState.Checking -> stringResource(R.string.settings_update_checking)
+  is UpdateCheckState.UpToDate -> stringResource(R.string.settings_update_upto_date)
+  is UpdateCheckState.UpdateAvailable ->
+    stringResource(R.string.settings_update_available, state.newVersion)
+  is UpdateCheckState.VersionMismatch -> stringResource(R.string.settings_update_error_short)
+  is UpdateCheckState.Error -> stringResource(R.string.settings_update_error_short)
+}
+
+/** Colore del valore della riga «Controlla aggiornamenti». */
+@Composable
+private fun updateCheckStateValueColor(state: UpdateCheckState): Color = when (state) {
+  UpdateCheckState.Idle -> NovaCyan
+  UpdateCheckState.Checking -> NovaCyan
+  is UpdateCheckState.UpToDate -> NovaGreen
+  is UpdateCheckState.UpdateAvailable -> NovaGreen
+  is UpdateCheckState.VersionMismatch -> NovaRed
+  is UpdateCheckState.Error -> NovaRed
 }
 
 @Composable

@@ -53,7 +53,14 @@ data class StreamNovaClientConfig(
    * le stagioni reali. La TV mantiene il comportamento storico (default `true`);
    * Mobile lo disattiva per non mostrare episodi sintetici.
    */
-  val generateSyntheticEpisodes: Boolean = true
+  val generateSyntheticEpisodes: Boolean = true,
+  /**
+   * Repository GitHub delle release che alimentano l'updater in-app, in forma
+   * `owner/repo`. Il default è il canale TV (`miciotto-web/StreamNova`); Mobile
+   * lo imposta sul proprio canale dedicato (`miciotto-web/StreamNova-Mobile`),
+   * così le due app non si propongono a vicenda gli aggiornamenti sbagliati.
+   */
+  val updateRepoSlug: String = "StreamNova"
 )
 
 /**

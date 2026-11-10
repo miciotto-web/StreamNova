@@ -157,8 +157,6 @@
     <string name="settings_app_language">App Language</string>
     <string name="settings_parental_control">Parental Control</string>
     <string name="settings_check_updates">Check for Updates</string>
-    <string name="settings_updates_unavailable">Not available</string>
-    <string name="settings_updates_unavailable_desc">The Mobile app update channel is not active yet: the check stays disabled until a dedicated channel is configured.</string>
     <string name="settings_in_progress">In progress…</string>
     <string name="settings_app_version">App Version</string>
     <string name="settings_update_checking">Checking for updates…</string>
@@ -474,4 +472,43 @@
     <string name="detail_status_returning_series">Returning Series</string>
     <string name="detail_status_ended">Ended</string>
     <string name="detail_status_pilot">Pilot</string>
+
+    <!-- Aggiornamenti in-app: canale GitHub dell\'app Mobile. -->
+    <string name="settings_update_check_now">Tap to check</string>
+    <string name="settings_updates_channel_desc">The installed version is compared with the latest release published on the official GitHub channel (github.com/miciotto-web/StreamNova-Mobile/releases). When a new version is available you can download and install the update right from the app.</string>
+     <string name="settings_update_installed_version">Installed version: %1$s</string>
+     <string name="settings_update_upto_date">The app is up to date</string>
+     <string name="settings_update_available">New version available: %1$s</string>
+     <string name="settings_update_prompt_title">Update available</string>
+     <string name="settings_update_prompt_update">Update now</string>
+     <string name="settings_update_prompt_later">Later</string>
+     <string name="settings_update_error">Couldn\'t check for updates</string>
+     <string name="settings_update_download">Download Update</string>
+     <string name="settings_update_downloading">Downloading…</string>
+     <string name="settings_update_download_complete">Download complete</string>
+     <string name="settings_update_install">Install</string>
+     <string name="settings_update_install_permission_needed">To install the update, allow StreamNova to install apps from this source in the Android settings.</string>
+     <string name="settings_update_install_permission_button">Allow installs</string>
+     <string name="settings_update_dl_error_no_apk">No APK file in this release</string>
+     <string name="settings_update_dl_error_network">No connection or connection lost</string>
+     <string name="settings_update_dl_error_timeout">Timed out during download</string>
+     <string name="settings_update_dl_error_http">Server error during download</string>
+     <string name="settings_update_dl_error_host">Download blocked: source not allowed</string>
+     <string name="settings_update_dl_error_interrupted">Download interrupted</string>
+     <string name="settings_update_dl_error_file">APK file missing or empty</string>
+     <string name="settings_update_dl_error_space">Not enough storage space</string>
+     <string name="settings_update_dl_error_generic">Error during download</string>
+    <string name="settings_update_dl_error_size">The downloaded file is incomplete or damaged (wrong size)</string>
+    <string name="settings_update_dl_error_checksum">The downloaded file failed the integrity check</string>
+    <string name="settings_update_changelog">What\'s new in this version</string>
+    <string name="settings_update_asset_name">File: %1$s</string>
+    <string name="settings_update_mismatch">Inconsistent release: the declared version (%1$s) does not match the published file (%2$s). Update not available.</string>
+    <string name="settings_update_error_rate_limited">Too many requests to GitHub: please try again later</string>
+    <string name="settings_update_error_not_found">No release available on the server</string>
+    <string name="settings_update_error_network">No connection or connection lost</string>
+    <string name="settings_update_error_invalid_release">The published release does not contain a valid update</string>
+    <string name="settings_update_error_no_compatible_apk">This release does not contain an APK installable on this device</string>
+    <string name="settings_update_install_failed_file">The update file is no longer available: download it again</string>
+    <string name="settings_update_install_failed_permission">Permission to install apps from this source is missing</string>
+    <string name="settings_update_install_failed_generic">Could not start the system installer</string>
 </resources>

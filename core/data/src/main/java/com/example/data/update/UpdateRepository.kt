@@ -180,7 +180,19 @@ object UpdateRepository {
    * frame (~1 s all'avvio, misurato con StartupTrace). Il primo uso reale è dentro
    * il controllo in background, quindi la costruzione avviene su Dispatchers.IO.
    */
-  private val defaultClient: GitHubUpdateClient by lazy { GitHubUpdateClient() }
+  /**
+   * Canale GitHub delle release: il repo è quello configurato dal client
+   * ([StreamNovaClientConfig.updateRepoSlug], installato dall'Application di
+   * ciascuna app), così TV e Mobile interrogano ciascuno il proprio canale.
+   * In assenza di installazione resta il canale TV storico.
+   */
+  private val defaultClient: GitHubUpdateClient by lazy {
+    val slug = StreamNovaConfig.current.updateRepoSlug.trim().ifBlank { "StreamNova" }
+    GitHubUpdateClient(
+      owner = slug.substringBefore('/').ifBlank { "miciotto-web" },
+      repo = slug.substringAfter('/', missingDelimiterValue = "StreamNova").ifBlank { "StreamNova" }
+    )
+  }
   private var clientOverride: GitHubUpdateClient? = null
   internal var client: GitHubUpdateClient
     get() = clientOverride ?: defaultClient

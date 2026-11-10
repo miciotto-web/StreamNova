@@ -27,6 +27,9 @@ import com.example.data.remote.simkl.SimklSyncStatus
 import com.example.data.repository.SimklRepository
 import com.example.data.repository.SimklSyncManager
 import com.example.data.torbox.TorBoxRepository
+import com.example.data.update.UpdateCheckState
+import com.example.data.update.UpdateDownloadState
+import com.example.data.update.UpdateRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -506,6 +509,47 @@ class MobileSettingsViewModel : ViewModel() {
     if (!ParentalControlPolicy.isValidPin(clean)) return false
     AppSettingsRepository.setParentalControlPin(clean)
     return true
+  }
+
+  // ── AGGIORNAMENTI ────────────────────────────────────────────────────
+  //
+  // Il controllo e il download vivono in UpdateRepository (core condiviso),
+  // già usato dalla TV: gli stati sono gli stessi, il canale GitHub è quello
+  // dedicato all'app Mobile impostato dalla configurazione del client.
+
+  /** Esito del controllo aggiornamenti (riga «Controlla aggiornamenti»). */
+  val updateCheckState: StateFlow<UpdateCheckState> = UpdateRepository.state
+
+  /** Stato del download APK avviato dall'utente (progresso, completamento). */
+  val updateDownloadState: StateFlow<UpdateDownloadState> = UpdateRepository.downloadState
+
+  /** Popup dell'aggiornamento trovato dal controllo automatico di avvio. */
+  val updateStartupPrompt: StateFlow<UpdateCheckState.UpdateAvailable?> =
+    UpdateRepository.startupPrompt
+
+  /** Controllo manuale: confronta la versione installata con l'ultima release. */
+  fun checkForUpdates() {
+    UpdateRepository.checkForUpdates()
+  }
+
+  /** Download dell'APK validato dal controllo (richiesta esplicita dell'utente). */
+  fun downloadUpdate(context: Context) {
+    UpdateRepository.downloadUpdate(context)
+  }
+
+  /** Chiude il feedback del controllo manuale (dialog e riga tornano a Idle). */
+  fun dismissUpdateResult() {
+    UpdateRepository.reset()
+  }
+
+  /** Annulla un download in corso senza perdere l'APK validato (riprova possibile). */
+  fun cancelUpdateDownload() {
+    UpdateRepository.resetDownload()
+  }
+
+  /** L'utente ha scelto «Più tardi» sul popup dell'aggiornamento di avvio. */
+  fun dismissStartupUpdatePrompt() {
+    UpdateRepository.dismissStartupPrompt()
   }
 
   // ── CACHE ────────────────────────────────────────────────────────────

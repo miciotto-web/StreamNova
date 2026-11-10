@@ -10,6 +10,7 @@ import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
 import com.example.data.repository.SimklSyncManager
 import com.example.data.stremio.StremioAddonRepository
+import com.example.data.update.UpdateRepository
 import com.aistudio.streamnova.mobile.ui.MobilePlayerPreferences
 import com.example.data.stremio.provider.ProviderCatalogResolvers
 import kotlinx.coroutines.CoroutineScope
@@ -62,6 +63,10 @@ class MobileApplication : Application() {
     LastWorkingStreamRepository.init(db)
     SettingsRepository.init(this)
     AppSettingsRepository.init(this)
+    // Controllo aggiornamenti AUTOMATICO di avvio: una sola volta per sessione,
+    // in background, silenzioso in caso di errore. Se trova un aggiornamento
+    // offribile rende disponibile il popup (MobileApp), mai un download.
+    UpdateRepository.checkForUpdatesOnStartup()
     // La lingua persistita deve essere nota PRIMA che l'Activity costruisca il
     // proprio base context (altrimenti il primo frame, e i dialog, userebbero la
     // lingua di sistema). Lettura locale breve, nessuna rete.

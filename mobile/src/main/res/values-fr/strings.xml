@@ -157,8 +157,6 @@
     <string name="settings_app_language">Langue de l\'application</string>
     <string name="settings_parental_control">Contrôle parental</string>
     <string name="settings_check_updates">Vérifier les mises à jour</string>
-    <string name="settings_updates_unavailable">Non disponible</string>
-    <string name="settings_updates_unavailable_desc">Le canal de mise à jour de l’app Mobile n’est pas encore actif : la vérification reste désactivée jusqu’à la configuration d’un canal dédié.</string>
     <string name="settings_in_progress">En cours…</string>
     <string name="settings_app_version">Version de l\'application</string>
     <string name="settings_update_checking">Vérification des mises à jour…</string>
@@ -474,4 +472,43 @@
     <string name="detail_status_returning_series">En cours</string>
     <string name="detail_status_ended">Terminé</string>
     <string name="detail_status_pilot">Pilote</string>
+
+    <!-- Aggiornamenti in-app: canale GitHub dell\'app Mobile. -->
+    <string name="settings_update_check_now">Toucher pour vérifier</string>
+    <string name="settings_updates_channel_desc">La version installée est comparée à la dernière publication du canal GitHub officiel (github.com/miciotto-web/StreamNova-Mobile/releases). Lorsqu\'une nouvelle version est disponible, vous pouvez télécharger et installer la mise à jour depuis l\'application.</string>
+     <string name="settings_update_installed_version">Version installée : %1$s</string>
+     <string name="settings_update_upto_date">L\'application est à jour</string>
+     <string name="settings_update_available">Nouvelle version disponible : %1$s</string>
+     <string name="settings_update_prompt_title">Mise à jour disponible</string>
+     <string name="settings_update_prompt_update">Mettre à jour</string>
+     <string name="settings_update_prompt_later">Plus tard</string>
+     <string name="settings_update_error">Impossible de vérifier les mises à jour</string>
+     <string name="settings_update_download">Télécharger la mise à jour</string>
+     <string name="settings_update_downloading">Téléchargement en cours…</string>
+     <string name="settings_update_download_complete">Téléchargement terminé</string>
+     <string name="settings_update_install">Installer</string>
+     <string name="settings_update_install_permission_needed">Pour installer la mise à jour, autorisez StreamNova à installer des apps depuis cette source dans les paramètres Android.</string>
+     <string name="settings_update_install_permission_button">Autoriser l\'installation</string>
+     <string name="settings_update_dl_error_no_apk">Aucun fichier APK dans cette release</string>
+     <string name="settings_update_dl_error_network">Pas de connexion ou connexion interrompue</string>
+     <string name="settings_update_dl_error_timeout">Délai dépassé pendant le téléchargement</string>
+     <string name="settings_update_dl_error_http">Erreur du serveur pendant le téléchargement</string>
+     <string name="settings_update_dl_error_interrupted">Téléchargement interrompu</string>
+     <string name="settings_update_dl_error_file">Fichier APK manquant ou vide</string>
+     <string name="settings_update_dl_error_space">Espace de stockage insuffisant</string>
+     <string name="settings_update_dl_error_host">Téléchargement bloqué : source non autorisée</string>
+     <string name="settings_update_dl_error_generic">Erreur pendant le téléchargement</string>
+    <string name="settings_update_dl_error_size">Le fichier téléchargé est incomplet ou endommagé (taille incorrecte)</string>
+    <string name="settings_update_dl_error_checksum">Le fichier téléchargé n\'a pas passé la vérification d\'intégrité</string>
+    <string name="settings_update_changelog">Nouveautés de cette version</string>
+    <string name="settings_update_asset_name">Fichier : %1$s</string>
+    <string name="settings_update_mismatch">Version incohérente : la version déclarée (%1$s) ne correspond pas au fichier publié (%2$s). Mise à jour indisponible.</string>
+    <string name="settings_update_error_rate_limited">Trop de requêtes vers GitHub : réessayez plus tard</string>
+    <string name="settings_update_error_not_found">Aucune version disponible sur le serveur</string>
+    <string name="settings_update_error_network">Connexion absente ou interrompue</string>
+    <string name="settings_update_error_invalid_release">La version publiée ne contient pas de mise à jour valide</string>
+    <string name="settings_update_error_no_compatible_apk">Cette version ne contient pas d\'APK installable sur cet appareil</string>
+    <string name="settings_update_install_failed_file">Le fichier de mise à jour n\'est plus disponible : téléchargez-le à nouveau</string>
+    <string name="settings_update_install_failed_permission">L\'autorisation d\'installer des applications depuis cette source est manquante</string>
+    <string name="settings_update_install_failed_generic">Impossible de lancer l\'installateur du système</string>
 </resources>

@@ -67,6 +67,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.aistudio.streamnova.mobile.R
 import com.aistudio.streamnova.mobile.ui.components.ParentalPinDialog
+import com.aistudio.streamnova.mobile.ui.components.MobileUpdatePromptDialog
 import com.aistudio.streamnova.mobile.ui.screens.CatalogKind
 import com.aistudio.streamnova.mobile.ui.screens.CatalogScreen
 import com.aistudio.streamnova.mobile.ui.screens.DetailScreen
@@ -80,6 +81,7 @@ import com.aistudio.streamnova.mobile.ui.screens.SettingsScreen
 import com.example.data.model.MediaItem
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.repository.MediaRepository
+import com.example.data.update.UpdateRepository
 import com.example.ui.components.ProviderConstants
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCyan
@@ -144,6 +146,23 @@ private fun MobileAppContent(
   // HTTP/direct il motore non espone un elenco di sorgenti negoziabile.
   val showSelectSource = MobileManualSourcePolicy.showsSelectSourceAction(engineMode)
   val destinations = visibleTopDestinations(showAddons)
+
+  // Popup dell'aggiornamento rilevato dal controllo AUTOMATICO di avvio
+  // (UpdateRepository, canale GitHub Mobile): mai sopra il player, resta in
+  // attesa e compare su una schermata normale. Nessun download automatico:
+  // «Aggiorna» è l'unica via, l'installer è un secondo tap esplicito.
+  val startupUpdate by UpdateRepository.startupPrompt.collectAsStateWithLifecycle()
+  val startupUpdateDownload by UpdateRepository.downloadState.collectAsStateWithLifecycle()
+  val appContext = LocalContext.current
+  val startupUpdateToShow = startupUpdate
+  if (startupUpdateToShow != null && !isPlayer) {
+    MobileUpdatePromptDialog(
+      update = startupUpdateToShow,
+      downloadState = startupUpdateDownload,
+      onUpdate = { UpdateRepository.downloadUpdate(appContext) },
+      onLater = { UpdateRepository.dismissStartupPrompt() }
+    )
+  }
 
   val parentalEnabled by AppSettingsRepository.parentalControlEnabled.collectAsStateWithLifecycle()
   val parentalLevel by AppSettingsRepository.parentalControlLevel.collectAsStateWithLifecycle()
