@@ -12,7 +12,9 @@ import com.example.data.repository.CatalogSection
 import com.example.data.repository.HomeCatalogs
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.StremioCatalogRepository
+import com.example.data.repository.TmdbHomeCatalogProvider
 import com.example.data.stremio.StremioAddonRepository
+import com.example.data.stremio.StremioCatalogEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -146,6 +148,42 @@ class MobileCatalogViewModel : ViewModel() {
   private var pendingHomeMediaList: List<MediaItem>? = null
   private var homeResolvedOnce = false
 
+  /**
+   * Firma dell'ULTIMA risoluzione Home applicata e di quella in corso. Le emissioni
+   * di [MediaRepository.mediaList] arrivano da progressi, preferiti e pagine TMDB
+   * scaricate da altre schermate: NON cambiano i cataloghi degli addon. Rilanciare
+   * l'intera risoluzione a ogni emissione (comportamento precedente) cancellava le
+   * pagine già accodate a Film/Serie dall'infinite scroll, riportando le liste alla
+   * sola prima pagina. Stessa firma → si aggiornano solo le liste di fallback locale.
+   */
+  private var homeResolvedSourceSignature: String? = null
+  private var inFlightHomeSourceSignature: String? = null
+
+  // ── Paginazione schermate Film / Serie TV (parità con la TV 1.0.5) ─────────────
+
+  private var currentMoviePage = 1
+  private var currentTvPage = 1
+  private var isLoadingMoreMovies = false
+  private var isLoadingMoreTv = false
+
+  /**
+   * Esaurimento della paginazione della schermata: l'ultimo trigger non ha prodotto
+   * titoli nuovi. Impedisce raffiche di richieste identiche a fine lista; si sblocca
+   * alla successiva risoluzione Home (refresh, cambio addon) o quando la lista cresce.
+   */
+  private var moviesPageExhausted = false
+  private var seriesPageExhausted = false
+
+  private val _isPaginatingMovies = MutableStateFlow(false)
+
+  /** true mentre la pagina successiva dei Film è in caricamento (footer della griglia). */
+  val isPaginatingMovies: StateFlow<Boolean> = _isPaginatingMovies.asStateFlow()
+
+  private val _isPaginatingSeries = MutableStateFlow(false)
+
+  /** true mentre la pagina successiva delle Serie TV è in caricamento. */
+  val isPaginatingSeries: StateFlow<Boolean> = _isPaginatingSeries.asStateFlow()
+
   private data class LoadUi(
     val home: HomeCatalogs,
     val loading: Boolean,
@@ -220,24 +258,53 @@ class MobileCatalogViewModel : ViewModel() {
   /**
    * Risolve le righe Home con la stessa funzione della TV.
    *
+   * Le emissioni di Room (progressi, preferiti, pagine TMDB scaricate altrove) NON
+   * rilanciano la risoluzione: con le stesse sorgenti si aggiornano solo le liste
+   * di fallback locale ([publishHomeFallbackMedia]), così le pagine già accodate a
+   * Film/Serie dall'infinite scroll restano a schermo.
+   *
    * Durante il refresh TMDB Room emette il catalogo a blocchi. La TV cancella e
    * rilancia la risoluzione a ogni emissione; su Mobile, che parte senza seed,
    * questo affamava le richieste Cinemeta e la Home restava in caricamento fino
    * alla fine dell'intero crawl. Qui la risoluzione in corso viene portata a
    * termine e le emissioni arrivate nel frattempo vengono accorpate in UNA sola
    * ripetizione con l'ultimo elenco: stessa pipeline, nessuna richiesta parallela.
+   *
+   * @param force true per un refresh ESPLICITO (retry, cambio lingua): ignora la
+   *        firma già applicata e risolve da zero.
    */
-  private fun refreshHomeCatalogs(mediaList: List<MediaItem> = MediaRepository.mediaList.value) {
+  private fun refreshHomeCatalogs(
+    mediaList: List<MediaItem> = MediaRepository.mediaList.value,
+    force: Boolean = false
+  ) {
+    val signature = homeCatalogSourceSignature()
+    if (!force && signature == homeResolvedSourceSignature && homeResolvedOnce) {
+      // Stesse sorgenti: le righe degli addon e le pagine già caricate non si toccano.
+      publishHomeFallbackMedia(mediaList)
+      return
+    }
     if (homeCatalogsJob?.isActive == true) {
+      if (signature == inFlightHomeSourceSignature) {
+        // La risoluzione delle STESSE sorgenti è già in corso: non la si riavvia
+        // (nemmeno con force, che si riferisce alle sorgenti GIÀ applicate, non a
+        // quelle in volo: rilanciare affamerebbe le richieste Cinemeta).
+        return
+      }
       pendingHomeMediaList = mediaList
       return
     }
+    inFlightHomeSourceSignature = signature
     homeCatalogsJob = viewModelScope.launch {
       var request = mediaList
       while (true) {
+        val activeSignature = inFlightHomeSourceSignature
         try {
           val resolved = StremioCatalogRepository.resolveHomeCatalogs(request)
           _homeCatalogs.value = resolved
+          homeResolvedSourceSignature = activeSignature
+          // Nuova risoluzione: le liste ripartono dalle pagine base dei cataloghi.
+          moviesPageExhausted = false
+          seriesPageExhausted = false
           _loadError.value = if (resolved.hasAnyContent()) null else MobileCatalogError.LOAD_FAILED
         } catch (e: CancellationException) {
           throw e
@@ -251,9 +318,51 @@ class MobileCatalogViewModel : ViewModel() {
         }
         val next = pendingHomeMediaList ?: break
         pendingHomeMediaList = null
+        val nextSignature = homeCatalogSourceSignature()
+        if (nextSignature == homeResolvedSourceSignature) {
+          publishHomeFallbackMedia(next)
+          break
+        }
+        inFlightHomeSourceSignature = nextSignature
         request = next
       }
+      inFlightHomeSourceSignature = null
     }
+  }
+
+  /**
+   * Firma delle sorgenti dei cataloghi Home (nessuna rete: legge i manifest già
+   * installati). Cambia quando un addon viene installato/rimosso/abilitato o quando
+   * il suo manifest dichiara cataloghi diversi. Stessa regola della TV.
+   */
+  private fun homeCatalogSourceSignature(): String = runCatching {
+    StremioCatalogEngine.getAvailableCatalogs()
+      .map { "${it.addonId}|${it.type}|${it.catalogId}" }
+      .distinct()
+      .sorted()
+      .joinToString(";")
+  }.getOrDefault("")
+
+  /**
+   * Aggiorna in place le SOLE liste `allMovies`/`allSeries` quando provengono dalla
+   * cache locale (nessun catalogo Stremio/TMDB di quel tipo): un cambiamento della
+   * libreria (preferiti, progressi, pagine scaricate) non deve rilanciare la
+   * risoluzione dei cataloghi né toccare le liste paginate.
+   */
+  private fun publishHomeFallbackMedia(mediaList: List<MediaItem>) {
+    val movies = mediaList.filter { it.type == MediaType.FILM }
+    val series = mediaList.filter { it.type == MediaType.SERIE_TV }
+    val current = _homeCatalogs.value
+    val moviesUseCache = !current.hasCustomCatalogMovies &&
+      !current.moviesFromDefaultCatalog &&
+      !current.moviesFromTmdbDefault
+    val seriesUseCache = !current.hasCustomCatalogSeries &&
+      !current.seriesFromDefaultCatalog &&
+      !current.seriesFromTmdbDefault
+    val nextMovies = if (moviesUseCache) movies else current.allMovies
+    val nextSeries = if (seriesUseCache) series else current.allSeries
+    if (nextMovies == current.allMovies && nextSeries == current.allSeries) return
+    _homeCatalogs.value = current.copy(allMovies = nextMovies, allSeries = nextSeries)
   }
 
   /** Refresh esplicito del catalogo reale (TMDB) e delle righe Home. */
@@ -265,7 +374,8 @@ class MobileCatalogViewModel : ViewModel() {
       } finally {
         _isRefreshing.value = false
       }
-      refreshHomeCatalogs()
+      // Refresh ESPLICITO: le righe addon vengono risolte da zero, ignorando la firma.
+      refreshHomeCatalogs(force = true)
     }
   }
 
@@ -276,7 +386,116 @@ class MobileCatalogViewModel : ViewModel() {
     _loadError.value = null
     viewModelScope.launch { MediaRepository.loadFromCache() }
     refreshCatalog()
-    refreshHomeCatalogs()
+    refreshHomeCatalogs(force = true)
+  }
+
+  // ── Paginazione Film / Serie TV (stessa logica della TV 1.0.5) ────────────────
+
+  /**
+   * Pagina successiva della schermata Film, invocata dall'infinite scroll della
+   * griglia. La sorgente è quella già attiva per la schermata:
+   *  - catalogo Stremio (addon utente o Cinemeta di default): paginazione `skip`;
+   *  - righe stock native TMDB: pagina successiva del catalogo "Popolari Film";
+   *  - fallback legacy: crawl TMDB persistito in Room.
+   */
+  fun loadNextMoviesPage() {
+    if (isLoadingMoreMovies || moviesPageExhausted) return
+    isLoadingMoreMovies = true
+    _isPaginatingMovies.value = true
+    viewModelScope.launch {
+      try {
+        val catalogs = _homeCatalogs.value
+        when {
+          catalogs.moviesFromTmdbDefault -> {
+            currentMoviePage++
+            appendMoviesPage(TmdbHomeCatalogProvider.paginateMovies(currentMoviePage))
+          }
+          catalogs.isMoviesFromStremio -> {
+            val currentList = _homeCatalogs.value.allMovies
+            appendMoviesPage(StremioCatalogRepository.paginateMovies(currentList.size))
+          }
+          else -> {
+            currentMoviePage++
+            // La pagina cresce dall'emissione di Room: nessun append diretto.
+            MediaRepository.loadMoreMovies(currentMoviePage)
+          }
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore paginazione film: ${e.message}")
+      } finally {
+        isLoadingMoreMovies = false
+        _isPaginatingMovies.value = false
+      }
+    }
+  }
+
+  /** Come [loadNextMoviesPage], per la schermata Serie TV. */
+  fun loadNextTvPage() {
+    if (isLoadingMoreTv || seriesPageExhausted) return
+    isLoadingMoreTv = true
+    _isPaginatingSeries.value = true
+    viewModelScope.launch {
+      try {
+        val catalogs = _homeCatalogs.value
+        when {
+          catalogs.seriesFromTmdbDefault -> {
+            currentTvPage++
+            appendSeriesPage(TmdbHomeCatalogProvider.paginateSeries(currentTvPage))
+          }
+          catalogs.isSeriesFromStremio -> {
+            val currentList = _homeCatalogs.value.allSeries
+            appendSeriesPage(StremioCatalogRepository.paginateSeries(currentList.size))
+          }
+          else -> {
+            currentTvPage++
+            MediaRepository.loadMoreTv(currentTvPage)
+          }
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore paginazione serie TV: ${e.message}")
+      } finally {
+        isLoadingMoreTv = false
+        _isPaginatingSeries.value = false
+      }
+    }
+  }
+
+  /** Accoda la pagina Film caricata, deduplicata contro la lista già a schermo. */
+  private fun appendMoviesPage(more: List<MediaItem>) {
+    val current = _homeCatalogs.value
+    if (more.isEmpty()) {
+      moviesPageExhausted = true
+      return
+    }
+    val combined = StremioCatalogRepository.deduplicateCrossSource(current.allMovies + more)
+    if (combined.size > current.allMovies.size) {
+      moviesPageExhausted = false
+      _homeCatalogs.value = current.copy(allMovies = combined)
+    } else {
+      // La pagina non ha prodotto titoli nuovi (skip disallineato o catalogo finito):
+      // si marca esaurita per non richiederla identica a ogni scroll.
+      moviesPageExhausted = true
+    }
+  }
+
+  /** Accoda la pagina Serie TV caricata, deduplicata contro la lista già a schermo. */
+  private fun appendSeriesPage(more: List<MediaItem>) {
+    val current = _homeCatalogs.value
+    if (more.isEmpty()) {
+      seriesPageExhausted = true
+      return
+    }
+    val combined = StremioCatalogRepository.deduplicateCrossSource(current.allSeries + more)
+    if (combined.size > current.allSeries.size) {
+      seriesPageExhausted = false
+      _homeCatalogs.value = current.copy(allSeries = combined)
+    } else {
+      seriesPageExhausted = true
+    }
   }
 
   /**
@@ -293,7 +512,8 @@ class MobileCatalogViewModel : ViewModel() {
       } finally {
         _isRefreshing.value = false
       }
-      refreshHomeCatalogs()
+      // Le sorgenti non cambiano, ma i metadati TMDB sì: la risoluzione riparte da zero.
+      refreshHomeCatalogs(force = true)
     }
   }
 
