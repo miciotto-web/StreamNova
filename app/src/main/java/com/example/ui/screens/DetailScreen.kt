@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import android.os.Build
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
@@ -71,7 +70,6 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -124,6 +122,7 @@ import com.example.ui.components.MediaActionBarFocus
 import com.example.ui.components.ProviderBadge
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.QualityBadge
+import com.example.ui.components.SpoilerBlurredImage
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusableBox
@@ -1900,11 +1899,12 @@ fun EpisodeRowItem(
   blurUnwatched: Boolean = false,
   modifier: Modifier = Modifier
 ) {
-  // `Modifier.blur` usa RenderEffect e su API < 31 non ha effetto: in quel caso si
-  // applica una velatura scura equivalente, come in ContinueWatchingArtwork.
+  // `Modifier.blur` usa RenderEffect e su API < 31 non ha effetto: sui TV box reali
+  // (Fire OS 7/8 = Android 9/11, molti Google TV con Android 10/11) la miniatura restava
+  // nitida. La sfocatura è quindi calcolata sulla bitmap (SpoilerBlurredImage), identica
+  // su emulatore e dispositivi reali.
   val isEpisodeUnseen = !isSimklWatched && !episode.isCompleted && episode.currentProgressMs <= 0L
   val blurThumbnail = blurUnwatched && isEpisodeUnseen
-  val canBlurThumbnail = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
   TvFocusableBox(
     modifier = modifier.fillMaxWidth(),
     shape = RoundedCornerShape(12.dp),
@@ -1940,34 +1940,46 @@ fun EpisodeRowItem(
           )
       ) {
         val thumbUrl = episode.thumbnailUrl ?: fallbackBackdropUrl
-        if (!thumbUrl.isNullOrBlank()) {
-          AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-              .data(thumbUrl)
-              .crossfade(true)
-              .build(),
-            contentDescription = episode.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-              .fillMaxSize()
-              .then(
-                if (blurThumbnail && canBlurThumbnail) Modifier.blur(16.dp) else Modifier
+        val thumb = episode.thumbnailRes ?: fallbackBackdropRes
+        when {
+          !thumbUrl.isNullOrBlank() -> {
+            if (blurThumbnail) {
+              SpoilerBlurredImage(
+                data = thumbUrl,
+                contentDescription = episode.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
               )
-          )
-        } else {
-          val thumb = episode.thumbnailRes ?: fallbackBackdropRes
-          if (thumb != null) {
-          Image(
-            painter = painterResource(id = thumb),
-            contentDescription = episode.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-              .fillMaxSize()
-              .then(
-                if (blurThumbnail && canBlurThumbnail) Modifier.blur(16.dp) else Modifier
+            } else {
+              AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current)
+                  .data(thumbUrl)
+                  .crossfade(true)
+                  .build(),
+                contentDescription = episode.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
               )
-          )
-          } else {
+            }
+          }
+          thumb != null -> {
+            if (blurThumbnail) {
+              SpoilerBlurredImage(
+                data = thumb,
+                contentDescription = episode.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+              )
+            } else {
+              Image(
+                painter = painterResource(id = thumb),
+                contentDescription = episode.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+              )
+            }
+          }
+          else -> {
             Box(
               modifier = Modifier
                 .fillMaxSize()
@@ -1978,16 +1990,6 @@ fun EpisodeRowItem(
                 )
             )
           }
-        }
-
-        // Velatura anti-spoiler su API < 31 (RenderEffect non disponibile): stessa
-        // contromisura della card «Continua a guardare», la protezione resta attiva.
-        if (blurThumbnail && !canBlurThumbnail) {
-          Box(
-            modifier = Modifier
-              .fillMaxSize()
-              .background(Color.Black.copy(alpha = 0.62f))
-          )
         }
 
         if (isSimklWatched) {

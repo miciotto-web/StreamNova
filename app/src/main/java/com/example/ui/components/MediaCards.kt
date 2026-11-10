@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import android.os.Build
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -41,7 +40,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
@@ -203,7 +201,14 @@ fun CardMediaImage(
   @DrawableRes fallbackRes: Int? = null,
   contentDescription: String?,
   modifier: Modifier = Modifier,
-  contentScale: ContentScale = ContentScale.Crop
+  contentScale: ContentScale = ContentScale.Crop,
+  /**
+   * Sfocatura anti-spoiler (preferenza «Sfoca non visti»). Non usa `Modifier.blur`
+   * (RenderEffect, attivo solo da API 31): la sfocatura è calcolata sulla bitmap a bassa
+   * risoluzione, quindi funziona allo stesso modo su Fire TV e Google TV con Android 9-11.
+   * Vedi [SpoilerBlurredImage].
+   */
+  blurArtwork: Boolean = false
 ) {
   val cleanPrimary = StremioCatalogMapper.extractImageUrl(primaryUrl)?.trim()?.takeIf { it.isNotEmpty() }
   val cleanSecondary = StremioCatalogMapper.extractImageUrl(secondaryUrl)?.trim()?.takeIf { it.isNotEmpty() && it != cleanPrimary }
@@ -235,43 +240,49 @@ fun CardMediaImage(
   }
 
   if (imageRequest != null) {
-    SubcomposeAsyncImage(
-      model = imageRequest,
-      contentDescription = contentDescription,
-      contentScale = contentScale,
-      modifier = modifier,
-      onError = {
-        if (!primaryFailed && targetUrl == cleanPrimary && cleanSecondary != null) {
-          primaryFailed = true
-        }
-      },
-      loading = {
-        Box(
-          modifier = Modifier
-            .fillMaxSize()
-            .background(
-              Brush.verticalGradient(
-                colors = listOf(Color(0xFF1B2333), Color(0xFF0F1420))
-              )
-            )
-        )
-      },
-      error = {
-        if (effectiveFallbackRes != null) {
-          Image(
-            painter = painterResource(id = effectiveFallbackRes),
+    if (blurArtwork) {
+      // Anti-spoiler: stesso artwork, ma caricato a bassa risoluzione e sfocato sulla
+      // bitmap. La catena primary → secondary → fallback locale resta identica.
+      SpoilerBlurredImage(
+        data = targetUrl,
+        contentDescription = contentDescription,
+        contentScale = contentScale,
+        modifier = modifier,
+        onError = {
+          if (!primaryFailed && targetUrl == cleanPrimary && cleanSecondary != null) {
+            primaryFailed = true
+          }
+        },
+        loading = { ArtworkLoadingPlaceholder() },
+        error = {
+          ArtworkErrorFallback(
+            fallbackRes = effectiveFallbackRes,
             contentDescription = contentDescription,
-            contentScale = contentScale,
-            modifier = Modifier.fillMaxSize()
-          )
-        } else {
-          MediaPosterFallback(
-            title = contentDescription,
-            modifier = Modifier.fillMaxSize()
+            contentScale = contentScale
           )
         }
-      }
-    )
+      )
+    } else {
+      SubcomposeAsyncImage(
+        model = imageRequest,
+        contentDescription = contentDescription,
+        contentScale = contentScale,
+        modifier = modifier,
+        onError = {
+          if (!primaryFailed && targetUrl == cleanPrimary && cleanSecondary != null) {
+            primaryFailed = true
+          }
+        },
+        loading = { ArtworkLoadingPlaceholder() },
+        error = {
+          ArtworkErrorFallback(
+            fallbackRes = effectiveFallbackRes,
+            contentDescription = contentDescription,
+            contentScale = contentScale
+          )
+        }
+      )
+    }
   } else if (effectiveFallbackRes != null) {
     Image(
       painter = painterResource(id = effectiveFallbackRes),
@@ -283,6 +294,42 @@ fun CardMediaImage(
     MediaPosterFallback(
       title = contentDescription,
       modifier = modifier
+    )
+  }
+}
+
+/** Segnaposto di caricamento condiviso dalle due varianti (nitida e sfocata). */
+@Composable
+private fun ArtworkLoadingPlaceholder() {
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .background(
+        Brush.verticalGradient(
+          colors = listOf(Color(0xFF1B2333), Color(0xFF0F1420))
+        )
+      )
+  )
+}
+
+/** Ripiego quando nessun artwork remoto è disponibile: risorsa locale o poster neutro. */
+@Composable
+private fun ArtworkErrorFallback(
+  @DrawableRes fallbackRes: Int?,
+  contentDescription: String?,
+  contentScale: ContentScale
+) {
+  if (fallbackRes != null) {
+    Image(
+      painter = painterResource(id = fallbackRes),
+      contentDescription = contentDescription,
+      contentScale = contentScale,
+      modifier = Modifier.fillMaxSize()
+    )
+  } else {
+    MediaPosterFallback(
+      title = contentDescription,
+      modifier = Modifier.fillMaxSize()
     )
   }
 }
@@ -645,29 +692,18 @@ private fun ContinueWatchingArtwork(
   @DrawableRes fallbackRes: Int?,
   modifier: Modifier = Modifier
 ) {
-  // `Modifier.blur` usa RenderEffect e su API < 31 non ha effetto: in quel caso si
-  // applica una velatura scura equivalente, così la protezione anti-spoiler resta
-  // attiva anche sui TV box con Android 8-11.
-  val canBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-  Box(modifier = modifier) {
-    CardMediaImage(
-      primaryUrl = artworkUrl ?: media.backdropUrl,
-      secondaryUrl = media.posterUrl,
-      fallbackRes = fallbackRes,
-      contentDescription = media.title,
-      modifier = Modifier
-        .fillMaxSize()
-        .then(if (blurArtwork && canBlur) Modifier.blur(16.dp) else Modifier),
-      contentScale = ContentScale.Crop
-    )
-    if (blurArtwork && !canBlur) {
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .background(Color.Black.copy(alpha = 0.62f))
-      )
-    }
-  }
+  // La sfocatura è calcolata sulla bitmap (SpoilerBlurredImage), non con Modifier.blur:
+  // sui TV box con Android 9-11 (Fire OS 7/8, Google TV) RenderEffect non esiste e la
+  // vecchia velatura scura non era una sfocatura. Vedi ArtworkBlur.kt.
+  CardMediaImage(
+    primaryUrl = artworkUrl ?: media.backdropUrl,
+    secondaryUrl = media.posterUrl,
+    fallbackRes = fallbackRes,
+    contentDescription = media.title,
+    modifier = modifier.fillMaxSize(),
+    contentScale = ContentScale.Crop,
+    blurArtwork = blurArtwork
+  )
 }
 
 /** Badge «Xm rimanenti» condiviso dai tre layout. */
