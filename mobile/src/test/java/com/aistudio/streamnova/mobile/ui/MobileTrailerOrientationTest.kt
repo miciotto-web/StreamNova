@@ -45,9 +45,11 @@ class MobileTrailerOrientationTest {
   }
 
   @Test
-  fun tabletRestaLandscapeAnchePerIlTrailer() {
+  fun tabletNonVieneRuotatoDalTrailer() {
+    // Il trailer segue l'orientamento fisico corrente del tablet: nessuna
+    // rotazione forzata all'apertura dell'overlay.
     assertEquals(
-      MobileOrientationTarget.SENSOR_LANDSCAPE,
+      MobileOrientationTarget.UNSPECIFIED,
       mobileTrailerOrientationTarget(
         formFactor = MobileFormFactor.TABLET,
         isMultiWindow = false

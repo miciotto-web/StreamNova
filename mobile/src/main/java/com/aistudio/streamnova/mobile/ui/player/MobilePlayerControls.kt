@@ -628,51 +628,58 @@ private fun PlayerSettingsPanel(
           actions.onOpenPanel(MobilePlayerPanel.NONE)
         }
     )
-    Column(
-      modifier = Modifier
-        .width(380.dp)
-        .fillMaxHeight()
-        .background(NovaBackground)
-        .border(1.dp, NovaDivider)
-    ) {
-      PanelHeader(
-        title = if (data.panel == MobilePlayerPanel.ROOT) {
-          stringResource(R.string.settings_title)
-        } else {
-          panelTitle(data.panel)
-        },
-        showBack = data.panel != MobilePlayerPanel.ROOT,
-        onBack = {
-          actions.onInteraction()
-          actions.onOpenPanel(MobilePlayerPanel.ROOT)
-        },
-        onClose = {
-          actions.onInteraction()
-          actions.onOpenPanel(MobilePlayerPanel.NONE)
-        }
-      )
-      LazyColumn(
+    // Larghezza adattiva: 380 dp sulle finestre normali, si restringe quando la
+    // finestra disponibile è più stretta (split-screen, piccole finestre) invece
+    // di sforare il bordo. Su telefoni in riproduzione (landscape) e sui tablet
+    // in portrait il pannello resta com'è.
+    BoxWithConstraints(modifier = Modifier.fillMaxHeight()) {
+      val panelWidth = minOf(380.dp, maxWidth * 0.9f)
+      Column(
         modifier = Modifier
-          .fillMaxSize()
-          .windowInsetsPadding(
-            WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)
-          )
-          .padding(horizontal = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+          .width(panelWidth)
+          .fillMaxHeight()
+          .background(NovaBackground)
+          .border(1.dp, NovaDivider)
       ) {
-        when (data.panel) {
-          MobilePlayerPanel.ROOT -> rootPanelItems(data, actions)
-          MobilePlayerPanel.QUALITY -> qualityItems(data, actions)
-          MobilePlayerPanel.AUDIO -> audioItems(data, actions)
-          MobilePlayerPanel.SUBTITLES -> subtitleItems(data, actions)
-          MobilePlayerPanel.SPEED -> speedItems(data, actions)
-          MobilePlayerPanel.SERVERS -> serverItems(data, actions)
-          MobilePlayerPanel.BUFFERING -> bufferingItems(data, actions)
-          MobilePlayerPanel.DECODER -> decoderItems(data, actions)
-          MobilePlayerPanel.GESTURES -> gesturesItems(data, actions)
-          MobilePlayerPanel.SCREEN_ON -> screenOnItems(data, actions)
-          MobilePlayerPanel.ZOOM -> zoomItems(data, actions)
-          MobilePlayerPanel.NONE -> Unit
+        PanelHeader(
+          title = if (data.panel == MobilePlayerPanel.ROOT) {
+            stringResource(R.string.settings_title)
+          } else {
+            panelTitle(data.panel)
+          },
+          showBack = data.panel != MobilePlayerPanel.ROOT,
+          onBack = {
+            actions.onInteraction()
+            actions.onOpenPanel(MobilePlayerPanel.ROOT)
+          },
+          onClose = {
+            actions.onInteraction()
+            actions.onOpenPanel(MobilePlayerPanel.NONE)
+          }
+        )
+        LazyColumn(
+          modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(
+              WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)
+            )
+            .padding(horizontal = 18.dp),
+          verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+          when (data.panel) {
+            MobilePlayerPanel.ROOT -> rootPanelItems(data, actions)
+            MobilePlayerPanel.QUALITY -> qualityItems(data, actions)
+            MobilePlayerPanel.AUDIO -> audioItems(data, actions)
+            MobilePlayerPanel.SUBTITLES -> subtitleItems(data, actions)
+            MobilePlayerPanel.SPEED -> speedItems(data, actions)
+            MobilePlayerPanel.SERVERS -> serverItems(data, actions)
+            MobilePlayerPanel.BUFFERING -> bufferingItems(data, actions)
+            MobilePlayerPanel.DECODER -> decoderItems(data, actions)
+            MobilePlayerPanel.GESTURES -> gesturesItems(data, actions)
+            MobilePlayerPanel.SCREEN_ON -> screenOnItems(data, actions)
+            MobilePlayerPanel.ZOOM -> zoomItems(data, actions)
+            MobilePlayerPanel.NONE -> Unit
+          }
         }
       }
     }

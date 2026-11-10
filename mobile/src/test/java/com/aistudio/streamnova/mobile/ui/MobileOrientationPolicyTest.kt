@@ -5,8 +5,9 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Matrice di orientamento Fase 8.1: telefono, tablet, player e multi-window.
- * Verifica anche la misura stabile del display e la soglia 599/600 dp.
+ * Matrice di orientamento Fase 9: telefono vincolato come in Fase 8.1, tablet
+ * completamente libero (UNSPECIFIED in qualunque stato). Verifica anche la
+ * misura stabile del display e la soglia 599/600 dp.
  */
 class MobileOrientationPolicyTest {
 
@@ -110,27 +111,48 @@ class MobileOrientationPolicyTest {
   // --- Tablet ---------------------------------------------------------------
 
   @Test
-  fun ilTabletInNavigazioneRestaLandscape() {
+  fun ilTabletInNavigazioneSegueLOrientamentoFisico() {
     assertEquals(
-      MobileOrientationTarget.SENSOR_LANDSCAPE,
+      MobileOrientationTarget.UNSPECIFIED,
       target(MobileFormFactor.TABLET, isPlayerScreen = false)
     )
   }
 
   @Test
-  fun ilTabletDuranteLaRiproduzioneRestaLandscape() {
+  fun ilTabletDuranteLaRiproduzioneNonVieneRuotato() {
+    // Nessuna rotazione forzata all'avvio della riproduzione: il player si
+    // apre nell'orientamento corrente del device.
     assertEquals(
-      MobileOrientationTarget.SENSOR_LANDSCAPE,
+      MobileOrientationTarget.UNSPECIFIED,
       target(MobileFormFactor.TABLET, isPlayerScreen = true, playbackActive = true)
     )
   }
 
   @Test
-  fun ilTabletNegliStatiIntermediDelPlayerRestaLandscape() {
+  fun ilTabletNegliStatiIntermediDelPlayerNonVieneRuotato() {
     assertEquals(
-      MobileOrientationTarget.SENSOR_LANDSCAPE,
+      MobileOrientationTarget.UNSPECIFIED,
       target(MobileFormFactor.TABLET, isPlayerScreen = true, playbackActive = false)
     )
+  }
+
+  @Test
+  fun ilTabletNonHaMaiUnOrientamentoImposto() {
+    // Matrice completa del tablet: qualunque stato, sempre UNSPECIFIED.
+    for (isPlayerScreen in listOf(false, true)) {
+      for (playbackActive in listOf(false, true)) {
+        assertEquals(
+          "player=$isPlayerScreen active=$playbackActive",
+          MobileOrientationTarget.UNSPECIFIED,
+          target(
+            formFactor = MobileFormFactor.TABLET,
+            isPlayerScreen = isPlayerScreen,
+            playbackActive = playbackActive,
+            isMultiWindow = false
+          )
+        )
+      }
+    }
   }
 
   // --- Multi-window ---------------------------------------------------------
@@ -162,7 +184,7 @@ class MobileOrientationPolicyTest {
       target(MobileFormFactor.PHONE, isPlayerScreen = false, isMultiWindow = false)
     )
     assertEquals(
-      MobileOrientationTarget.SENSOR_LANDSCAPE,
+      MobileOrientationTarget.UNSPECIFIED,
       target(MobileFormFactor.TABLET, isPlayerScreen = false, isMultiWindow = false)
     )
   }

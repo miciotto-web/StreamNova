@@ -72,26 +72,37 @@ fun resolveMobileFormFactor(
   mobileFormFactor(measuredDisplayWidthDp ?: configurationSmallestScreenWidthDp)
 
 /**
- * Policy unica di orientamento (Fase 8.1).
+ * Policy unica di orientamento (Fase 9: libertà totale di orientamento sui
+ * tablet, esperienza telefono invariata).
  *
  * | Device  | Schermata            | Riproduzione        | Multi-window | Target           |
  * |---------|----------------------|---------------------|--------------|------------------|
  * | Phone   | non-player           | —                   | no           | PORTRAIT         |
  * | Phone   | player               | attiva              | no           | SENSOR_LANDSCAPE |
  * | Phone   | player               | loading/errore/picker | no         | PORTRAIT         |
- * | Tablet  | non-player           | —                   | no           | SENSOR_LANDSCAPE |
- * | Tablet  | player               | attiva              | no           | SENSOR_LANDSCAPE |
- * | Tablet  | player               | loading/errore/picker | no         | SENSOR_LANDSCAPE |
+ * | Tablet  | qualsiasi            | qualsiasi           | no           | UNSPECIFIED      |
  * | Qualsiasi | qualsiasi          | qualsiasi           | sì           | UNSPECIFIED      |
  *
+ * Il tablet non ha alcun orientamento imposto: navigazione e player seguono
+ * l'orientamento fisico scelto dall'utente e la rotazione di sistema. Nessuna
+ * rotazione forzata all'avvio della riproduzione: se il tablet è verticale il
+ * player si apre in verticale e si adatta a ogni rotazione successiva. Il
+ * playback non viene mai interrotto dalla policy: il manifest gestisce
+ * `orientation|screenSize|...` senza ricreare l'Activity.
+ *
+ * I layout (griglie adattive, hero, controlli player) seguono i vincoli della
+ * finestra (`BoxWithConstraints`, `LocalWindowWidthExpanded`) e si riorganizzano
+ * da soli a ogni rotazione, sia in navigazione sia durante la riproduzione.
+ *
  * In multi-window non viene imposto nulla: il sistema gestisce la finestra e il
- * layout adattivo (`BoxWithConstraints`, rail laterale) segue i suoi vincoli.
+ * layout adattivo segue i suoi vincoli.
  *
  * @param isPlayerScreen true quando la destinazione corrente è il player, anche
  *   se la sorgente non è ancora pronta (`playbackActive = false` in loading,
- *   errore e source picker).
+ *   errore e source picker). Non influenza il target dei tablet.
  * @param playbackActive true solo quando una sorgente sta effettivamente
- *   riproducendo (`MobilePlayerUiState.source != null`).
+ *   riproducendo (`MobilePlayerUiState.source != null`). Non influenza il
+ *   target dei tablet.
  * @param isMultiWindow true quando l'Activity è in split-screen/freeform.
  */
 fun mobileOrientationTarget(
@@ -100,19 +111,24 @@ fun mobileOrientationTarget(
   playbackActive: Boolean,
   isMultiWindow: Boolean
 ): MobileOrientationTarget = when {
-  isMultiWindow -> MobileOrientationTarget.UNSPECIFIED
-  formFactor == MobileFormFactor.TABLET -> MobileOrientationTarget.SENSOR_LANDSCAPE
+  // Tablet e multi-window: nessuna forzatura, segue l'orientamento fisico
+  // scelto dall'utente e gestito da Android.
+  isMultiWindow || formFactor == MobileFormFactor.TABLET ->
+    MobileOrientationTarget.UNSPECIFIED
+  // Telefono: portrait in navigazione e negli stati intermedi del player,
+  // landscape con sensore solo durante la riproduzione effettiva.
   !isPlayerScreen -> MobileOrientationTarget.PORTRAIT
   playbackActive -> MobileOrientationTarget.SENSOR_LANDSCAPE
   else -> MobileOrientationTarget.PORTRAIT
 }
 
 /**
- * Orientamento del trailer (Fase 8.4).
+ * Orientamento del trailer (Fase 8.4, adattata alla Fase 9).
  *
- * Il trailer è un overlay della scheda Dettaglio: su telefono deve poter ruotare
- * in landscape e adattarsi alla rotazione fisica; alla chiusura la policy base
- * riporta il portrait. Sul tablet il landscape è già la policy del device.
+ * Il trailer è un overlay della scheda Dettaglio: su telefono abilita il
+ * landscape finché l'overlay è aperto e alla chiusura la policy base riporta il
+ * portrait. Sul tablet il trailer segue l'orientamento corrente del device:
+ * nessuna rotazione forzata all'apertura.
  *
  * Non tocca la policy del player principale: [mobileOrientationTarget] resta
  * invariata e il trailer ha un ingresso separato nel controller.
@@ -121,7 +137,7 @@ fun mobileTrailerOrientationTarget(
   formFactor: MobileFormFactor,
   isMultiWindow: Boolean
 ): MobileOrientationTarget = when {
-  isMultiWindow -> MobileOrientationTarget.UNSPECIFIED
-  formFactor == MobileFormFactor.TABLET -> MobileOrientationTarget.SENSOR_LANDSCAPE
+  isMultiWindow || formFactor == MobileFormFactor.TABLET ->
+    MobileOrientationTarget.UNSPECIFIED
   else -> MobileOrientationTarget.SENSOR_LANDSCAPE
 }

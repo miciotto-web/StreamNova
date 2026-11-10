@@ -177,9 +177,10 @@ private fun mobilePlayerLoadingPhaseLabel(phase: MobilePlayerLoadingPhase): Stri
  * condiviso (`:core:player`) per factory HLS/progressiva, policy errori, renderer
  * e buffer.
  *
- * Orientamento: la schermata delega a [orientationController] (policy Fase 8.1).
+ * Orientamento: la schermata delega a [orientationController] (policy Fase 9).
  * Telefono: landscape durante la riproduzione, portrait in loading/errore/picker
- * e all'uscita. Tablet: landscape sempre, anche negli stati intermedi e al Back.
+ * e all'uscita. Tablet: nessuna forzatura — il player si apre nell'orientamento
+ * corrente del device e lo segue a ogni rotazione, playback sempre continuo.
  *
  * UI: l'intero overlay (titolo, Back, controlli, seek bar, pulsanti) si nasconde
  * dopo un periodo di inattività mentre il video continua. Un tap lo riporta in
@@ -217,10 +218,11 @@ fun MobilePlayerScreen(
     viewModel.prepare(mediaId, season, episode, autoStart, manualSelection)
   }
 
-  // Sessione di riproduzione: landscape + sistema in modalità immersiva SOLO
-  // quando una sorgente è effettivamente in riproduzione. La policy del device
-  // decide l'orientamento anche negli stati intermedi (loading, errore, scelta
-  // sorgente) e all'uscita: tablet sempre landscape, telefono portrait.
+  // Sessione di riproduzione: sistema in modalità immersiva SOLO quando una
+  // sorgente è effettivamente in riproduzione. La policy del device decide
+  // l'orientamento anche negli stati intermedi (loading, errore, scelta
+  // sorgente) e all'uscita: tablet segue sempre l'orientamento fisico,
+  // telefono portrait fuori dalla riproduzione effettiva.
   val playbackActive = state.source != null ||
     // Avanzamento automatico: il nuovo episodio è già stato scelto dall'utente,
     // quindi il telefono resta in landscape anche durante il breve loading e non
@@ -237,7 +239,7 @@ fun MobilePlayerScreen(
           .show(WindowInsetsCompat.Type.systemBars())
       }
       // Uscita dal player: il controller riapplica la policy del device
-      // (telefono portrait, tablet landscape, multi-window unspecified).
+      // (telefono portrait, tablet orientamento fisico, multi-window unspecified).
       orientationController.clearPlayerScreen()
     }
   }

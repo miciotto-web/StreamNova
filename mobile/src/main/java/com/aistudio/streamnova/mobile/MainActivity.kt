@@ -39,7 +39,8 @@ class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     // Policy di orientamento: telefono portrait fuori dal player e landscape
-    // durante la riproduzione; tablet sempre landscape; multi-window senza
+    // durante la riproduzione; tablet senza alcuna forzatura (segue
+    // l'orientamento fisico scelto dall'utente); multi-window senza
     // forzature. Applicata prima di setContent per ridurre il mismatch iniziale.
     orientationController = MobileOrientationController(this)
     orientationController.applyBasePolicy()
