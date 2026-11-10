@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -364,6 +365,34 @@ fun CategoryBrowsingScreen(
     requestFocusWhenAttached(cellFocusRequester(anchorId))
   }
 
+  // BACK su una card della griglia: UNA sola pressione torna in cima alla scheda — griglia
+  // riportata al primo elemento e focus sul PRIMO badge «Tutti». Con il focus sui badge (o
+  // fuori dalla griglia) il gestore è disattivato e il BACK prosegue con la navigazione
+  // esistente (apertura sidebar / ritorno alla Home).
+  var gridHasFocus by remember { mutableStateOf(false) }
+  val filterRowState = rememberLazyListState()
+  val filterChipRequesters = remember { mutableMapOf<String, FocusRequester>() }
+  fun filterChipRequester(filter: CategoryCatalogFilter): FocusRequester =
+    filterChipRequesters.getOrPut(filter.name) { FocusRequester() }
+  val backToTopScope = rememberCoroutineScope()
+  BackHandler(enabled = gridHasFocus) {
+    backToTopScope.launch {
+      // La fila di badge torna all'inizio: il chip «Tutti» deve essere montato prima che
+      // la richiesta di focus possa essere consegnata (chip riciclata fuori finestra).
+      try {
+        filterRowState.scrollToItem(0)
+      } catch (_: Exception) {
+      }
+      // «Inizio scheda»: anche la griglia riparte dal primo elemento, così discese successive
+      // dal badge riprendono dal catalogo dall'inizio.
+      try {
+        gridState.scrollToItem(0)
+      } catch (_: Exception) {
+      }
+      requestFocusWhenAttached(filterChipRequester(CategoryCatalogFilter.ALL))
+    }
+  }
+
   // UNICO punto di ingresso del ripristino dal Dettaglio: risolve la cella per identità e
   // richiede il focus SU QUELLA cella. Lo scroll avviene solo quando la cella target non è
   // già in finestra CON la griglia già misurata: alla prima composizione dopo il ritorno
@@ -424,6 +453,7 @@ fun CategoryBrowsingScreen(
 
     // Filter Chips Row
     LazyRow(
+      state = filterRowState,
       modifier = Modifier.padding(vertical = 14.dp),
       horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -431,6 +461,10 @@ fun CategoryBrowsingScreen(
         val isSelected = selectedFilter == filter
         val label = filter.labelRes?.let { stringResource(it) } ?: filter.brandName ?: ""
         TvFocusableBox(
+          // Requester del chip: il BACK dalla griglia deve consegnare il focus al primo
+          // badge «Tutti» (vedi il BackHandler sopra). Il chip è montato perché la LazyRow
+          // è già stata riportata all'inizio prima della richiesta.
+          modifier = Modifier.focusRequester(filterChipRequester(filter)),
           shape = RoundedCornerShape(20.dp),
           onClick = { selectedFilter = filter }
         ) { isFocused ->
@@ -469,7 +503,11 @@ fun CategoryBrowsingScreen(
         contentPadding = PaddingValues(bottom = 40.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier
+          .fillMaxSize()
+          // Tracking del focus nella griglia (hasFocus include le card): è la condizione
+          // del BackHandler «torna in cima al badge Tutti».
+          .onFocusChanged { gridHasFocus = it.hasFocus }
       ) {
         itemsIndexed(filteredItems, key = { _, item -> item.id }, contentType = { _, _ -> "media_poster" }) { index, item ->
           if (index >= filteredItems.size - 6) {
@@ -556,10 +594,33 @@ fun FavoritesScreen(
   // L'istanza è stabile per ricomposizione: la chiave dell'effetto di ripristino è l'elenco.
   val favorites = remember(allMedia) { MediaIdentity.dedupeFavorites(allMedia) }
 
+  // Badge di filtro in alto («Film» / «Serie TV»): il tipo selezionato mostra SOLO le schede
+  // di quel tipo; nessun tipo selezionato (o selezione annullata ricliccando il badge attivo)
+  // mostra tutti i Preferiti insieme, come nel comportamento storico.
+  var selectedType by rememberSaveable { mutableStateOf<MediaType?>(null) }
+  val visibleFavorites = remember(favorites, selectedType) {
+    if (selectedType == null) favorites else favorites.filter { it.type == selectedType }
+  }
+
   // Posizione di scroll PERSISTENTE attraverso la navigazione (come le griglie di Film, Serie
   // TV e Provider): al BACK dal Dettaglio la griglia ritrova la stessa posizione, quindi la
   // scheda ripristinata resta nella riga e nella posizione visiva da cui si era entrati.
   val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+
+  // Reset dello scroll al REALE cambio di badge: al ritorno dal Dettaglio (nessun cambio)
+  // la posizione salvata della griglia resta intatta.
+  var appliedFavoriteTypeName by remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(selectedType) {
+    val typeName = selectedType?.name
+    val filterChanged = appliedFavoriteTypeName != null && appliedFavoriteTypeName != typeName
+    appliedFavoriteTypeName = typeName
+    if (filterChanged) {
+      try {
+        gridState.scrollToItem(0)
+      } catch (_: Exception) {
+      }
+    }
+  }
 
   // Canali di ripristino della Home (MainActivity -> HomeScreen): TARGET salvato al click,
   // TOKEN dell'evento (riattiva il tentativo anche su ritorni consecutivi dalla stessa
@@ -604,11 +665,12 @@ fun FavoritesScreen(
   // UNICO punto di ingresso del ripristino dal Dettaglio: risolve la scheda per IDENTITÀ e
   // richiede il focus SU QUELLA. È il protocollo delle griglie di Film/Serie TV e Provider,
   // che è l'unico a garantire che al ritorno il focus non resti fuori dal contenuto (sulla
-  // sidebar) quando la griglia viene ricomposta.
-  LaunchedEffect(restoreMediaId, focusRestoreToken, favorites) {
+  // sidebar) quando la griglia viene ricomposta. La risoluzione usa l'elenco FILTRATO: un
+  // titolo fuori dal badge attivo cade nel percorso di recupero (prima scheda visibile).
+  LaunchedEffect(restoreMediaId, focusRestoreToken, visibleFavorites) {
     val mediaId = restoreMediaId ?: return@LaunchedEffect
-    val index = favoriteRestoreIndex(favorites, allMedia, mediaId)
-    val target = favorites.getOrNull(index)
+    val index = favoriteRestoreIndex(visibleFavorites, allMedia, mediaId)
+    val target = visibleFavorites.getOrNull(index)
     if (target == null) {
       // Titolo non più fra i Preferiti: il target viene rilasciato (le card tornano
       // focalizzabili) e il focus va alla prima scheda GIÀ visibile. Nessuno scroll in cima,
@@ -713,37 +775,101 @@ fun FavoritesScreen(
         }
       }
     } else {
-      TvFocusBringIntoView {
-        LazyVerticalGrid(
-          state = gridState,
-          columns = GridCells.Adaptive(minSize = 150.dp),
-          contentPadding = PaddingValues(bottom = 48.dp),
-          horizontalArrangement = Arrangement.spacedBy(16.dp),
-          verticalArrangement = Arrangement.spacedBy(16.dp),
-          modifier = Modifier.fillMaxSize()
-        ) {
-          itemsIndexed(favorites, key = { _, item -> favoriteCardKey(item.id) }, contentType = { _, _ -> "media_poster" }) { _, item ->
+      // Badge di filtro «Film» / «Serie TV»: stile identico ai chip delle sezioni Film e
+      // Serie TV. Il badge attivo si riclicca per annullare il filtro e tornare a TUTTI i
+      // Preferiti.
+      Row(
+        modifier = Modifier.padding(bottom = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        listOf(
+          MediaType.FILM to R.string.filter_movies,
+          MediaType.SERIE_TV to R.string.filter_tv_series
+        ).forEach { (type, labelRes) ->
+          val isSelected = selectedType == type
+          TvFocusableBox(
+            shape = RoundedCornerShape(20.dp),
+            onClick = { selectedType = if (isSelected) null else type }
+          ) { isFocused ->
             Box(
               modifier = Modifier
-                .fillMaxWidth(),
-              contentAlignment = Alignment.TopCenter
+                .background(
+                  when {
+                    isFocused -> NovaCyanBright
+                    isSelected -> NovaCyan.copy(alpha = 0.25f)
+                    else -> NovaSurfaceVariant
+                  },
+                  RoundedCornerShape(20.dp)
+                )
+                .border(
+                  1.dp,
+                  if (isSelected || isFocused) NovaCyanBright else Color(0xFF1E293B),
+                  RoundedCornerShape(20.dp)
+                )
+                .padding(horizontal = 14.dp, vertical = 8.dp)
             ) {
-              PosterMediaCard(
-                media = item,
-                // L'identità della scheda aperta viene salvata PRIMA di navigare: senza target
-                // il ripristino al BACK non ha nulla da ricondurre alla scheda di origine.
-                onClick = {
-                  viewModel?.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
-                  onMediaClick(item)
-                },
-                // Requester DELLA scheda (nodo focalizzabile della card): una richiesta via
-                // `focusRequester` su una Box non focalizzabile non può mai essere consegnata.
-                focusRequester = cellFocusRequester(item.id),
-                // Protocollo con CONFERMA del focus reale: il target viene rilasciato solo
-                // quando la scheda lo ha davvero acquisito, quindi al ritorno nessuna
-                // richiesta prematura resta senza esito.
-                confirmFocusRestore = true
+              Text(
+                text = stringResource(labelRes),
+                color = if (isFocused) NovaBackground else if (isSelected) NovaCyanBright else NovaTextSecondary,
+                fontSize = 12.sp,
+                fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium
               )
+            }
+          }
+        }
+      }
+
+      if (visibleFavorites.isEmpty()) {
+        // Il badge attivo non ha schede: messaggio coerente col filtro (nessuna scheda
+        // indovinata per posizione, griglia comunque navigabile sui badge).
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+          contentAlignment = Alignment.Center
+        ) {
+          Text(
+            text = stringResource(
+              R.string.provider_empty_filter,
+              stringResource(if (selectedType == MediaType.FILM) R.string.filter_movies else R.string.filter_tv_series)
+            ),
+            color = NovaTextMuted,
+            fontSize = 16.sp
+          )
+        }
+      } else {
+        TvFocusBringIntoView {
+          LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Adaptive(minSize = 150.dp),
+            contentPadding = PaddingValues(bottom = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.fillMaxSize()
+          ) {
+            itemsIndexed(visibleFavorites, key = { _, item -> favoriteCardKey(item.id) }, contentType = { _, _ -> "media_poster" }) { _, item ->
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth(),
+                contentAlignment = Alignment.TopCenter
+              ) {
+                PosterMediaCard(
+                  media = item,
+                  // L'identità della scheda aperta viene salvata PRIMA di navigare: senza target
+                  // il ripristino al BACK non ha nulla da ricondurre alla scheda di origine.
+                  onClick = {
+                    viewModel?.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
+                    onMediaClick(item)
+                  },
+                  // Requester DELLA scheda (nodo focalizzabile della card): una richiesta via
+                  // `focusRequester` su una Box non focalizzabile non può mai essere consegnata.
+                  focusRequester = cellFocusRequester(item.id),
+                  // Protocollo con CONFERMA del focus reale: il target viene rilasciato solo
+                  // quando la scheda lo ha davvero acquisito, quindi al ritorno nessuna
+                  // richiesta prematura resta senza esito.
+                  confirmFocusRestore = true
+                )
+              }
             }
           }
         }

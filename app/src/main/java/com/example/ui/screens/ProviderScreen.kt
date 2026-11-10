@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -34,6 +35,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -65,6 +67,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import com.example.ui.components.PosterMediaCard
+import com.example.ui.components.requestFocusWhenAttached
 import com.example.ui.components.stabilizeFirstSeenOrder
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.TvFocusBringIntoView
@@ -83,6 +86,7 @@ import com.example.ui.theme.NovaTextSecondary
 import com.example.ui.viewmodel.StreamNovaViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 
 enum class ProviderCatalogFilter(val labelRes: Int) {
   ALL(R.string.filter_all),
@@ -183,7 +187,14 @@ fun ProviderScreen(
   viewModel: StreamNovaViewModel? = null,
   onLoadMore: ((isTv: Boolean) -> Unit)? = null
 ) {
-  BackHandler { onBackClick() }
+  // BACK su una card della griglia: UNA sola pressione torna in cima alla scheda — griglia
+  // riportata al primo elemento e focus sul PRIMO badge «Tutti» (stesso protocollo delle
+  // sezioni Film/Serie TV). Con il focus fuori dalla griglia (badge, intestazione) il BACK
+  // esce regolarmente dalla scheda provider. Il gestore vero è più sotto, dopo la
+  // dichiarazione dei requester dei chip filtro.
+  var gridHasFocus by remember { mutableStateOf(false) }
+  val filterRowState = rememberLazyListState()
+  val backToTopScope = rememberCoroutineScope()
   // Stato di ripristino del focus: dal ViewModel quando è disponibile, altrimenti quello
   // ambientale (fornito da MainActivity o dall'harness di test). I valori ambientali coincidono
   // con quelli del ViewModel nel percorso di produzione, quindi il comportamento non cambia.
@@ -489,6 +500,27 @@ fun ProviderScreen(
   val filterAttachments = remember { mutableMapOf<Int, TvFocusAttachment>() }
   var lastFocusedFilterIndex by remember { mutableStateOf(0) }
 
+  BackHandler {
+    if (gridHasFocus) {
+      backToTopScope.launch {
+        // La fila di badge torna all'inizio: il chip «Tutti» deve essere montato prima che
+        // la richiesta di focus possa essere consegnata (chip riciclata fuori finestra).
+        try {
+          filterRowState.scrollToItem(0)
+        } catch (_: Exception) {
+        }
+        // «Inizio scheda»: anche la griglia riparte dal primo elemento.
+        try {
+          gridState.scrollToItem(0)
+        } catch (_: Exception) {
+        }
+        filterFocusRequesters[0]?.let { requestFocusWhenAttached(it) }
+      }
+    } else {
+      onBackClick()
+    }
+  }
+
   CompositionLocalProvider(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
     LocalLastFocusedTarget provides lastFocusedTarget,
@@ -571,6 +603,7 @@ fun ProviderScreen(
 
     // Filter Chips Pills con forma a pillola identica
     LazyRow(
+      state = filterRowState,
       modifier = Modifier
         .fillMaxWidth()
         .padding(horizontal = 32.dp, vertical = 8.dp),
@@ -693,6 +726,9 @@ fun ProviderScreen(
             verticalArrangement = Arrangement.spacedBy(PROVIDER_GRID_SPACING),
             modifier = Modifier
               .fillMaxSize()
+              // Tracking del focus nella griglia (hasFocus include le card): è la condizione
+              // del BackHandler «torna in cima al badge Tutti».
+              .onFocusChanged { gridHasFocus = it.hasFocus }
               .testTag(PROVIDER_GRID_TEST_TAG)
           ) {
             itemsIndexed(filteredItems, key = { _, it -> it.id }, contentType = { _, _ -> "media_poster" }) { index, item ->

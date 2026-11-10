@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.os.Build
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
@@ -70,6 +71,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -310,6 +312,12 @@ fun DetailScreen(
    * logo/titolo e le sorgenti, senza tab Episodi/Produzione.
    */
   isLiveChannel: Boolean = false,
+  /**
+   * Preferenza «Sfoca non visti» (Impostazioni → Continua a guardare) estesa alla lista
+   * episodi della serie: le miniature degli episodi MAI visti sono sfocate anti-spoiler
+   * (stesso criterio della riga Home, vedi [EpisodeRowItem]).
+   */
+  blurUnwatchedEpisodes: Boolean = false,
   modifier: Modifier = Modifier
 ) {
   // Resolve active media & extended details depending on UI State
@@ -1543,6 +1551,7 @@ fun DetailScreen(
                 isSimklWatched = episode.episodeNumber in simklWatchedEpisodes,
                 fallbackBackdropUrl = displayMedia.backdropUrl,
                 fallbackBackdropRes = displayMedia.backdropRes,
+                blurUnwatched = blurUnwatchedEpisodes,
                 onClick = {
                   onEpisodeClick?.invoke(displayMedia, episode) ?: onPlayClick(displayMedia, episode)
                 },
@@ -1882,8 +1891,20 @@ fun EpisodeRowItem(
   isSimklWatched: Boolean = false,
   fallbackBackdropUrl: String? = null,
   fallbackBackdropRes: Int? = null,
+  /**
+   * Preferenza «Sfoca non visti» attiva: la miniatura degli episodi MAI visti (nessun
+   * progresso, non completati, non segnati su SIMKL) è sfocata anti-spoiler. Episodi
+   * iniziati (in visione) o completati restano sempre nitidi, come nella riga
+   * «Continua a guardare» ([ContinueWatchingRowPolicy]: `unwatched = progress <= 0`).
+   */
+  blurUnwatched: Boolean = false,
   modifier: Modifier = Modifier
 ) {
+  // `Modifier.blur` usa RenderEffect e su API < 31 non ha effetto: in quel caso si
+  // applica una velatura scura equivalente, come in ContinueWatchingArtwork.
+  val isEpisodeUnseen = !isSimklWatched && !episode.isCompleted && episode.currentProgressMs <= 0L
+  val blurThumbnail = blurUnwatched && isEpisodeUnseen
+  val canBlurThumbnail = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
   TvFocusableBox(
     modifier = modifier.fillMaxWidth(),
     shape = RoundedCornerShape(12.dp),
@@ -1927,7 +1948,11 @@ fun EpisodeRowItem(
               .build(),
             contentDescription = episode.title,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+              .fillMaxSize()
+              .then(
+                if (blurThumbnail && canBlurThumbnail) Modifier.blur(16.dp) else Modifier
+              )
           )
         } else {
           val thumb = episode.thumbnailRes ?: fallbackBackdropRes
@@ -1936,7 +1961,11 @@ fun EpisodeRowItem(
             painter = painterResource(id = thumb),
             contentDescription = episode.title,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+              .fillMaxSize()
+              .then(
+                if (blurThumbnail && canBlurThumbnail) Modifier.blur(16.dp) else Modifier
+              )
           )
           } else {
             Box(
@@ -1949,6 +1978,16 @@ fun EpisodeRowItem(
                 )
             )
           }
+        }
+
+        // Velatura anti-spoiler su API < 31 (RenderEffect non disponibile): stessa
+        // contromisura della card «Continua a guardare», la protezione resta attiva.
+        if (blurThumbnail && !canBlurThumbnail) {
+          Box(
+            modifier = Modifier
+              .fillMaxSize()
+              .background(Color.Black.copy(alpha = 0.62f))
+          )
         }
 
         if (isSimklWatched) {

@@ -75,6 +75,7 @@ import com.example.ui.components.LocalClearLastFocusedProvider
 import com.example.ui.navigation.DetailNavArgs
 import com.example.ui.navigation.Screen
 import com.example.ui.screens.DetailScreen
+import com.example.ui.screens.HomeBackToRowStartState
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.PlayerScreen
 import com.example.ui.screens.ProviderScreen
@@ -433,6 +434,15 @@ fun StreamNovaApp(
         BackHandler(
           enabled = screenState == ScreenState.BROWSING && currentSection == SidebarSection.HOME
         ) {
+          // La via TASTIERA della Home ha già preso in carico questa pressione (BACK su una
+          // card oltre la prima scheda della fila: vedi HomeScreen.homeBackToRowStart). La
+          // piattaforma recapita la STESSA pressione anche a questo callback, in parallelo ai
+          // key event: senza la guardia un solo BACK mostrerebbe il feedback di uscita oltre
+          // a riportare il focus alla prima scheda (stesso protocollo di
+          // PlayerScreen.`backKeyDownPending`).
+          if (HomeBackToRowStartState.isPending) {
+            return@BackHandler
+          }
           val now = SystemClock.elapsedRealtime()
           if (now - lastExitRequestAt < EXIT_CONFIRM_WINDOW_MS) {
             // Uscita regolare dell'Activity (il processo resta vivo).
@@ -710,6 +720,10 @@ fun StreamNovaApp(
         val seasonEpisodesUiState by viewModel.seasonEpisodesUiState.collectAsState()
         val lastFocusedCastMemberId by viewModel.lastFocusedCastMemberId.collectAsState()
         val lastFocusedCompanyId by viewModel.lastFocusedCompanyId.collectAsState()
+        // Preferenza «Sfoca non visti» (Impostazioni → Continua a guardare), estesa alle
+        // miniature della lista episodi della scheda: gli episodi mai visti restano sfocati
+        // anche qui quando l'opzione è attiva.
+        val continueWatchingPreferences by viewModel.continueWatchingPreferences.collectAsState()
         // Chiusure del selettore sorgenti avvenute mentre QUESTA scheda era composta
         // sotto l'overlay: il Dettaglio le usa per riprendere il focus su «Riproduci».
         val sourceDialogDismissedToken by viewModel.sourceDialogDismissedToken.collectAsState()
@@ -854,7 +868,8 @@ fun StreamNovaApp(
             onClearTargetCastMember = { viewModel.clearLastFocusedCastMember() },
 targetCompanyId = lastFocusedCompanyId,
             onClearTargetCompany = { viewModel.clearLastFocusedCompany() },
-            isLiveChannel = isLiveChannel
+            isLiveChannel = isLiveChannel,
+            blurUnwatchedEpisodes = continueWatchingPreferences.blurUnwatched
           )
           }
         }

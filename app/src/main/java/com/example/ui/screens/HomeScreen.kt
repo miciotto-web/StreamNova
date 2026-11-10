@@ -866,6 +866,73 @@ internal fun Modifier.homeVerticalStepKeys(
 }
 
 /**
+ * Pressione BACK «torna alla prima scheda della fila» presa in carico dalla via TASTIERA
+ * ([homeBackToRowStart]) e non ancora rilasciata.
+ *
+ * Serve a MainActivity: la piattaforma recapita la STESSA pressione ANCHE al
+ * OnBackPressedDispatcher (in parallelo ai key event, vedi PlayerScreen.`backKeyDownPending`),
+ * quindi il gestore di uscita della Home deve ignorare il callback quando questa via ha
+ * già accettato il tasto — altrimenti un solo BACK mostrerebbe il feedback «Premi ancora
+ * indietro per uscire» oltre a spostare il focus.
+ */
+object HomeBackToRowStartState {
+  var isPending: Boolean by mutableStateOf(false)
+    private set
+
+  fun arm() {
+    isPending = true
+  }
+
+  fun release() {
+    isPending = false
+  }
+}
+
+/**
+ * BACK su una card di riga della Home: UNA sola pressione riporta alla PRIMA scheda della
+ * fila. Vale per tutte le righe di schede del contenuto — «Continua a guardare», hub dei
+ * provider e ogni riga catalogo — perché il movimento passa dal protocollo autorevole del
+ * coordinatore ([HomeRowFocusCoordinator.requestPendingFocus] → [HomeVerticalFocusSync]):
+ * la riga torna anche in posizione iniziale (la colonna 0 viene portata in finestra con lo
+ * scroll orizzontale) e il focus atterra sulla card verificata da `onFocusChanged`.
+ *
+ * Regole:
+ * - l'azione avviene sul DOWN della prima pressione (`repeatCount == 0`); il rilascio (UP) è
+ *   consumato a sua volta quando il DOWN è stato consumato ([HomeBackToRowStartState]): con
+ *   il dispatch "legacy" del BACK l'UP lasciato passare arma `onBackPressed` e la stessa
+ *   pressione attiverebbe il doppio-BACK di uscita oltre allo spostamento di focus;
+ * - l'Hero è escluso: non è una fila di schede e gestisce i propri tasti;
+ * - già sulla PRIMA scheda della fila (colonna 0): il tasto NON è consumato e prosegue con
+ *   il percorso di uscita già presente in MainActivity (doppio BACK con feedback).
+ *
+ * @return `true` quando il tasto è stato consumato (non raggiunge l'uscita della Home).
+ */
+internal fun homeBackToRowStart(
+  event: androidx.compose.ui.input.key.KeyEvent,
+  coordinator: HomeRowFocusCoordinator
+): Boolean {
+  val native = event.nativeKeyEvent
+  // Rilascio della STESSA pressione BACK presa in carico sul DOWN: consumato senza azioni.
+  // Solo il BACK: l'UP di un altro tasto (es. OK) arrivato nel frattempo non va mangiato.
+  if (native.action == KeyEvent.ACTION_UP &&
+    native.keyCode == KeyEvent.KEYCODE_BACK &&
+    HomeBackToRowStartState.isPending
+  ) {
+    HomeBackToRowStartState.release()
+    return true
+  }
+  if (native.action != KeyEvent.ACTION_DOWN || native.repeatCount != 0) return false
+  if (native.keyCode != KeyEvent.KEYCODE_BACK) return false
+  val rowKey = coordinator.focusedRowKey ?: return false
+  if (rowKey == "hero_banner") return false
+  val col = coordinator.lastFocusedColumn(rowKey) ?: return false
+  if (col <= 0) return false
+  HomeBackToRowStartState.arm()
+  coordinator.requestPendingFocus(rowKey, 0)
+  return true
+}
+
+/**
  * Unico punto che muove la Home (LazyColumn verticale + LazyRow orizzontali) in risposta alla
  * richiesta di focus pendente del coordinatore.
  *
@@ -2146,19 +2213,25 @@ fun HomeMainBrowsingContent(
       // Consumare DOWN **e UP** evita che il rilascio di OK venga letto come click dalla card
       // sottostante (riproduzione o altra azione implicita dietro il popup).
       .onPreviewKeyEvent { keyEvent ->
-        if (!isContextMenuOpen) return@onPreviewKeyEvent false
-        when (keyEvent.nativeKeyEvent.keyCode) {
-          KeyEvent.KEYCODE_DPAD_UP,
-          KeyEvent.KEYCODE_DPAD_DOWN,
-          KeyEvent.KEYCODE_DPAD_LEFT,
-          KeyEvent.KEYCODE_DPAD_RIGHT,
-          KeyEvent.KEYCODE_DPAD_CENTER,
-          KeyEvent.KEYCODE_ENTER,
-          KeyEvent.KEYCODE_NUMPAD_ENTER,
-          // BACK destinato al popup ma ancora consegnato a questa finestra: non deve
-          // raggiungere il doppio-BACK di uscita della Home.
-          KeyEvent.KEYCODE_BACK -> true
-          else -> false
+        if (isContextMenuOpen) {
+          when (keyEvent.nativeKeyEvent.keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER,
+            // BACK destinato al popup ma ancora consegnato a questa finestra: non deve
+            // raggiungere il doppio-BACK di uscita della Home.
+            KeyEvent.KEYCODE_BACK -> true
+            else -> false
+          }
+        } else {
+          // BACK su una card di riga: una sola pressione riporta alla PRIMA scheda della fila
+          // (vedi [homeBackToRowStart]). Già sulla prima scheda (o sull'Hero) il tasto NON è
+          // consumato e vale il percorso di uscita esistente (doppio BACK con feedback).
+          homeBackToRowStart(keyEvent, coordinator)
         }
       }
       // Il contenuto non ha (più) il focus: nessuna cella può essere considerata focalizzata.
@@ -2167,7 +2240,13 @@ fun HomeMainBrowsingContent(
       // prima: la verifica della sincronizzazione risulterebbe vera per una cella che non ha
       // più il focus e il ripristino verrebbe consumato senza spostare nulla.
       .onFocusChanged { focusState ->
-        if (!focusState.hasFocus) coordinator.onCellFocusInvalidated()
+        if (!focusState.hasFocus) {
+          coordinator.onCellFocusInvalidated()
+          // Pressione BACK rimasta "aperta" mentre il contenuto perde il focus (UP mai
+          // recapitato): il flag va azzerato, altrimenti il rilascio di una pressione
+          // successiva verrebbe consumato senza motivo.
+          HomeBackToRowStartState.release()
+        }
       }
       // Nuvio ModernHomeRowsList: quando il focus (ri)entra nel contenuto delle righe da fuori
       // (ripristino senza target, ritorno dalla sidebar) il restorer lo rimanda alla CELLA
