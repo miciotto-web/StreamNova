@@ -28,8 +28,8 @@ android {
     applicationId = "com.aistudio.streamnova.mobile"
     minSdk = 24
     targetSdk = 36
-    versionCode = 3
-    versionName = "1.1.1"
+    versionCode = 4
+    versionName = "1.0.1"
 
     val localProps = Properties().apply {
       val localFile = rootProject.file("local.properties")

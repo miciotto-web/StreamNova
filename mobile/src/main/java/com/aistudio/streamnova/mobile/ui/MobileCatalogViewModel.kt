@@ -11,6 +11,7 @@ import com.example.data.prefs.AppSettingsRepository
 import com.example.data.repository.CatalogSection
 import com.example.data.repository.HomeCatalogs
 import com.example.data.repository.MediaRepository
+import com.example.data.repository.SimklRepository
 import com.example.data.repository.StremioCatalogRepository
 import com.example.data.repository.TmdbHomeCatalogProvider
 import com.example.data.stremio.StremioAddonRepository
@@ -875,11 +876,24 @@ class MobileCatalogViewModel : ViewModel() {
   /**
    * Rimozione esplicita da «Continua a guardare», come il menu contestuale TV.
    * La card sparisce perché Room riemette il catalogo, senza stato locale
-   * parallelo che possa divergere.
+   * parallelo che possa divergere. La rimozione è PERSISTENTE anche lato
+   * SIMKL (TV 1.0.7): le sessioni di pausa del titolo vengono chiuse sul
+   * server (`DELETE /sync/playback/{id}`), altrimenti la card rientra alla
+   * sincronizzazione successiva. Best-effort: il fallimento non invalida
+   * la rimozione locale.
    */
   fun removeFromContinueWatching(mediaId: String) {
     viewModelScope.launch {
+      val media = MediaRepository.getMediaById(mediaId)
       MediaRepository.removeFromContinueWatching(mediaId)
+      if (media != null) {
+        SimklRepository.deletePlaybackSessionsFor(
+          title = media.title,
+          year = media.year,
+          tmdbId = media.tmdbId,
+          imdbId = media.effectiveImdbId
+        )
+      }
     }
   }
 

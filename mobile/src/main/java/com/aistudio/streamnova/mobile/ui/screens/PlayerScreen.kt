@@ -129,10 +129,13 @@ import com.example.data.prefs.TargetBufferOption
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.ParentalGuideRepository
 import com.example.data.repository.ParentalGuideSummary
+import com.example.data.repository.SimklEpisodePayload
+import com.example.data.repository.SimklMediaPayload
 import com.example.data.streaming.CacheState
 import com.example.data.streaming.StreamSource
 import com.example.ui.screens.player.CustomDefaultTrackNameProvider
 import com.example.ui.screens.player.NuvioRenderersFactory
+import com.example.ui.screens.player.SimklScrobbler
 import com.example.data.prefs.StreamingEngineMode
 import com.example.ui.screens.player.DebridLoadingScreen
 import com.example.ui.screens.player.DebridLoadingOverlay
@@ -676,6 +679,32 @@ private fun MobilePlayerSurface(
   val media = state.media
   val episode = state.episode
   val currentOnEpisodeEnded by rememberUpdatedState(onEpisodeEnded)
+  // Sessione Simkl: il payload dipende da media ed episodio (chiavi season/episode),
+  // quindi al cambio episodio ne viene creato uno NUOVO. L'effetto dedicato più sotto
+  // chiude la sessione del payload precedente.
+  val simklMedia = remember(
+    media?.id,
+    media?.title,
+    media?.year,
+    media?.tmdbId,
+    media?.effectiveImdbId,
+    episode?.seasonNumber,
+    episode?.episodeNumber
+  ) {
+    media?.let { item ->
+      SimklMediaPayload(
+        title = item.title,
+        year = item.year.takeIf { it > 0 },
+        tmdbId = item.tmdbId,
+        imdbId = episode?.effectiveImdbId ?: item.effectiveImdbId,
+        episode = episode?.let { SimklEpisodePayload(it.seasonNumber, it.episodeNumber) },
+        // Id locale della scheda: la risposta effettiva di SIMKL (`action: "scrobble"`)
+        // permette di consolidare il completamento senza cercare di nuovo il titolo.
+        mediaId = item.id
+      )
+    }
+  }
+  val simklScrobbler = remember(simklMedia) { simklMedia?.let { SimklScrobbler(it) } }
 
   val startPositionMs = remember(state.source, episode, media, settings.autoResume) {
     val saved = if (episode != null && media != null) {
@@ -754,6 +783,19 @@ private fun MobilePlayerSurface(
   var positionMs by remember(exoPlayer) { mutableLongStateOf(exoPlayer.currentPosition) }
   var durationMs by remember(exoPlayer) { mutableLongStateOf(exoPlayer.duration.coerceAtLeast(0L)) }
   var isPlaying by remember(exoPlayer) { mutableStateOf(exoPlayer.isPlaying) }
+
+  // L'effetto (e SOLO questo) chiude la sessione del payload PRECEDENTE al cambio
+  // episodio: è separato dal DisposableEffect del player per non rilasciare mai
+  // ExoPlayer durante la transizione. La chiusura legge lo stato vivo
+  // (`positionMs`/`durationMs`), senza toccare il player che potrebbe essere già
+  // stato rilasciato.
+  DisposableEffect(simklScrobbler) {
+    val previousScrobbler = simklScrobbler
+    onDispose {
+      previousScrobbler?.onStop(simklProgressPercent(positionMs, durationMs))
+    }
+  }
+  val currentSimklScrobbler by rememberUpdatedState(simklScrobbler)
   var isBuffering by remember(exoPlayer) {
     mutableStateOf(exoPlayer.playbackState == Player.STATE_BUFFERING)
   }
@@ -949,14 +991,45 @@ private fun MobilePlayerSurface(
 
       override fun onIsPlayingChanged(playing: Boolean) {
         isPlaying = playing
+        // Sessione SIMKL: play/pausa reali del player, solo a flusso pronto
+        // (READY/ENDED); lo scrobbler deduplica gli eventi ripetuti.
+        if (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.playbackState == Player.STATE_ENDED) {
+          val progress = simklProgressPercent(
+            exoPlayer.currentPosition.coerceAtLeast(0L),
+            exoPlayer.duration
+          )
+          if (playing) {
+            currentSimklScrobbler?.onPlay(progress)
+          } else {
+            currentSimklScrobbler?.onPause(progress)
+          }
+        }
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
         isBuffering = playbackState == Player.STATE_BUFFERING
         playbackEnded = playbackState == Player.STATE_ENDED
-        if (playbackState == Player.STATE_READY) playerReady = true
+        if (playbackState == Player.STATE_READY) {
+          playerReady = true
+          // Primo READY con riproduzione già attiva: il `start` che mancava
+          // (tipicamente dopo un buffering iniziale) parte qui.
+          if (exoPlayer.isPlaying) {
+            currentSimklScrobbler?.onPlay(
+              simklProgressPercent(
+                exoPlayer.currentPosition.coerceAtLeast(0L),
+                exoPlayer.duration
+              )
+            )
+          }
+        }
         durationMs = exoPlayer.duration.coerceAtLeast(0L)
         if (playbackState == Player.STATE_ENDED) {
+          // Conclusione normale SOLO se la sessione non è fallita e la riproduzione
+          // ha effettivamente consumato contenuto (no ENDED istantaneo da stream
+          // vuoto/rotto).
+          if (playbackError == null && exoPlayer.currentPosition > 0L && exoPlayer.duration > 0L) {
+            currentSimklScrobbler?.onEnded()
+          }
           positionMs = exoPlayer.duration.coerceAtLeast(0L)
           controlsVisible = true
           currentOnEpisodeEnded()
@@ -1037,7 +1110,15 @@ private fun MobilePlayerSurface(
   DisposableEffect(lifecycleOwner, exoPlayer) {
     val observer = LifecycleEventObserver { _, event ->
       when (event) {
-        Lifecycle.Event.ON_STOP -> exoPlayer.pause()
+        // Quando l'app va in background (HOME, chiamata, spegnimento dello schermo)
+        // il player può non ricevere un `onDispose`: il progresso locale viene salvato
+        // qui, con la posizione reale, così la ripresa non dipende dal percorso di
+        // chiusura della schermata.
+        Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+          val position = exoPlayer.currentPosition.coerceAtLeast(0L)
+          if (position > 0L) onProgress(position, exoPlayer.duration.coerceAtLeast(0L))
+          if (event == Lifecycle.Event.ON_STOP) exoPlayer.pause()
+        }
         Lifecycle.Event.ON_DESTROY -> exoPlayer.release()
         else -> Unit
       }
@@ -1049,6 +1130,10 @@ private fun MobilePlayerSurface(
       // fallito a 0:00 non deve azzerare la posizione di ripresa già salvata.
       val positionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
       if (positionMs > 0L) {
+        // Chiusura della sessione scrobble PRIMA del rilascio del player: dopo
+        // `release()` posizione e durata non sono più leggibili e lo `stop`
+        // verrebbe rifiutato, lasciando la sessione aperta su SIMKL.
+        currentSimklScrobbler?.onStop(simklProgressPercent(positionMs, exoPlayer.duration))
         onProgress(positionMs, exoPlayer.duration.coerceAtLeast(0L))
       }
       exoPlayer.release()
@@ -1938,6 +2023,17 @@ private fun StatsLine(label: String, value: String) {
 
 /** Tag logcat del player Mobile (diagnostica; nessun dato utente nei messaggi). */
 private const val PLAYER_ERROR_TAG = "MobilePlayer"
+
+/**
+ * Percentuale di visione per lo scrobble SIMKL, **`null` quando la durata non è nota**.
+ *
+ * `C.TIME_UNSET`/0 (`exoPlayer.duration`) è la durata *sconosciuta*, non una durata di zero:
+ * restituire `0.0` direbbe a SIMKL "riprendi dall'inizio" e sovrascriverebbe il punto di
+ * ripresa con un dato inventato. Il `null` fa rifiutare l'evento, che resta così
+ * recuperabile quando la durata reale è disponibile.
+ */
+private fun simklProgressPercent(positionMs: Long, durationMs: Long): Double? =
+  if (durationMs > 0L) (positionMs.toDouble() / durationMs.toDouble() * 100.0).coerceIn(0.0, 100.0) else null
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
   is Activity -> this

@@ -598,6 +598,11 @@ class MobilePlayerViewModel : ViewModel() {
         progressMs = positionMs,
         durationMs = durationMs
       )
+      // Conclusione di un FILM (TV 1.0.7): posizione alla fine della durata MISURATA.
+      // Non cancella nulla: registra `completedAt`, toglie la card da «Continua a
+      // guardare» e annuncia il completamento a SIMKL tramite il sink locale.
+      val measuredDuration = if (durationMs > 0L) durationMs else media.totalDurationMs
+      MediaRepository.maybeCompleteMovie(media.id, positionMs, measuredDuration)
     }
   }
 

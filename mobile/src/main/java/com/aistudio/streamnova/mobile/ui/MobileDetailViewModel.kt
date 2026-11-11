@@ -8,6 +8,8 @@ import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.repository.MediaRepository
+import com.example.data.repository.SimklMediaKind
+import com.example.data.repository.SimklMediaPayload
 import com.example.data.repository.SimklRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -349,11 +351,18 @@ class MobileDetailViewModel : ViewModel() {
    * Guardato / Da guardare: identico alla TV, aggiorna il progresso del titolo
    * (100% se non visto, 0 se già visto). Per le serie è lo stato del titolo,
    * non la somma degli episodi, come nella scheda TV 1.0.4.
+   *
+   * "Visto" è una CONCLUSIONE (TV 1.0.7): oltre a portare il progresso alla durata
+   * totale, toglie la card da «Continua a guardare» (`completedAt`) e — tramite il
+   * sink dei completamenti locali — dichiara il titolo concluso anche su SIMKL
+   * (`status=completed` per le serie, cronologia vista per i film). "Non visto"
+   * ritira il completamento in locale e su SIMKL (`history/remove`).
    */
   fun toggleWatched() {
     val media = _state.value.media ?: return
     val current = MediaRepository.getMediaById(media.id) ?: media
     val target = MobileDetailPolicy.watchedTargetProgress(current)
+    val becomingWatched = !current.isWatched
     MediaRepository.updateProgress(current.id, target)
 
     val updated = MediaRepository.getMediaById(current.id)
@@ -370,6 +379,43 @@ class MobileDetailViewModel : ViewModel() {
       _state.update { state ->
         state.copy(media = state.media?.copy(currentProgressMs = target))
       }
+    }
+    viewModelScope.launch {
+      if (becomingWatched) {
+        MediaRepository.markWatchedManually(current.id)
+      } else {
+        MediaRepository.clearCompletedManually(current.id)
+        broadcastUnwatchToSimkl(current)
+      }
+    }
+  }
+
+  /**
+   * Trasmette a SIMKL il RITIRO della marcatura «visto» (`/sync/history/remove`):
+   * film e serie intera. La MARCATURA invece viaggia tramite
+   * [MediaRepository.markWatchedManually], che notifica SIMKL dal sink dei
+   * completamenti locali. Il fallimento non tocca lo stato locale, già scritto.
+   */
+  private suspend fun broadcastUnwatchToSimkl(media: MediaItem) {
+    val hasIdentifiers = (media.tmdbId ?: 0) > 0 || !media.effectiveImdbId.isNullOrBlank()
+    if (!hasIdentifiers) return
+    val payload = SimklMediaPayload(
+      title = media.title,
+      year = media.year,
+      tmdbId = media.tmdbId,
+      imdbId = media.effectiveImdbId,
+      episode = null,
+      kind = if (media.type == MediaType.SERIE_TV) SimklMediaKind.SERIES else SimklMediaKind.MOVIE,
+      mediaId = media.id
+    )
+    val delivered = if (media.type == MediaType.SERIE_TV) {
+      // Serie intera: la stessa forma show-level della marcatura, senza `status`.
+      SimklRepository.removeSeriesHistory(payload)
+    } else {
+      SimklRepository.unmarkWatched(payload)
+    }
+    if (delivered) {
+      android.util.Log.i("SimklWatched", "Marcatura «da vedere» confermata da SIMKL: ${media.title}.")
     }
   }
 
