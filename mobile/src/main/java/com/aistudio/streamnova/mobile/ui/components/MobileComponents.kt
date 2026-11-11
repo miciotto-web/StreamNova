@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -34,10 +35,15 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -51,6 +57,9 @@ import coil.compose.AsyncImage
 import com.aistudio.streamnova.mobile.R
 import com.example.core.designsystem.R as DesignSystemR
 import com.example.data.model.MediaItem
+import com.example.data.model.MediaType
+import com.example.data.prefs.ContinueWatchingLayout
+import com.example.data.repository.ContinueWatchingRowItem
 import com.example.ui.components.NeonCardBorderWidth
 import com.example.ui.components.NeonCardCorner
 import com.example.ui.components.ProviderBranding
@@ -232,60 +241,378 @@ fun MobilePosterCard(
   }
 }
 
-/** Card orizzontale "Continua a guardare" con progresso reale. */
+/**
+ * Card «Continua a guardare» con i tre layout della TV 1.0.7:
+ *  - [ContinueWatchingLayout.CARD] → 16:9 full-bleed, testi sovrapposti (storico);
+ *  - [ContinueWatchingLayout.WIDE] → card larga, immagine a sinistra e testi a destra;
+ *  - [ContinueWatchingLayout.POSTER] → locandina 2:3 con testi sovrapposti in basso.
+ *
+ * [artworkUrl] è l'immagine già scelta dal policy (miniatura episodio, backdrop o
+ * locandina) e [blurArtwork] è già deciso dal policy (solo episodi non ancora visti):
+ * la card non replica nessuna regola delle preferenze.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MobileContinueCard(
   media: MediaItem,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
-  onLongClick: (() -> Unit)? = null
+  onLongClick: (() -> Unit)? = null,
+  layout: ContinueWatchingLayout = ContinueWatchingLayout.CARD,
+  artworkUrl: String? = null,
+  blurArtwork: Boolean = false
 ) {
-  Column(
+  val cardWidth = when (layout) {
+    ContinueWatchingLayout.CARD -> 230.dp
+    ContinueWatchingLayout.WIDE -> 330.dp
+    ContinueWatchingLayout.POSTER -> 150.dp
+  }
+  val cardHeight = when (layout) {
+    ContinueWatchingLayout.CARD,
+    ContinueWatchingLayout.WIDE -> 130.dp
+    ContinueWatchingLayout.POSTER -> 225.dp
+  }
+  Box(
     modifier = modifier
-      .width(230.dp)
+      .width(cardWidth)
+      .height(cardHeight)
+      .clip(RoundedCornerShape(12.dp))
+      .background(NovaCardBg)
       .combinedClickable(
         onClick = onClick,
         onLongClick = onLongClick
       )
   ) {
-    Box(
-      modifier = Modifier
-        .fillMaxWidth()
-        .aspectRatio(16f / 9f)
-        .clip(RoundedCornerShape(12.dp))
-        .background(NovaCardBg)
-    ) {
-      MediaArtwork(
+    when (layout) {
+      ContinueWatchingLayout.CARD -> ContinueWatchingCardLayout(
         media = media,
-        preferPoster = false,
-        modifier = Modifier.fillMaxSize()
+        artworkUrl = artworkUrl,
+        blurArtwork = blurArtwork
       )
-      LinearProgressIndicator(
-        progress = { media.progressFraction },
-        modifier = Modifier
-          .align(Alignment.BottomCenter)
-          .fillMaxWidth()
-          .height(4.dp),
-        color = NovaCyan,
-        trackColor = Color.White.copy(alpha = 0.16f)
+      ContinueWatchingLayout.WIDE -> ContinueWatchingWideLayout(
+        media = media,
+        artworkUrl = artworkUrl,
+        blurArtwork = blurArtwork
+      )
+      ContinueWatchingLayout.POSTER -> ContinueWatchingPosterLayout(
+        media = media,
+        artworkUrl = artworkUrl,
+        blurArtwork = blurArtwork
       )
     }
-    Spacer(modifier = Modifier.height(6.dp))
+  }
+}
+
+/** Layout «Scheda»: immagine full-bleed e testi sovrapposti in basso. */
+@Composable
+private fun ContinueWatchingCardLayout(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean
+) {
+  Box(modifier = Modifier.fillMaxSize()) {
+    ContinueWatchingArtwork(
+      media = media,
+      artworkUrl = artworkUrl,
+      blurArtwork = blurArtwork,
+      modifier = Modifier.fillMaxSize()
+    )
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(
+          Brush.verticalGradient(
+            colors = listOf(
+              Color.Transparent,
+              Color.Transparent,
+              Color.Black.copy(alpha = 0.62f),
+              Color.Black.copy(alpha = 0.94f)
+            )
+          )
+        )
+    )
+    ContinueWatchingRemainingBadge(
+      media = media,
+      modifier = Modifier
+        .align(Alignment.TopEnd)
+        .padding(8.dp)
+    )
+    Column(
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .fillMaxWidth()
+        .padding(start = 12.dp, end = 12.dp, bottom = 18.dp)
+    ) {
+      ContinueWatchingTextBlock(media = media, onDarkArtwork = true)
+    }
+    ContinueWatchingProgressBar(
+      media = media,
+      modifier = Modifier
+        .align(Alignment.BottomCenter)
+        .fillMaxWidth()
+        .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
+    )
+  }
+}
+
+/** Layout «Larga»: immagine a sinistra, pannello testi a destra. */
+@Composable
+private fun ContinueWatchingWideLayout(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean
+) {
+  Box(modifier = Modifier.fillMaxSize()) {
+    Row(modifier = Modifier.fillMaxSize()) {
+      Box(modifier = Modifier.width(130.dp).fillMaxHeight()) {
+        ContinueWatchingArtwork(
+          media = media,
+          artworkUrl = artworkUrl,
+          blurArtwork = blurArtwork,
+          modifier = Modifier.fillMaxSize()
+        )
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(
+              Brush.horizontalGradient(
+                listOf(Color.Transparent, NovaCardBg.copy(alpha = 0.85f))
+              )
+            )
+        )
+        ContinueWatchingRemainingBadge(
+          media = media,
+          modifier = Modifier
+            .align(Alignment.BottomStart)
+            .padding(8.dp)
+        )
+      }
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxHeight()
+          .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 18.dp)
+      ) {
+        ContinueWatchingTextBlock(media = media, onDarkArtwork = false)
+      }
+    }
+    ContinueWatchingProgressBar(
+      media = media,
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .fillMaxWidth()
+        .padding(start = 130.dp, end = 12.dp, bottom = 8.dp)
+    )
+  }
+}
+
+/** Layout «Locandina»: poster 2:3 con testi sovrapposti in basso. */
+@Composable
+private fun ContinueWatchingPosterLayout(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean
+) {
+  Box(modifier = Modifier.fillMaxSize()) {
+    ContinueWatchingArtwork(
+      media = media,
+      artworkUrl = artworkUrl,
+      blurArtwork = blurArtwork,
+      modifier = Modifier.fillMaxSize()
+    )
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(
+          Brush.verticalGradient(
+            colors = listOf(
+              Color.Transparent,
+              Color.Transparent,
+              Color.Black.copy(alpha = 0.72f),
+              Color.Black.copy(alpha = 0.96f)
+            )
+          )
+        )
+    )
+    ContinueWatchingRemainingBadge(
+      media = media,
+      modifier = Modifier
+        .align(Alignment.TopEnd)
+        .padding(8.dp)
+    )
+    Column(
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .fillMaxWidth()
+        .padding(start = 10.dp, end = 10.dp, bottom = 18.dp)
+    ) {
+      ContinueWatchingTextBlock(media = media, onDarkArtwork = true)
+    }
+    ContinueWatchingProgressBar(
+      media = media,
+      modifier = Modifier
+        .align(Alignment.BottomCenter)
+        .fillMaxWidth()
+        .padding(start = 10.dp, end = 10.dp, bottom = 8.dp)
+    )
+  }
+}
+
+/** Riga episodio/anno, titolo e titolo della puntata: identica nei tre layout. */
+@Composable
+private fun ContinueWatchingTextBlock(
+  media: MediaItem,
+  onDarkArtwork: Boolean
+) {
+  val primaryColor = if (onDarkArtwork) Color.White else NovaTextPrimary
+  val secondaryColor = if (onDarkArtwork) Color.White.copy(alpha = 0.75f) else NovaTextSecondary
+  val episodeLabel = media.continueEpisodeLabel()
+  if (episodeLabel.isNotEmpty()) {
     Text(
-      text = media.title,
-      color = NovaTextPrimary,
-      fontSize = 14.sp,
+      text = episodeLabel,
+      color = if (onDarkArtwork) Color.White.copy(alpha = 0.9f) else NovaCyanBright,
+      fontSize = 10.sp,
       fontWeight = FontWeight.SemiBold,
+      maxLines = 1
+    )
+  }
+  Text(
+    text = media.title,
+    color = primaryColor,
+    fontSize = if (onDarkArtwork) 14.sp else 15.sp,
+    fontWeight = FontWeight.Bold,
+    maxLines = 2,
+    overflow = TextOverflow.Ellipsis
+  )
+  media.continueEpisodeTitle()?.let { episodeTitle ->
+    Text(
+      text = episodeTitle,
+      color = secondaryColor,
+      fontSize = 10.sp,
       maxLines = 1,
       overflow = TextOverflow.Ellipsis
     )
-    Text(
-      text = media.continueLabel(),
-      color = NovaTextMuted,
-      fontSize = 11.sp
+  }
+}
+
+/**
+ * Immagine della card: URL deciso dal policy, con fallback backdrop → poster.
+ * La sfocatura è calcolata sulla bitmap (SpoilerBlurredImage), non con
+ * `Modifier.blur`, così funziona anche su Android 7-11 (minSdk 24).
+ */
+@Composable
+private fun ContinueWatchingArtwork(
+  media: MediaItem,
+  artworkUrl: String?,
+  blurArtwork: Boolean,
+  modifier: Modifier = Modifier
+) {
+  val primary: Any? = artworkUrl?.takeIf { it.isNotBlank() } ?: media.backdropModel()
+  val secondary: Any? = media.posterModel()
+  var primaryFailed by remember(primary) { mutableStateOf(false) }
+  val target = if (!primaryFailed || secondary == primary) primary else secondary
+  val tryFallback = {
+    if (!primaryFailed && primary != null && secondary != null && secondary != primary) {
+      primaryFailed = true
+    }
+  }
+  if (target == null) {
+    ContinueWatchingArtworkPlaceholder(modifier)
+    return
+  }
+  if (blurArtwork) {
+    SpoilerBlurredImage(
+      data = target,
+      contentDescription = media.title,
+      modifier = modifier,
+      contentScale = ContentScale.Crop,
+      onError = tryFallback,
+      loading = { ContinueWatchingArtworkPlaceholder(Modifier.fillMaxSize()) },
+      error = { ContinueWatchingArtworkPlaceholder(Modifier.fillMaxSize()) }
+    )
+  } else {
+    AsyncImage(
+      model = target,
+      contentDescription = media.title,
+      contentScale = ContentScale.Crop,
+      modifier = modifier,
+      onError = { tryFallback() }
     )
   }
+}
+
+@Composable
+private fun ContinueWatchingArtworkPlaceholder(modifier: Modifier = Modifier) {
+  Box(
+    modifier = modifier.background(
+      Brush.verticalGradient(listOf(Color(0xFF1B2333), Color(0xFF0F1420)))
+    )
+  )
+}
+
+/** Badge «Xm rimanenti»: solo con un progresso reale e con tempo residuo. */
+@Composable
+private fun ContinueWatchingRemainingBadge(
+  media: MediaItem,
+  modifier: Modifier = Modifier
+) {
+  val remaining = media.continueRemainingMinutes() ?: return
+  Box(
+    modifier = modifier
+      .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(6.dp))
+      .padding(horizontal = 7.dp, vertical = 3.dp)
+  ) {
+    Text(
+      text = stringResource(R.string.home_continue_remaining_minutes, remaining),
+      color = Color.White,
+      fontSize = 10.sp,
+      fontWeight = FontWeight.Medium,
+      maxLines = 1
+    )
+  }
+}
+
+@Composable
+private fun ContinueWatchingProgressBar(
+  media: MediaItem,
+  modifier: Modifier = Modifier
+) {
+  Box(
+    modifier = modifier
+      .height(3.dp)
+      .clip(RoundedCornerShape(2.dp))
+      .background(Color(0x55000000))
+  ) {
+    LinearProgressIndicator(
+      progress = { media.progressFraction },
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(3.dp),
+      color = NovaCyan,
+      trackColor = Color(0x3300A3FF)
+    )
+  }
+}
+
+/** Etichetta «S1 E2» (serie) oppure anno (film). */
+private fun MediaItem.continueEpisodeLabel(): String =
+  if (type == MediaType.SERIE_TV && lastWatchedEpisode != null) {
+    "S${lastWatchedSeason ?: 1} E$lastWatchedEpisode"
+  } else {
+    displayYear
+  }
+
+/** Titolo della puntata di ripresa, solo se i dati della stagione sono disponibili. */
+private fun MediaItem.continueEpisodeTitle(): String? =
+  episodes.firstOrNull {
+    it.seasonNumber == lastWatchedSeason && it.episodeNumber == lastWatchedEpisode
+  }?.title?.takeIf { it.isNotBlank() }
+
+/** Minuti rimanenti dai millisecondi reali; null quando non c'è nulla da riprendere. */
+private fun MediaItem.continueRemainingMinutes(): Int? {
+  if (currentProgressMs <= 0L) return null
+  val remainingMs = (totalDurationMs - currentProgressMs).coerceAtLeast(0L)
+  return (remainingMs / 60_000L).toInt().takeIf { it > 0 }
 }
 
 /** Stile delle card usato dalle righe Home, come le card della Home TV. */
@@ -306,9 +633,14 @@ fun MobileSectionRow(
   badge: String? = null,
   style: MobileRowStyle = MobileRowStyle.POSTER,
   onContinueClick: ((MediaItem) -> Unit)? = null,
-  onContinueLongClick: ((MediaItem) -> Unit)? = null
+  onContinueLongClick: ((MediaItem) -> Unit)? = null,
+  continueWatchingCards: List<ContinueWatchingRowItem> = emptyList(),
+  continueWatchingLayout: ContinueWatchingLayout = ContinueWatchingLayout.CARD
 ) {
   if (items.isEmpty()) return
+  val continueCardsById = remember(continueWatchingCards) {
+    continueWatchingCards.associateBy { it.media.id }
+  }
   Column(modifier = modifier.fillMaxWidth()) {
     Row(
       modifier = Modifier
@@ -346,11 +678,17 @@ fun MobileSectionRow(
             modifier = Modifier.width(132.dp)
           )
 
-          MobileRowStyle.CONTINUE -> MobileContinueCard(
-            media = media,
-            onClick = { (onContinueClick ?: onMediaClick)(media) },
-            onLongClick = onContinueLongClick?.let { callback -> { callback(media) } }
-          )
+          MobileRowStyle.CONTINUE -> {
+            val card = continueCardsById[media.id]
+            MobileContinueCard(
+              media = media,
+              onClick = { (onContinueClick ?: onMediaClick)(media) },
+              onLongClick = onContinueLongClick?.let { callback -> { callback(media) } },
+              layout = continueWatchingLayout,
+              artworkUrl = card?.artworkUrl,
+              blurArtwork = card?.blurArtwork == true
+            )
+          }
 
           MobileRowStyle.TOP_10 -> MobileTop10Card(
             rank = index + 1,
@@ -604,14 +942,4 @@ private fun MediaItem.shortMetadata(): String {
   val yearText = if (year > 0) year.toString() else ""
   val ratingText = if (rating > 0f) String.format(Locale.ITALY, "%.1f", rating) else ""
   return listOf(yearText, ratingText).filter { it.isNotBlank() }.joinToString(" • ")
-}
-
-@Composable
-private fun MediaItem.continueLabel(): String {
-  val remaining = ((totalDurationMs - currentProgressMs).coerceAtLeast(0L) / 60_000L).toInt()
-  return if (remaining > 0) {
-    stringResource(R.string.home_continue_remaining_minutes, remaining)
-  } else {
-    stringResource(R.string.home_continue_in_progress)
-  }
 }

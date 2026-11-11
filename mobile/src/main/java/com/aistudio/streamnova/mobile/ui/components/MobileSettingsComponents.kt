@@ -15,12 +15,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -48,6 +51,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -102,6 +108,90 @@ fun MobileSettingsSection(
       verticalArrangement = Arrangement.spacedBy(2.dp),
       content = content
     )
+  }
+}
+
+/**
+ * Sezione impostazioni espandibile: intestazione touch con stato Aperto/Chiuso e
+ * contenuto nella stessa card delle altre sezioni.
+ *
+ * Replica la sezione «Continua a guardare» della TV 1.0.7: lo stato vive solo nella
+ * composizione, le preferenze interne restano persistite singolarmente.
+ */
+@Composable
+fun MobileSettingsExpandableSection(
+  title: String,
+  subtitle: String,
+  expanded: Boolean,
+  expandedLabel: String,
+  collapsedLabel: String,
+  onToggle: () -> Unit,
+  modifier: Modifier = Modifier,
+  content: @Composable ColumnScope.() -> Unit
+) {
+  val stateLabel = if (expanded) expandedLabel else collapsedLabel
+  Column(modifier = modifier.fillMaxWidth()) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .selectable(
+          selected = expanded,
+          role = Role.Button,
+          onClick = onToggle
+        )
+        .semantics { stateDescription = stateLabel }
+        .background(NovaCardBg, RoundedCornerShape(12.dp))
+        .border(1.dp, NovaDivider, RoundedCornerShape(12.dp))
+        .padding(horizontal = 16.dp, vertical = 14.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = title,
+          color = NovaTextPrimary,
+          fontSize = 16.sp,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis
+        )
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(
+          text = subtitle,
+          color = NovaTextSecondary,
+          fontSize = 12.sp,
+          lineHeight = 16.sp,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+      Spacer(modifier = Modifier.width(12.dp))
+      Text(
+        text = stateLabel,
+        color = NovaCyanBright,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold
+      )
+      Spacer(modifier = Modifier.width(6.dp))
+      Icon(
+        imageVector = if (expanded) Icons.Default.KeyboardArrowUp
+        else Icons.Default.KeyboardArrowDown,
+        contentDescription = null,
+        tint = NovaCyanBright,
+        modifier = Modifier.size(20.dp)
+      )
+    }
+    if (expanded) {
+      Spacer(modifier = Modifier.height(8.dp))
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(NovaCardBg.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+          .border(1.dp, NovaDivider, RoundedCornerShape(14.dp))
+          .padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        content = content
+      )
+    }
   }
 }
 

@@ -19,6 +19,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +45,7 @@ import com.aistudio.streamnova.mobile.ui.components.MobileSectionRow
 import com.aistudio.streamnova.mobile.ui.components.MobileTopBar
 import com.aistudio.streamnova.mobile.ui.homeSections
 import com.example.data.model.MediaItem
+import com.example.data.model.MediaType
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.StreamingProvider
 import com.example.ui.theme.NovaCyan
@@ -71,6 +73,37 @@ fun HomeScreen(
   val state by viewModel.catalog.collectAsStateWithLifecycle()
   val expanded = LocalWindowWidthExpanded.current
   var contextMenuMedia by remember { mutableStateOf<MediaItem?>(null) }
+
+  // Arricchimento in background della riga «Continua a guardare», come la Home TV:
+  // il prossimo episodio TMDB serve al calcolo della ripresa (preferenza «Prossimo
+  // episodio dall'ultimo raggiunto» e puntate non ancora trasmesse), la still alla
+  // preferenza «Usa miniature episodi». Le chiavi sono gli id e la coppia
+  // (titolo, stagione, episodio): i progressi e i refresh non rilanciano richieste.
+  val continueWatchingCards = state.continueWatchingCards
+  val continueWatchingIds = remember(continueWatchingCards) {
+    continueWatchingCards.map { it.media.id }
+  }
+  LaunchedEffect(continueWatchingIds) {
+    viewModel.ensureNextEpisodeBadges(continueWatchingCards.map { it.media })
+  }
+  val episodeThumbnailTargets = remember(
+    continueWatchingCards,
+    state.continueWatchingPreferences.useEpisodeThumbnails
+  ) {
+    if (!state.continueWatchingPreferences.useEpisodeThumbnails) {
+      emptyList()
+    } else {
+      continueWatchingCards
+        .map { it.media }
+        .filter { it.type == MediaType.SERIE_TV }
+        .map { "${it.id}:${it.lastWatchedSeason}:${it.lastWatchedEpisode}" }
+    }
+  }
+  LaunchedEffect(episodeThumbnailTargets) {
+    if (state.continueWatchingPreferences.useEpisodeThumbnails) {
+      viewModel.ensureEpisodeThumbnails(continueWatchingCards.map { it.media })
+    }
+  }
 
   BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
     val isLandscape = maxWidth > maxHeight
@@ -161,7 +194,9 @@ fun HomeScreen(
                   onMediaClick = onMediaClick,
                   style = MobileRowStyle.CONTINUE,
                   onContinueClick = onPlayMedia,
-                  onContinueLongClick = { contextMenuMedia = it }
+                  onContinueLongClick = { contextMenuMedia = it },
+                  continueWatchingCards = section.continueWatchingCards,
+                  continueWatchingLayout = state.continueWatchingPreferences.layout
                 )
               }
 

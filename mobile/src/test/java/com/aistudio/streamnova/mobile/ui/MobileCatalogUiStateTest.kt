@@ -2,7 +2,10 @@ package com.aistudio.streamnova.mobile.ui
 
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.prefs.ContinueWatchingLayout
+import com.example.data.prefs.ContinueWatchingPreferences
 import com.example.data.repository.CatalogSection
+import com.example.data.repository.ContinueWatchingRowItem
 import com.example.data.repository.HomeCatalogs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -193,6 +196,74 @@ class MobileCatalogUiStateTest {
     assertTrue(state.parentalControlActive)
     // La serie consentita tiene viva la riga Popolari Serie: la Home non è vuota.
     assertTrue(state.hasHomeContent)
+  }
+
+  @Test
+  fun laRigaContinuaAGuardareUsaLeCardDeciseDalPolicy() {
+    val media = series("serie").copy(
+      inContinueWatching = true,
+      lastWatchedSeason = 2,
+      lastWatchedEpisode = 4,
+      currentProgressMs = 120_000L
+    )
+    val card = ContinueWatchingRowItem(
+      media = media,
+      artworkUrl = "https://image.tmdb.org/t/p/w780/still.jpg",
+      blurArtwork = true,
+      targetEpisodeUnwatched = true
+    )
+    val preferences = ContinueWatchingPreferences(
+      layout = ContinueWatchingLayout.WIDE,
+      useEpisodeThumbnails = true,
+      blurUnwatched = true
+    )
+
+    val state = buildMobileCatalogUiState(
+      home = home(),
+      continueWatching = listOf(media),
+      continueWatchingCards = listOf(card),
+      continueWatchingPreferences = preferences,
+      favorites = emptyList(),
+      isLoading = false,
+      isRefreshing = false,
+      error = null,
+      parentalEnabled = false,
+      parentalLevel = "18"
+    )
+
+    assertEquals(listOf(card), state.continueWatchingCards)
+    assertEquals(listOf(media), state.continueWatching)
+    assertEquals(ContinueWatchingLayout.WIDE, state.continueWatchingPreferences.layout)
+    val section = state.homeSections().first { it.key == "continue_watching" }
+    assertEquals(listOf(card), section.continueWatchingCards)
+    assertEquals(listOf(media), section.items)
+  }
+
+  @Test
+  fun ilFiltroGenitoriRimuoveAncheLaCardDellaRiga() {
+    val restricted = movie("restricted", ageRating = 18)
+    val card = ContinueWatchingRowItem(
+      media = restricted,
+      artworkUrl = null,
+      blurArtwork = false,
+      targetEpisodeUnwatched = false
+    )
+
+    val state = buildMobileCatalogUiState(
+      home = home(),
+      continueWatching = listOf(restricted),
+      continueWatchingCards = listOf(card),
+      favorites = emptyList(),
+      isLoading = false,
+      isRefreshing = false,
+      error = null,
+      parentalEnabled = true,
+      parentalLevel = "18"
+    )
+
+    assertTrue(state.continueWatching.isEmpty())
+    assertTrue(state.continueWatchingCards.isEmpty())
+    assertTrue(state.homeSections().none { it.key == "continue_watching" })
   }
 
   @Test

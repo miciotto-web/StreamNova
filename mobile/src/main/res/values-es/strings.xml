@@ -174,6 +174,32 @@
     <string name="settings_status_connected">Conectado</string>
     <string name="settings_status_verify_account">Verificar Cuenta</string>
     <string name="settings_use_torbox_instant">Usar TorBox Instant Debrid</string>
+    <!-- Sección «Seguir viendo» (paridad TV 1.0.7) -->
+    <string name="settings_cw_section_title">Seguir viendo</string>
+    <string name="settings_cw_section_desc">Ajustes de la sección \"Seguir viendo\".</string>
+    <string name="settings_cw_expanded">Abierto</string>
+    <string name="settings_cw_collapsed">Cerrado</string>
+    <string name="settings_cw_show">Mostrar Seguir viendo</string>
+    <string name="settings_cw_show_desc">Muestra la fila Seguir viendo en la pantalla de inicio.</string>
+    <string name="settings_cw_layout">Diseño de la fila</string>
+    <string name="settings_cw_layout_card">Tarjeta</string>
+    <string name="settings_cw_layout_wide">Ancha</string>
+    <string name="settings_cw_layout_poster">Póster</string>
+    <string name="settings_cw_layout_selected">Seleccionado</string>
+    <string name="settings_cw_episode_thumbnails">Usar miniaturas de episodios en \"Seguir viendo\"</string>
+    <string name="settings_cw_episode_thumbnails_desc">Usa las miniaturas de los episodios como imagen predeterminada. Si está desactivado, usa el fondo.</string>
+    <string name="settings_cw_blur_unwatched">Desenfocar no vistos en Seguir viendo</string>
+    <string name="settings_cw_blur_unwatched_desc">Desenfoca las miniaturas del próximo episodio en Seguir viendo para evitar spoilers.</string>
+    <string name="settings_cw_next_from_furthest">Próximo episodio desde el último alcanzado</string>
+    <string name="settings_cw_next_from_furthest_desc">Muestra el episodio siguiente basándose en el punto más avanzado de la visualización. Desactiva para los rewatches y usar en su lugar el episodio visto más recientemente.</string>
+    <string name="settings_cw_show_unaired">Mostrar episodios aún no emitidos</string>
+    <string name="settings_cw_show_unaired_desc">Incluye los próximos episodios en \"Seguir viendo\" antes de su emisión.</string>
+    <string name="settings_cw_sort">Ordenación</string>
+    <string name="settings_cw_sort_desc">Cómo se ordenan los elementos en \"Seguir viendo\"</string>
+    <string name="settings_cw_sort_default">Predeterminado</string>
+    <string name="settings_cw_sort_title">Título (A-Z)</string>
+    <string name="settings_cw_sort_rating">Voto TMDB</string>
+
     <string name="settings_search_section">Búsqueda y catálogos</string>
     <string name="settings_tmdb_genre_fallback">Usar TMDB como respaldo para los catálogos</string>
     <string name="settings_tmdb_genre_fallback_desc">Usa el catálogo TMDB (caché local y discover) cuando los catálogos de addons/Cinemeta no devuelven contenido para Películas o Series.</string>

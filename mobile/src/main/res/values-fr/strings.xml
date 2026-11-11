@@ -174,6 +174,32 @@
     <string name="settings_status_connected">Connecté</string>
     <string name="settings_status_verify_account">Vérifier le compte</string>
     <string name="settings_use_torbox_instant">Utiliser TorBox Instant Debrid</string>
+    <!-- Section «À suivre» (parité TV 1.0.7) -->
+    <string name="settings_cw_section_title">À suivre</string>
+    <string name="settings_cw_section_desc">Paramètres de la section \"À suivre\".</string>
+    <string name="settings_cw_expanded">Ouvert</string>
+    <string name="settings_cw_collapsed">Fermé</string>
+    <string name="settings_cw_show">Afficher À suivre</string>
+    <string name="settings_cw_show_desc">Affiche la ligne À suivre sur l\'écran d\'accueil.</string>
+    <string name="settings_cw_layout">Disposition de la ligne</string>
+    <string name="settings_cw_layout_card">Carte</string>
+    <string name="settings_cw_layout_wide">Large</string>
+    <string name="settings_cw_layout_poster">Affiche</string>
+    <string name="settings_cw_layout_selected">Sélectionné</string>
+    <string name="settings_cw_episode_thumbnails">Utiliser les miniatures d\'épisodes dans \"À suivre\"</string>
+    <string name="settings_cw_episode_thumbnails_desc">Utilise les miniatures des épisodes comme image par défaut. Si désactivé, utilise l\'arrière-plan.</string>
+    <string name="settings_cw_blur_unwatched">Flouter les non-vus dans À suivre</string>
+    <string name="settings_cw_blur_unwatched_desc">Floute les miniatures du prochain épisode dans À suivre pour éviter les spoilers.</string>
+    <string name="settings_cw_next_from_furthest">Prochain épisode depuis le plus avancé</string>
+    <string name="settings_cw_next_from_furthest_desc">Affiche l\'épisode suivant en se basant sur le point le plus avancé de la vision. Désactivez pour les rewatch afin d\'utiliser plutôt l\'épisode regardé le plus récemment.</string>
+    <string name="settings_cw_show_unaired">Afficher les épisodes non encore diffusés</string>
+    <string name="settings_cw_show_unaired_desc">Inclut les prochains épisodes dans \"À suivre\" avant leur diffusion.</string>
+    <string name="settings_cw_sort">Tri</string>
+    <string name="settings_cw_sort_desc">Comment les éléments de \"À suivre\" sont triés</string>
+    <string name="settings_cw_sort_default">Par défaut</string>
+    <string name="settings_cw_sort_title">Titre (A-Z)</string>
+    <string name="settings_cw_sort_rating">Note TMDB</string>
+
     <string name="settings_search_section">Recherche et catalogues</string>
     <string name="settings_tmdb_genre_fallback">Utiliser TMDB comme repli pour les catalogues</string>
     <string name="settings_tmdb_genre_fallback_desc">Utilise le catalogue TMDB (cache locale et discover) lorsque les catalogues addon/Cinemeta ne renvoient aucun contenu pour les Films ou les Séries.</string>

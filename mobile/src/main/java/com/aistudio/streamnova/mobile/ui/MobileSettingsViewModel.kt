@@ -9,6 +9,9 @@ import com.example.data.opensubtitles.OpenSubtitlesConnectionVerifier
 import com.example.data.opensubtitles.OpenSubtitlesVerifyError
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.BackBufferOption
+import com.example.data.prefs.ContinueWatchingLayout
+import com.example.data.prefs.ContinueWatchingPreferences
+import com.example.data.prefs.ContinueWatchingSort
 import com.example.data.prefs.DecoderFallbackMode
 import com.example.data.prefs.InitialBufferOption
 import com.example.data.prefs.LastStreamCacheDuration
@@ -70,6 +73,11 @@ data class MobileSettingsUiState(
   val playback: PlaybackSettings = PlaybackSettings(),
   val autoplayEnabled: Boolean = false,
   val tmdbGenreFallbackEnabled: Boolean = true,
+  /**
+   * Preferenze della sezione «Continua a guardare»: stesso snapshot osservabile del
+   * core condiviso con la TV, così la Home si aggiorna senza riavvio.
+   */
+  val continueWatching: ContinueWatchingPreferences = ContinueWatchingPreferences(),
   val parentalEnabled: Boolean = false,
   val parentalLevel: String = "18",
   val hasParentalPin: Boolean = false,
@@ -100,7 +108,8 @@ class MobileSettingsViewModel : ViewModel() {
   private data class PlaybackBundle(
     val playback: PlaybackSettings,
     val autoplay: Boolean,
-    val tmdbGenreFallback: Boolean
+    val tmdbGenreFallback: Boolean,
+    val continueWatching: ContinueWatchingPreferences
   )
 
   private data class ParentalState(
@@ -164,9 +173,10 @@ class MobileSettingsViewModel : ViewModel() {
   private val playbackFlow = combine(
     SettingsRepository.settings,
     AppSettingsRepository.autoplayEnabled,
-    AppSettingsRepository.tmdbGenreFallbackEnabled
-  ) { playback, autoplay, tmdbGenreFallback ->
-    PlaybackBundle(playback, autoplay, tmdbGenreFallback)
+    AppSettingsRepository.tmdbGenreFallbackEnabled,
+    AppSettingsRepository.continueWatchingPreferences
+  ) { playback, autoplay, tmdbGenreFallback, continueWatching ->
+    PlaybackBundle(playback, autoplay, tmdbGenreFallback, continueWatching)
   }
 
   private val parentalFlow = combine(
@@ -214,6 +224,7 @@ class MobileSettingsViewModel : ViewModel() {
       playback = playback.playback,
       autoplayEnabled = playback.autoplay,
       tmdbGenreFallbackEnabled = playback.tmdbGenreFallback,
+      continueWatching = playback.continueWatching,
       parentalEnabled = parental.enabled,
       parentalLevel = parental.level,
       hasParentalPin = parental.hasPin,
@@ -239,6 +250,7 @@ class MobileSettingsViewModel : ViewModel() {
       playback = SettingsRepository.settings.value,
       autoplayEnabled = AppSettingsRepository.autoplayEnabled.value,
       tmdbGenreFallbackEnabled = AppSettingsRepository.tmdbGenreFallbackEnabled.value,
+      continueWatching = AppSettingsRepository.continueWatchingPreferences.value,
       parentalEnabled = AppSettingsRepository.parentalControlEnabled.value,
       parentalLevel = AppSettingsRepository.parentalControlLevel.value,
       hasParentalPin = AppSettingsRepository.hasParentalControlPin(),
@@ -447,6 +459,32 @@ class MobileSettingsViewModel : ViewModel() {
 
   fun setTmdbGenreFallbackEnabled(enabled: Boolean) =
     AppSettingsRepository.setTmdbGenreFallbackEnabled(enabled)
+
+  // ── CONTINUA A GUARDARE ──────────────────────────────────────────────
+  //
+  // Stesse chiavi persistenti e stesso policy della TV: qui non viene duplicata
+  // alcuna regola, la UI scrive solo le preferenze del core condiviso.
+
+  fun setContinueWatchingShowRow(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingShowRow(enabled)
+
+  fun setContinueWatchingLayout(layout: ContinueWatchingLayout) =
+    AppSettingsRepository.setContinueWatchingLayout(layout)
+
+  fun setContinueWatchingEpisodeThumbnails(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingEpisodeThumbnails(enabled)
+
+  fun setContinueWatchingBlurUnwatched(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingBlurUnwatched(enabled)
+
+  fun setContinueWatchingNextEpisodeFromFurthest(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingNextEpisodeFromFurthest(enabled)
+
+  fun setContinueWatchingShowUnairedEpisodes(enabled: Boolean) =
+    AppSettingsRepository.setContinueWatchingShowUnairedEpisodes(enabled)
+
+  fun setContinueWatchingSort(sort: ContinueWatchingSort) =
+    AppSettingsRepository.setContinueWatchingSort(sort)
 
   // ── CONTROLLO GENITORI ───────────────────────────────────────────────
 

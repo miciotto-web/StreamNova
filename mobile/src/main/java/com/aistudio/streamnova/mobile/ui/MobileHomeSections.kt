@@ -3,6 +3,7 @@ package com.aistudio.streamnova.mobile.ui
 import androidx.annotation.StringRes
 import com.aistudio.streamnova.mobile.R
 import com.example.data.model.MediaItem
+import com.example.data.repository.ContinueWatchingRowItem
 
 /**
  * Tipo di riga della Home mobile.
@@ -35,7 +36,12 @@ data class MobileHomeSection(
   @StringRes val titleRes: Int? = null,
   @StringRes val badgeRes: Int? = null,
   val title: String? = null,
-  val badge: String? = null
+  val badge: String? = null,
+  /**
+   * Card della riga «Continua a guardare» con artwork/sfocatura decisi dal policy.
+   * Per le altre righe resta vuota.
+   */
+  val continueWatchingCards: List<ContinueWatchingRowItem> = emptyList()
 )
 
 /**
@@ -51,14 +57,15 @@ fun MobileCatalogUiState.homeSections(): List<MobileHomeSection> = buildList {
   if (heroItems.isNotEmpty()) {
     add(MobileHomeSection("hero", MobileHomeSectionKind.HERO, heroItems))
   }
-  if (continueWatching.isNotEmpty()) {
+  if (continueWatchingCards.isNotEmpty()) {
     add(
       MobileHomeSection(
         key = "continue_watching",
         kind = MobileHomeSectionKind.CONTINUE_WATCHING,
-        items = continueWatching,
+        items = continueWatchingCards.map { it.media },
         titleRes = R.string.home_continue,
-        badgeRes = R.string.home_badge_in_progress
+        badgeRes = R.string.home_badge_in_progress,
+        continueWatchingCards = continueWatchingCards
       )
     )
   }

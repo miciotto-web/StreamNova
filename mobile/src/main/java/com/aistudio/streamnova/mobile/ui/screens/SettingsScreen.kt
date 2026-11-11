@@ -9,22 +9,30 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -36,11 +44,13 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.HdrOn
 import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Restore
@@ -52,6 +62,7 @@ import androidx.compose.material.icons.filled.SyncAlt
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VerticalAlignBottom
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wallpaper
@@ -69,7 +80,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -87,6 +103,7 @@ import com.aistudio.streamnova.mobile.ui.MobileTorBoxAccountState
 import com.aistudio.streamnova.mobile.ui.components.MobileChoiceDialog
 import com.aistudio.streamnova.mobile.ui.components.MobilePinDialog
 import com.aistudio.streamnova.mobile.ui.components.MobileUpdateResultDialog
+import com.aistudio.streamnova.mobile.ui.components.MobileSettingsExpandableSection
 import com.aistudio.streamnova.mobile.ui.components.MobileSettingsNote
 import com.aistudio.streamnova.mobile.ui.components.MobileSettingsRow
 import com.aistudio.streamnova.mobile.ui.components.MobileSettingsSection
@@ -94,6 +111,8 @@ import com.aistudio.streamnova.mobile.ui.components.MobileSettingsSwitchRow
 import com.aistudio.streamnova.mobile.ui.components.MobileSimklLoginDialog
 import com.aistudio.streamnova.mobile.ui.components.MobileTextInputDialog
 import com.example.data.prefs.BackBufferOption
+import com.example.data.prefs.ContinueWatchingLayout
+import com.example.data.prefs.ContinueWatchingSort
 import com.example.data.prefs.DecoderFallbackMode
 import com.example.data.prefs.InitialBufferOption
 import com.example.data.prefs.LastStreamCacheDuration
@@ -109,8 +128,11 @@ import com.example.data.remote.simkl.SimklSyncStatus
 import com.example.data.opensubtitles.OpenSubtitlesVerifyError
 import com.example.data.update.UpdateCheckState
 import com.example.ui.theme.NovaBackground
+import com.example.ui.theme.NovaCardBg
+import com.example.ui.theme.NovaCardBgFocused
 import com.example.ui.theme.NovaCyan
 import com.example.ui.theme.NovaCyanBright
+import com.example.ui.theme.NovaDivider
 import com.example.ui.theme.NovaGreen
 import com.example.ui.theme.NovaOrange
 import com.example.ui.theme.NovaRed
@@ -166,6 +188,10 @@ fun SettingsScreen(onBack: () -> Unit) {
   var showReuseCacheDialog by remember { mutableStateOf(false) }
   var showTorBoxKeyDialog by remember { mutableStateOf(false) }
   var showOpenSubtitlesKeyDialog by remember { mutableStateOf(false) }
+  // Sezione «Continua a guardare»: aperta di default come la TV 1.0.7; lo stato
+  // vive solo nella composizione, le singole preferenze sono persistite dal core.
+  var continueWatchingExpanded by remember { mutableStateOf(true) }
+  var showContinueWatchingSortDialog by remember { mutableStateOf(false) }
 
   var parentalStep by remember { mutableStateOf<MobileParentalStep?>(null) }
   var parentalError by remember { mutableStateOf<String?>(null) }
@@ -324,6 +350,76 @@ fun SettingsScreen(onBack: () -> Unit) {
           } else {
             MobileSettingsNote(text = stringResource(R.string.settings_http_desc))
           }
+        }
+      }
+
+      // ── CONTINUA A GUARDARE ────────────────────────────────────────────
+      // Sezione espandibile dedicata alla riga omonima della Home, con le stesse
+      // sette preferenze della TV 1.0.7. La UI scrive solo le preferenze del core:
+      // visibilità, layout, immagine, sfocatura, ripresa, episodi futuri e
+      // ordinamento sono applicati da ContinueWatchingRowPolicy nella Home.
+      item(key = "continue_watching") {
+        MobileSettingsExpandableSection(
+          title = stringResource(R.string.settings_cw_section_title),
+          subtitle = stringResource(R.string.settings_cw_section_desc),
+          expanded = continueWatchingExpanded,
+          expandedLabel = stringResource(R.string.settings_cw_expanded),
+          collapsedLabel = stringResource(R.string.settings_cw_collapsed),
+          onToggle = { continueWatchingExpanded = !continueWatchingExpanded }
+        ) {
+          MobileSettingsSwitchRow(
+            icon = Icons.Default.PlayArrow,
+            title = stringResource(R.string.settings_cw_show),
+            checked = state.continueWatching.showRow,
+            onCheckedChange = viewModel::setContinueWatchingShowRow
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_cw_show_desc))
+
+          SettingsContinueWatchingLayoutSelector(
+            title = stringResource(R.string.settings_cw_layout),
+            selected = state.continueWatching.layout,
+            onSelect = viewModel::setContinueWatchingLayout
+          )
+
+          MobileSettingsSwitchRow(
+            icon = Icons.Default.Image,
+            title = stringResource(R.string.settings_cw_episode_thumbnails),
+            checked = state.continueWatching.useEpisodeThumbnails,
+            onCheckedChange = viewModel::setContinueWatchingEpisodeThumbnails
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_cw_episode_thumbnails_desc))
+
+          MobileSettingsSwitchRow(
+            icon = Icons.Default.VisibilityOff,
+            title = stringResource(R.string.settings_cw_blur_unwatched),
+            checked = state.continueWatching.blurUnwatched,
+            onCheckedChange = viewModel::setContinueWatchingBlurUnwatched
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_cw_blur_unwatched_desc))
+
+          MobileSettingsSwitchRow(
+            icon = Icons.Default.SkipNext,
+            title = stringResource(R.string.settings_cw_next_from_furthest),
+            checked = state.continueWatching.nextEpisodeFromFurthest,
+            onCheckedChange = viewModel::setContinueWatchingNextEpisodeFromFurthest
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_cw_next_from_furthest_desc))
+
+          MobileSettingsSwitchRow(
+            icon = Icons.Default.PlayArrow,
+            title = stringResource(R.string.settings_cw_show_unaired),
+            checked = state.continueWatching.showUnairedEpisodes,
+            onCheckedChange = viewModel::setContinueWatchingShowUnairedEpisodes
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_cw_show_unaired_desc))
+
+          MobileSettingsRow(
+            icon = Icons.AutoMirrored.Filled.Sort,
+            title = stringResource(R.string.settings_cw_sort),
+            value = continueWatchingSortLabel(state.continueWatching.sort),
+            onClick = { showContinueWatchingSortDialog = true }
+          )
+          MobileSettingsNote(text = stringResource(R.string.settings_cw_sort_desc))
         }
       }
 
@@ -658,6 +754,21 @@ fun SettingsScreen(onBack: () -> Unit) {
         showEngineModeDialog = false
       },
       onDismiss = { showEngineModeDialog = false }
+    )
+  }
+
+  if (showContinueWatchingSortDialog) {
+    // Stesse voci dell'enum TV: ogni modalità è implementata dal policy della riga.
+    val options = ContinueWatchingSort.entries
+    MobileChoiceDialog(
+      title = stringResource(R.string.settings_cw_sort),
+      options = options.map { continueWatchingSortLabel(it) },
+      selectedIndex = options.indexOf(state.continueWatching.sort).coerceAtLeast(0),
+      onSelect = { index ->
+        viewModel.setContinueWatchingSort(options[index])
+        showContinueWatchingSortDialog = false
+      },
+      onDismiss = { showContinueWatchingSortDialog = false }
     )
   }
 
@@ -1242,6 +1353,217 @@ private tailrec fun Context.hostActivity(): Activity? = when (this) {
   is Activity -> this
   is ContextWrapper -> baseContext?.hostActivity()
   else -> null
+}
+
+/**
+ * Selettore visuale del layout della riga «Continua a guardare»: tre card touch con
+ * anteprima schematica, bordo di selezione e spunta, come la TV 1.0.7. L'intera card
+ * è un unico target; nessuna immagine o colore viene preso dai riferimenti.
+ */
+@Composable
+private fun SettingsContinueWatchingLayoutSelector(
+  title: String,
+  selected: ContinueWatchingLayout,
+  onSelect: (ContinueWatchingLayout) -> Unit
+) {
+  val selectedLabel = stringResource(R.string.settings_cw_layout_selected)
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(horizontal = 8.dp, vertical = 4.dp)
+  ) {
+    Text(
+      text = title,
+      color = NovaTextPrimary,
+      fontSize = 15.sp,
+      fontWeight = FontWeight.SemiBold,
+      modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+    )
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+      ContinueWatchingLayout.entries.forEach { layout ->
+        val isSelected = layout == selected
+        Column(
+          modifier = Modifier
+            .weight(1f)
+            .selectable(
+              selected = isSelected,
+              role = Role.RadioButton,
+              onClick = { onSelect(layout) }
+            )
+            .semantics {
+              // Stessa semantica della TV: la card selezionata espone lo stato
+              // «Selezionato» oltre al segno di spunta visivo.
+              if (isSelected) stateDescription = selectedLabel
+            }
+            .background(NovaCardBg.copy(alpha = 0.75f), RoundedCornerShape(12.dp))
+            .border(
+              width = if (isSelected) 2.dp else 1.dp,
+              color = if (isSelected) NovaCyan else NovaDivider,
+              shape = RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+          horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+          ContinueWatchingLayoutPreview(layout = layout, highlighted = isSelected)
+          Spacer(modifier = Modifier.height(8.dp))
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            if (isSelected) {
+              Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = NovaCyanBright,
+                modifier = Modifier.size(14.dp)
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+            }
+            Text(
+              text = continueWatchingLayoutLabel(layout),
+              color = if (isSelected) NovaCyanBright else NovaTextSecondary,
+              fontSize = 11.sp,
+              fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+/** Anteprima schematica del layout: solo disposizione di immagine e testi. */
+@Composable
+private fun ContinueWatchingLayoutPreview(
+  layout: ContinueWatchingLayout,
+  highlighted: Boolean
+) {
+  val accent = if (highlighted) NovaCyanBright else NovaTextMuted
+  val block = NovaTextMuted.copy(alpha = 0.55f)
+  val shape = RoundedCornerShape(5.dp)
+  val base = Modifier
+    .background(NovaCardBgFocused, shape)
+    .border(1.dp, accent.copy(alpha = 0.55f), shape)
+
+  when (layout) {
+    ContinueWatchingLayout.CARD -> Column(
+      modifier = Modifier
+        .width(64.dp)
+        .height(38.dp)
+        .then(base)
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .weight(1f)
+          .background(block)
+      )
+      Column(modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp)) {
+        Box(
+          modifier = Modifier
+            .width(34.dp)
+            .height(3.dp)
+            .background(accent, RoundedCornerShape(2.dp))
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Box(
+          modifier = Modifier
+            .width(24.dp)
+            .height(2.dp)
+            .background(NovaTextMuted, RoundedCornerShape(2.dp))
+        )
+      }
+    }
+
+    ContinueWatchingLayout.WIDE -> Row(
+      modifier = Modifier
+        .width(74.dp)
+        .height(38.dp)
+        .then(base)
+    ) {
+      Box(
+        modifier = Modifier
+          .width(24.dp)
+          .fillMaxHeight()
+          .background(block)
+      )
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxHeight()
+          .padding(horizontal = 5.dp, vertical = 6.dp)
+      ) {
+        Box(
+          modifier = Modifier
+            .width(34.dp)
+            .height(3.dp)
+            .background(accent, RoundedCornerShape(2.dp))
+        )
+        Spacer(modifier = Modifier.height(3.dp))
+        Box(
+          modifier = Modifier
+            .fillMaxWidth(0.8f)
+            .height(2.dp)
+            .background(NovaTextMuted, RoundedCornerShape(2.dp))
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Box(
+          modifier = Modifier
+            .fillMaxWidth(0.6f)
+            .height(2.dp)
+            .background(NovaTextMuted, RoundedCornerShape(2.dp))
+        )
+      }
+    }
+
+    ContinueWatchingLayout.POSTER -> Box(
+      modifier = Modifier
+        .width(26.dp)
+        .height(38.dp)
+        .then(base)
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(block)
+      )
+      Column(
+        modifier = Modifier
+          .align(Alignment.BottomStart)
+          .padding(horizontal = 4.dp, vertical = 4.dp)
+      ) {
+        Box(
+          modifier = Modifier
+            .width(16.dp)
+            .height(2.dp)
+            .background(accent, RoundedCornerShape(1.dp))
+        )
+        Spacer(modifier = Modifier.height(3.dp))
+        Box(
+          modifier = Modifier
+            .width(12.dp)
+            .height(2.dp)
+            .background(NovaTextMuted, RoundedCornerShape(1.dp))
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun continueWatchingLayoutLabel(layout: ContinueWatchingLayout): String = when (layout) {
+  ContinueWatchingLayout.CARD -> stringResource(R.string.settings_cw_layout_card)
+  ContinueWatchingLayout.WIDE -> stringResource(R.string.settings_cw_layout_wide)
+  ContinueWatchingLayout.POSTER -> stringResource(R.string.settings_cw_layout_poster)
+}
+
+@Composable
+private fun continueWatchingSortLabel(sort: ContinueWatchingSort): String = when (sort) {
+  ContinueWatchingSort.DEFAULT -> stringResource(R.string.settings_cw_sort_default)
+  ContinueWatchingSort.TITLE -> stringResource(R.string.settings_cw_sort_title)
+  ContinueWatchingSort.RATING -> stringResource(R.string.settings_cw_sort_rating)
 }
 
 @Composable

@@ -8,7 +8,11 @@ import com.example.data.model.MediaType
 import com.example.data.model.SearchCategoryFilter
 import com.example.data.model.SearchTypeFilter
 import com.example.data.prefs.AppSettingsRepository
+import com.example.data.prefs.ContinueWatchingLayout
+import com.example.data.prefs.ContinueWatchingPreferences
 import com.example.data.repository.CatalogSection
+import com.example.data.repository.ContinueWatchingRowItem
+import com.example.data.repository.ContinueWatchingRowPolicy
 import com.example.data.repository.HomeCatalogs
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
@@ -83,6 +87,14 @@ data class MobileCatalogUiState(
   val homeCatalogs: HomeCatalogs = HomeCatalogs(),
   val heroItems: List<MediaItem> = emptyList(),
   val continueWatching: List<MediaItem> = emptyList(),
+  /**
+   * Card della riga «Continua a guardare» già costruite da [ContinueWatchingRowPolicy]:
+   * portano l'immagine scelta (miniatura/backdrop/locandina), la sfocatura anti-spoiler
+   * e il punto di ripresa selezionato dalle preferenze.
+   */
+  val continueWatchingCards: List<ContinueWatchingRowItem> = emptyList(),
+  /** Preferenze correnti della sezione Impostazioni «Continua a guardare». */
+  val continueWatchingPreferences: ContinueWatchingPreferences = ContinueWatchingPreferences(),
   val top10Movies: List<MediaItem> = emptyList(),
   val top10Series: List<MediaItem> = emptyList(),
   val trendingMovies: List<MediaItem> = emptyList(),
@@ -189,16 +201,18 @@ class MobileCatalogViewModel : ViewModel() {
     val home: HomeCatalogs,
     val loading: Boolean,
     val refreshing: Boolean,
-    val error: MobileCatalogError?
+    val error: MobileCatalogError?,
+    val continueWatchingPreferences: ContinueWatchingPreferences
   )
 
   private val loadUi = combine(
     _homeCatalogs,
     _isLoading,
     _isRefreshing,
-    _loadError
-  ) { home, loading, refreshing, error ->
-    LoadUi(home, loading, refreshing, error)
+    _loadError,
+    AppSettingsRepository.continueWatchingPreferences
+  ) { home, loading, refreshing, error, continueWatchingPreferences ->
+    LoadUi(home, loading, refreshing, error, continueWatchingPreferences)
   }
 
   val catalog: StateFlow<MobileCatalogUiState> = combine(
@@ -207,8 +221,8 @@ class MobileCatalogViewModel : ViewModel() {
     AppSettingsRepository.parentalControlEnabled,
     AppSettingsRepository.parentalControlLevel,
     AppSettingsRepository.tmdbGenreFallbackEnabled
-  ) { load, _, parentalEnabled, level, tmdbFallbackEnabled ->
-    buildUiState(load, parentalEnabled, level, tmdbFallbackEnabled)
+  ) { load, mediaList, parentalEnabled, level, tmdbFallbackEnabled ->
+    buildUiState(load, mediaList, parentalEnabled, level, tmdbFallbackEnabled)
   }.stateIn(
     scope = viewModelScope,
     started = SharingStarted.WhileSubscribed(5_000),
@@ -241,20 +255,56 @@ class MobileCatalogViewModel : ViewModel() {
 
   private fun buildUiState(
     load: LoadUi,
+    mediaList: List<MediaItem>,
     parentalEnabled: Boolean,
     level: String,
     tmdbFallbackEnabled: Boolean
-  ): MobileCatalogUiState = buildMobileCatalogUiState(
-    home = load.home,
-    continueWatching = MediaRepository.getContinueWatching(),
-    favorites = MediaRepository.getFavorites(),
-    isLoading = load.loading,
-    isRefreshing = load.refreshing,
-    error = load.error,
-    parentalEnabled = parentalEnabled,
-    parentalLevel = level,
-    tmdbFallbackEnabled = tmdbFallbackEnabled
-  )
+  ): MobileCatalogUiState {
+    // Unico punto in cui la riga viene costruita, come la Home TV: visibilità,
+    // layout, punto di ripresa, immagine, sfocatura e ordinamento sono decisi dal
+    // policy condiviso, non duplicati nella UI.
+    val continueWatchingCards = ContinueWatchingRowPolicy.build(
+      items = mediaList,
+      preferences = load.continueWatchingPreferences,
+      furthestWatched = { mediaId -> MediaRepository.furthestWatchedEpisode(mediaId) }
+    )
+    return buildMobileCatalogUiState(
+      home = load.home,
+      continueWatching = continueWatchingCards.map { it.media },
+      continueWatchingCards = continueWatchingCards,
+      continueWatchingPreferences = load.continueWatchingPreferences,
+      favorites = MediaRepository.getFavorites(),
+      isLoading = load.loading,
+      isRefreshing = load.refreshing,
+      error = load.error,
+      parentalEnabled = parentalEnabled,
+      parentalLevel = level,
+      tmdbFallbackEnabled = tmdbFallbackEnabled
+    )
+  }
+
+  /**
+   * Arricchisce in BACKGROUND le serie di «Continua a guardare» con la prossima
+   * puntata TMDB: alimenta il calcolo dell'episodio di ripresa quando la preferenza
+   * «Prossimo episodio dall'ultimo raggiunto» è attiva e il filtro delle puntate
+   * non ancora trasmesse. Non blocca Home né riga; il repository deduplica per
+   * `tmdbId` e riusa la cache dettagli.
+   */
+  fun ensureNextEpisodeBadges(items: List<MediaItem>) {
+    if (items.isEmpty()) return
+    viewModelScope.launch { MediaRepository.refreshNextEpisodes(items) }
+  }
+
+  /**
+   * Arricchisce in BACKGROUND le serie con la still (`still_path`) dell'episodio di
+   * ripresa, per la preferenza «Usa miniature episodi». Stesso principio: la card
+   * compare subito, l'immagine arriva quando la stagione è disponibile e la riga
+   * si aggiorna da sola tramite [MediaRepository.mediaList].
+   */
+  fun ensureEpisodeThumbnails(items: List<MediaItem>) {
+    if (items.isEmpty()) return
+    viewModelScope.launch { MediaRepository.refreshEpisodeThumbnails(items) }
+  }
 
   /**
    * Risolve le righe Home con la stessa funzione della TV.
@@ -965,7 +1015,14 @@ internal fun buildMobileCatalogUiState(
   error: MobileCatalogError?,
   parentalEnabled: Boolean,
   parentalLevel: String,
-  tmdbFallbackEnabled: Boolean = true
+  tmdbFallbackEnabled: Boolean = true,
+  /**
+   * Card già costruite dal policy con artwork/sfocatura. Quando non vengono passate
+   * (test e chiamanti che hanno solo la lista titoli) la riga resta valida: le card
+   * derivano dai [continueWatching] senza immagine preferita né sfocatura.
+   */
+  continueWatchingCards: List<ContinueWatchingRowItem>? = null,
+  continueWatchingPreferences: ContinueWatchingPreferences = ContinueWatchingPreferences()
 ): MobileCatalogUiState {
   fun List<MediaItem>.keepVisible(): List<MediaItem> =
     filterByParental(parentalEnabled, parentalLevel)
@@ -993,11 +1050,26 @@ internal fun buildMobileCatalogUiState(
   )
   val visibleMovies = home.allMovies.keepVisible()
   val visibleSeries = home.allSeries.keepVisible()
+  // Il filtro età si applica alla riga e alle sue card nello stesso punto: una card
+  // non può sopravvivere alla rimozione del suo titolo.
+  val visibleContinueWatching = continueWatching.keepVisible()
+  val visibleContinueWatchingIds = visibleContinueWatching.mapTo(HashSet()) { it.id }
+  val cards = continueWatchingCards ?: continueWatching.map { item ->
+    ContinueWatchingRowItem(
+      media = item,
+      artworkUrl = null,
+      blurArtwork = false,
+      targetEpisodeUnwatched = false
+    )
+  }
+  val visibleContinueWatchingCards = cards.filter { it.media.id in visibleContinueWatchingIds }
 
   return MobileCatalogUiState(
     homeCatalogs = home,
     heroItems = home.heroItems.keepVisible(),
-    continueWatching = continueWatching.keepVisible(),
+    continueWatching = visibleContinueWatching,
+    continueWatchingCards = visibleContinueWatchingCards,
+    continueWatchingPreferences = continueWatchingPreferences,
     top10Movies = home.top10Movies.take(StremioCatalogRepository.HOME_TOP_10_SIZE).keepVisible(),
     top10Series = home.top10Series.take(StremioCatalogRepository.HOME_TOP_10_SIZE).keepVisible(),
     trendingMovies = home.trendingMovies.keepVisible(),
