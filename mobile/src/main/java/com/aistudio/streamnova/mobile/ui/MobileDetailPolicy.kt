@@ -310,6 +310,28 @@ object MobileDetailPolicy {
       (state.media?.lastWatchedSeason != null && state.media?.lastWatchedEpisode != null)
   }
 
+  /**
+   * Sfocatura anti-spoiler della miniatura episodio nella scheda di una serie.
+   *
+   * Usa la STESSA preferenza della riga «Continua a guardare» (`blurUnwatched`), ma
+   * con una regola per episodio: si sfocano solo le puntate non ancora viste, cioè
+   * senza progresso e non concluse. Un episodio appena iniziato (in corso) o già
+   * guardato resta nitido, così la sfocatura non nasconde il punto di ripresa; un
+   * episodio marcato visto su SIMKL è trattato come visto anche se il progresso
+   * locale non è ancora stato scritto.
+   *
+   * La preferenza spenta lascia sempre la miniatura nitida: nessun comportamento
+   * viene dedotto da altri flag (miniature nel Continua a guardare incluse).
+   */
+  fun shouldBlurEpisodeThumbnail(
+    episode: Episode?,
+    blurUnwatched: Boolean,
+    isSimklWatched: Boolean
+  ): Boolean {
+    if (episode == null || !blurUnwatched || isSimklWatched) return false
+    return !episode.isCompleted && episode.currentProgressMs <= 0L
+  }
+
   /** Conteggio episodi reale della stagione, oppure `null` se non ancora noto. */
   fun seasonEpisodeCount(
     media: MediaItem?,

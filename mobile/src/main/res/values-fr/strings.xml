@@ -188,8 +188,8 @@
     <string name="settings_cw_layout_selected">Sélectionné</string>
     <string name="settings_cw_episode_thumbnails">Utiliser les miniatures d\'épisodes dans \"À suivre\"</string>
     <string name="settings_cw_episode_thumbnails_desc">Utilise les miniatures des épisodes comme image par défaut. Si désactivé, utilise l\'arrière-plan.</string>
-    <string name="settings_cw_blur_unwatched">Flouter les non-vus dans À suivre</string>
-    <string name="settings_cw_blur_unwatched_desc">Floute les miniatures du prochain épisode dans À suivre pour éviter les spoilers.</string>
+    <string name="settings_cw_blur_unwatched">Flouter les épisodes non vus</string>
+    <string name="settings_cw_blur_unwatched_desc">Floute les miniatures des épisodes non vus dans À suivre et dans les fiches de séries.</string>
     <string name="settings_cw_next_from_furthest">Prochain épisode depuis le plus avancé</string>
     <string name="settings_cw_next_from_furthest_desc">Affiche l\'épisode suivant en se basant sur le point le plus avancé de la vision. Désactivez pour les rewatch afin d\'utiliser plutôt l\'épisode regardé le plus récemment.</string>
     <string name="settings_cw_show_unaired">Afficher les épisodes non encore diffusés</string>

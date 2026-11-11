@@ -761,7 +761,8 @@ fun MobileEpisodeCard(
   fallbackBackdropUrl: String?,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
-  expanded: Boolean = false
+  expanded: Boolean = false,
+  blurThumbnail: Boolean = false
 ) {
   val shape = RoundedCornerShape(14.dp)
   Row(
@@ -778,7 +779,8 @@ fun MobileEpisodeCard(
       episode = episode,
       isSimklWatched = isSimklWatched,
       fallbackBackdropUrl = fallbackBackdropUrl,
-      width = if (expanded) 176.dp else 128.dp
+      width = if (expanded) 176.dp else 128.dp,
+      blurThumbnail = blurThumbnail
     )
     Spacer(modifier = Modifier.width(12.dp))
     Column(
@@ -893,7 +895,8 @@ private fun EpisodeThumbnail(
   episode: Episode,
   isSimklWatched: Boolean,
   fallbackBackdropUrl: String?,
-  width: Dp
+  width: Dp,
+  blurThumbnail: Boolean
 ) {
   Box(
     modifier = Modifier
@@ -905,12 +908,23 @@ private fun EpisodeThumbnail(
     val thumbUrl = episode.thumbnailUrl?.takeIf { it.isNotBlank() }
       ?: fallbackBackdropUrl?.takeIf { it.isNotBlank() }
     if (thumbUrl != null) {
-      AsyncImage(
-        model = thumbUrl,
-        contentDescription = episode.title.takeIf { it.isNotBlank() },
-        contentScale = ContentScale.Crop,
-        modifier = Modifier.fillMaxSize()
-      )
+      if (blurThumbnail) {
+        // Stessa sfocatura bitmap della riga «Continua a guardare»: funziona anche
+        // su Android 7-11, dove `Modifier.blur`/`RenderEffect` non esiste.
+        SpoilerBlurredImage(
+          data = thumbUrl,
+          contentDescription = episode.title.takeIf { it.isNotBlank() },
+          contentScale = ContentScale.Crop,
+          modifier = Modifier.fillMaxSize()
+        )
+      } else {
+        AsyncImage(
+          model = thumbUrl,
+          contentDescription = episode.title.takeIf { it.isNotBlank() },
+          contentScale = ContentScale.Crop,
+          modifier = Modifier.fillMaxSize()
+        )
+      }
     } else {
       Box(
         modifier = Modifier

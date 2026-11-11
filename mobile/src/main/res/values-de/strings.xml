@@ -188,8 +188,8 @@
     <string name="settings_cw_layout_selected">Ausgewählt</string>
     <string name="settings_cw_episode_thumbnails">Episoden-Vorschaubilder in \"Weiterschauen\" verwenden</string>
     <string name="settings_cw_episode_thumbnails_desc">Verwendet Episoden-Vorschaubilder als Standardbild. Wenn deaktiviert, wird das Hintergrundbild verwendet.</string>
-    <string name="settings_cw_blur_unwatched">Ungesehene in „Weiterschauen“ unscharf</string>
-    <string name="settings_cw_blur_unwatched_desc">Macht die Vorschaubilder der nächsten Episode in „Weiterschauen“ unscharf, um Spoiler zu vermeiden.</string>
+    <string name="settings_cw_blur_unwatched">Ungesehene Episoden unscharf</string>
+    <string name="settings_cw_blur_unwatched_desc">Macht die Vorschaubilder ungesehener Episoden in „Weiterschauen“ und in Seriendetails unscharf.</string>
     <string name="settings_cw_next_from_furthest">Nächste Episode ab dem weitesten Stand</string>
     <string name="settings_cw_next_from_furthest_desc">Zeigt die nächste Episode basierend auf dem weitesten Stand der Wiedergabe. Für Rewatches deaktivieren, um stattdessen die zuletzt gesehene Episode zu verwenden.</string>
     <string name="settings_cw_show_unaired">Noch nicht ausgestrahlte Episoden anzeigen</string>

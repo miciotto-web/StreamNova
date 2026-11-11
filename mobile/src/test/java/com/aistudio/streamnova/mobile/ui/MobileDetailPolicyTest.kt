@@ -452,4 +452,85 @@ class MobileDetailPolicyTest {
     assertEquals(MobileTrailerState.Error, MobileDetailPolicy.trailerStateForKey(null))
     assertEquals(MobileTrailerState.Error, MobileDetailPolicy.trailerStateForKey("   "))
   }
+
+  private fun episode(
+    progressMs: Long = 0L,
+    totalDurationMs: Long = 2_700_000L
+  ) = Episode(
+    id = "tmdb_tv_1_s1e1",
+    seasonNumber = 1,
+    episodeNumber = 1,
+    title = "Episodio",
+    synopsis = "",
+    durationMinutes = 45,
+    videoUrl = "",
+    currentProgressMs = progressMs,
+    totalDurationMs = totalDurationMs
+  )
+
+  @Test
+  fun laSfocaturaDellaMiniaturaEpisodioSegueLaPreferenza() {
+    // Preferenza OFF: la miniatura resta sempre nitida, anche per una puntata mai vista.
+    assertFalse(
+      MobileDetailPolicy.shouldBlurEpisodeThumbnail(
+        episode = episode(),
+        blurUnwatched = false,
+        isSimklWatched = false
+      )
+    )
+    // Preferenza ON: si sfoca solo la puntata non ancora vista.
+    assertTrue(
+      MobileDetailPolicy.shouldBlurEpisodeThumbnail(
+        episode = episode(),
+        blurUnwatched = true,
+        isSimklWatched = false
+      )
+    )
+  }
+
+  @Test
+  fun unEpisodioInCorsoOConclusoNonVieneSfocato() {
+    // Puntata iniziata ma non conclusa: nascondere la miniatura confonderebbe il
+    // punto di ripresa, quindi resta nitida.
+    assertFalse(
+      MobileDetailPolicy.shouldBlurEpisodeThumbnail(
+        episode = episode(progressMs = 60_000L),
+        blurUnwatched = true,
+        isSimklWatched = false
+      )
+    )
+    // Puntata conclusa (>= 90% della durata): è vista, nessuna sfocatura.
+    assertFalse(
+      MobileDetailPolicy.shouldBlurEpisodeThumbnail(
+        episode = episode(progressMs = 2_600_000L),
+        blurUnwatched = true,
+        isSimklWatched = false
+      )
+    )
+  }
+
+  @Test
+  fun unEpisodioVistoSuSimklNonVieneSfocatoSenzaProgressoLocale() {
+    // SIMKL può marcare la puntata come vista prima che il progresso locale sia
+    // scritto: lo stato remoto ha la precedenza, altrimenti si sfocherebbe una
+    // puntata già guardata.
+    assertFalse(
+      MobileDetailPolicy.shouldBlurEpisodeThumbnail(
+        episode = episode(),
+        blurUnwatched = true,
+        isSimklWatched = true
+      )
+    )
+  }
+
+  @Test
+  fun senzaEpisodioNonSiApplicaNessunaSfocatura() {
+    assertFalse(
+      MobileDetailPolicy.shouldBlurEpisodeThumbnail(
+        episode = null,
+        blurUnwatched = true,
+        isSimklWatched = false
+      )
+    )
+  }
 }

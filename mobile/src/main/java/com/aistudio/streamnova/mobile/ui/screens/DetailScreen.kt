@@ -91,6 +91,7 @@ import com.aistudio.streamnova.mobile.ui.components.MobileProviderBadge
 import com.aistudio.streamnova.mobile.ui.components.MobileSeasonChip
 import com.aistudio.streamnova.mobile.ui.components.MobileSeasonStatusBar
 import com.example.data.model.MediaItem
+import com.example.data.prefs.AppSettingsRepository
 import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
 import com.example.ui.components.ProviderConstants
@@ -131,6 +132,10 @@ fun DetailScreen(
   BackHandler(onBack = onBack)
   val viewModel: MobileDetailViewModel = viewModel()
   val state by viewModel.state.collectAsStateWithLifecycle()
+  // Stessa preferenza della Home: la sfocatura anti-spoiler si applica anche alle
+  // miniature degli episodi non ancora visti nella scheda di una serie.
+  val continueWatchingPreferences by
+    AppSettingsRepository.continueWatchingPreferences.collectAsStateWithLifecycle()
   val expanded = LocalWindowWidthExpanded.current
   val configuration = LocalConfiguration.current
   val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -640,12 +645,18 @@ fun DetailScreen(
           }
 
           items(state.episodes, key = { it.id }) { episode ->
+            val simklWatched = episode.episodeNumber in state.simklWatchedEpisodes
             MobileEpisodeCard(
               episode = episode,
-              isSimklWatched = episode.episodeNumber in state.simklWatchedEpisodes,
+              isSimklWatched = simklWatched,
               fallbackBackdropUrl = state.details?.backdropUrl ?: media.backdropUrl,
               onClick = { onPlay(media, episode.seasonNumber, episode.episodeNumber) },
               expanded = expanded,
+              blurThumbnail = MobileDetailPolicy.shouldBlurEpisodeThumbnail(
+                episode = episode,
+                blurUnwatched = continueWatchingPreferences.blurUnwatched,
+                isSimklWatched = simklWatched
+              ),
               modifier = Modifier.padding(horizontal = 20.dp, vertical = 5.dp)
             )
           }

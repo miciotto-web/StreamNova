@@ -188,8 +188,8 @@
     <string name="settings_cw_layout_selected">Seleccionado</string>
     <string name="settings_cw_episode_thumbnails">Usar miniaturas de episodios en \"Seguir viendo\"</string>
     <string name="settings_cw_episode_thumbnails_desc">Usa las miniaturas de los episodios como imagen predeterminada. Si está desactivado, usa el fondo.</string>
-    <string name="settings_cw_blur_unwatched">Desenfocar no vistos en Seguir viendo</string>
-    <string name="settings_cw_blur_unwatched_desc">Desenfoca las miniaturas del próximo episodio en Seguir viendo para evitar spoilers.</string>
+    <string name="settings_cw_blur_unwatched">Desenfocar episodios no vistos</string>
+    <string name="settings_cw_blur_unwatched_desc">Desenfoca las miniaturas de los episodios no vistos en Seguir viendo y en las fichas de series.</string>
     <string name="settings_cw_next_from_furthest">Próximo episodio desde el último alcanzado</string>
     <string name="settings_cw_next_from_furthest_desc">Muestra el episodio siguiente basándose en el punto más avanzado de la visualización. Desactiva para los rewatches y usar en su lugar el episodio visto más recientemente.</string>
     <string name="settings_cw_show_unaired">Mostrar episodios aún no emitidos</string>

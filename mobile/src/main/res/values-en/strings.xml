@@ -188,8 +188,8 @@
     <string name="settings_cw_layout_selected">Selected</string>
     <string name="settings_cw_episode_thumbnails">Use episode thumbnails in \"Continue Watching\"</string>
     <string name="settings_cw_episode_thumbnails_desc">Use episode thumbnails as the default image. If disabled, use the backdrop.</string>
-    <string name="settings_cw_blur_unwatched">Blur unwatched in Continue Watching</string>
-    <string name="settings_cw_blur_unwatched_desc">Blur next-episode thumbnails in Continue Watching to avoid spoilers.</string>
+    <string name="settings_cw_blur_unwatched">Blur unwatched episodes</string>
+    <string name="settings_cw_blur_unwatched_desc">Blur thumbnails of unwatched episodes in Continue Watching and TV series details.</string>
     <string name="settings_cw_next_from_furthest">Next episode from the furthest watched</string>
     <string name="settings_cw_next_from_furthest_desc">Show the next episode based on the furthest point in your viewing. Turn off for rewatches to use the most recently watched episode instead.</string>
     <string name="settings_cw_show_unaired">Show episodes not yet aired</string>
