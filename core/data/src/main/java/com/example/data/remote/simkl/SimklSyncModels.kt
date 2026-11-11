@@ -55,6 +55,13 @@ data class SimklPlaybackEntry(
   val episode: Int? = null,
   val episodeTitle: String? = null,
   val isAnime: Boolean = false,
+  val tvdbId: Int? = null,
+  /**
+   * true quando la voce descrive l'episodio **successivo** da guardare (`next_to_watch`
+   * della libreria SIMKL), non una posizione già raggiunta: il target è a progresso 0 e
+   * non richiede una durata per essere applicato.
+   */
+  val isNextToWatch: Boolean = false,
   val origin: SimklResumeOrigin = SimklResumeOrigin.PLAYBACK
 ) {
   val isEpisode: Boolean get() = kind == SimklPlaybackKind.EPISODE && season != null && episode != null
@@ -67,7 +74,7 @@ data class SimklPlaybackEntry(
    */
   val resumeKey: String
     get() = playbackId?.let { "id:$it" }
-      ?: "k:${origin.name.lowercase()}:$kind:${tmdbId ?: 0}:${simklId ?: 0}:${season ?: 0}:${episode ?: 0}:${title.trim().lowercase()}"
+      ?: "k:${origin.name.lowercase()}:$kind:${tmdbId ?: 0}:${simklId ?: 0}:${season ?: 0}:${episode ?: 0}:${if (isNextToWatch) "next" else "pos"}:${title.trim().lowercase()}"
 }
 
 object SimklPlaybackParser {
@@ -87,10 +94,22 @@ object SimklPlaybackParser {
     val episodeObject = session["episode"] as? Map<*, *>
     // La doc mostra `episode` come chiave del numero episodio, lo schema OpenAPI usa
     // `number`: si accettano entrambe.
-    val episodeNumber = (episodeObject?.get("number") ?: episodeObject?.get("episode")).asIntOrNull()
-    val seasonNumber = episodeObject?.get("season").asIntOrNull()
+    val animeType = (container["anime_type"] ?: container["animeType"])?.toString()
     val hasMovie = session["movie"] is Map<*, *>
-    val kind = if (hasMovie) SimklPlaybackKind.MOVIE else SimklPlaybackKind.EPISODE
+    // Un anime-film ha il contenitore `anime` ma nessun episodio: è un FILM, non una
+    // serie con un episodio mancante.
+    val animeMovie = isAnime && episodeObject == null &&
+      (animeType == null || animeType.equals("movie", ignoreCase = true))
+    val kind = if (hasMovie || animeMovie) SimklPlaybackKind.MOVIE else SimklPlaybackKind.EPISODE
+    // Per gli anime la coordinata LOCALE è quella TVDB/TMDB: `tvdb_season`/`tvdb_number`
+    // sono la mappatura documentata, mentre `season`/`number` sono la numerazione
+    // anime-native (per cour, che per TMDB è spesso la stagione 1).
+    val rawEpisodeNumber = (episodeObject?.get("number") ?: episodeObject?.get("episode")).asIntOrNull()
+    val tvdbEpisodeNumber = episodeObject?.get("tvdb_number").asIntOrNull()
+    val tvdbSeasonNumber = episodeObject?.get("tvdb_season").asIntOrNull()
+    val episodeNumber = if (isAnime) tvdbEpisodeNumber ?: rawEpisodeNumber else rawEpisodeNumber
+    val seasonNumber = if (isAnime) tvdbSeasonNumber ?: episodeObject?.get("season").asIntOrNull()
+    else episodeObject?.get("season").asIntOrNull()
     return SimklPlaybackEntry(
       playbackId = session["id"].asLongOrNull(),
       kind = kind,
@@ -101,6 +120,7 @@ object SimklPlaybackParser {
       tmdbId = ids?.get("tmdb").asIntOrNull(),
       imdbId = ids?.get("imdb")?.toString()?.takeIf { it.isNotBlank() },
       simklId = ids?.get("simkl").asLongOrNull(),
+      tvdbId = ids?.get("tvdb").asIntOrNull(),
       season = if (kind == SimklPlaybackKind.EPISODE) seasonNumber else null,
       episode = if (kind == SimklPlaybackKind.EPISODE) episodeNumber else null,
       episodeTitle = episodeObject?.get("title")?.toString()?.takeIf { it.isNotBlank() },
@@ -108,9 +128,13 @@ object SimklPlaybackParser {
     )
   }
 
-  /** true se la voce identifica esattamente il film o l'episodio da riprendere. */
+  /**
+   * true se la voce identifica esattamente il film o l'episodio da riprendere.
+   * Un `next_to_watch` è riprendibile al 0%: è l'episodio successivo da avviare, non una
+   * posizione parziale da convertire.
+   */
   fun isResumable(entry: SimklPlaybackEntry): Boolean =
-    entry.progressPercent > 0.0 &&
+    (entry.progressPercent > 0.0 || (entry.isNextToWatch && entry.progressPercent == 0.0)) &&
       (entry.kind == SimklPlaybackKind.MOVIE || entry.isEpisode)
 
   /**
@@ -256,7 +280,9 @@ object SimklPendingPlaybackStore {
         entry.episode?.toString().orEmpty(),
         entry.episodeTitle.orEmpty(),
         if (entry.isAnime) "1" else "0",
-        entry.origin.name
+        entry.origin.name,
+        entry.tvdbId?.toString().orEmpty(),
+        if (entry.isNextToWatch) "1" else "0"
       ).joinToString(FIELD_SEPARATOR.toString())
     }
 
@@ -288,7 +314,9 @@ object SimklPendingPlaybackStore {
       isAnime = fields[13] == "1",
       origin = fields.getOrNull(14)
         ?.let { stored -> runCatching { SimklResumeOrigin.valueOf(stored) }.getOrNull() }
-        ?: SimklResumeOrigin.PLAYBACK
+        ?: SimklResumeOrigin.PLAYBACK,
+      tvdbId = fields.getOrNull(15)?.toIntOrNull(),
+      isNextToWatch = fields.getOrNull(16) == "1"
     )
     return SimklPendingPlayback(entry, fields[0].toIntOrNull() ?: 0)
   }
@@ -314,6 +342,11 @@ enum class SimklDecisionReason(val label: String) {
   UNKNOWN_TIMESTAMP("data di pausa assente"),
   /** Già allineati: nessuna scrittura necessaria. */
   ALREADY_IN_SYNC("già allineati"),
+  /**
+   * Concluso in LOCALE (fine riproduzione verificata o toggle dell'utente, già notificato
+   * a SIMKL): le voci di playback e `next_to_watch` non devono resuscitarlo dalla riga.
+   */
+  LOCALLY_COMPLETED("già concluso in locale"),
   /** Nessun titolo locale corrispondente e importazione non riuscita. */
   UNRESOLVED_TITLE("titolo non riconosciuto"),
   /** Tentativi di recupero esauriti: la voce non viene più riprovata. */
@@ -369,8 +402,10 @@ object SimklProgressMergePolicy {
   ): SimklProgressDecision {
     // Prima la validità della percentuale, poi la completezza della sessione: una
     // percentuale fuori scala è un dato non utilizzabile, non una sessione incompleta.
+    // Lo 0 è valido SOLO per un `next_to_watch` (episodio successivo da avviare).
     val percent = entry.progressPercent
-    if (percent <= 0.0 || percent > 100.0) {
+    val nextToWatchAtZero = entry.isNextToWatch && percent == 0.0
+    if (percent > 100.0 || (!nextToWatchAtZero && percent <= 0.0)) {
       return SimklProgressDecision(adopt = false, reason = SimklDecisionReason.INVALID_PROGRESS)
     }
     if (!SimklPlaybackParser.isResumable(entry)) {
@@ -379,10 +414,28 @@ object SimklProgressMergePolicy {
     if (local == null) {
       return SimklProgressDecision(adopt = false, reason = SimklDecisionReason.UNRESOLVED_TITLE)
     }
-    // Prima della durata: un recupero (rinvio) non ha senso per una serie che in locale è
-    // già più avanti, e riprovare all'infinito una voce che non va applicata sarebbe un ciclo.
-    if (entry.origin == SimklResumeOrigin.LIBRARY && isLocallyAheadOnAnotherEpisode(entry, series)) {
+    // Vale per OGNI origine, non solo per la libreria: una sessione di pausa obsoleta non
+    // deve riportare indietro una serie che in locale è già più avanti nel tempo.
+    if (isLocallyAhead(entry, local, series)) {
       return SimklProgressDecision(adopt = false, reason = SimklDecisionReason.LOCAL_NEWER)
+    }
+    if (entry.isNextToWatch) {
+      // L'episodio successivo è già quello corrente (e non ha progresso): niente da fare.
+      if (local.progressMs > 0L) {
+        return SimklProgressDecision(adopt = false, reason = SimklDecisionReason.ALREADY_IN_SYNC)
+      }
+      val localAt = local.lastWatchedAtMs
+      val entryAt = entry.pausedAtEpochMs
+      if (localAt != null && entryAt != null) {
+        if (localAt > entryAt) {
+          return SimklProgressDecision(adopt = false, reason = SimklDecisionReason.LOCAL_NEWER)
+        }
+        if (localAt == entryAt) {
+          return SimklProgressDecision(adopt = false, reason = SimklDecisionReason.ALREADY_IN_SYNC)
+        }
+      }
+      // Posizione 0 legittima: è il prossimo episodio, non una percentuale da convertire.
+      return SimklProgressDecision(adopt = true, progressMs = 0L)
     }
     if (local.totalDurationMs <= 0L) {
       return SimklProgressDecision(adopt = false, reason = SimklDecisionReason.UNKNOWN_DURATION)
@@ -406,16 +459,40 @@ object SimklProgressMergePolicy {
     return SimklProgressDecision(adopt = true, progressMs = target)
   }
 
-  /** true se la serie in locale è ferma più avanti nel tempo, su un episodio diverso. */
-  private fun isLocallyAheadOnAnotherEpisode(
+  /**
+   * true se la serie in locale è già più avanti, su un episodio successivo e non più
+   * vecchio. Protegge da una sessione di pausa o da un `last_watched` obsoleto che
+   * altrimenti sposterebbe la card indietro. Un rewatch di un episodio precedente con
+   * data PIÙ RECENTE non viene bloccato: è la visione effettiva più recente.
+   */
+  private fun isLocallyAhead(
     entry: SimklPlaybackEntry,
+    local: SimklLocalProgress,
     series: SimklSeriesState?
   ): Boolean {
     if (series == null) return false
-    val localAt = series.lastWatchedAtMs ?: return false
-    val entryAt = entry.pausedAtEpochMs ?: return false
-    val anotherEpisode = series.season != entry.season || series.episode != entry.episode
-    return anotherEpisode && localAt >= entryAt
+    val localSeason = series.season ?: return false
+    val localEpisode = series.episode ?: return false
+    val entrySeason = entry.season ?: return false
+    val entryEpisode = entry.episode ?: return false
+    val localAt = series.lastWatchedAtMs
+    val entryAt = entry.pausedAtEpochMs
+    val sameEpisode = localSeason == entrySeason && localEpisode == entryEpisode
+    val aheadInSeries = localSeason > entrySeason ||
+      (localSeason == entrySeason && localEpisode > entryEpisode)
+    // Serie locale più avanti: si protegge anche quando manca una delle due date. Senza
+    // una prova che il dato remoto sia più recente non si sposta la card indietro.
+    if (aheadInSeries && (localAt == null || entryAt == null || localAt >= entryAt)) {
+      return true
+    }
+    // Stesso episodio già iniziato in locale: un `next_to_watch` non deve azzerarne la
+    // posizione, e una posizione remota non più recente non deve sovrascriverla.
+    if (entry.isNextToWatch && sameEpisode && local.progressMs > 0L &&
+      (localAt == null || entryAt == null || localAt >= entryAt)
+    ) {
+      return true
+    }
+    return false
   }
 }
 
@@ -436,43 +513,149 @@ data class SimklWatchingResume(
   val tmdbId: Int?,
   val imdbId: String?,
   val simklId: Long?,
+  /** Coordinata LOCALE (TVDB/TMDB) dell'episodio **successivo** da guardare. */
   val season: Int,
   val episode: Int,
   /** `last_watched_at` di SIMKL: è la data che decide chi è più recente. */
   val watchedAtEpochMs: Long,
-  val isAnime: Boolean = false
+  val isAnime: Boolean = false,
+  val tvdbId: Int? = null,
+  /** Ultimo episodio visto, solo per diagnostica/report: non è il target della card. */
+  val lastWatchedSeason: Int? = null,
+  val lastWatchedEpisode: Int? = null
 )
 
 /** Esito del pull della libreria: badge "visto" più le serie in visione da riposizionare. */
 data class SimklWatchedLibraryData(
   val watchedEpisodesByShow: Map<Int, Map<Int, Set<Int>>>,
-  val watchingResumes: List<SimklWatchingResume>
+  val watchingResumes: List<SimklWatchingResume>,
+  /**
+   * Tutti i titoli ancora `status=watching`, anche quelli "in pari" senza
+   * `next_to_watch`. Serve a non dichiarare conclusa una serie TMDB solo perché una
+   * singola cour anime è `completed` mentre un'altra è ancora in visione.
+   */
+  val watchingTmdbIds: Set<Int> = emptySet(),
+  /**
+   * Titoli che SIMKL dichiara `completed`. Servono a verificare i completamenti fatti
+   * direttamente sul sito/altrove: la sincronizzazione li registra senza cancellare
+   * progressi o storico.
+   */
+  val completedTitles: List<SimklCompletedTitle> = emptyList()
 ) {
   companion object {
     val EMPTY = SimklWatchedLibraryData(emptyMap(), emptyList())
   }
 }
 
+enum class SimklCompletedKind { MOVIE, SHOW }
+
+/** Un titolo `status=completed` nella libreria SIMKL. */
+data class SimklCompletedTitle(
+  val kind: SimklCompletedKind,
+  val title: String,
+  val year: Int?,
+  val tmdbId: Int?,
+  val imdbId: String?,
+  val simklId: Long?,
+  val tvdbId: Int?,
+  val isAnime: Boolean,
+  /** `last_watched_at` di SIMKL, `null` se il server non lo espone. */
+  val completedAtEpochMs: Long?
+)
+
 object SimklWatchedLibrary {
 
-  /** `S01E07`, `s1e7`, `1x7` → (1, 7). Forme non riconoscibili ⇒ `null`, mai un'ipotesi. */
-  private val EPISODE_CODE = Regex("^[Ss]?(\\d+)\\s*[EexX]\\s*(\\d+)$")
-
-  /** Un episodio visto è una posizione al 100%: nessuna durata/posizione viene inventata. */
-  const val WATCHED_PROGRESS_PERCENT = 100.0
-
-  /** Libreria completa: mappa per i badge + serie in visione. */
-  fun parse(body: Map<String, Any>): SimklWatchedLibraryData = SimklWatchedLibraryData(
-    watchedEpisodesByShow = parseWatchedEpisodesByShow(body),
-    watchingResumes = parseWatchingResumes(body)
+  /**
+   * `S01E07`, `s1e7`, `1x7` → (1, 7); `E2` (anime-native, nessuna stagione) → (1, 2).
+   * Forme non riconoscibili ⇒ `null`, mai un'ipotesi.
+   */
+  private val EPISODE_CODE = Regex(
+    "^(?:[Ss]?(\\d+)\\s*[EexX]\\s*(\\d+)|[Ee](\\d+))$"
   )
 
+  /** Libreria completa: mappa per i badge + serie in visione + completati verificati. */
+  fun parse(body: Map<String, Any>): SimklWatchedLibraryData = SimklWatchedLibraryData(
+    watchedEpisodesByShow = parseWatchedEpisodesByShow(body),
+    watchingResumes = parseWatchingResumes(body),
+    watchingTmdbIds = parseWatchingTmdbIds(body),
+    completedTitles = parseCompletedTitles(body)
+  )
+
+  /** TMDB id di OGNI voce `status=watching`, anche senza `next_to_watch`. */
+  fun parseWatchingTmdbIds(body: Map<String, Any>): Set<Int> {
+    val showsBucket = (body["shows"] as? List<*>) ?: (body["tv_shows"] as? List<*>)
+    val result = mutableSetOf<Int>()
+    for (bucket in listOfNotNull(showsBucket, body["anime"] as? List<*>)) {
+      for (raw in bucket) {
+        val entry = raw as? Map<*, *> ?: continue
+        if (entry["status"]?.toString()?.trim()?.lowercase() != "watching") continue
+        val container = (entry["show"] as? Map<*, *>) ?: (entry["anime"] as? Map<*, *>) ?: continue
+        val tmdbId = (container["ids"] as? Map<*, *>)?.get("tmdb").asIntOrNull() ?: continue
+        result += tmdbId
+      }
+    }
+    return result
+  }
+
   /**
-   * Serie in visione con l'ultimo episodio visto, dai bucket `shows`/`tv_shows` e `anime`.
+   * Voci `status=completed` dei bucket `movies`, `shows`/`tv_shows` e `anime`.
    *
-   * Vengono lette SOLO le voci `status=watching` con `last_watched` e `last_watched_at`
-   * valorizzati: una serie conclusa o abbandonata non è un punto di ripresa, e senza data
-   * non si può stabilire chi è più recente (niente viene indovinato).
+   * `anime_type=movie` distingue un anime-film da una serie anime. Un anime per cour
+   * (`anime_type=tv`) è un titolo a sé: il chiamante evita di dichiarare conclusa
+   * l'intera serie TMDB se un'altra cour risulta ancora `watching`.
+   */
+  fun parseCompletedTitles(body: Map<String, Any>): List<SimklCompletedTitle> {
+    val result = mutableListOf<SimklCompletedTitle>()
+    fun addBucket(
+      bucket: List<*>?,
+      containerKeys: List<String>,
+      kind: SimklCompletedKind,
+      isAnime: Boolean
+    ) {
+      bucket ?: return
+      for (raw in bucket) {
+        val entry = raw as? Map<*, *> ?: continue
+        if (entry["status"]?.toString()?.trim()?.lowercase() != "completed") continue
+        val container = containerKeys.firstNotNullOfOrNull { key -> entry[key] as? Map<*, *> }
+          ?: continue
+        val title = container["title"]?.toString()?.takeIf { it.isNotBlank() } ?: continue
+        val ids = container["ids"] as? Map<*, *>
+        val animeType = (container["anime_type"] ?: entry["anime_type"])?.toString()
+        val effectiveKind = if (isAnime && animeType.equals("movie", ignoreCase = true)) {
+          SimklCompletedKind.MOVIE
+        } else {
+          kind
+        }
+        result += SimklCompletedTitle(
+          kind = effectiveKind,
+          title = title,
+          year = container["year"].asIntOrNull(),
+          tmdbId = ids?.get("tmdb").asIntOrNull(),
+          imdbId = ids?.get("imdb")?.toString()?.takeIf { it.isNotBlank() },
+          simklId = ids?.get("simkl").asLongOrNull(),
+          tvdbId = ids?.get("tvdb").asIntOrNull(),
+          isAnime = isAnime,
+          completedAtEpochMs = SimklPlaybackParser.parseIsoUtcToEpochMs(
+            entry["last_watched_at"]?.toString()
+          )
+        )
+      }
+    }
+    addBucket(body["movies"] as? List<*>, listOf("movie"), SimklCompletedKind.MOVIE, isAnime = false)
+    val showsBucket = (body["shows"] as? List<*>) ?: (body["tv_shows"] as? List<*>)
+    addBucket(showsBucket, listOf("show"), SimklCompletedKind.SHOW, isAnime = false)
+    addBucket(body["anime"] as? List<*>, listOf("anime", "show"), SimklCompletedKind.SHOW, isAnime = true)
+    return result
+  }
+
+  /**
+   * Serie in visione con il prossimo episodio da guardare (`next_to_watch`), dai bucket
+   * `shows`/`tv_shows` e `anime`.
+   *
+   * Vengono lette SOLO le voci `status=watching` con `last_watched_at` e `next_to_watch`
+   * valorizzati: una serie conclusa o abbandonata non è un punto di ripresa, una serie
+   * "in pari" non ha un episodio da avviare e senza data non si può stabilire chi è più
+   * recente (niente viene indovinato).
    */
   fun parseWatchingResumes(body: Map<String, Any>): List<SimklWatchingResume> {
     val showsBucket = (body["shows"] as? List<*>) ?: (body["tv_shows"] as? List<*>)
@@ -481,10 +664,25 @@ object SimklWatchedLibrary {
       for (raw in bucket) {
         val entry = raw as? Map<*, *> ?: continue
         if (entry["status"]?.toString()?.trim()?.lowercase() != "watching") continue
-        val code = parseEpisodeCode(entry["last_watched"]?.toString()) ?: continue
-        val watchedAt = SimklPlaybackParser.parseIsoUtcToEpochMs(entry["last_watched_at"]?.toString()) ?: continue
+        // `next_to_watch` è l'episodio da avviare; `last_watched` è quello appena finito.
+        // Una serie "in pari" ha `next_to_watch = null`: non è un punto di ripresa (e non
+        // va mostrata a 100% come se ci fosse ancora da guardare).
+        val nextCode = entry["next_to_watch"]?.toString()
+        val watchedAt = SimklPlaybackParser.parseIsoUtcToEpochMs(entry["last_watched_at"]?.toString())
+          ?: continue
         val container = (entry["show"] as? Map<*, *>) ?: (entry["anime"] as? Map<*, *>) ?: continue
         val title = container["title"]?.toString()?.takeIf { it.isNotBlank() } ?: continue
+        val isAnime = entry["anime"] is Map<*, *>
+        val target = parseTargetCoordinates(entry, nextCode, isAnime) ?: continue
+        // Anche l'ultimo episodio visto può essere un codice anime-native (`E2`): va
+        // mappato sulla stessa coordinata TVDB/TMDB del target, altrimenti il report
+        // mostrerebbe una stagione 1 inventata.
+        val lastWatchedRaw = entry["last_watched"]?.toString()
+        val lastWatched = if (lastWatchedRaw.isNullOrBlank()) {
+          null
+        } else {
+          parseTargetCoordinates(entry, lastWatchedRaw, isAnime)
+        }
         val ids = container["ids"] as? Map<*, *>
         result += SimklWatchingResume(
           title = title,
@@ -492,36 +690,90 @@ object SimklWatchedLibrary {
           tmdbId = ids?.get("tmdb").asIntOrNull(),
           imdbId = ids?.get("imdb")?.toString()?.takeIf { it.isNotBlank() },
           simklId = ids?.get("simkl").asLongOrNull(),
-          season = code.first,
-          episode = code.second,
+          tvdbId = ids?.get("tvdb").asIntOrNull(),
+          season = target.first,
+          episode = target.second,
           watchedAtEpochMs = watchedAt,
-          isAnime = entry["anime"] is Map<*, *>
+          isAnime = isAnime,
+          lastWatchedSeason = lastWatched?.first,
+          lastWatchedEpisode = lastWatched?.second
         )
       }
     }
     return result
   }
 
-  /** `S01E07` → (1, 7); `null` se il codice non è riconoscibile. */
+  /**
+   * Coordinate LOCALI (TVDB/TMDB) del prossimo episodio.
+   *
+   * Per gli anime `next_to_watch` può essere `E3` (numerazione nativa, senza stagione):
+   * il numero viene mappato tramite `seasons[].episodes[].tvdb` della risposta
+   * `extended=full_anime_seasons`. Se la mappatura manca, si usa `mapped_tvdb_seasons`
+   * (una sola stagione) oppure la stagione 1. Per le serie normali resta `SxxExx`.
+   */
+  private fun parseTargetCoordinates(
+    entry: Map<*, *>,
+    rawCode: String?,
+    isAnime: Boolean
+  ): Pair<Int, Int>? {
+    val parsed = parseEpisodeCode(rawCode) ?: return null
+    if (!isAnime) return parsed
+    val value = rawCode?.trim().orEmpty()
+    val isSeasonless = value.startsWith("E", ignoreCase = true) &&
+      !value.contains("S", ignoreCase = true) &&
+      !value.contains("x", ignoreCase = true)
+    if (!isSeasonless) return parsed
+    val animeEpisode = parsed.second
+    tvdbCoordinatesFor(entry, animeEpisode)?.let { return it }
+    val mappedSeason = (entry["mapped_tvdb_seasons"] as? List<*>)
+      ?.firstNotNullOfOrNull { it.asIntOrNull() }
+    return (mappedSeason ?: 1) to animeEpisode
+  }
+
+  /** `number` anime → (`tvdb.season`, `tvdb.episode`) dalla risposta `full_anime_seasons`. */
+  private fun tvdbCoordinatesFor(entry: Map<*, *>, animeEpisode: Int): Pair<Int, Int>? {
+    val seasons = entry["seasons"] as? List<*> ?: return null
+    for (seasonRaw in seasons) {
+      val season = seasonRaw as? Map<*, *> ?: continue
+      val episodes = season["episodes"] as? List<*> ?: continue
+      for (episodeRaw in episodes) {
+        val episode = episodeRaw as? Map<*, *> ?: continue
+        val number = (episode["number"] ?: episode["episode"]).asIntOrNull() ?: continue
+        if (number != animeEpisode) continue
+        val tvdb = episode["tvdb"] as? Map<*, *> ?: return null
+        val seasonNumber = tvdb["season"].asIntOrNull() ?: return null
+        val episodeNumber = tvdb["episode"].asIntOrNull() ?: return null
+        if (seasonNumber <= 0 || episodeNumber <= 0) return null
+        return seasonNumber to episodeNumber
+      }
+    }
+    return null
+  }
+
+  /** `S01E07` → (1, 7), `E2` → (1, 2); `null` se il codice non è riconoscibile. */
   internal fun parseEpisodeCode(raw: String?): Pair<Int, Int>? {
     val value = raw?.trim().orEmpty()
     if (value.isEmpty()) return null
     val match = EPISODE_CODE.matchEntire(value) ?: return null
-    val season = match.groupValues[1].toIntOrNull() ?: return null
-    val episode = match.groupValues[2].toIntOrNull() ?: return null
+    val season = match.groupValues[1].toIntOrNull() ?: 1
+    val episode = if (match.groupValues[1].isNotEmpty()) {
+      match.groupValues[2].toIntOrNull()
+    } else {
+      match.groupValues[3].toIntOrNull()
+    } ?: return null
     return if (season > 0 && episode > 0) season to episode else null
   }
 
   /**
-   * La serie in visione come punto di ripresa, con la stessa forma di una sessione di pausa:
-   * così passa per la stessa catena (matching, risoluzione durata, politica di merge, rinvio)
-   * e l'app la mostra esattamente come una ripresa locale — l'episodio visto risulta al 100%,
-   * cioè "visto", senza inventare una posizione parziale che SIMKL non ha.
+   * La serie in visione come punto di ripresa: il target è `next_to_watch`, cioè
+   * l'episodio successivo da avviare, a progresso 0. Passa per la stessa catena di una
+   * sessione di pausa (matching, politica di merge, rinvio), ma non richiede una durata:
+   * non c'è nessuna percentuale da convertire.
    */
   fun resumeEntry(resume: SimklWatchingResume): SimklPlaybackEntry = SimklPlaybackEntry(
     playbackId = null,
     kind = SimklPlaybackKind.EPISODE,
-    progressPercent = WATCHED_PROGRESS_PERCENT,
+    progressPercent = 0.0,
     pausedAtEpochMs = resume.watchedAtEpochMs,
     title = resume.title,
     year = resume.year,
@@ -531,6 +783,8 @@ object SimklWatchedLibrary {
     season = resume.season,
     episode = resume.episode,
     isAnime = resume.isAnime,
+    tvdbId = resume.tvdbId,
+    isNextToWatch = true,
     origin = SimklResumeOrigin.LIBRARY
   )
 
@@ -559,7 +813,14 @@ object SimklWatchedLibrary {
             // Solo un `watched_at` valorizzato conta come "visto".
             episodeMap["watched_at"]?.toString()?.takeIf { it.isNotBlank() && it != "null" } ?: continue
             val number = (episodeMap["number"] ?: episodeMap["episode"]).asIntOrNull() ?: continue
-            target.getOrPut(seasonNumber) { LinkedHashSet() }.add(number)
+            // Gli anime con `extended=full_anime_seasons` portano la coordinata TVDB/TMDB
+            // in `tvdb.season`/`tvdb.episode`: è quella che il catalogo locale usa per il
+            // badge "visto". Senza mappatura resta la numerazione della stagione.
+            val tvdb = episodeMap["tvdb"] as? Map<*, *>
+            val mappedSeason = tvdb?.get("season").asIntOrNull() ?: seasonNumber
+            val mappedEpisode = tvdb?.get("episode").asIntOrNull() ?: number
+            if (mappedSeason <= 0 || mappedEpisode <= 0) continue
+            target.getOrPut(mappedSeason) { LinkedHashSet() }.add(mappedEpisode)
           }
         }
       }
@@ -589,7 +850,10 @@ data class SimklWatchlistEntry(
   val imdbId: String?,
   val simklId: Long?,
   val status: String,
-  val isAnime: Boolean = false
+  val isAnime: Boolean = false,
+  val tvdbId: Int? = null,
+  /** `anime_type` di SIMKL (`tv`, `movie`, `ova`, …): distingue un anime-film. */
+  val animeType: String? = null
 )
 
 object SimklWatchlistParser {
@@ -644,8 +908,17 @@ object SimklWatchlistParser {
       ?: return null
     val title = container["title"]?.toString()?.takeIf { it.isNotBlank() } ?: return null
     val ids = container["ids"] as? Map<*, *>
+    val animeType = (container["anime_type"] ?: entry["anime_type"])?.toString()
+      ?.takeIf { it.isNotBlank() }
+    // Un anime-film va nei Preferiti come FILM: trattarlo come serie lo farebbe cercare
+    // nel catalogo TV e lo importerebbe con il tipo sbagliato.
+    val effectiveKind = if (isAnime && animeType.equals("movie", ignoreCase = true)) {
+      SimklWatchlistKind.MOVIE
+    } else {
+      kind
+    }
     return SimklWatchlistEntry(
-      kind = kind,
+      kind = effectiveKind,
       title = title,
       year = container["year"].asIntOrNull(),
       tmdbId = ids?.get("tmdb").asIntOrNull(),
@@ -653,7 +926,9 @@ object SimklWatchlistParser {
       simklId = ids?.get("simkl").asLongOrNull(),
       status = entry["status"]?.toString()?.takeIf { it.isNotBlank() }
         ?: SIMKL_STATUS_PLAN_TO_WATCH,
-      isAnime = isAnime
+      isAnime = isAnime,
+      tvdbId = ids?.get("tvdb").asIntOrNull(),
+      animeType = animeType
     )
   }
 }
@@ -669,7 +944,8 @@ enum class SimklSyncStatus { NOT_LOGGED_IN, UP_TO_DATE, SYNCED, PARTIAL, FAILED,
 enum class SimklSyncSection(val label: String) {
   PLAYBACK("Continua a guardare"),
   WATCHLIST("watchlist"),
-  WATCHED_LIBRARY("libreria vista")
+  WATCHED_LIBRARY("libreria vista"),
+  MOVIES_LIBRARY("libreria film")
 }
 
 data class SimklSyncResult(
@@ -684,6 +960,8 @@ data class SimklSyncResult(
    * posizioni parziali delle sessioni di pausa) per rendere leggibile il report.
    */
   val adoptedLibraryEpisodes: Int = 0,
+  /** Titoli riconosciuti `completed` su SIMKL e marcati localmente (senza cancellare nulla). */
+  val completedTitlesMarked: Int = 0,
   val watchedShowsUpdated: Int = 0,
   /** Titoli della watchlist SIMKL portati nei Preferiti in questa sincronizzazione. */
   val watchlistImported: Int = 0,

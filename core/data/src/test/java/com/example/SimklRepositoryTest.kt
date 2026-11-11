@@ -25,11 +25,16 @@ class SimklRepositoryTest {
     val payload = media.toPayload(42.0)
     assertEquals(42.0, payload["progress"])
     assertTrue(payload.containsKey("show"))
-    assertEquals(mapOf("season" to 2, "episode" to 4), payload["episode"])
+    assertEquals(mapOf("season" to 2, "number" to 4), payload["episode"])
     assertEquals(
       listOf(mapOf("number" to 2, "episodes" to listOf(mapOf("number" to 4)))),
       media.toHistoryItem()["seasons"]
     )
+    // `/sync/history` vuole l'item con `ids` al primo livello, non il wrapper `show`
+    // dello scrobble.
+    assertTrue(media.toHistoryItem()["ids"] is Map<*, *>)
+    assertTrue(!media.toHistoryItem().containsKey("show"))
+    assertEquals(true, media.toHistoryItem()["use_tvdb_anime_seasons"])
   }
 
   @Test

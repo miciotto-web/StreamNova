@@ -130,6 +130,55 @@ class SimklPlaybackParserTest {
   }
 
   @Test
+  fun unAnimeUsaLaCoordinataTvdbPerLaRipresaLocale() {
+    val entry = SimklPlaybackParser.parseSession(
+      mapOf(
+        "progress" to 30.0,
+        "type" to "episode",
+        "episode" to mapOf(
+          "season" to 1,
+          "number" to 9,
+          "tvdb_season" to 2,
+          "tvdb_number" to 4
+        ),
+        "anime" to mapOf(
+          "title" to "Attack on Titan",
+          "year" to 2017,
+          "anime_type" to "tv",
+          "ids" to mapOf("tmdb" to "1429", "tvdb" to "267440")
+        )
+      )
+    )
+
+    assertEquals(2, entry?.season)
+    assertEquals(4, entry?.episode)
+    assertEquals(267440, entry?.tvdbId)
+    assertTrue(entry?.isAnime == true)
+  }
+
+  @Test
+  fun unAnimeSenzaEpisodioEUnFilm() {
+    val entry = SimklPlaybackParser.parseSession(
+      mapOf(
+        "progress" to 55.0,
+        "paused_at" to "2026-04-11T10:36:01Z",
+        "type" to "movie",
+        "anime" to mapOf(
+          "title" to "Anime Film",
+          "year" to 2024,
+          "anime_type" to "movie",
+          "ids" to mapOf("tmdb" to "999")
+        )
+      )
+    )
+
+    assertEquals(SimklPlaybackKind.MOVIE, entry?.kind)
+    assertTrue(SimklPlaybackParser.isResumable(entry!!))
+    assertNull(entry.season)
+    assertNull(entry.episode)
+  }
+
+  @Test
   fun unaSessioneSenzaTitoloOMancanteDiContenitoreVieneScartata() {
     assertNull(SimklPlaybackParser.parseSession(mapOf("progress" to 10.0, "type" to "movie")))
     assertNull(

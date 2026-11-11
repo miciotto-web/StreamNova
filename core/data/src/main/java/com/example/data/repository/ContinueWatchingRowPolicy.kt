@@ -308,7 +308,15 @@ object ContinueWatchingRowPolicy {
       it.seasonNumber == season && it.episodeNumber == episode
     }
 
-  /** Applica l'ordinamento scelto; a parità vince sempre la visione più recente. */
+  /**
+   * La visione più recente ha SEMPRE la precedenza, qualunque sia la preferenza scelta:
+   * riprendere un film o un episodio deve portare la sua card in prima posizione.
+   * `TITLE`/`RATING` restano disponibili solo come criteri di spareggio fra card con lo
+   * stesso istante di visione; non possono scavalcare la cronologia.
+   *
+   * La data usata è `lastWatchedAt`, cioè il momento reale della visione (player o
+   * `paused_at`/`last_watched_at` di SIMKL). La data di importazione non viene mai usata.
+   */
   private fun sort(
     items: List<ContinueWatchingRowItem>,
     sort: ContinueWatchingSort
@@ -317,10 +325,10 @@ object ContinueWatchingRowPolicy {
     return when (sort) {
       ContinueWatchingSort.DEFAULT -> items.sortedWith(byRecent)
       ContinueWatchingSort.TITLE -> items.sortedWith(
-        compareBy<ContinueWatchingRowItem> { it.media.title.lowercase(Locale.ROOT) }.then(byRecent)
+        byRecent.thenBy { it.media.title.lowercase(Locale.ROOT) }
       )
       ContinueWatchingSort.RATING -> items.sortedWith(
-        compareByDescending<ContinueWatchingRowItem> { it.media.rating }.then(byRecent)
+        byRecent.thenByDescending { it.media.rating }
       )
     }
   }

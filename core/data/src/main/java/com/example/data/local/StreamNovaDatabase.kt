@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     EpisodeProgressEntity::class,
     LastWorkingStreamEntity::class
   ],
-  version = 10,
+  version = 12,
   exportSchema = false
 )
 abstract class StreamNovaDatabase : RoomDatabase() {
@@ -168,6 +168,62 @@ abstract class StreamNovaDatabase : RoomDatabase() {
       }
     }
 
+    /**
+     * v10 -> v11: stato NON distruttivo di «Continua a guardare» e completamento.
+     *
+     * - `inContinueWatching` nasce `1` come default di colonna (coerente con l'entità), ma
+     *   viene poi riallineato al comportamento storico: `1` solo per i titoli con un
+     *   progresso reale (`currentProgressMs > 0`). I record a progresso 0 — in particolare
+     *   le serie concluse che la vecchia versione azzerava — restano fuori dalla riga,
+     *   esattamente come prima. Nessun record, progresso o riga episodio viene cancellato.
+     * - `completedAt` nasce `NULL`: nessun record storico viene dichiarato concluso per
+     *   inferenza. Il valore viene scritto solo da una conclusione verificata (player o
+     *   `status=completed` di SIMKL).
+     */
+    internal val MIGRATION_10_11 = object : Migration(10, 11) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+          "ALTER TABLE cached_media_items ADD COLUMN inContinueWatching INTEGER NOT NULL DEFAULT 1"
+        )
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN completedAt INTEGER")
+        // Comportamento storico: in «Continua a guardare» c'erano solo i titoli con un
+        // progresso > 0. Le righe a 0 (serie concluse azzerate dalla vecchia versione)
+        // restano fuori, senza perdere nulla.
+        db.execSQL(
+          "UPDATE cached_media_items SET inContinueWatching = " +
+            "CASE WHEN currentProgressMs > 0 THEN 1 ELSE 0 END"
+        )
+      }
+    }
+
+    /**
+     * v11 -> v12: riallineamento del flag «Continua a guardare» al nuovo default Kotlin.
+     *
+     * Lo schema NON cambia (il DEFAULT di colonna resta `1` per compatibilità con la
+     * 10→11; Room lega sempre il valore della proprietà, quindi il default Kotlin
+     * `false` governa ogni insert). Cambia solo il significato del flag, che da questo
+     * momento vale SOLO per uno stato di ripresa reale:
+     *
+     * - `1` per i titoli con una posizione reale (`currentProgressMs > 0`: sessione di
+     *   pausa SIMKL o del player) o con un puntatore «prossimo episodio» noto
+     *   (`lastWatchedSeason` valorizzato) — è la riga che il sito SIMKL mostra;
+     * - `0` per tutto il resto, cioè le righe ri-cacheate da TMDB che il default storico
+     *   `true` aveva accese senza motivo (su un catalogo reale era quasi tutta la
+     *   tabella) e i titoli mai avviati.
+     *
+     * Dato non distruttivo: nessun record, progresso, puntatore di ripresa o riga
+     * episodio viene toccato; le righe esplicitamente nascoste con un progresso reale
+     * tornano visibili, come già accadeva nella 10→11.
+     */
+    internal val MIGRATION_11_12 = object : Migration(11, 12) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+          "UPDATE cached_media_items SET inContinueWatching = " +
+            "CASE WHEN currentProgressMs > 0 OR lastWatchedSeason IS NOT NULL THEN 1 ELSE 0 END"
+        )
+      }
+    }
+
     @Volatile
     private var INSTANCE: StreamNovaDatabase? = null
 
@@ -180,6 +236,7 @@ abstract class StreamNovaDatabase : RoomDatabase() {
         )
           .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
           .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+          .addMigrations(MIGRATION_10_11, MIGRATION_11_12)
           .build()
           .also { INSTANCE = it }
       }

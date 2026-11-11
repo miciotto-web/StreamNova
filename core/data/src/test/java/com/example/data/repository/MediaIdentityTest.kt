@@ -42,6 +42,10 @@ class MediaIdentityTest {
     year = anno,
     currentProgressMs = progressoMs,
     lastWatchedAt = vistoIl,
+    // Dalla v12 il default è `false`: le schede di questi scenari hanno uno stato di
+    // ripresa reale (progresso scritto), quindi la candidatura a «Continua a guardare»
+    // va esplicitata.
+    inContinueWatching = progressoMs > 0L,
     isFavorite = preferito
   )
 
@@ -101,7 +105,12 @@ class MediaIdentityTest {
     assertTrue("a schermo è lo stesso titolo", MediaIdentity.isSameTitle(senzaId, senzaId2))
     assertTrue("ma senza identificativi forti non si unisce lo stato", MediaIdentity.strongKeys(senzaId).isEmpty())
     assertEquals("titolo+anno+punteggiatura ignorata", 1, MediaIdentity.dedupeByProgress(
-      listOf(senzaId.copy(currentProgressMs = 10, lastWatchedAt = 1L), senzaId2.copy(currentProgressMs = 20, lastWatchedAt = 2L))
+      listOf(
+        // Card con progresso reale: dalla v12 la candidatura a «Continua a guardare»
+        // va esplicitata (il builder base ha flag false perché senza progresso).
+        senzaId.copy(currentProgressMs = 10, lastWatchedAt = 1L, inContinueWatching = true),
+        senzaId2.copy(currentProgressMs = 20, lastWatchedAt = 2L, inContinueWatching = true)
+      )
     ).size)
   }
 
@@ -112,7 +121,10 @@ class MediaIdentityTest {
 
     assertFalse(MediaIdentity.isSameTitle(originale, remake))
     assertEquals(2, MediaIdentity.dedupeByProgress(
-      listOf(originale.copy(currentProgressMs = 1, lastWatchedAt = 1L), remake.copy(currentProgressMs = 1, lastWatchedAt = 2L))
+      listOf(
+        originale.copy(currentProgressMs = 1, lastWatchedAt = 1L, inContinueWatching = true),
+        remake.copy(currentProgressMs = 1, lastWatchedAt = 2L, inContinueWatching = true)
+      )
     ).size)
   }
 

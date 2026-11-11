@@ -150,6 +150,8 @@ class ContinueWatchingPlayerReturnFocusTest {
     tmdbId = tmdbId,
     currentProgressMs = 10 * 60_000L,
     totalDurationMs = 100 * 60_000L,
+    // Card di «Continua a guardare»: dalla v12 il default del flag è `false`.
+    inContinueWatching = true,
     lastWatchedAt = lastWatchedAt
   )
 

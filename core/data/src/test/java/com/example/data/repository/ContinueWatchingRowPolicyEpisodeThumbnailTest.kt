@@ -50,6 +50,8 @@ class ContinueWatchingRowPolicyEpisodeThumbnailTest {
         lastWatchedEpisode = 1,
         currentProgressMs = 180_000L,
         totalDurationMs = 22 * 60 * 1_000L,
+        // Card di «Continua a guardare» con posizione reale: dalla v12 il default è `false`.
+        inContinueWatching = true,
         episodes = episodes
       )
     }
@@ -298,7 +300,9 @@ class ContinueWatchingRowPolicyEpisodeThumbnailTest {
       year = 2010,
       durationMinutes = 148,
       currentProgressMs = 3_600_000L,
-      totalDurationMs = 148 * 60 * 1_000L
+      totalDurationMs = 148 * 60 * 1_000L,
+      // Film in «Continua a guardare»: dalla v12 il default del flag è `false`.
+      inContinueWatching = true
     )
 
     val card = ContinueWatchingRowPolicy.build(

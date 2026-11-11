@@ -22,12 +22,13 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Rimozione **persistente** delle serie concluse da «Continua a guardare».
+ * Conclusione delle serie e uscita **NON distruttiva** da «Continua a guardare».
  *
  * Verifica il percorso reale repository + Room:
  *  - fine stagione ≠ fine serie (nessuna rimozione prematura);
  *  - serie in corso / metadati incompleti → card conservata;
- *  - serie conclusa → posizione azzerata in memoria E su Room (sopravvive al riavvio);
+ *  - serie conclusa → `inContinueWatching = false` + `completedAt`, con posizione e
+ *    storico episodi CONSERVATI (la riga Room sopravvive al riavvio);
  *  - riconciliazione all'avvio conservativa (solo posizioni arrivate davvero a fine).
  */
 @RunWith(RobolectricTestRunner::class)
@@ -68,8 +69,8 @@ class MediaRepositorySeriesCompletionTest {
     MediaRepository.seriesCompletionFactsProvider = { completedFacts(seasons = 1, episodes = mapOf(1 to 10)) }
 
     assertTrue(MediaRepository.completeSeriesIfFinished(item.id, 1, 10))
-    attendi { db.cachedMediaDao().getMediaById(item.id)?.currentProgressMs == 0L }
-    attendi { MediaRepository.getMediaById(item.id)?.currentProgressMs == 0L }
+    attendi { db.cachedMediaDao().getMediaById(item.id)?.inContinueWatching == false }
+    attendi { MediaRepository.getMediaById(item.id)?.inContinueWatching == false }
 
     assertTrue(
       "la card non deve più comparire in Continua a guardare",
@@ -77,9 +78,19 @@ class MediaRepositorySeriesCompletionTest {
     )
     val row = db.cachedMediaDao().getMediaById(item.id)
     assertNotNull(row)
-    assertEquals("posizione azzerata in modo persistente", 0L, row!!.currentProgressMs)
+    assertEquals(
+      "la posizione è CONSERVATA: il completamento non cancella lo storico",
+      50 * minute,
+      row!!.currentProgressMs
+    )
+    assertNotNull("il completamento è registrato", row.completedAt)
     assertEquals("l'episodio visto resta noto", 1, row.lastWatchedSeason)
     assertEquals(10, row.lastWatchedEpisode)
+    assertEquals(
+      "la riga episodio (storico) resta intatta",
+      50 * minute,
+      db.episodeProgressDao().getEpisodeProgress(item.id, 1, 10)?.progressMs
+    )
 
     // "Riavvio": la riga Room è la fonte persistente e non fa riapparire la card.
     MediaRepository.loadFromCache()
@@ -169,8 +180,13 @@ class MediaRepositorySeriesCompletionTest {
     MediaRepository.seriesCompletionFactsProvider = { completedFacts(seasons = 1, episodes = mapOf(1 to 10)) }
     MediaRepository.reconcileCompletedSeries()
 
-    attendi { db.cachedMediaDao().getMediaById(item.id)?.currentProgressMs == 0L }
-    assertEquals(0L, db.cachedMediaDao().getMediaById(item.id)!!.currentProgressMs)
+    attendi { db.cachedMediaDao().getMediaById(item.id)?.inContinueWatching == false }
+    assertEquals(
+      "la posizione resta: la riconciliazione non cancella lo storico",
+      50 * minute,
+      db.cachedMediaDao().getMediaById(item.id)!!.currentProgressMs
+    )
+    assertNotNull(db.cachedMediaDao().getMediaById(item.id)!!.completedAt)
     assertTrue(MediaRepository.getContinueWatching().none { it.id == item.id })
   }
 
@@ -187,7 +203,7 @@ class MediaRepositorySeriesCompletionTest {
 
     assertTrue(
       "nessuna rimozione basata su una posizione non arrivata esattamente a fine",
-      MediaRepository.getContinueWatching().any { it.id == item.id }
+      attendi { MediaRepository.getContinueWatching().any { it.id == item.id } }
     )
     assertTrue(db.cachedMediaDao().getMediaById(item.id)!!.currentProgressMs > 0L)
   }
@@ -207,10 +223,12 @@ class MediaRepositorySeriesCompletionTest {
     // Percorso reale di avvio: riconciliazione dalle righe persistite.
     MediaRepository.loadFromCache()
 
-    attendi { db.cachedMediaDao().getMediaById(item.id)?.currentProgressMs == 0L }
+    attendi { db.cachedMediaDao().getMediaById(item.id)?.inContinueWatching == false }
     val row = db.cachedMediaDao().getMediaById(item.id)
     assertNotNull(row)
-    assertEquals("la card non riappare dopo il riavvio", 0L, row!!.currentProgressMs)
+    assertFalse("la card non riappare dopo il riavvio", row!!.inContinueWatching)
+    assertEquals("la posizione resta nello storico", 50 * minute, row.currentProgressMs)
+    assertNotNull(row.completedAt)
   }
 
   // ── Fixture ──────────────────────────────────────────────────────────────
@@ -229,6 +247,10 @@ class MediaRepositorySeriesCompletionTest {
     seasonsCount = 1,
     lastWatchedSeason = 1,
     lastWatchedEpisode = 10,
+    // Serie guardata fino all'ultimo episodio: è uno stato di ripresa reale. Dalla v12 il
+    // default del flag è `false` e la reconciliazione del completamento parte solo da
+    // card candidate (`inContinueWatching = true`), quindi va esplicitato.
+    inContinueWatching = true,
     episodes = (1..10).map { number ->
       Episode(
         id = "${id}_s1e$number",

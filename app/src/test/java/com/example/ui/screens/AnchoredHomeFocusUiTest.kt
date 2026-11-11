@@ -135,7 +135,9 @@ class AnchoredHomeFocusUiTest {
       tmdbId = 7000 + index,
       currentProgressMs = 10 * 60_000L,
       totalDurationMs = 100 * 60_000L,
-      lastWatchedAt = 10_000L - index * 1_000L
+      lastWatchedAt = 10_000L - index * 1_000L,
+      // Card di «Continua a guardare»: dalla v12 il default del flag è `false`.
+      inContinueWatching = true
     )
   }
 

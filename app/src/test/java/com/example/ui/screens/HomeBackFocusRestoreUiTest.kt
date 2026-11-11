@@ -159,6 +159,10 @@ class HomeBackFocusRestoreUiTest {
       year = 2200 + index,
       progress = 10 * 60_000L,
       watchedAt = 10_000L - index * 1_000L
+    ).copy(
+      // Card di «Continua a guardare» con posizione reale: dalla v12 il default del
+      // flag è `false` (una scheda TMDB fresca non è candidata).
+      inContinueWatching = true
     )
   }
 

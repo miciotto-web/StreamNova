@@ -80,6 +80,12 @@ class ContinueWatchingSmartSwitchTest {
     LastWorkingStreamRepository.setInstanceForTesting(null)
     database.close()
     AppSettingsRepository.setTorBoxApiKey(null)
+    // Il singleton AppSettingsRepository è condiviso fra le classi della stessa JVM:
+    // si riportano ai default anche i campi toccati dai test (modalità, autoplay,
+    // instant debrid), altrimenti l'esito delle classi successive dipende dall'ordine.
+    AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.HTTP_WEB)
+    AppSettingsRepository.setTorBoxInstantDebridEnabled(true)
+    AppSettingsRepository.setAutoplayEnabled(false)
     Dispatchers.resetMain()
   }
 

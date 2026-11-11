@@ -2,10 +2,13 @@ package com.example.data.repository
 
 import android.util.Log
 import com.example.data.local.MEDIA_SOURCE_SIMKL
+import com.example.data.local.MEDIA_SOURCE_SIMKL_NEXT_UP
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.remote.simkl.SimklActivitiesSnapshot
 import com.example.data.remote.simkl.SimklAuthException
+import com.example.data.remote.simkl.SimklCompletedKind
+import com.example.data.remote.simkl.SimklCompletedTitle
 import com.example.data.remote.simkl.SimklDecisionReason
 import com.example.data.remote.simkl.SimklLocalProgress
 import com.example.data.remote.simkl.SimklPlaybackEntry
@@ -22,12 +25,18 @@ import com.example.data.remote.simkl.SimklWatchlistEntry
 import com.example.data.remote.simkl.SimklWatchlistKind
 import com.example.data.remote.simkl.SimklWatchedLibrary
 import com.example.data.remote.simkl.SimklWatchedLibraryData
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Sincronizzazione account SIMKL → StreamNova.
  *
- * Tre letture, tutte gate su `GET /sync/activities` (mai polling a timer, come richiesto
- * dalla documentazione ufficiale):
+ * Quattro letture (playback, watchlist, libreria serie+anime, completati film), tutte
+ * gate su `GET /sync/activities` (mai polling a timer, come richiesto dalla
+ * documentazione ufficiale):
  *
  * 1. **Continua a guardare** — `GET /sync/playback` sono i *punti di pausa salvati*: la
  *    fonte documentata del "Continue Watching". La cronologia NON è usata per la posizione.
@@ -35,12 +44,13 @@ import com.example.data.remote.simkl.SimklWatchedLibraryData
  *    `status=plantowatch`: film, serie e anime che l'utente vuole guardare, portati nei
  *    **Preferiti** (l'archivio che la sezione legge davvero). È un insieme distinto sia
  *    dalla cronologia sia dai punti di pausa.
- * 3. **Libreria/history** — `GET /sync/all-items/shows`: alimenta la cache dei badge
- *    "Visto su SIMKL" nel Dettaglio (nessuna chiamata di rete per stagione) **e** fornisce i
- *    punti di ripresa degli episodi: le serie `status=watching` con `last_watched` /
- *    `last_watched_at` sono posizioni episodiche a tutti gli effetti. Senza questa lettura i
- *    progressi degli episodi non comparirebbero mai, perché `/sync/playback` contiene solo
- *    le sessioni di pausa ancora aperte — un episodio guardato fino in fondo non c'è.
+ * 3. **Libreria/history** — `GET /sync/all-items/shows` e `/sync/all-items/anime`:
+ *    alimentano la cache dei badge "Visto su SIMKL" nel Dettaglio (nessuna chiamata di
+ *    rete per stagione), forniscono il **prossimo episodio** delle serie in visione
+ *    (`next_to_watch`, non l'ultimo già finito) e i titoli `completed`. Gli anime sono
+ *    letti con `extended=full_anime_seasons` per mappare `E2` sulla coordinata TVDB/TMDB.
+ *    Senza questa lettura i progressi degli episodi non comparirebbero mai, perché
+ *    `/sync/playback` contiene solo le sessioni di pausa ancora aperte.
  *
  * Invarianti:
  * - ogni sezione ha il proprio esito: il fallimento di una NON cancella i dati dell'altra e
@@ -62,6 +72,49 @@ object SimklSyncManager {
 
   private const val TAG = "SimklSync"
 
+  /** Debounce del sync leggero al ritorno in primo piano. */
+  internal const val FOREGROUND_SYNC_DEBOUNCE_MS = 5L * 60L * 1000L
+
+  /**
+   * Una sola sincronizzazione per volta: due sync concorrenti (avvio, ritorno in primo
+   * piano, pulsante manuale) leggerebbero le stesse attività e riscriverebbero gli stessi
+   * dati, con il rischio di applicare due volte la stessa voce o di sovrascriversi.
+   */
+  private val syncMutex = Mutex()
+
+  /** Guardia del debounce: un solo tentativo di sync foreground per volta. */
+  private val foregroundCheckInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+  /**
+   * Sync leggero al ritorno in primo piano: parte solo se sono passati almeno 5 minuti
+   * dall'ultima sincronizzazione riuscita (o tentata). Il gate economico resta
+   * `GET /sync/activities`: se nulla è cambiato, il pull delle liste non avviene.
+   */
+  suspend fun syncOnForeground(now: Long = System.currentTimeMillis()): SimklSyncResult? {
+    val account = SimklRepository.accountState.value
+    if (!account.isLoggedIn || account.sessionExpired) return null
+    val last = maxOf(
+      SimklRepository.lastSyncAtEpochMs() ?: 0L,
+      lastForegroundSyncAt
+    )
+    if (now - last < FOREGROUND_SYNC_DEBOUNCE_MS) return null
+    if (!foregroundCheckInFlight.compareAndSet(false, true)) return null
+    return try {
+      lastForegroundSyncAt = now
+      // Il primo onResume può precedere il caricamento del catalogo da Room: una sync
+      // eseguita sul catalogo vuoto reimporta titoli già presenti. Si attende (con tetto)
+      // che MediaRepository abbia pubblicato lo stato locale.
+      if (MediaRepository.mediaList.value.isEmpty()) {
+        withTimeoutOrNull(15_000L) { MediaRepository.mediaList.first { it.isNotEmpty() } }
+      }
+      sync(now = System.currentTimeMillis())
+    } finally {
+      foregroundCheckInFlight.set(false)
+    }
+  }
+
+  @Volatile private var lastForegroundSyncAt: Long = 0L
+
   /**
    * Motivi che possono risolversi senza un intervento: la durata reale arriva (prima
    * riproduzione dell'episodio, risposta di TMDB), il titolo entra in catalogo, l'episodio
@@ -77,6 +130,13 @@ object SimklSyncManager {
   suspend fun sync(
     force: Boolean = false,
     now: Long = System.currentTimeMillis()
+  ): SimklSyncResult = syncMutex.withLock {
+    syncLocked(force, now)
+  }
+
+  private suspend fun syncLocked(
+    force: Boolean,
+    now: Long
   ): SimklSyncResult {
     val account = SimklRepository.accountState.value
     if (!account.isLoggedIn) {
@@ -108,6 +168,10 @@ object SimklSyncManager {
       }
       Log.w(TAG, "Sincronizzazione SIMKL non riuscita: ${e.message}")
       result
+    } catch (e: CancellationException) {
+      // La cancellazione della coroutine non è un guasto da registrare come risultato:
+      // deve propagare e fermare davvero il lavoro (inclusi i pull in corso).
+      throw e
     } catch (e: Exception) {
       val result = SimklSyncResult(
         SimklSyncStatus.FAILED,
@@ -187,6 +251,7 @@ object SimklSyncManager {
     var playbacks: List<SimklPlaybackEntry>? = null
     var watchlist: List<SimklWatchlistEntry>? = null
     var watchedShows: SimklWatchedLibraryData? = null
+    var completedMovies: List<SimklCompletedTitle>? = null
 
     if (playbackChanged) {
       // Nessun filtro a monte: la classificazione (comprese le sessioni incomplete da
@@ -202,6 +267,11 @@ object SimklSyncManager {
       pull("libreria vista") { SimklRepository.fetchWatchedLibrary() }
         .onSuccess { watchedShows = it }
         .onFailure { failed += SimklSyncSection.WATCHED_LIBRARY }
+      // I completamenti dei film sono una verifica a sé: un film può essere stato
+      // marcato `completed` su SIMKL senza avere playback né watchlist.
+      pull("libreria film") { SimklRepository.fetchCompletedMovies() }
+        .onSuccess { completedMovies = it }
+        .onFailure { failed += SimklSyncSection.MOVIES_LIBRARY }
     }
 
     // ── APPLICAZIONE: solo le sezioni effettivamente scaricate, sempre in modo additivo.
@@ -213,13 +283,25 @@ object SimklSyncManager {
     val freshPlaybacks = playbacks
     val pendingEntries = pending.map { it.entry }
     val freshKeys = freshPlaybacks?.map { it.resumeKey }?.toSet() ?: emptySet()
+    // La documentazione SIMKL è esplicita: se una serie ha una sessione di pausa, quella
+    // riga vince sul `next_to_watch`. Applicare entrambe poteva spostare la card
+    // sull'episodio sbagliato (o addirittura indietro) a seconda dell'ordine.
+    val playbackTitleKeys = (freshPlaybacks.orEmpty() + pendingEntries)
+      .filter { it.origin == com.example.data.remote.simkl.SimklResumeOrigin.PLAYBACK }
+      .mapNotNull { resumeTitleKey(it) }
+      .toSet()
     val libraryEntries = watchedShows?.watchingResumes
       ?.map { SimklWatchedLibrary.resumeEntry(it) }
-      ?.filter { it.resumeKey !in freshKeys }
+      ?.filter { it.resumeKey !in freshKeys && resumeTitleKey(it) !in playbackTitleKeys }
       .orEmpty()
-    val entriesToApply = freshPlaybacks.orEmpty() +
-      pendingEntries.filter { it.resumeKey !in freshKeys } +
-      libraryEntries
+    val pendingToApply = pendingEntries.filter { entry ->
+      if (entry.resumeKey in freshKeys) return@filter false
+      // Una voce di libreria rimandata non deve sovrascrivere una sessione di pausa
+      // fresca per lo stesso titolo: la pausa è la posizione effettivamente aperta.
+      !(entry.origin == com.example.data.remote.simkl.SimklResumeOrigin.LIBRARY &&
+        resumeTitleKey(entry) in playbackTitleKeys)
+    }
+    val entriesToApply = freshPlaybacks.orEmpty() + pendingToApply + libraryEntries
     val playOutcome = if (freshPlaybacks != null || libraryEntries.isNotEmpty() || pendingEntries.isNotEmpty()) {
       // `null` = la disconnessione è avvenuta durante l'applicazione: nessun dato viene
       // pubblicato, la sincronizzazione si ferma qui (la pulizia del logout è già passata
@@ -234,6 +316,20 @@ object SimklSyncManager {
       watchOutcome = applyWatchlist(watchlist, sessionValid) ?: return abortedSync(now)
     } else {
       watchOutcome = WatchlistOutcome.EMPTY
+    }
+
+    // ── COMPLETAMENTI verificati su SIMKL ─────────────────────────────────────
+    // Un titolo può essere stato marcato `completed` sul sito o da un altro client:
+    // registriamo `completedAt` e togliamo la card dalla riga, senza cancellare progressi
+    // o storico. Se la stessa serie/anime ha ancora una cour `watching`, non la
+    // dichiariamo conclusa: l'utente sta guardando altro della stessa opera TMDB.
+    val completedFromLibrary = watchedShows?.completedTitles.orEmpty()
+    val allCompleted = completedMovies.orEmpty() + completedFromLibrary
+    val watchingTmdbIds = watchedShows?.watchingTmdbIds.orEmpty()
+    val completedMarked = if (allCompleted.isNotEmpty()) {
+      applyCompletions(allCompleted, watchingTmdbIds, sessionValid) ?: return abortedSync(now)
+    } else {
+      0
     }
 
     // L'elenco rimandato si riscrive solo se abbiamo davvero potuto riprovare TUTTE le voci:
@@ -263,10 +359,14 @@ object SimklSyncManager {
     }
     val result = SimklSyncResult(
       status = status,
-      message = buildMessage(playOutcome, watchOutcome, watchedShows != null, libraryChanged, failed),
+      message = buildMessage(
+        playOutcome, watchOutcome, watchedShows != null, libraryChanged, failed,
+        completedMarked = completedMarked
+      ),
       adoptedMovies = playOutcome.movies,
       adoptedEpisodes = playOutcome.episodes,
       adoptedLibraryEpisodes = playOutcome.libraryEpisodes,
+      completedTitlesMarked = completedMarked,
       watchedShowsUpdated = watchedShows?.watchedEpisodesByShow?.size ?: 0,
       watchlistImported = watchOutcome.imported,
       watchlistAlreadyFavorite = watchOutcome.alreadyFavorite,
@@ -299,12 +399,19 @@ object SimklSyncManager {
    * (`IOException`) — senza questa riga tutti e tre sarebbero indistinguibili.
    */
   private suspend fun <T> pull(section: String, block: suspend () -> T): Result<T> =
-    runCatching { block() }.onFailure { error ->
+    try {
+      Result.success(block())
+    } catch (e: CancellationException) {
+      // `runCatching` cattura anche CancellationException: usarlo qui rendeva la
+      // cancellazione una "sezione non scaricata" e il lavoro continuava.
+      throw e
+    } catch (error: Exception) {
       Log.w(
         TAG,
         "Sezione '$section' non scaricata: ${error.javaClass.simpleName} — " +
           (error.localizedMessage ?: "nessun dettaglio")
       )
+      Result.failure(error)
     }
 
   private class ApplyOutcome(
@@ -385,6 +492,12 @@ object SimklSyncManager {
           if (!sessionValid()) return null
           reason = SimklDecisionReason.UNRESOLVED_TITLE
           unresolved.add(entryLabel(entry))
+        } else if (target.completedAt != null) {
+          // Concluso in LOCALE (fine riproduzione verificata o toggle dell'utente) e già
+          // notificato a SIMKL: le voci di playback e `next_to_watch` non devono
+          // resuscitare la card dalla riga. Se SIMKL conferma lo stato `completed`, la
+          // riconciliazione dei completamenti lo ribadisce senza riaccendere nulla.
+          reason = SimklDecisionReason.LOCALLY_COMPLETED
         } else {
           val local = localProgressFor(entry, target)
           val decision = SimklProgressMergePolicy.decide(
@@ -393,7 +506,9 @@ object SimklSyncManager {
             series = SimklSeriesState(
               season = target.lastWatchedSeason,
               episode = target.lastWatchedEpisode,
-              lastWatchedAtMs = if (target.currentProgressMs > 0L) target.lastWatchedAt else null
+              // Anche una serie ferma sull'episodio successivo (progresso 0) ha una data
+              // di visione: è quella che protegge dalla sessione obsoleta.
+              lastWatchedAtMs = target.lastWatchedAt
             )
           )
           if (!decision.adopt) {
@@ -420,15 +535,29 @@ object SimklSyncManager {
               else -> {
                 val isLibraryEntry = entry.resumeKey in libraryKeys
                 val adopted = gatedWrite(sessionValid) {
-                  MediaRepository.updateEpisodeProgress(
-                    mediaId = target.id,
-                    seasonNumber = season,
-                    episodeNumber = episode,
-                    progressMs = decision.progressMs,
-                    durationMs = local.totalDurationMs,
-                    lastWatchedAtMs = watchedAt,
-                    source = MEDIA_SOURCE_SIMKL
-                  )
+                  if (entry.isNextToWatch) {
+                    // `next_to_watch` di SIMKL: puntatore al PROSSIMO episodio, non una
+                    // posizione raggiunta. È ciò che il sito SIMKL mostra nella sua riga
+                    // "Continua a guardare": la card va in riga sull'episodio successivo
+                    // a posizione 0 (e serve anche a «Riproduci S…E…» nel Dettaglio).
+                    MediaRepository.updateNextUpFromSimkl(
+                      mediaId = target.id,
+                      seasonNumber = season,
+                      episodeNumber = episode,
+                      lastWatchedAtMs = watchedAt,
+                      source = MEDIA_SOURCE_SIMKL_NEXT_UP
+                    )
+                  } else {
+                    MediaRepository.updateEpisodeProgress(
+                      mediaId = target.id,
+                      seasonNumber = season,
+                      episodeNumber = episode,
+                      progressMs = decision.progressMs,
+                      durationMs = local.totalDurationMs,
+                      lastWatchedAtMs = watchedAt,
+                      source = MEDIA_SOURCE_SIMKL
+                    )
+                  }
                   if (isLibraryEntry) libraryEpisodes++ else episodes++
                 }
                 if (!adopted) return null
@@ -466,6 +595,7 @@ object SimklSyncManager {
         val isTv = entry.kind == SimklPlaybackKind.EPISODE
         val tmdbId = entry.tmdbId?.takeIf { it > 0 }
           ?: entry.imdbId?.let { MediaRepository.resolveImdbToTmdbId(it, isTv) }
+          ?: entry.tvdbId?.let { MediaRepository.resolveTvdbToTmdbId(it, isTv) }
           ?: return null
         // La rete (risoluzione IMDb, dettagli TMDB) resta FUORI dal gate: la disconnessione
         // non deve restare in attesa di un titolo. Solo la scrittura dell'import è gateata.
@@ -486,6 +616,20 @@ object SimklSyncManager {
 
   /** Durata reale e progresso noto in locale per il film o l'episodio della sessione. */
   private suspend fun localProgressFor(entry: SimklPlaybackEntry, target: MediaItem): SimklLocalProgress {
+    if (entry.isNextToWatch) {
+      // Il prossimo episodio non ha una percentuale da convertire: non serve una durata,
+      // quindi non si interroga TMDB per una voce che è già applicabile.
+      val season = entry.season ?: 0
+      val episode = entry.episode ?: 0
+      val sameEpisode = target.lastWatchedSeason == season && target.lastWatchedEpisode == episode
+      val progress = MediaRepository.getEpisodeProgress(target.id, season, episode)
+      return SimklLocalProgress(
+        mediaId = target.id,
+        totalDurationMs = 0L,
+        progressMs = if (sameEpisode) progress else 0L,
+        lastWatchedAtMs = if (sameEpisode) target.lastWatchedAt else null
+      )
+    }
     if (entry.kind == SimklPlaybackKind.MOVIE) {
       // Durata del film: quella già nota dalla scheda, altrimenti quella REALE di TMDB. Mai
       // stimata: senza una durata vera la percentuale non diventa millisecondi, e la voce
@@ -522,8 +666,18 @@ object SimklSyncManager {
       mediaId = target.id,
       totalDurationMs = duration,
       progressMs = if (sameEpisode) progress else 0L,
-      lastWatchedAtMs = if (sameEpisode && progress > 0L) target.lastWatchedAt else null
+      // Anche a progresso 0 (episodio appena avviato o next_to_watch già applicato) la
+      // data appartiene a questo episodio e serve all'idempotenza.
+      lastWatchedAtMs = if (sameEpisode) target.lastWatchedAt else null
     )
+  }
+
+  /** Chiave del TITOLO per decidere quale fonte di ripresa vince (playback o libreria). */
+  private fun resumeTitleKey(entry: SimklPlaybackEntry): String? {
+    if (entry.kind != SimklPlaybackKind.EPISODE) return null
+    entry.tmdbId?.takeIf { it > 0 }?.let { return "tmdb:$it" }
+    entry.imdbId?.takeIf { it.isNotBlank() }?.let { return "imdb:${it.lowercase()}" }
+    return "title:${MediaIdentity.normalizeTitle(entry.title)}:${entry.year ?: 0}"
   }
 
   private fun entryLabel(entry: SimklPlaybackEntry): String = when {
@@ -577,6 +731,7 @@ object SimklSyncManager {
     val isTv = entry.kind == SimklWatchlistKind.SHOW
     val tmdbId = entry.tmdbId?.takeIf { it > 0 }
       ?: entry.imdbId?.let { MediaRepository.resolveImdbToTmdbId(it, isTv) }
+      ?: entry.tvdbId?.let { MediaRepository.resolveTvdbToTmdbId(it, isTv) }
       ?: return null
     val built = MediaRepository.buildExternalItem(tmdbId, isTv) ?: return null
     var imported: MediaItem? = null
@@ -587,12 +742,74 @@ object SimklSyncManager {
     return imported?.id
   }
 
+  // ── Completamenti verificati su SIMKL ─────────────────────────────────────
+
+  /**
+   * Applica i titoli che SIMKL dichiara `completed`.
+   *
+   * Regole:
+   * - il titolo deve essere già in catalogo: un completamento non giustifica l'importazione
+   *   di una scheda (e non deve inventare una posizione);
+   * - un dato locale **più recente** (una nuova visione in corso) non viene scavalcato;
+   * - un anime per cour non dichiara conclusa l'intera serie TMDB se un'altra cour è
+   *   ancora `watching`;
+   * - la scrittura è non distruttiva: `completedAt` + `inContinueWatching = false`, con
+   *   progressi e righe episodio intatti.
+   *
+   * @return il numero di titoli marcati, o `null` se la sessione è stata disconnessa.
+   */
+  private suspend fun applyCompletions(
+    titles: List<SimklCompletedTitle>,
+    watchingTmdbIds: Set<Int>,
+    sessionValid: () -> Boolean
+  ): Int? {
+    var marked = 0
+    for (title in titles) {
+      if (title.isAnime && title.kind == SimklCompletedKind.SHOW && title.tmdbId in watchingTmdbIds) {
+        // Una cour anime conclusa non significa che l'opera TMDB sia finita.
+        continue
+      }
+      val matched = SimklLocalMatcher.find(MediaRepository.mediaList.value, title) ?: continue
+      if (matched.completedAt != null && !matched.inContinueWatching) {
+        // Già marcato: nessuna nuova scrittura né conteggio a ogni sincronizzazione.
+        continue
+      }
+      val completedAt = title.completedAtEpochMs ?: System.currentTimeMillis()
+      val localAt = matched.lastWatchedAt
+      if (localAt != null && localAt > completedAt && matched.inContinueWatching) {
+        // C'è una visione locale più recente: il `completed` remoto è vecchio.
+        continue
+      }
+      val written = gatedWrite(sessionValid) {
+        if (title.kind == SimklCompletedKind.MOVIE) {
+          MediaRepository.markCompletedFromSimkl(
+            mediaId = matched.id,
+            completedAtMs = completedAt,
+            setProgressToEnd = true
+          )
+        } else {
+          MediaRepository.markSeriesCompletedFromSimkl(
+            mediaId = matched.id,
+            completedAtMs = completedAt
+          )
+        }
+      }
+      if (!written) return null
+      marked++
+    }
+    if (marked > 0) {
+      Log.i(TAG, "Completamenti SIMKL verificati: $marked titoli marcati (storico preservato).")
+    }
+    return marked
+  }
+
   private fun buildMessage(
     outcome: ApplyOutcome,
     watchlist: WatchlistOutcome,
     watchedPulled: Boolean,
     libraryChanged: Boolean,
-    failed: List<SimklSyncSection>
+    failed: List<SimklSyncSection>,
+    completedMarked: Int = 0
   ): String {
     val parts = mutableListOf<String>()
     val adopted = outcome.movies + outcome.episodes
@@ -606,7 +823,7 @@ object SimklSyncManager {
       }
     )
     if (outcome.libraryEpisodes > 0) {
-      parts.add("Allineate ${outcome.libraryEpisodes} serie all'ultimo episodio visto su SIMKL.")
+      parts.add("Allineate ${outcome.libraryEpisodes} serie al prossimo episodio da guardare su SIMKL.")
     }
     parts.add(
       when {
@@ -616,6 +833,9 @@ object SimklSyncManager {
         else -> "Nessun titolo nella watchlist SIMKL."
       }
     )
+    if (completedMarked > 0) {
+      parts.add("Verificati $completedMarked completamenti su SIMKL (storico conservato).")
+    }
     if (watchedPulled) parts.add("Libreria SIMKL aggiornata.")
     else if (!libraryChanged) parts.add("Libreria SIMKL invariata.")
     // Un elemento non applicato deve dire PERCHÉ: senza il motivo, un dato mancante è
@@ -676,6 +896,15 @@ object SimklLocalMatcher {
     tmdbId = entry.tmdbId,
     imdbId = entry.imdbId,
     type = if (entry.kind == SimklWatchlistKind.SHOW) MediaType.SERIE_TV else MediaType.FILM
+  )
+
+  fun find(candidates: List<MediaItem>, entry: SimklCompletedTitle): MediaItem? = findByIdentity(
+    candidates = candidates,
+    title = entry.title,
+    year = entry.year,
+    tmdbId = entry.tmdbId,
+    imdbId = entry.imdbId,
+    type = if (entry.kind == SimklCompletedKind.SHOW) MediaType.SERIE_TV else MediaType.FILM
   )
 
   private fun findByIdentity(

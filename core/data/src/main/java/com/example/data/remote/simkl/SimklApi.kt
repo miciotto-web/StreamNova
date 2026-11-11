@@ -1,7 +1,6 @@
 package com.example.data.remote.simkl
 
 import com.example.data.config.StreamNovaConfig
-
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import java.util.concurrent.TimeUnit
@@ -12,6 +11,7 @@ import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
 import retrofit2.http.Header
@@ -70,9 +70,18 @@ interface SimklApi {
     @Header("Authorization") authorization: String
   ): Response<SimklUserSettingsResponse>
 
+  /**
+   * `min_progress` è un parametro **solo URL** (50–100, default del server 80) e conta
+   * SOLO per `stop` (e per uno `start` che sostituisce una sessione precedente): un
+   * `pause` lo ignora. È la soglia oltre la quale lo stop marca l'episodio come visto
+   * invece di salvare un punto di ripresa. 80 è il default Simkl e il valore che usa
+   * Nuvio (che non lo invia affatto): uno stop al 95% deve segnare "visto", non una
+   * pausa da 5 minuti.
+   */
   @POST("scrobble/start")
   suspend fun startScrobble(
     @Query("client_id") clientId: String,
+    @Query("min_progress") minProgress: Int = SIMKL_MIN_PROGRESS,
     @Header("Authorization") authorization: String,
     @Body payload: Map<String, @JvmSuppressWildcards Any>
   ): Response<Map<String, Any>>
@@ -80,6 +89,7 @@ interface SimklApi {
   @POST("scrobble/stop")
   suspend fun stopScrobble(
     @Query("client_id") clientId: String,
+    @Query("min_progress") minProgress: Int = SIMKL_MIN_PROGRESS,
     @Header("Authorization") authorization: String,
     @Body payload: Map<String, @JvmSuppressWildcards Any>
   ): Response<Map<String, Any>>
@@ -91,9 +101,35 @@ interface SimklApi {
     @Body payload: Map<String, @JvmSuppressWildcards Any>
   ): Response<Map<String, Any>>
 
+  /**
+   * `POST /sync/history/remove` — "non visto": la stessa forma di `/sync/history` ma
+   * SENZA `watched_at` (né `status`), così il server rimuove la cronologia dell'episodio
+   * o del film indicato invece di fissarla a un momento nuovo.
+   */
+  @POST("sync/history/remove")
+  suspend fun removeHistory(
+    @Query("client_id") clientId: String,
+    @Header("Authorization") authorization: String,
+    @Body payload: Map<String, @JvmSuppressWildcards Any>
+  ): Response<Map<String, Any>>
+
+  /**
+   * `DELETE /sync/playback/{id}` — chiude la sessione di pausa sul server. È ciò che
+   * rende persistente la rimozione di una card da «Continua a guardare»: senza questa
+   * chiamata la sessione resta aperta lato SIMKL e la card rientra alla sincronizzazione
+   * successiva (il comportamento che Nuvio evita con la stessa DELETE).
+   */
+  @DELETE("sync/playback/{playbackId}")
+  suspend fun deletePlaybackSession(
+    @Path("playbackId") playbackId: Long,
+    @Query("client_id") clientId: String,
+    @Header("Authorization") authorization: String
+  ): Response<Map<String, Any>>
+
   @POST("scrobble/pause")
   suspend fun pauseScrobble(
     @Query("client_id") clientId: String,
+    @Query("min_progress") minProgress: Int = SIMKL_MIN_PROGRESS,
     @Header("Authorization") authorization: String,
     @Body payload: Map<String, @JvmSuppressWildcards Any>
   ): Response<Map<String, Any>>
@@ -104,7 +140,32 @@ interface SimklApi {
     @Header("Authorization") authorization: String,
     @Query("extended") extended: String = "full",
     @Query("episode_watched_at") episodeWatchedAt: String = "yes",
-    @Query("include_all_episodes") includeAllEpisodes: String = "yes"
+    @Query("include_all_episodes") includeAllEpisodes: String = "yes",
+    @Query("next_watch_info") nextWatchInfo: String = "yes"
+  ): Response<Map<String, Any>>
+
+  /**
+   * Libreria anime (`GET /sync/all-items/anime`, senza status: tutti gli stati).
+   *
+   * `extended=full_anime_seasons` è la forma documentata per un'app TMDB-primary: ogni
+   * episodio porta `tvdb: {season, episode}`, cioè la coordinata con cui mappare la
+   * numerazione anime-native (`E2`) sulla stagione/episodio locale.
+   */
+  @GET("sync/all-items/anime")
+  suspend fun getWatchedAnime(
+    @Query("client_id") clientId: String,
+    @Header("Authorization") authorization: String,
+    @Query("extended") extended: String = "full_anime_seasons",
+    @Query("episode_watched_at") episodeWatchedAt: String = "yes",
+    @Query("include_all_episodes") includeAllEpisodes: String = "yes",
+    @Query("next_watch_info") nextWatchInfo: String = "yes"
+  ): Response<Map<String, Any>>
+
+  /** Libreria film (tutti gli stati): serve a verificare i `completed` su SIMKL. */
+  @GET("sync/all-items/movies")
+  suspend fun getWatchedMovies(
+    @Query("client_id") clientId: String,
+    @Header("Authorization") authorization: String
   ): Response<Map<String, Any>>
 
   /**
@@ -116,7 +177,9 @@ interface SimklApi {
     @Query("client_id") clientId: String,
     @Header("Authorization") authorization: String,
     @Query("hide_watched") hideWatched: String = "true",
-    @Query("limit") limit: Int = 1000
+    // Limite documentato dell'endpoint (1–10000): una sola richiesta copre l'intera
+    // libreria di ripresa, senza paginazione e senza polling.
+    @Query("limit") limit: Int = 10000
   ): Response<List<Map<String, Any>>>
 
   /**
@@ -151,6 +214,15 @@ const val SIMKL_TYPE_ANIME = "anime"
 
 /** `status` di "Plan to Watch": il contenuto che l'utente vuole guardare. */
 const val SIMKL_STATUS_PLAN_TO_WATCH = "plantowatch"
+
+/**
+ * Soglia di completamento inviata a SIMKL: 80 = default del server (range 50–100) e
+ * valore che usa Nuvio. Il parametro viaggia SOLO nella query string, non nel body, e
+ * conta solo per `stop`: con 80 uno stop all'85% marca l'episodio come visto, mentre
+ * il valore 100 usato in precedenza lo trasformava in un punto di ripresa e l'episodio
+ * restava "non visto" su SIMKL pur essendo visto al 90% in locale.
+ */
+const val SIMKL_MIN_PROGRESS = 80
 
 const val DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 const val REFRESH_TOKEN_GRANT = "refresh_token"
