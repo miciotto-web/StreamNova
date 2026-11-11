@@ -74,6 +74,9 @@ class MobileApplication : Application() {
     SimklRepository.init(this)
     StremioAddonRepository.init()
     ProviderCatalogResolvers.init(this)
+    // Modalità Sync (Impostazioni): l'init legge solo la preferenza persistita; con
+    // la Sync attiva server HTTP e annuncio NSD ripartono sul thread IO.
+    com.example.data.sync.SyncManager.init(this)
     // Preferenze del player touch (gesture, schermo in pausa, buffering extra):
     // locali al modulo Mobile, non condivise con la TV.
     MobilePlayerPreferences.init(this)

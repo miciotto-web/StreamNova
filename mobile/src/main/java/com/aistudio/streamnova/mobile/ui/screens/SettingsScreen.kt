@@ -251,6 +251,15 @@ fun SettingsScreen(onBack: () -> Unit) {
         )
       }
 
+      // ── SINCRONIZZAZIONE (modalità Sync) ────────────────────────────────
+      // Replica la configurazione completa su altri dispositivi StreamNova della
+      // stessa rete. Tutta la logica e i dialog vivono in SyncSettings.kt: qui
+      // resta solo l'aggancio alla lista delle sezioni (come sulla TV, prima
+      // della sezione Generale).
+      item(key = "sync") {
+        SyncSettingsSection()
+      }
+
       // ── GENERALE ───────────────────────────────────────────────────────
       item(key = "general") {
         MobileSettingsSection(title = stringResource(R.string.settings_sec_general)) {

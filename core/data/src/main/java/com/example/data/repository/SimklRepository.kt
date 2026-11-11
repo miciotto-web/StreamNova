@@ -392,6 +392,28 @@ object SimklRepository {
   }
 
   /**
+   * Importa una sessione SIMKL ricevuta da un altro dispositivo tramite la modalità
+   * Sync ([com.example.data.sync.SyncConfigApplier]): scrive le credenziali con lo
+   * stesso percorso del login ([writeAccount]) senza passare dalla rete.
+   *
+   * L'epoca di sessione NON cambia: non è una disconnessione. La sincronizzazione dei
+   * dati SIMKL (attività, playback) parte regolarmente al prossimo foreground: i
+   * checkpoint arrivano dal server, non dal dispositivo di provenienza.
+   *
+   * Chiamare SOLO con uno stato collegato ([SimklAccountState.isLoggedIn]): una
+   * sorgente non collegata non deve disconnettere il ricevente.
+   */
+  suspend fun importAccount(state: SimklAccountState) {
+    if (!state.isLoggedIn) return
+    appContext?.simklDataStore?.edit { prefs -> prefs.writeAccount(state) }
+    accountMutable.value = state
+    lastSyncMutable.value = null
+    loginFlowCache.set(state.flow)
+    invalidateWatchedCache()
+    ensureScrobbleWorkerStarted()
+  }
+
+  /**
    * Scollega l'account. Con AUTH V2 revoca il grant sul server (best-effort: `200` non
    * prova che la revoca sia avvenuta) e in ogni caso cancella SOLO le credenziali e i
    * metadati di sincronizzazione. Nessun dato dell'account remoto SIMKL viene cancellato:

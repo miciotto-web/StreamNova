@@ -78,6 +78,7 @@ import com.aistudio.streamnova.mobile.ui.screens.MobilePlayerScreen
 import com.aistudio.streamnova.mobile.ui.screens.MobileProviderScreen
 import com.aistudio.streamnova.mobile.ui.screens.SearchScreen
 import com.aistudio.streamnova.mobile.ui.screens.SettingsScreen
+import com.aistudio.streamnova.mobile.ui.screens.SyncApprovalOverlay
 import com.example.data.model.MediaItem
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.repository.MediaRepository
@@ -163,6 +164,11 @@ private fun MobileAppContent(
       onLater = { UpdateRepository.dismissStartupPrompt() }
     )
   }
+
+  // Richiesta di sincronizzazione in arrivo (modalità Sync): dialog globale, perché
+  // la richiesta scade dopo due minuti e l'utente può trovarsi su qualunque schermata
+  // (player compreso, come sulla TV).
+  SyncApprovalOverlay()
 
   val parentalEnabled by AppSettingsRepository.parentalControlEnabled.collectAsStateWithLifecycle()
   val parentalLevel by AppSettingsRepository.parentalControlLevel.collectAsStateWithLifecycle()

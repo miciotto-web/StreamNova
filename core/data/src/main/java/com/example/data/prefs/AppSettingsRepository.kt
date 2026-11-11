@@ -637,6 +637,20 @@ object AppSettingsRepository {
   }
 
   /**
+   * Salva direttamente l'hash SHA-256 del PIN (modalità Sync: dall'altro dispositivo
+   * arriva l'hash, mai il PIN in chiaro). Accetta solo un esadecimale a 64 caratteri:
+   * un valore estraneo viene ignorato, così la chiave resta coerente con le scritture
+   * di [setParentalControlPin].
+   */
+  fun setParentalControlPinHash(hash: String) {
+    val clean = hash.trim().lowercase()
+    if (clean.length != 64 || !clean.all { it.isDigit() || it in 'a'..'f' }) return
+    parentalPinLocalWrite = true
+    _parentalControlPin.value = clean
+    scope.launch { dataStore?.edit { it[KEY_PARENTAL_CONTROL_PIN] = clean } }
+  }
+
+  /**
    * Verifica se il PIN inserito corrisponde all'hash SHA-256 salvato.
    */
   fun verifyParentalControlPin(pin: String): Boolean {

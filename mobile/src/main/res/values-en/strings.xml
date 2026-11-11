@@ -537,4 +537,44 @@
     <string name="settings_update_install_failed_file">The update file is no longer available: download it again</string>
     <string name="settings_update_install_failed_permission">Permission to install apps from this source is missing</string>
     <string name="settings_update_install_failed_generic">Could not start the system installer</string>
+
+    <!-- Sync Mode (synchronization between StreamNova devices) -->
+    <string name="settings_sync_section">Synchronization</string>
+    <string name="settings_sync_mode">Sync Mode</string>
+    <string name="settings_sync_mode_desc">Make your configuration available to other StreamNova devices on the same network (Wi‑Fi/Ethernet)</string>
+    <string name="settings_sync_this_device">This device</string>
+    <string name="settings_sync_activating">Activating…</string>
+    <string name="settings_sync_device_name">Device name</string>
+    <string name="settings_sync_search_devices">Search for devices</string>
+    <string name="settings_sync_no_devices">No devices found</string>
+    <string name="settings_sync_one_device">1 device</string>
+    <string name="settings_sync_n_devices">%1$d devices</string>
+    <string name="settings_sync_add_ip">Add by IP address</string>
+    <string name="settings_sync_add_ip_title">Add device by IP</string>
+    <string name="settings_sync_hint_ip">e.g. 192.168.1.24</string>
+    <string name="settings_sync_name_dialog_title">Device name</string>
+    <string name="settings_sync_name_hint">e.g. Living Room TV</string>
+    <string name="settings_sync_note">Turn on Sync on the other device too: devices find each other automatically. Every transfer must be approved on the device that owns the data.</string>
+    <string name="settings_sync_transfer_title">Sync with “%1$s”</string>
+    <string name="settings_sync_import">Import from device</string>
+    <string name="settings_sync_import_desc">Copy the configuration of “%1$s” to this device</string>
+    <string name="settings_sync_push">Send your configuration</string>
+    <string name="settings_sync_push_desc">Replicate this device\'s configuration to “%1$s”</string>
+    <string name="settings_sync_what">What to transfer</string>
+    <string name="settings_sync_cat_settings">Settings and API keys</string>
+    <string name="settings_sync_cat_addons">Stremio addons</string>
+    <string name="settings_sync_cat_simkl">SIMKL account</string>
+    <string name="settings_sync_cat_library">Favorites and progress</string>
+    <string name="settings_sync_start">Start</string>
+    <string name="settings_sync_approval_title">Sync request</string>
+    <string name="settings_sync_approval_pull">“%1$s” wants to copy your configuration.</string>
+    <string name="settings_sync_approval_push">“%1$s” wants to send you its configuration: the current settings of this device will be replaced.</string>
+    <string name="settings_sync_deny">Deny</string>
+    <string name="settings_sync_transfer_confirm">Transfer</string>
+    <string name="settings_sync_state_running_title">Transfer in progress</string>
+    <string name="settings_sync_state_waiting">Waiting for approval on “%1$s”. Confirm the transfer on the other device.</string>
+    <string name="settings_sync_state_denied_title">Transfer denied</string>
+    <string name="settings_sync_state_denied">“%1$s” denied the transfer.</string>
+    <string name="settings_sync_state_completed_title">Transfer completed</string>
+    <string name="settings_sync_state_failed_title">Transfer failed</string>
 </resources>

@@ -537,4 +537,44 @@
     <string name="settings_update_install_failed_file">El archivo de actualización ya no está disponible: vuelve a descargarlo</string>
     <string name="settings_update_install_failed_permission">Falta el permiso para instalar aplicaciones desde esta fuente</string>
     <string name="settings_update_install_failed_generic">No se pudo iniciar el instalador del sistema</string>
+
+    <!-- Modo Sync (sincronización entre dispositivos StreamNova) -->
+    <string name="settings_sync_section">Sincronización</string>
+    <string name="settings_sync_mode">Modo Sync</string>
+    <string name="settings_sync_mode_desc">Pon tu configuración a disposición de los demás dispositivos StreamNova de la misma red (Wi‑Fi/Ethernet)</string>
+    <string name="settings_sync_this_device">Este dispositivo</string>
+    <string name="settings_sync_activating">Activando…</string>
+    <string name="settings_sync_device_name">Nombre del dispositivo</string>
+    <string name="settings_sync_search_devices">Buscar dispositivos</string>
+    <string name="settings_sync_no_devices">No se encontraron dispositivos</string>
+    <string name="settings_sync_one_device">1 dispositivo</string>
+    <string name="settings_sync_n_devices">%1$d dispositivos</string>
+    <string name="settings_sync_add_ip">Añadir por dirección IP</string>
+    <string name="settings_sync_add_ip_title">Añadir dispositivo por IP</string>
+    <string name="settings_sync_hint_ip">p. ej. 192.168.1.24</string>
+    <string name="settings_sync_name_dialog_title">Nombre del dispositivo</string>
+    <string name="settings_sync_name_hint">p. ej. TV del salón</string>
+    <string name="settings_sync_note">Activa la Sync también en el otro dispositivo: los dispositivos se encuentran solos. Cada transferencia debe aprobarse en el dispositivo que posee los datos.</string>
+    <string name="settings_sync_transfer_title">Sincronizar con «%1$s»</string>
+    <string name="settings_sync_import">Importar del dispositivo</string>
+    <string name="settings_sync_import_desc">Copiar la configuración de «%1$s» en este dispositivo</string>
+    <string name="settings_sync_push">Enviar tu configuración</string>
+    <string name="settings_sync_push_desc">Replicar la configuración de este dispositivo en «%1$s»</string>
+    <string name="settings_sync_what">Qué transferir</string>
+    <string name="settings_sync_cat_settings">Ajustes y claves API</string>
+    <string name="settings_sync_cat_addons">Add-ons de Stremio</string>
+    <string name="settings_sync_cat_simkl">Cuenta SIMKL</string>
+    <string name="settings_sync_cat_library">Favoritos y progreso</string>
+    <string name="settings_sync_start">Iniciar</string>
+    <string name="settings_sync_approval_title">Solicitud de sincronización</string>
+    <string name="settings_sync_approval_pull">«%1$s» quiere copiar tu configuración.</string>
+    <string name="settings_sync_approval_push">«%1$s» quiere enviarte su configuración: los ajustes actuales de este dispositivo se sustituirán.</string>
+    <string name="settings_sync_deny">Rechazar</string>
+    <string name="settings_sync_transfer_confirm">Transferir</string>
+    <string name="settings_sync_state_running_title">Transferencia en curso</string>
+    <string name="settings_sync_state_waiting">Esperando aprobación en «%1$s». Confirma la transferencia en el otro dispositivo.</string>
+    <string name="settings_sync_state_denied_title">Transferencia rechazada</string>
+    <string name="settings_sync_state_denied">«%1$s» ha rechazado la transferencia.</string>
+    <string name="settings_sync_state_completed_title">Transferencia completada</string>
+    <string name="settings_sync_state_failed_title">Transferencia fallida</string>
 </resources>
