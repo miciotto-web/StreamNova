@@ -81,6 +81,7 @@ import com.example.ui.screens.PlayerScreen
 import com.example.ui.screens.ProviderScreen
 import com.example.ui.screens.PersonDetailScreen
 import com.example.ui.screens.CompanyDetailScreen
+import com.example.ui.screens.SyncApprovalOverlay
 import com.example.ui.screens.TrailerErrorOverlay
 import com.example.ui.screens.TrailerLoadingOverlay
 import com.example.ui.screens.TrailerPlayerScreen
@@ -1093,6 +1094,11 @@ targetCompanyId = lastFocusedCompanyId,
       is TrailerPlaybackState.Loading -> TrailerLoadingOverlay(onClose = { viewModel.closeTrailer() })
       TrailerPlaybackState.Idle -> Unit
     }
+
+    // Richiesta di sincronizzazione in arrivo (modalità Sync): overlay globale, perché
+    // la richiesta scade dopo due minuti e l'utente può trovarsi su qualunque schermata.
+    // Sotto la splash: all'avvio nessun dialog deve rubare la scena.
+    SyncApprovalOverlay()
 
     if (isSplashActive) {
       // Intro video: riproduzione integrale, poi pausa di 4 s sull'ultimo frame,

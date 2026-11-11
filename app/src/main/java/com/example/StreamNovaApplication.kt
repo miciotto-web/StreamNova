@@ -80,6 +80,9 @@ class StreamNovaApplication : Application(), ImageLoaderFactory {
     // REGISTRY (res/raw/stremio_provider_bindings.json) resterebbe sempre vuota,
     // mentre i binding USER letti da DataStore funzionerebbero lo stesso.
     StartupTrace.trace("provider_catalog_resolvers_init") { ProviderCatalogResolvers.init(this) }
+    // Modalità Sync (Impostazioni): l'init legge solo la preferenza persistita; con
+    // la Sync attiva server HTTP e annuncio NSD ripartono sul thread IO.
+    StartupTrace.trace("sync_manager_init") { com.example.data.sync.SyncManager.init(this) }
     StartupTrace.mark("application_oncreate_exit")
 
     // Preload cached media immediately on background thread
