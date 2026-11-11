@@ -130,6 +130,8 @@ La logica di «prossimo episodio dall'ultimo raggiunto» e «mostra episodi non 
 - Verifica `aapt dump badging`: `versionName='1.0.1'`.
 - Installazione in-place sul S22: **completata** con `adb install -r` (ADB wireless). Verifica `dumpsys package`: `versionName=1.0.1`; `firstInstallTime` invariato (`2026-11-08 22:53:40`), quindi dati, login SIMKL e progressi sono conservati.
 - Nota sul versionCode: la build di test 1.0.2 (versionCode 5) era già installata sul dispositivo; Samsung blocca il downgrade a 4 anche con `pm install -d`. Il versionCode resta quindi 5, mentre la versione pubblica e il tag sono **1.0.1**, coerenti con la release GitHub precedente (1.0.0).
+- **Release GitHub pubblicata:** https://github.com/miciotto-web/StreamNova-Mobile/releases/tag/v1.0.1 — asset `StreamNova-Mobile-v1.0.1-universal.apk`, SHA-256 `71d56ace148352564c56b0b1d4160fa338f6ebce891b27b337f63b2ba5a56695`; è la release più recente del canale usato dall'updater in-app.
+- **Codice pushato:** `origin/feature/streamnova-mobile-phase2` (commit `4fa7e82`).
 - L'app è stata avviata e verificata sul dispositivo: account SIMKL collegato, 43 titoli in «Continua a guardare», tutte le funzioni della sezione esercitate (vedi §4.2).
 
 ## 6. Note
