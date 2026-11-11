@@ -1,6 +1,7 @@
+@file:OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+
 package com.example.ui.screens
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -38,19 +39,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.data.sync.SyncCategory
 import com.example.data.sync.SyncDirection
 import com.example.data.sync.SyncIncomingRequest
@@ -273,9 +274,11 @@ fun SyncApprovalOverlay() {
 /**
  * Dialog di avvio trasferimento: direzione (importa/invia) e categorie da portare.
  * In entrambe le direzioni l'approvazione finale spetta all'altro dispositivo.
+ *
+ * `internal` per i test di navigabilità remote-safe (stesso package dei test UI).
  */
 @Composable
-private fun SyncTransferDialog(
+internal fun SyncTransferDialog(
   peer: SyncPeerDevice,
   onDismiss: () -> Unit
 ) {
@@ -283,16 +286,23 @@ private fun SyncTransferDialog(
   var selected by remember {
     mutableStateOf(SyncCategory.entries.associateWith { true })
   }
+  val initialFocus = remember { FocusRequester() }
 
   SyncDialogScaffold(
     title = "Sincronizza con «${peer.displayName}»",
-    onDismiss = onDismiss
+    onDismiss = onDismiss,
+    initialFocus = initialFocus
   ) {
     DirectionRow(
       title = "Importa dal dispositivo",
       subtitle = "Copia la configurazione di «${peer.displayName}» su questo dispositivo",
       selected = direction == SyncDirection.PULL,
-      onClick = { direction = SyncDirection.PULL }
+      onClick = { direction = SyncDirection.PULL },
+      modifier = Modifier
+        .focusRequester(initialFocus)
+        // Primo controllo del dialog: sopra non c'è nulla di azionabile, il D-pad non
+        // deve tentare la fuga verso lo sfondo.
+        .focusProperties { up = FocusRequester.Cancel }
     )
     DirectionRow(
       title = "Invia la tua configurazione",
@@ -332,13 +342,17 @@ private fun SyncTransferDialog(
   }
 }
 
-/** Dialog di approvazione sul dispositivo che possiede i dati. */
+/** Dialog di approvazione sul dispositivo che possiede i dati.
+ *
+ *  `internal` per i test di navigabilità remote-safe (stesso package dei test UI).
+ */
 @Composable
-private fun SyncApprovalDialog(
+internal fun SyncApprovalDialog(
   request: SyncIncomingRequest,
   onApprove: () -> Unit,
   onDeny: () -> Unit
 ) {
+  val initialFocus = remember { FocusRequester() }
   val directionText = when (request.direction) {
     SyncDirection.PULL ->
       "«${request.peerDeviceName}» vuole copiare la tua configurazione."
@@ -348,7 +362,8 @@ private fun SyncApprovalDialog(
   }
   SyncDialogScaffold(
     title = "Richiesta di sincronizzazione",
-    onDismiss = onDeny
+    onDismiss = onDeny,
+    initialFocus = initialFocus
   ) {
     Text(
       text = directionText,
@@ -367,6 +382,9 @@ private fun SyncApprovalDialog(
       cancelLabel = "Rifiuta",
       confirmLabel = "Trasferisci",
       confirmEnabled = true,
+      // I pulsanti sono gli unici controlli del dialog: UP non ha dove andare.
+      cancelUp = true,
+      confirmFocusRequester = initialFocus,
       onCancel = onDeny,
       onConfirm = onApprove
     )
@@ -384,9 +402,11 @@ private fun SyncTransferStateDialog(
   onConfirm: () -> Unit,
   onDismiss: () -> Unit
 ) {
+  val initialFocus = remember { FocusRequester() }
   SyncDialogScaffold(
     title = title,
-    onDismiss = onDismiss
+    onDismiss = onDismiss,
+    initialFocus = initialFocus
   ) {
     Text(
       text = message,
@@ -400,66 +420,106 @@ private fun SyncTransferStateDialog(
       confirmLabel = confirmLabel,
       confirmEnabled = true,
       destructive = destructive,
+      // Pulsante unico del dialog: UP non ha dove andare.
+      cancelUp = true,
+      confirmFocusRequester = initialFocus,
       onCancel = onDismiss,
       onConfirm = onConfirm
     )
   }
 }
 
+/** Tentativi di cattura del focus iniziale nei dialog Sync (un tentativo per frame). */
+private const val SYNC_DIALOG_FOCUS_MAX_ATTEMPTS = 30
+
 /**
- * Struttura comune dei dialog Sync: overlay in-window (stessa finestra dell'Activity,
- * così il D-pad resta confinato al popup), card centrata, focus trap e BACK = chiudi.
- * Stesso contratto visivo di [TextInputDialog].
+ * Struttura comune dei dialog Sync.
+ *
+ * È un VERO [androidx.compose.ui.window.Dialog] (finestra separata), non un overlay
+ * composto nella finestra dell'Activity: è la stessa decisione presa per il menu
+ * contestuale degli episodi ([com.example.ui.components.EpisodeContextMenu]) dopo
+ * aver scoperto che con gli overlay in-window il focus poteva restare dietro lo
+ * scrim — sul telecomando il popup appariva "bloccato" e il D-pad non navigava nulla.
+ *
+ * Contratto remote-safe (stesso dell'EpisodeContextMenu):
+ *  - il focus iniziale è RICHIESTO E VERIFICATO con retry per frame ([initialFocus]
+ *    va collegato al primo controllo azionabile del dialog);
+ *  - il contenitore ha `exit = Cancel`: il focus non può uscire dalla card, qualunque
+ *    sia la direzione premuta;
+ *  - BACK chiude la finestra ([DialogProperties.dismissOnBackPress]) chiamando
+ *    [onDismiss] tramite `onDismissRequest`.
  */
 @Composable
 private fun SyncDialogScaffold(
   title: String,
   onDismiss: () -> Unit,
+  initialFocus: FocusRequester,
   content: @Composable () -> Unit
 ) {
   DisposableEffect(Unit) {
     ModalOverlayState.onShown()
     onDispose { ModalOverlayState.onHidden() }
   }
-  BackHandler { onDismiss() }
 
-  Box(
-    modifier = Modifier
-      .fillMaxSize()
-      .background(Color.Black.copy(alpha = 0.75f))
-      .focusProperties { canFocus = false }
-      .clickable(
-        interactionSource = remember { MutableInteractionSource() },
-        indication = null
-      ) { }
-      .onPreviewKeyEvent { event ->
-        if (event.type == KeyEventType.KeyUp && event.key == Key.Back) {
-          onDismiss()
-          true
-        } else {
-          false
-        }
-      },
-    contentAlignment = Alignment.Center
+  var dialogHasFocus by remember { mutableStateOf(false) }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(
+      dismissOnBackPress = true,
+      dismissOnClickOutside = false,
+      usePlatformDefaultWidth = false,
+      decorFitsSystemWindows = false
+    )
   ) {
-    Column(
+    // Focus iniziale differito e VERIFICATO: requestFocus() non espone un esito, il
+    // nodo del primo controllo può non essere ancora agganciato al frame in cui la
+    // finestra compare. Si riprova a ogni frame finché il focus non entra nel dialog.
+    LaunchedEffect(dialogHasFocus) {
+      if (dialogHasFocus) return@LaunchedEffect
+      var attempts = 0
+      while (!dialogHasFocus && attempts < SYNC_DIALOG_FOCUS_MAX_ATTEMPTS) {
+        attempts++
+        try {
+          initialFocus.requestFocus()
+        } catch (_: IllegalStateException) {
+        }
+        withFrameNanos { }
+      }
+    }
+
+    Box(
       modifier = Modifier
-        .widthIn(max = 560.dp)
-        .fillMaxWidth()
-        .padding(horizontal = 24.dp)
-        .background(NovaSurface, RoundedCornerShape(20.dp))
-        .border(1.5.dp, NovaCyan, RoundedCornerShape(20.dp))
-        .padding(24.dp)
-        .focusGroup()
+        .fillMaxSize()
+        .background(Color.Black.copy(alpha = 0.75f))
+        .focusProperties { canFocus = false }
+        .clickable(
+          interactionSource = remember { MutableInteractionSource() },
+          indication = null
+        ) { onDismiss() },
+      contentAlignment = Alignment.Center
     ) {
-      Text(
-        text = title,
-        color = NovaTextPrimary,
-        fontSize = 18.sp,
-        fontWeight = FontWeight.Bold
-      )
-      Spacer(modifier = Modifier.height(14.dp))
-      content()
+      Column(
+        modifier = Modifier
+          .widthIn(max = 560.dp)
+          .fillMaxWidth()
+          .padding(horizontal = 24.dp)
+          .background(NovaSurface, RoundedCornerShape(20.dp))
+          .border(1.5.dp, NovaCyan, RoundedCornerShape(20.dp))
+          .padding(24.dp)
+          .focusProperties { exit = { FocusRequester.Cancel } }
+          .focusGroup()
+          .onFocusChanged { dialogHasFocus = it.hasFocus }
+      ) {
+        Text(
+          text = title,
+          color = NovaTextPrimary,
+          fontSize = 18.sp,
+          fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(14.dp))
+        content()
+      }
     }
   }
 }
@@ -470,13 +530,14 @@ private fun DirectionRow(
   title: String,
   subtitle: String,
   selected: Boolean,
-  onClick: () -> Unit
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier
 ) {
   TvFocusableBox(
     shape = RoundedCornerShape(10.dp),
     focusedScale = 1.01f,
     onClick = onClick,
-    modifier = Modifier
+    modifier = modifier
       .fillMaxWidth()
       .padding(vertical = 3.dp)
   ) { isFocused ->
@@ -593,7 +654,14 @@ private fun RadioIndicator(selected: Boolean, isFocused: Boolean) {
   }
 }
 
-/** Coppia di pulsanti Annulla / Conferma condivisa dai dialog Sync. */
+/** Coppia di pulsanti Annulla / Conferma condivisa dai dialog Sync.
+ *
+ *  @param confirmFocusRequester se fornito, il pulsante di conferma diventa il target
+ *         del focus iniziale del dialog (il chiamante lo passa anche a
+ *         [SyncDialogScaffold], che lo richiede al primo frame).
+ *  @param cancelUp con true, UP sui pulsanti è annullato: da usare quando i pulsanti
+ *         sono gli unici controlli del dialog (approvazione, esito).
+ */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun SyncDialogButtons(
@@ -601,6 +669,8 @@ private fun SyncDialogButtons(
   confirmLabel: String,
   confirmEnabled: Boolean,
   destructive: Boolean = false,
+  cancelUp: Boolean = false,
+  confirmFocusRequester: FocusRequester? = null,
   onCancel: () -> Unit,
   onConfirm: () -> Unit
 ) {
@@ -614,6 +684,7 @@ private fun SyncDialogButtons(
         modifier = Modifier.focusProperties {
           down = FocusRequester.Cancel
           left = FocusRequester.Cancel
+          if (cancelUp) up = FocusRequester.Cancel
         },
         shape = RoundedCornerShape(50),
         focusedScale = 1.05f,
@@ -634,10 +705,19 @@ private fun SyncDialogButtons(
       }
     }
     TvFocusableBox(
-      modifier = Modifier.focusProperties {
-        down = FocusRequester.Cancel
-        right = FocusRequester.Cancel
-      },
+      modifier = Modifier
+        .then(
+          if (confirmFocusRequester != null) {
+            Modifier.focusRequester(confirmFocusRequester)
+          } else {
+            Modifier
+          }
+        )
+        .focusProperties {
+          down = FocusRequester.Cancel
+          right = FocusRequester.Cancel
+          if (cancelUp) up = FocusRequester.Cancel
+        },
       shape = RoundedCornerShape(50),
       focusedScale = 1.05f,
       onClick = { if (confirmEnabled) onConfirm() }
