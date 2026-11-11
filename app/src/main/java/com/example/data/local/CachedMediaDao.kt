@@ -120,6 +120,26 @@ interface CachedMediaDao {
   @Query("UPDATE cached_media_items SET completedAt = NULL WHERE id = :id")
   suspend fun clearCompleted(id: String)
 
+  /**
+   * Azzera lo stato di visione di una serie («Serie non vista»): nessun episodio visto,
+   * nessun punto di ripresa, nessun completamento. La scheda resta in catalogo (titolo,
+   * preferito e metadati intatti) ma esce da «Continua a guardare».
+   */
+  @Query(
+    "UPDATE cached_media_items SET currentProgressMs = 0, lastWatchedSeason = NULL, " +
+      "lastWatchedEpisode = NULL, lastWatchedAt = NULL, completedAt = NULL, " +
+      "inContinueWatching = 0 WHERE id = :id"
+  )
+  suspend fun clearSeriesWatchState(id: String)
+
+  /**
+   * Aggiorna SOLO la posizione corrente del titolo, senza toccare
+   * `inContinueWatching`/`completedAt`: usata dalla marcatura «Serie già vista», che
+   * persiste il progresso completo ma lascia la conclusione a [markCompleted].
+   */
+  @Query("UPDATE cached_media_items SET currentProgressMs = :progressMs WHERE id = :id")
+  suspend fun updateCurrentProgressOnly(id: String, progressMs: Long)
+
   @Query("SELECT COUNT(*) FROM cached_media_items")
   suspend fun count(): Int
 

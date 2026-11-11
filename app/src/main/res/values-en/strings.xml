@@ -84,6 +84,13 @@
     <string name="context_details">View Details</string>
     <string name="context_remove_continue_watching">Remove from Continue Watching</string>
 
+    <!-- Episode context menu (long-press on an episode row) -->
+    <string name="episode_context_mark_watched">Mark episode as watched</string>
+    <string name="episode_context_mark_unwatched">Mark episode as unwatched</string>
+    <string name="episode_context_browse_sources">Browse sources again</string>
+    <string name="episode_context_mark_season_watched">Season already watched</string>
+    <string name="episode_context_cancel">Cancel</string>
+
     <!-- Detail Screen -->
     <string name="detail_tab_episodes">Episodes</string>
     <string name="detail_tab_more_like_this">More Like This</string>
@@ -149,6 +156,9 @@
     <string name="detail_action_select_source">Select source</string>
     <string name="detail_action_mark_watched">Mark as watched</string>
     <string name="detail_action_mark_unwatched">Mark as unwatched</string>
+    <string name="detail_action_mark_series_watched">Series already watched</string>
+    <string name="detail_action_mark_series_unwatched">Mark series as unwatched</string>
+    <string name="detail_series_watched_badge">Series watched</string>
     <string name="detail_air_date_format">Air date: %s</string>
     <string name="detail_tech_specs_title">Technical Specs &amp; Overview</string>
     <string name="detail_tech_original_title">Original Title</string>

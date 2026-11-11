@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,6 +63,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -528,6 +530,12 @@ fun MediaContextMenu(
   // dal sistema delle finestre e non da una richiesta di focus che un effetto della Home
   // può scavalcare nel frame successivo (causa reale del difetto «popup visibile ma focus
   // ancora sulla Home», con BACK che finiva sul doppio-Back di uscita dell'app).
+  // Come per il menu episodio: la finestra Dialog può partire dal contesto di sistema
+  // invece che dal contesto localizzato forzato dall'app. Si cattura qui, nella
+  // composizione localizzata, e si riapplica dentro il Dialog.
+  val localizedContext = LocalContext.current
+  val localizedConfiguration = LocalConfiguration.current
+
   Dialog(
     onDismissRequest = { complete() },
     properties = DialogProperties(
@@ -537,6 +545,10 @@ fun MediaContextMenu(
       decorFitsSystemWindows = false
     )
   ) {
+    CompositionLocalProvider(
+      LocalContext provides localizedContext,
+      LocalConfiguration provides localizedConfiguration
+    ) {
     val firstItemFocusRequester = remember { FocusRequester() }
     val cancelFocusRequester = remember { FocusRequester() }
 
@@ -833,6 +845,7 @@ fun MediaContextMenu(
           }
         }
       }
+    }
     }
   }
 }

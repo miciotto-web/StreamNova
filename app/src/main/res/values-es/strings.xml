@@ -84,6 +84,13 @@
     <string name="context_details">Ver detalles</string>
     <string name="context_remove_continue_watching">Quitar de Seguir viendo</string>
 
+    <!-- Menú contextual del episodio (pulsación larga en la fila del episodio) -->
+    <string name="episode_context_mark_watched">Marcar episodio como visto</string>
+    <string name="episode_context_mark_unwatched">Marcar episodio como no visto</string>
+    <string name="episode_context_browse_sources">Explorar fuentes de nuevo</string>
+    <string name="episode_context_mark_season_watched">Temporada ya vista</string>
+    <string name="episode_context_cancel">Cancelar</string>
+
     <!-- Detail Screen -->
     <string name="detail_tab_episodes">Episodios</string>
     <string name="detail_tab_more_like_this">Más como esto</string>
@@ -149,6 +156,9 @@
     <string name="detail_action_select_source">Seleccionar fuente</string>
     <string name="detail_action_mark_watched">Marcar como visto</string>
     <string name="detail_action_mark_unwatched">Marcar como no visto</string>
+    <string name="detail_action_mark_series_watched">Serie ya vista</string>
+    <string name="detail_action_mark_series_unwatched">Marcar serie como no vista</string>
+    <string name="detail_series_watched_badge">Serie vista</string>
     <string name="detail_air_date_format">Fecha de emisión: %s</string>
     <string name="detail_tech_specs_title">Ficha técnica y especificaciones</string>
     <string name="detail_tech_original_title">Título original</string>

@@ -1162,6 +1162,110 @@ object SimklRepository {
   }
 
   /**
+   * Marca su SIMKL un'intera stagione come vista (`POST /sync/history` con un solo
+   * elemento `shows[]` che contiene tutte le puntate). Una richiesta invece di N:
+   * l'azione «Stagione già vista» è atomica anche lato server.
+   *
+   * Non lancia: la marcatura LOCALE è già avvenuta. Restituisce `false` se l'account
+   * non è collegato, se mancano identificativi o se il server risponde `not_found`.
+   */
+  suspend fun markSeasonWatched(
+    media: SimklMediaPayload,
+    season: Int,
+    episodeNumbers: Collection<Int>
+  ): Boolean {
+    val numbers = episodeNumbers.filter { it > 0 }.distinct().sorted()
+    if (numbers.isEmpty()) return false
+    return deliverHistory(
+      media = media,
+      payload = mapOf("shows" to listOf(media.toSeasonHistoryItem(season, numbers))),
+      add = true
+    )
+  }
+
+  /**
+   * Rimuove da SIMKL la cronologia di un SINGOLO episodio
+   * (`POST /sync/history/remove` con `shows[].seasons[].episodes[]`).
+   * L'inverso di [markWatched] quando il payload contiene un episodio.
+   * Non lancia.
+   */
+  suspend fun removeEpisodeHistory(media: SimklMediaPayload): Boolean {
+    if (media.episode == null) return false
+    return deliverHistory(
+      media = media,
+      payload = mapOf("shows" to listOf(media.toHistoryItem())),
+      add = false
+    )
+  }
+
+  /**
+   * Rimuove da SIMKL la cronologia di un'intera stagione (stessa forma di
+   * [markSeasonWatched], senza `watched_at`/`status`). Non lancia.
+   */
+  suspend fun removeSeasonHistory(
+    media: SimklMediaPayload,
+    season: Int,
+    episodeNumbers: Collection<Int>
+  ): Boolean {
+    val numbers = episodeNumbers.filter { it > 0 }.distinct().sorted()
+    if (numbers.isEmpty()) return false
+    return deliverHistory(
+      media = media,
+      payload = mapOf("shows" to listOf(media.toSeasonHistoryItem(season, numbers))),
+      add = false
+    )
+  }
+
+  /**
+   * Invio di una marcatura/rimozione di cronologia per item episodio o stagione.
+   * Stesso protocollo delle funzioni storiche (`markWatched`, `unmarkWatched`,
+   * `removeSeriesHistory`): token, `not_found` verificato solo in aggiunta, cache
+   * invalidata su successo, nessuna eccezione propagata.
+   */
+  private suspend fun deliverHistory(
+    media: SimklMediaPayload,
+    payload: Map<String, Any>,
+    add: Boolean
+  ): Boolean = withContext(Dispatchers.IO) {
+    if (!accountMutable.value.isLoggedIn) return@withContext false
+    if (!media.hasIdentifiers) return@withContext false
+    try {
+      val response = withAuthorizedToken { token ->
+        if (add) {
+          api.addHistory(requireClientId(), "Bearer $token", payload)
+        } else {
+          api.removeHistory(requireClientId(), "Bearer $token", payload)
+        }
+      }
+      if (!response.isSuccessful) {
+        Log.w(
+          TAG,
+          "Cronologia SIMKL (${if (add) "aggiunta" else "rimozione"}) fallita per " +
+            "${media.scrobbleLabel()} (${response.code()})."
+        )
+        return@withContext false
+      }
+      if (add) {
+        val notFound = (response.body()?.get("not_found") as? Map<*, *>)
+        val notFoundCount = listOf("movies", "shows", "episodes").sumOf { key ->
+          (notFound?.get(key) as? List<*>)?.size ?: 0
+        }
+        if (notFoundCount > 0) {
+          Log.w(TAG, "SIMKL non ha riconosciuto $notFoundCount elemento/i per ${media.scrobbleLabel()}.")
+          return@withContext false
+        }
+      }
+      invalidateWatchedCache()
+      true
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Cronologia SIMKL non disponibile per ${media.scrobbleLabel()}: ${e.message}")
+      false
+    }
+  }
+
+  /**
    * Chiude sul server le sessioni di pausa SIMKL del titolo (ogni episodio ha la sua
    * sessione): è ciò che rende PERSISTENTE la rimozione di una card da «Continua a
    * guardare» — senza questa chiamata la sessione resta aperta lato SIMKL e la card
@@ -1418,6 +1522,59 @@ object SimklRepository {
   internal fun parseWatchedEpisodes(body: Map<String, Any>, tmdbId: Int, season: Int): Set<Int> =
     SimklWatchedLibrary.parseWatchedEpisodes(body, tmdbId, season)
 
+  /**
+   * Aggiornamento OTTIMISTICO della libreria vista in memoria dopo una marcatura manuale
+   * dell'utente. Serve a due cose:
+   *  - il badge «Visto su SIMKL» sulla miniatura sparisce SUBITO quando si smarca un
+   *    episodio, senza aspettare la risposta del server (prima la libreria in memoria
+   *    riproponeva il vecchio set e il badge restava visibile);
+   *  - il badge compare subito quando si marca un episodio.
+   *
+   * Il server resta la fonte di verità: la sincronizzazione successiva riallinea il set
+   * (se la rimozione remota fallisce, il badge può ricomparire, com'è corretto).
+   */
+  fun rememberWatchedEpisodeLocally(seriesTmdbId: Int, season: Int, episodeNumber: Int) {
+    if (!accountMutable.value.isLoggedIn) return
+    if (seriesTmdbId <= 0 || season < 0 || episodeNumber <= 0) return
+    watchedLibrary.updateAndGet { library ->
+      val show = library[seriesTmdbId].orEmpty()
+      val episodes = show[season].orEmpty()
+      library + (seriesTmdbId to (show + (season to (episodes + episodeNumber))))
+    }
+    invalidateWatchedCache()
+  }
+
+  /** Inverso di [rememberWatchedEpisodeLocally]: rimuove subito l'episodio dal badge. */
+  fun forgetWatchedEpisodeLocally(seriesTmdbId: Int, season: Int, episodeNumber: Int) {
+    if (!accountMutable.value.isLoggedIn) return
+    if (seriesTmdbId <= 0 || season < 0 || episodeNumber <= 0) return
+    watchedLibrary.updateAndGet { library ->
+      val show = library[seriesTmdbId] ?: return@updateAndGet library
+      val episodes = show[season] ?: return@updateAndGet library
+      val updatedEpisodes = episodes - episodeNumber
+      when {
+        updatedEpisodes.isNotEmpty() -> {
+          library + (seriesTmdbId to (show + (season to updatedEpisodes)))
+        }
+
+        show.size > 1 -> {
+          library + (seriesTmdbId to (show - season))
+        }
+
+        else -> library - seriesTmdbId
+      }
+    }
+    invalidateWatchedCache()
+  }
+
+  /** Ritira subito dalla libreria in memoria tutti gli episodi di una serie. */
+  fun forgetWatchedSeriesLocally(seriesTmdbId: Int) {
+    if (!accountMutable.value.isLoggedIn) return
+    if (seriesTmdbId <= 0) return
+    watchedLibrary.updateAndGet { library -> library - seriesTmdbId }
+    invalidateWatchedCache()
+  }
+
   private fun invalidateWatchedCache() {
     watchedEpisodesCache.clear()
     watchedRevisionMutable.value += 1L
@@ -1516,6 +1673,29 @@ data class SimklMediaPayload(
     )
     status?.takeIf { it.isNotBlank() }?.let { put("status", it) }
   }
+
+  /**
+   * Item per `POST /sync/history` di un'INTERA stagione: la stessa forma di
+   * [toHistoryItem] ma con tutte le puntate della stagione in un solo elemento.
+   * La marcatura manuale «Stagione già vista» non deve generare una richiesta per
+   * episodio, e la rimozione deve poter cancellare esattamente le stesse puntate.
+   */
+  fun toSeasonHistoryItem(season: Int, episodeNumbers: Collection<Int>): Map<String, Any> =
+    buildMap {
+      putAll(toShowItem())
+      put(
+        "seasons",
+        listOf(
+          mapOf(
+            "number" to season,
+            "episodes" to episodeNumbers.filter { it > 0 }.distinct().sorted()
+              .map { mapOf("number" to it) }
+          )
+        )
+      )
+      // Stessa coordinata anime/TVDB usata dall'item del singolo episodio.
+      put("use_tvdb_anime_seasons", true)
+    }
 
   /**
    * Item per `POST /sync/history`. La forma è DIVERSA dallo scrobble: qui `shows[]` e

@@ -45,6 +45,7 @@ import com.example.data.prefs.PersistentSubtitleStore
 import com.example.data.image.ImageCache
 import com.example.data.repository.EpisodeResumeResolver
 import com.example.data.repository.MediaRepository
+import com.example.data.repository.SimklEpisodePayload
 import com.example.data.repository.SimklMediaKind
 import com.example.data.repository.SimklMediaPayload
 import com.example.data.repository.SimklRepository
@@ -6078,6 +6079,134 @@ fun backToBrowsing() {
       }
     }
   }
+
+  /**
+   * Marca o smarca un SINGOLO episodio («Segna episodio come visto / da vedere» dal
+   * menu contestuale della lista episodi).
+   *
+   * Lo stato LOCALE viene scritto subito (memory + Room): la riga e i badge si
+   * aggiornano senza attendere la rete. La sincronizzazione SIMKL è best-effort:
+   * `markWatched` per la marcatura, `removeEpisodeHistory` per il ritiro.
+   *
+   * Marcare un episodio PRECEDENTE a quello corrente non sposta «Riprendi S…E…»:
+   * quella regola vive in [MediaRepository.markEpisodeWatchedLocally].
+   */
+  fun setEpisodeWatched(media: MediaItem, episode: Episode, watched: Boolean) {
+    // Aggiornamento ottimistico del badge SIMKL: sparisce/compare subito, senza
+    // aspettare la risposta del server (che resta la fonte di verità).
+    val tmdbId = media.tmdbId ?: 0
+    if (watched) {
+      SimklRepository.rememberWatchedEpisodeLocally(
+        tmdbId,
+        episode.seasonNumber,
+        episode.episodeNumber
+      )
+    } else {
+      SimklRepository.forgetWatchedEpisodeLocally(
+        tmdbId,
+        episode.seasonNumber,
+        episode.episodeNumber
+      )
+    }
+    if (watched) {
+      MediaRepository.markEpisodeWatchedLocally(
+        media.id,
+        episode.seasonNumber,
+        episode.episodeNumber
+      )
+    } else {
+      MediaRepository.markEpisodeUnwatchedLocally(
+        media.id,
+        episode.seasonNumber,
+        episode.episodeNumber
+      )
+    }
+    viewModelScope.launch {
+      val payload = simklSeriesPayload(media, episode)
+      if (watched) {
+        SimklRepository.markWatched(payload)
+      } else {
+        SimklRepository.removeEpisodeHistory(payload)
+      }
+    }
+  }
+
+  /**
+   * Marca TUTTA la stagione [seasonNumber] come vista («Stagione già vista»).
+   *
+   * [episodes] è la lista realmente visualizzata nella scheda: gli episodi senza durata
+   * verificabile vengono lasciati intatti dal repository, mai completati con dati inventati.
+   * Una sola richiesta SIMKL con tutte le puntate della stagione.
+   */
+  fun setSeasonWatched(media: MediaItem, seasonNumber: Int, episodes: List<Episode>) {
+    val numbers = episodes
+      .asSequence()
+      .filter { it.seasonNumber == seasonNumber }
+      .map { it.episodeNumber }
+      .filter { it > 0 }
+      .distinct()
+      .sorted()
+      .toList()
+    if (numbers.isEmpty()) return
+    MediaRepository.markSeasonWatchedLocally(media.id, seasonNumber, numbers)
+    // Badge SIMKL ottimistico per tutte le puntate della stagione.
+    numbers.forEach { number ->
+      SimklRepository.rememberWatchedEpisodeLocally(media.tmdbId ?: 0, seasonNumber, number)
+    }
+    viewModelScope.launch {
+      SimklRepository.markSeasonWatched(simklSeriesPayload(media), seasonNumber, numbers)
+    }
+  }
+
+  /**
+   * Toggle «Serie già vista / Serie da vedere» della scheda dettagli.
+   *
+   *  - non conclusa → TUTTI gli episodi noti vengono marcati visti, il titolo viene
+   *    concluso (`completedAt`, uscita da «Continua a guardare») e SIMKL riceve
+   *    `status=completed` tramite il sink dei completamenti locali;
+   *  - già conclusa → righe episodio e completamento vengono azzerati in locale e la
+   *    cronologia dell'intera serie viene rimossa da SIMKL.
+   *
+   * Lo stato «conclusa» è `completedAt`, non il solo progresso del titolo: una serie in
+   * corso con l'episodio corrente completato non risulta «serie vista».
+   */
+  fun toggleSeriesWatched(media: MediaItem) {
+    val repoCurrent = MediaRepository.getMediaById(media.id)
+    val current = repoCurrent ?: media
+    // La scheda visibile è l'autorità su ciò che l'utente sta vedendo; il repository
+    // copre la finestra in cui l'osservatore Room non ha ancora riemesso lo stato.
+    val isCompleted = media.completedAt != null || repoCurrent?.completedAt != null
+    Log.i("ManualWatch", "toggleSeriesWatched id=${current.id} completed=$isCompleted")
+    if (current.type != MediaType.SERIE_TV) return
+    if (!isCompleted) {
+      // Conteggi TMDB delle stagioni: sono l'unico dato che permette di marcare anche le
+      // stagioni NON ancora aperte nella scheda («Serie già vista» = tutta la serie, non
+      // solo le puntate caricate). `null` = nessun dato: il repository marca il noto.
+      val detail = detailUiState.value as? MediaDetailUiState.Success
+      val seasonCounts = detail?.details?.seasonEpisodesCount.orEmpty()
+      val totalSeasons = detail?.details?.seasonsCount ?: current.seasonsCount
+      MediaRepository.markSeriesWatchedLocally(current.id, seasonCounts, totalSeasons)
+    } else {
+      MediaRepository.clearSeriesWatchedLocally(current.id)
+      // Il badge «Visto su SIMKL» sugli episodi non deve sopravvivere al reset locale.
+      SimklRepository.forgetWatchedSeriesLocally(current.tmdbId ?: 0)
+      viewModelScope.launch {
+        SimklRepository.removeSeriesHistory(simklSeriesPayload(current))
+      }
+    }
+  }
+
+  /** Payload SIMKL di una serie, con l'eventuale coordinata episodio. */
+  private fun simklSeriesPayload(media: MediaItem, episode: Episode? = null): SimklMediaPayload =
+    SimklMediaPayload(
+      title = media.title,
+      year = media.year,
+      tmdbId = media.tmdbId,
+      imdbId = media.effectiveImdbId,
+      episode = episode?.let { SimklEpisodePayload(it.seasonNumber, it.episodeNumber) },
+      kind = SimklMediaKind.SERIES,
+      mediaId = media.id
+    )
 
   /**
    * Trasmette a SIMKL il RITIRO della marcatura «visto» (`/sync/history/remove`):

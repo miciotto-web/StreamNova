@@ -180,6 +180,64 @@ class SimklHistoryAndPlaybackRemovalTest {
     )
   }
 
+  // ── Stagione / episodio: marcature e ritiri bulk ───────────────────────────
+
+  @Test
+  fun laMarcaturaDiUnaStagioneInviaUnSoloShowConTutteLePuntate() = runBlocking {
+    val consegnata = SimklRepository.markSeasonWatched(
+      serie(),
+      season = 2,
+      episodeNumbers = listOf(3, 1, 2)
+    )
+
+    assertTrue("la stagione deve arrivare a SIMKL", consegnata)
+    val richiesta = received.single { it.path == "/sync/history" }
+    assertEquals("POST", richiesta.method)
+    val show = JSONObject(richiesta.body).getJSONArray("shows").getJSONObject(0)
+    assertEquals("5502", show.getJSONObject("ids").getString("tmdb"))
+    assertFalse("una stagione non è una serie intera", show.has("status"))
+    val season = show.getJSONArray("seasons").getJSONObject(0)
+    assertEquals(2, season.getInt("number"))
+    val numeri = season.getJSONArray("episodes").let { episodi ->
+      (0 until episodi.length()).map { episodi.getJSONObject(it).getInt("number") }
+    }
+    assertEquals("puntate ordinate e senza duplicati", listOf(1, 2, 3), numeri)
+  }
+
+  @Test
+  fun laRimozioneDiUnEpisodioInviaShowConSeasonsEdEpisodes() = runBlocking {
+    val episodio = serie().copy(episode = SimklEpisodePayload(2, 5))
+
+    val consegnata = SimklRepository.removeEpisodeHistory(episodio)
+
+    assertTrue(consegnata)
+    val richiesta = received.single { it.path == "/sync/history/remove" }
+    val show = JSONObject(richiesta.body).getJSONArray("shows").getJSONObject(0)
+    assertFalse("la rimozione non fissa un nuovo stato", show.has("status"))
+    val season = show.getJSONArray("seasons").getJSONObject(0)
+    assertEquals(2, season.getInt("number"))
+    assertEquals(5, season.getJSONArray("episodes").getJSONObject(0).getInt("number"))
+  }
+
+  @Test
+  fun laRimozioneDiUnaStagioneInviaLeStessePuntateMarcate() = runBlocking {
+    val consegnata = SimklRepository.removeSeasonHistory(
+      serie(),
+      season = 4,
+      episodeNumbers = listOf(2, 4)
+    )
+
+    assertTrue(consegnata)
+    val richiesta = received.single { it.path == "/sync/history/remove" }
+    val show = JSONObject(richiesta.body).getJSONArray("shows").getJSONObject(0)
+    val season = show.getJSONArray("seasons").getJSONObject(0)
+    assertEquals(4, season.getInt("number"))
+    val numeri = season.getJSONArray("episodes").let { episodi ->
+      (0 until episodi.length()).map { episodi.getJSONObject(it).getInt("number") }
+    }
+    assertEquals(listOf(2, 4), numeri)
+  }
+
   // ── Rimozione da «Continua a guardare» → chiusura sessioni ───────────────
 
   @Test

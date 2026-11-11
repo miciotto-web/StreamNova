@@ -824,6 +824,19 @@ fun StreamNovaApp(
             },
             onToggleFavorite = { viewModel.toggleFavorite(it) },
             onToggleWatched = { viewModel.toggleWatched(it) },
+            // Menu contestuale della riga episodio (long-press del tasto centrale):
+            // visto/da vedere per la singola puntata, stagione intera, riapertura fonti.
+            onEpisodeWatchedChange = { m, ep, watched ->
+              viewModel.setEpisodeWatched(m, ep, watched)
+            },
+            onMarkSeasonWatched = { m, season, episodes ->
+              viewModel.setSeasonWatched(m, season, episodes)
+            },
+            onBrowseEpisodeSources = { m, ep ->
+              viewModel.openManualSourceSelection(m, ep)
+            },
+            // «Serie già vista» accanto ai preferiti: agisce sull'intera serie.
+            onToggleSeriesWatched = { m -> viewModel.toggleSeriesWatched(m) },
             onPlayTrailer = { viewModel.playTrailer(it) },
             // «Seleziona fonte» accanto a Trailer: SOLO in modalità Debrid e per
             // contenuti che non siano canali live (per i canali il Play apre già

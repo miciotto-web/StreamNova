@@ -1719,7 +1719,13 @@ object MediaRepository {
     progressMs: Long,
     durationMs: Long,
     lastWatchedAtMs: Long = System.currentTimeMillis(),
-    source: String? = null
+    source: String? = null,
+    /**
+     * `false` scrive SOLO la riga episodio (memoria + Room) senza spostare il punto di
+     * ripresa del titolo. Serve alle marcature manuali di puntate precedenti a quella
+     * corrente: dichiararle viste non deve far ripartire la serie da lì.
+     */
+    updateAggregate: Boolean = true
   ) {
     val key = episodeProgressKey(mediaId, seasonNumber, episodeNumber)
     episodeProgressMap[key] = progressMs
@@ -1762,23 +1768,29 @@ object MediaRepository {
               )
             } else ep
           }
-          // La durata della card e' quella dell'episodio corrente: mai la durata della
-          // serie, mai quella di un episodio precedente (se il player non l'ha ancora
-          // comunicata, `effectiveEpisodeDurationMs` conserva quella nota per QUESTO episodio).
-          val cardDurationMs = effectiveEpisodeDurationMs.takeIf { it > 0L }
-            ?: WatchProgress.resolveDuration(item.totalDurationMs, durationMs)
-          item.copy(
-            // La card "Continua a guardare" mostra posizione e durata dell'episodio corrente.
-            currentProgressMs = progressMs,
-            totalDurationMs = cardDurationMs,
-            lastWatchedSeason = seasonNumber,
-            lastWatchedEpisode = episodeNumber,
-            lastWatchedAt = now,
-            progressSource = source,
-            // Include il caso `next_to_watch` di SIMKL: episodio noto con progresso 0.
-            inContinueWatching = true,
-            episodes = updatedEpisodes
-          )
+          if (!updateAggregate) {
+            // Marcatura manuale di una puntata NON corrente: il punto di ripresa del
+            // titolo resta dov'è, cambia solo la riga episodio.
+            item.copy(episodes = updatedEpisodes)
+          } else {
+            // La durata della card e' quella dell'episodio corrente: mai la durata della
+            // serie, mai la durata di un episodio precedente (se il player non l'ha ancora
+            // comunicata, `effectiveEpisodeDurationMs` conserva quella nota per QUESTO episodio).
+            val cardDurationMs = effectiveEpisodeDurationMs.takeIf { it > 0L }
+              ?: WatchProgress.resolveDuration(item.totalDurationMs, durationMs)
+            item.copy(
+              // La card "Continua a guardare" mostra posizione e durata dell'episodio corrente.
+              currentProgressMs = progressMs,
+              totalDurationMs = cardDurationMs,
+              lastWatchedSeason = seasonNumber,
+              lastWatchedEpisode = episodeNumber,
+              lastWatchedAt = now,
+              progressSource = source,
+              // Include il caso `next_to_watch` di SIMKL: episodio noto con progresso 0.
+              inContinueWatching = true,
+              episodes = updatedEpisodes
+            )
+          }
         } else {
           item
         }
@@ -1795,18 +1807,22 @@ object MediaRepository {
           )
         } else ep
       }
-      _detailUiState.value = currentDetail.copy(
-        media = currentDetail.media.copy(
-          currentProgressMs = progressMs,
-          totalDurationMs = WatchProgress.resolveDuration(currentDetail.media.totalDurationMs, durationMs),
-          lastWatchedSeason = seasonNumber,
-          lastWatchedEpisode = episodeNumber,
-          lastWatchedAt = now,
-          progressSource = source,
-          inContinueWatching = true,
-          episodes = updatedEpisodes
+      _detailUiState.value = if (!updateAggregate) {
+        currentDetail.copy(media = currentDetail.media.copy(episodes = updatedEpisodes))
+      } else {
+        currentDetail.copy(
+          media = currentDetail.media.copy(
+            currentProgressMs = progressMs,
+            totalDurationMs = WatchProgress.resolveDuration(currentDetail.media.totalDurationMs, durationMs),
+            lastWatchedSeason = seasonNumber,
+            lastWatchedEpisode = episodeNumber,
+            lastWatchedAt = now,
+            progressSource = source,
+            inContinueWatching = true,
+            episodes = updatedEpisodes
+          )
         )
-      )
+      }
     }
 
     database?.let { db ->
@@ -1837,15 +1853,17 @@ object MediaRepository {
           )
           // Persiste anche la durata dell'episodio corrente sulla riga del titolo: e' quella
           // letta dalla card "Continua a guardare" (mai la durata della serie).
-          db.cachedMediaDao().updateTvProgressWithDurationAndSource(
-            mediaId,
-            progressMs,
-            effectiveEpisodeDurationMs,
-            seasonNumber,
-            episodeNumber,
-            now,
-            source
-          )
+          if (updateAggregate) {
+            db.cachedMediaDao().updateTvProgressWithDurationAndSource(
+              mediaId,
+              progressMs,
+              effectiveEpisodeDurationMs,
+              seasonNumber,
+              episodeNumber,
+              now,
+              source
+            )
+          }
         } catch (e: Exception) {
           Log.w("MediaRepository", "Failed to update episode progress in Room: ${e.message}")
         } finally {
@@ -3013,10 +3031,498 @@ object MediaRepository {
     maybeCompleteSeries(mediaId, seasonNumber, episodeNumber, duration, duration)
   }
 
+  // ── Marcature manuali «visto / da vedere» (episodio, stagione, serie) ──────
+  //
+  // Sono azioni ESPLICITE dell'utente sullo stato di visione, distinte dal player:
+  //  - non inventano durate: usano quella misurata dal player, poi quella nota
+  //    dell'episodio, infine il runtime episodio del titolo;
+  //  - non spostano mai all'indietro il punto di ripresa: marcare S1E2 vista su una
+  //    serie ferma a S5E1 non deve far ripartire «Riprendi» da S1E2;
+  //  - una serie con almeno un episodio «da vedere» non resta «conclusa»
+  //    (`completedAt` viene ritirato quando si toglie la spunta).
+
   /**
-   * Conclusione di un film misurata dal player: una posizione entro la tolleranza di fine
-   * sulla durata REALE. Non cancella nulla e non usa durate stimate.
+   * Durata da usare per completare manualmente una puntata: misura reale del player,
+   * durata già nota dell'episodio, runtime episodio del titolo. `0` = nessun dato
+   * verificabile (in quel caso la marcatura viene rifiutata, mai inventata).
    */
+  private fun manualEpisodeDurationMs(
+    item: MediaItem,
+    seasonNumber: Int,
+    episodeNumber: Int
+  ): Long {
+    getEpisodeDurationMs(item.id, seasonNumber, episodeNumber).takeIf { it > 0L }?.let { return it }
+    item.episodes
+      .firstOrNull { it.seasonNumber == seasonNumber && it.episodeNumber == episodeNumber }
+      ?.totalDurationMs
+      ?.takeIf { it > 0L }
+      ?.let { return it }
+    return (item.durationMinutes.toLong() * 60_000L).takeIf { it > 0L } ?: 0L
+  }
+
+  /**
+   * true quando la puntata marcata è quella corrente o una successiva: solo in questo
+   * caso la marcatura può spostare il punto di ripresa del titolo.
+   */
+  private fun shouldAdvanceResumePoint(
+    item: MediaItem,
+    seasonNumber: Int,
+    episodeNumber: Int
+  ): Boolean {
+    val savedSeason = item.lastWatchedSeason ?: return true
+    val savedEpisode = item.lastWatchedEpisode ?: return true
+    return seasonNumber > savedSeason || (seasonNumber == savedSeason && episodeNumber >= savedEpisode)
+  }
+
+  /** Marca un singolo episodio come VISTO (stato locale + riga Room, senza rete). */
+  fun markEpisodeWatchedLocally(mediaId: String, seasonNumber: Int, episodeNumber: Int) {
+    val item = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    if (item.type != MediaType.SERIE_TV) return
+    if (seasonNumber < 0 || episodeNumber <= 0) return
+    // La stessa serie può vivere su più schede (TMDB/IMDb): la puntata marcata deve
+    // risultare vista su tutte, altrimenti cambiando scheda lo stato si contraddice.
+    val twinIds = MediaIdentity.groupById(_mediaList.value, mediaId)
+      .ifEmpty { listOf(item) }
+      .map { it.id }
+      .toSet()
+    var seedAdvanced = false
+    twinIds.forEach { id ->
+      val twin = _mediaList.value.firstOrNull { it.id == id } ?: return@forEach
+      val duration = manualEpisodeDurationMs(twin, seasonNumber, episodeNumber)
+      if (duration <= 0L) return@forEach
+      val advance = shouldAdvanceResumePoint(twin, seasonNumber, episodeNumber)
+      updateEpisodeProgress(
+        mediaId = id,
+        seasonNumber = seasonNumber,
+        episodeNumber = episodeNumber,
+        progressMs = duration,
+        durationMs = duration,
+        source = null,
+        updateAggregate = advance
+      )
+      if (id == mediaId) seedAdvanced = advance
+    }
+    val duration = manualEpisodeDurationMs(item, seasonNumber, episodeNumber)
+    if (duration <= 0L) {
+      Log.w(TAG_CW, "Marcatura episodio rifiutata per $mediaId S${seasonNumber}E$episodeNumber: durata sconosciuta")
+      return
+    }
+    if (seedAdvanced) maybeCompleteSeries(mediaId, seasonNumber, episodeNumber, duration, duration)
+  }
+
+  /**
+   * Marca un singolo episodio come DA VEDERE: riga episodio a 0, completamento della
+   * serie ritirato. Se l'episodio è il punto di ripresa corrente, la scheda torna in
+   * «Continua a guardare» a posizione 0 (riparte da lì).
+   */
+  fun markEpisodeUnwatchedLocally(mediaId: String, seasonNumber: Int, episodeNumber: Int) {
+    val item = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    if (item.type != MediaType.SERIE_TV) return
+    // Gemelle TMDB/IMDb: la puntata smarcata e il ritiro del completamento valgono per
+    // tutte le schede della stessa serie.
+    val twinIds = MediaIdentity.groupById(_mediaList.value, mediaId)
+      .ifEmpty { listOf(item) }
+      .map { it.id }
+      .toSet()
+    val key = episodeProgressKey(mediaId, seasonNumber, episodeNumber)
+    twinIds.forEach { id ->
+      episodeProgressMap.remove(episodeProgressKey(id, seasonNumber, episodeNumber))
+      episodeProgressSourceMap.remove(episodeProgressKey(id, seasonNumber, episodeNumber))
+    }
+    val duration = episodeDurationMap[key] ?: manualEpisodeDurationMs(item, seasonNumber, episodeNumber)
+    // Stato di OGNI scheda prima della modifica: la gemella può avere un punto di ripresa
+    // e un completamento diversi dalla scheda su cui è avvenuto il long-press.
+    val twinStates = twinIds.associateWith { id ->
+      val twin = _mediaList.value.firstOrNull { it.id == id }
+      EpisodeUnwatchState(
+        isCurrent = twin?.lastWatchedSeason == seasonNumber &&
+          twin.lastWatchedEpisode == episodeNumber,
+        wasCompleted = twin?.completedAt != null
+      )
+    }
+    val now = System.currentTimeMillis()
+
+    fun MediaItem.withEpisodeUnwatched(): MediaItem {
+      val episodes = episodes.map { ep ->
+        if (ep.seasonNumber == seasonNumber && ep.episodeNumber == episodeNumber) {
+          ep.copy(currentProgressMs = 0L)
+        } else ep
+      }
+      val isSamePoint = lastWatchedSeason == seasonNumber && lastWatchedEpisode == episodeNumber
+      // Una serie «conclusa» che perde la spunta di un episodio non è più vista: il
+      // progresso del titolo va azzerato anche quando la puntata smarcata non è quella
+      // corrente, altrimenti l'occhio resterebbe verde con la pillola «Serie già vista».
+      val wasCompletedHere = completedAt != null
+      return copy(
+        episodes = episodes,
+        currentProgressMs = if (isSamePoint || wasCompletedHere) 0L else currentProgressMs,
+        inContinueWatching = if (isSamePoint) true else inContinueWatching,
+        completedAt = null,
+        lastWatchedAt = if (isSamePoint) now else lastWatchedAt
+      )
+    }
+
+    _mediaList.update { list ->
+      list.map { media -> if (media.id in twinIds) media.withEpisodeUnwatched() else media }
+    }
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id in twinIds) {
+      _detailUiState.value = detail.copy(media = detail.media.withEpisodeUnwatched())
+    }
+
+    database?.let { db ->
+      pendingProgressWrites.incrementAndGet()
+      repoScope.launch(progressWriteDispatcher) {
+        try {
+          twinIds.forEach { id ->
+            val state = twinStates[id]
+            db.episodeProgressDao().saveEpisodeProgress(
+              EpisodeProgressEntity(
+                mediaId = id,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                progressMs = 0L,
+                durationMs = duration,
+                source = null
+              )
+            )
+            db.cachedMediaDao().clearCompleted(id)
+            if (state?.isCurrent == true) {
+              db.cachedMediaDao().updateProgress(id, 0L)
+            } else if (state?.wasCompleted == true) {
+              // Il titolo non torna in «Continua a guardare»: si azzera solo lo stato
+              // «visto» del titolo, senza toccare l'appartenenza alla riga.
+              db.cachedMediaDao().updateCurrentProgressOnly(id, 0L)
+            }
+          }
+        } catch (e: Exception) {
+          Log.w(TAG_CW, "Rimozione visto non persistita per $mediaId S${seasonNumber}E$episodeNumber: ${e.message}")
+        } finally {
+          pendingProgressWrites.decrementAndGet()
+        }
+      }
+    }
+  }
+
+  /** Stato di una scheda (gemella inclusa) prima di smarcare un episodio. */
+  private data class EpisodeUnwatchState(val isCurrent: Boolean, val wasCompleted: Boolean)
+
+  /**
+   * Marca TUTTA la stagione [seasonNumber] come vista.
+   *
+   * [episodeNumbers] sono gli episodi realmente noti per quella stagione (la lista è
+   * caricata nella scheda): le puntate senza durata verificabile restano invariate.
+   * Il punto di ripresa avanza all'ultimo episodio della stagione solo se la stagione
+   * è quella corrente o una successiva.
+   */
+  fun markSeasonWatchedLocally(
+    mediaId: String,
+    seasonNumber: Int,
+    episodeNumbers: Collection<Int>
+  ) {
+    val item = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    if (item.type != MediaType.SERIE_TV) return
+    if (seasonNumber < 0) return
+    val numbers = episodeNumbers.filter { it > 0 }.distinct().sorted()
+    if (numbers.isEmpty()) return
+    val now = System.currentTimeMillis()
+    val rows = numbers.mapNotNull { number ->
+      val duration = manualEpisodeDurationMs(item, seasonNumber, number)
+      if (duration <= 0L) return@mapNotNull null
+      EpisodeProgressEntity(
+        mediaId = mediaId,
+        seasonNumber = seasonNumber,
+        episodeNumber = number,
+        progressMs = duration,
+        durationMs = duration,
+        updatedAt = now,
+        source = null
+      )
+    }
+    if (rows.isEmpty()) {
+      Log.w(TAG_CW, "Marcatura stagione rifiutata per $mediaId S$seasonNumber: nessuna durata verificabile")
+      return
+    }
+    val byNumber = rows.associateBy { it.episodeNumber }
+    rows.forEach { row ->
+      val key = episodeProgressKey(mediaId, seasonNumber, row.episodeNumber)
+      episodeProgressMap[key] = row.progressMs
+      episodeDurationMap[key] = row.durationMs
+      episodeProgressSourceMap.remove(key)
+    }
+    val last = rows.maxByOrNull { it.episodeNumber } ?: return
+    val advance = shouldAdvanceResumePoint(item, seasonNumber, last.episodeNumber)
+
+    fun MediaItem.withSeasonWatched(): MediaItem {
+      val episodes = episodes.map { ep ->
+        val row = if (ep.seasonNumber == seasonNumber) byNumber[ep.episodeNumber] else null
+        if (row != null) {
+          ep.copy(
+            currentProgressMs = row.progressMs,
+            totalDurationMs = WatchProgress.resolveDuration(ep.totalDurationMs, row.durationMs)
+          )
+        } else ep
+      }
+      if (!advance) return copy(episodes = episodes)
+      return copy(
+        episodes = episodes,
+        currentProgressMs = last.progressMs,
+        totalDurationMs = last.durationMs,
+        lastWatchedSeason = seasonNumber,
+        lastWatchedEpisode = last.episodeNumber,
+        lastWatchedAt = now,
+        progressSource = null,
+        inContinueWatching = true
+      )
+    }
+
+    _mediaList.update { list ->
+      list.map { media -> if (media.id == mediaId) media.withSeasonWatched() else media }
+    }
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id == mediaId) {
+      _detailUiState.value = detail.copy(media = detail.media.withSeasonWatched())
+    }
+
+    database?.let { db ->
+      pendingProgressWrites.incrementAndGet()
+      repoScope.launch(progressWriteDispatcher) {
+        try {
+          db.episodeProgressDao().saveEpisodeProgress(rows)
+          if (advance) {
+            db.cachedMediaDao().updateTvProgressWithDurationAndSource(
+              mediaId,
+              last.progressMs,
+              last.durationMs,
+              seasonNumber,
+              last.episodeNumber,
+              now,
+              null
+            )
+          }
+        } catch (e: Exception) {
+          Log.w(TAG_CW, "Marcatura stagione non persistita per $mediaId S$seasonNumber: ${e.message}")
+        } finally {
+          pendingProgressWrites.decrementAndGet()
+        }
+      }
+    }
+    if (advance) {
+      maybeCompleteSeries(mediaId, seasonNumber, last.episodeNumber, last.progressMs, last.durationMs)
+    }
+  }
+
+  /**
+   * Marca l'INTERA serie come vista: tutte le puntate note delle stagioni conosciute
+   * vengono completate, poi il titolo viene concluso ([markWatchedManually]) e quindi
+   * esce da «Continua a guardare». Le puntate senza durata verificabile non vengono
+   * inventate: restano nello stato precedente.
+   */
+  fun markSeriesWatchedLocally(
+    mediaId: String,
+    seasonEpisodeCounts: Map<Int, Int> = emptyMap(),
+    totalSeasons: Int? = null
+  ) {
+    val item = _mediaList.value.firstOrNull { it.id == mediaId }
+    if (item == null) return
+    if (item.type != MediaType.SERIE_TV) return
+    // La stessa serie può esistere come scheda TMDB e come scheda IMDb/Stremio: la
+    // marcatura «intera serie» vale per TUTTE le gemelle, altrimenti aprendo l'altra
+    // scheda gli episodi risulterebbero di nuovo da vedere.
+    val twinIds = MediaIdentity.groupById(_mediaList.value, mediaId)
+      .ifEmpty { listOf(item) }
+      .map { it.id }
+      .toSet()
+    val now = System.currentTimeMillis()
+    // Stagioni e conteggi noti: si completano TUTTI gli episodi delle stagioni
+    // conosciute, anche quelle non ancora aperte nella scheda. La mappa TMDB passata dal
+    // chiamante è la più autorevole; seguono i conteggi del titolo e gli episodi noti.
+    // Le speciali (stagione 0) restano fuori dalla marcatura «serie intera».
+    val numberedSeasons = item.seasonEpisodesCount
+      .filterKeys { it > 0 }
+      .filterValues { it > 0 }
+      .toMutableMap()
+    seasonEpisodeCounts
+      .filterKeys { it > 0 }
+      .filterValues { it > 0 }
+      .forEach { (season, count) -> numberedSeasons[season] = count }
+    item.episodes
+      .filter { it.seasonNumber > 0 && it.episodeNumber > 0 }
+      .groupBy { it.seasonNumber }
+      .forEach { (season, episodes) ->
+        // Il conteggio della stagione è il NUMERO dell'ultimo episodio noto (le serie
+        // numerano da 1 in modo contiguo): non il numero di elementi, che con un elenco
+        // parziale sottostimerebbe la stagione.
+        numberedSeasons[season] = maxOf(
+          numberedSeasons[season] ?: 0,
+          episodes.maxOf { it.episodeNumber }
+        )
+      }
+    // Stagioni dichiarate da TMDB ma senza conteggio: si usa il numero di episodi più
+    // frequente già noto, MAI un numero inventato (se non esiste alcun dato, la stagione
+    // resta fuori e viene marcata quando l'utente la apre).
+    val declaredSeasons = (totalSeasons ?: 0).coerceAtLeast(numberedSeasons.keys.maxOrNull() ?: 0)
+    if (declaredSeasons > 0 && numberedSeasons.isNotEmpty()) {
+      val typicalCount = numberedSeasons.values.groupingBy { it }.eachCount()
+        .maxByOrNull { it.value }?.key ?: 0
+      (1..declaredSeasons).forEach { season ->
+        if (season !in numberedSeasons && typicalCount > 0) {
+          numberedSeasons[season] = typicalCount
+        }
+      }
+    }
+    // Durata di ripiego per le puntate mai caricate: la mediana delle durate note degli
+    // episodi della serie. La durata del TITOLO non è una durata episodio e non va usata.
+    val knownDurations = item.episodes
+      .mapNotNull { ep -> ep.totalDurationMs.takeIf { it > 0L } }
+      .sorted()
+    val medianEpisodeDurationMs = knownDurations
+      .takeIf { it.isNotEmpty() }
+      ?.let { it[it.size / 2] }
+      ?: 0L
+    val rows = numberedSeasons.flatMap { (season, count) ->
+      (1..count).mapNotNull { number ->
+        val measuredOrKnown = manualEpisodeDurationMs(item, season, number)
+        val duration = measuredOrKnown.takeIf { it > 0L } ?: medianEpisodeDurationMs
+        if (duration <= 0L) return@mapNotNull null
+        EpisodeProgressEntity(
+          mediaId = mediaId,
+          seasonNumber = season,
+          episodeNumber = number,
+          progressMs = duration,
+          durationMs = duration,
+          updatedAt = now,
+          source = null
+        )
+      }
+    }
+    rows.forEach { row ->
+      twinIds.forEach { id ->
+        val key = episodeProgressKey(id, row.seasonNumber, row.episodeNumber)
+        episodeProgressMap[key] = row.progressMs
+        episodeDurationMap[key] = row.durationMs
+        episodeProgressSourceMap.remove(key)
+      }
+    }
+    val byEpisode = rows.associateBy { it.seasonNumber to it.episodeNumber }
+    Log.i(
+      TAG_CW,
+      "Serie $mediaId marcata vista: ${rows.size} episodi su ${numberedSeasons.size} stagioni " +
+        "(schede: ${twinIds.size})"
+    )
+    val titleProgressMs = item.totalDurationMs.takeIf { it > 0L }
+
+    fun MediaItem.withSeriesWatched(): MediaItem {
+      val episodes = episodes.map { ep ->
+        val row = byEpisode[ep.seasonNumber to ep.episodeNumber] ?: return@map ep
+        ep.copy(
+          currentProgressMs = row.progressMs,
+          totalDurationMs = WatchProgress.resolveDuration(ep.totalDurationMs, row.durationMs)
+        )
+      }
+      // Il completamento (completedAt + uscita dalla riga + notifica SIMKL) NON si scrive
+      // qui: lo applica [markWatchedManually], unico percorso della conclusione manuale.
+      return copy(
+        episodes = episodes,
+        currentProgressMs = titleProgressMs ?: currentProgressMs
+      )
+    }
+
+    _mediaList.update { list ->
+      list.map { media -> if (media.id in twinIds) media.withSeriesWatched() else media }
+    }
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id in twinIds) {
+      _detailUiState.value = detail.copy(media = detail.media.withSeriesWatched())
+    }
+
+    database?.let { db ->
+      pendingProgressWrites.incrementAndGet()
+      repoScope.launch(progressWriteDispatcher) {
+        try {
+          if (rows.isNotEmpty()) {
+            db.episodeProgressDao().saveEpisodeProgress(
+              twinIds.flatMap { id -> rows.map { it.copy(mediaId = id) } }
+            )
+          }
+          // Persiste la posizione del titolo sulla durata nota: senza questa scrittura
+          // l'emissione Room successiva riporterebbe il titolo al vecchio progresso,
+          // annullando in memoria la marcatura appena fatta.
+          titleProgressMs?.let { progress ->
+            twinIds.forEach { id -> db.cachedMediaDao().updateCurrentProgressOnly(id, progress) }
+          }
+          // La conclusione del titolo (completedAt + uscita dalla riga) e la notifica a
+          // SIMKL passano dallo stesso percorso del toggle «visto» esistente.
+        } catch (e: Exception) {
+          Log.w(TAG_CW, "Marcatura serie non persistita per $mediaId: ${e.message}")
+        } finally {
+          pendingProgressWrites.decrementAndGet()
+        }
+      }
+    }
+    repoScope.launch {
+      runCatching { markWatchedManually(mediaId) }
+        .onFailure { Log.w(TAG_CW, "Conclusione serie non notificata per $mediaId: ${it.message}") }
+    }
+  }
+
+  /**
+   * Ritira lo stato «serie vista»: tutte le righe episodio della serie vengono rimosse,
+   * il punto di ripresa azzerato e il completamento annullato. La scheda resta in
+   * catalogo (titolo, metadati e preferito intatti) e fuori da «Continua a guardare».
+   */
+  fun clearSeriesWatchedLocally(mediaId: String) {
+    val item = _mediaList.value.firstOrNull { it.id == mediaId } ?: return
+    if (item.type != MediaType.SERIE_TV) return
+    // Stessa identità, stessa serie: il reset deve valere anche per la scheda gemella
+    // TMDB/IMDb, altrimenti riaprendo l'altra resterebbe «Serie vista».
+    val twinIds = MediaIdentity.groupById(_mediaList.value, mediaId)
+      .ifEmpty { listOf(item) }
+      .map { it.id }
+      .toSet()
+    val keys = episodeProgressMap.keys.filter { key ->
+      twinIds.any { id -> key.startsWith("${id}_s") }
+    }
+    keys.forEach { key ->
+      episodeProgressMap.remove(key)
+      episodeProgressSourceMap.remove(key)
+      episodeDurationMap.remove(key)
+    }
+
+    fun MediaItem.withSeriesUnwatched(): MediaItem = copy(
+      episodes = episodes.map { it.copy(currentProgressMs = 0L) },
+      currentProgressMs = 0L,
+      lastWatchedSeason = null,
+      lastWatchedEpisode = null,
+      lastWatchedAt = null,
+      completedAt = null,
+      inContinueWatching = false
+    )
+
+    _mediaList.update { list ->
+      list.map { media -> if (media.id in twinIds) media.withSeriesUnwatched() else media }
+    }
+    val detail = _detailUiState.value
+    if (detail is MediaDetailUiState.Success && detail.media.id in twinIds) {
+      _detailUiState.value = detail.copy(media = detail.media.withSeriesUnwatched())
+    }
+
+    database?.let { db ->
+      pendingProgressWrites.incrementAndGet()
+      repoScope.launch(progressWriteDispatcher) {
+        try {
+          twinIds.forEach { id ->
+            db.episodeProgressDao().clearProgressForMedia(id)
+            db.cachedMediaDao().clearSeriesWatchState(id)
+          }
+        } catch (e: Exception) {
+          Log.w(TAG_CW, "Reset serie non persistito per $mediaId: ${e.message}")
+        } finally {
+          pendingProgressWrites.decrementAndGet()
+        }
+      }
+    }
+  }
   fun maybeCompleteMovie(mediaId: String, positionMs: Long, durationMs: Long) {
     if (!WatchProgress.isAtEnd(positionMs, durationMs)) return
     repoScope.launch {
@@ -3275,6 +3781,42 @@ object MediaRepository {
     _detailUiState.value = MediaDetailUiState.Loading(baseMedia)
   }
 
+  /**
+   * Riprende dalla riga Room lo stato UTENTE (progresso, episodio corrente,
+   * completamento, preferito) della scheda che si sta aprendo.
+   *
+   * Perché serve: la scheda del Dettaglio può essere costruita da un catalogo appena
+   * letto (Stremio/TMDB) che non porta con sé lo stato locale. Senza questo merge il
+   * pulsante «Serie già vista» tornava «non visto» dopo un riavvio pur avendo
+   * `completedAt` persistito: la UI mostrava la copia del catalogo, non la riga Room.
+   * La riga persistita è la fonte di verità per lo stato utente.
+   */
+  private suspend fun refreshPersistedWatchState(base: MediaItem?): MediaItem? {
+    val item = base ?: return null
+    val row = runCatching { database?.cachedMediaDao()?.getMediaById(item.id) }.getOrNull()
+      ?: return item
+    // Una riga senza alcuno stato di visione non deve cancellare un progresso appena
+    // scritto in memoria dal player (la persistenza è asincrona): in quel caso la copia
+    // del chiamante resta la più recente.
+    val hasPersistedWatchState = row.currentProgressMs > 0L ||
+      row.lastWatchedAt != null ||
+      row.lastWatchedSeason != null ||
+      row.lastWatchedEpisode != null ||
+      row.completedAt != null
+    return item.copy(
+      currentProgressMs = if (hasPersistedWatchState) row.currentProgressMs else item.currentProgressMs,
+      totalDurationMs = row.totalDurationMs.takeIf { it > 0L } ?: item.totalDurationMs,
+      lastWatchedSeason = if (hasPersistedWatchState) row.lastWatchedSeason else item.lastWatchedSeason,
+      lastWatchedEpisode = if (hasPersistedWatchState) row.lastWatchedEpisode else item.lastWatchedEpisode,
+      lastWatchedAt = if (hasPersistedWatchState) row.lastWatchedAt else item.lastWatchedAt,
+      inContinueWatching = if (hasPersistedWatchState) row.inContinueWatching else item.inContinueWatching,
+      completedAt = if (hasPersistedWatchState) row.completedAt else item.completedAt,
+      progressSource = if (hasPersistedWatchState) row.progressSource else item.progressSource,
+      isFavorite = row.isFavorite,
+      favoriteSource = row.favoriteSource
+    )
+  }
+
   fun setDetailError(baseMedia: MediaItem?, message: String) {
     _detailUiState.value = MediaDetailUiState.Error(baseMedia, message)
   }
@@ -3282,7 +3824,9 @@ object MediaRepository {
   suspend fun loadMediaDetails(tmdbId: Int, isTv: Boolean, baseMedia: MediaItem? = null) {
     // Match tipizzato: un ID film e un ID serie TMDB coincidenti non si confondono.
     val wantedType = if (isTv) MediaType.SERIE_TV else MediaType.FILM
-    val existingBase = baseMedia ?: _mediaList.value.find { it.tmdbId == tmdbId && it.type == wantedType }
+    val existingBase = refreshPersistedWatchState(
+      baseMedia ?: _mediaList.value.find { it.tmdbId == tmdbId && it.type == wantedType }
+    )
 
     // Ogni nuova richiesta invalida le precedenti in volo: una risposta arrivata in
     // ritardo per un media aperto prima non deve sovrascrivere lo stato corrente.

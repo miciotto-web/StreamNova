@@ -20,6 +20,13 @@ interface EpisodeProgressDao {
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun saveEpisodeProgress(progress: EpisodeProgressEntity)
 
+  /**
+   * Scrittura BULK delle righe episodio (marca una stagione o una serie intera come vista):
+   * una sola transazione invece di N scritture indipendenti.
+   */
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun saveEpisodeProgress(progress: List<EpisodeProgressEntity>)
+
   @Query("DELETE FROM episode_progress WHERE mediaId = :mediaId")
   suspend fun clearProgressForMedia(mediaId: String)
 

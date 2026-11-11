@@ -84,6 +84,13 @@
     <string name="context_details">Details anzeigen</string>
     <string name="context_remove_continue_watching">Aus Weiterschauen entfernen</string>
 
+    <!-- Episoden-Kontextmenü (langes Drücken auf eine Episodenzeile) -->
+    <string name="episode_context_mark_watched">Episode als gesehen markieren</string>
+    <string name="episode_context_mark_unwatched">Episode als ungesehen markieren</string>
+    <string name="episode_context_browse_sources">Quellen erneut durchsuchen</string>
+    <string name="episode_context_mark_season_watched">Staffel bereits gesehen</string>
+    <string name="episode_context_cancel">Abbrechen</string>
+
     <!-- Detail Screen -->
     <string name="detail_tab_episodes">Episoden</string>
     <string name="detail_tab_more_like_this">Ähnliche Titel</string>
@@ -149,6 +156,9 @@
     <string name="detail_action_select_source">Quelle auswählen</string>
     <string name="detail_action_mark_watched">Als gesehen markieren</string>
     <string name="detail_action_mark_unwatched">Als ungesehen markieren</string>
+    <string name="detail_action_mark_series_watched">Serie bereits gesehen</string>
+    <string name="detail_action_mark_series_unwatched">Serie als ungesehen markieren</string>
+    <string name="detail_series_watched_badge">Serie gesehen</string>
     <string name="detail_air_date_format">Erstausstrahlung: %s</string>
     <string name="detail_tech_specs_title">Technische Daten &amp; Übersicht</string>
     <string name="detail_tech_original_title">Originaltitel</string>

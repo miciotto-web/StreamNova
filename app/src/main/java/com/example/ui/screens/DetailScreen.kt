@@ -117,6 +117,7 @@ import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
 import com.example.data.stremio.StremioCatalogMapper
 import com.example.data.util.DetailFactsMapper
+import com.example.ui.components.EpisodeContextMenu
 import com.example.ui.components.MediaActionBar
 import com.example.ui.components.MediaActionBarFocus
 import com.example.ui.components.ProviderBadge
@@ -255,6 +256,23 @@ fun DetailScreen(
   onEpisodeClick: ((MediaItem, Episode) -> Unit)? = null,
   onRetry: (() -> Unit)? = null,
   onToggleWatched: ((MediaItem) -> Unit)? = null,
+  /**
+   * Azioni del menu contestuale della riga episodio (pressione prolungata del tasto
+   * centrale). Tutte nullable: se assenti il long-press non apre nulla, così le anteprime
+   * e i chiamanti storici restano invariati.
+   *
+   *  - [onEpisodeWatchedChange]: marca l'episodio come visto (`true`) o da vedere (`false`);
+   *  - [onMarkSeasonWatched]: marca TUTTA la stagione attiva come vista;
+   *  - [onBrowseEpisodeSources]: riapre la scelta delle fonti per quell'episodio senza
+   *    avviare la riproduzione.
+   */
+  onEpisodeWatchedChange: ((MediaItem, Episode, Boolean) -> Unit)? = null,
+  onMarkSeasonWatched: ((MediaItem, Int, List<Episode>) -> Unit)? = null,
+  onBrowseEpisodeSources: ((MediaItem, Episode) -> Unit)? = null,
+  /**
+   * «Serie già vista» accanto ai preferiti (solo serie TV): agisce sull'INTERA serie.
+   */
+  onToggleSeriesWatched: ((MediaItem) -> Unit)? = null,
   onPlayTrailer: ((MediaItem) -> Unit)? = null,
   /**
    * Selezione MANUALE della sorgente (modalità Debrid): non-null solo quando il motore
@@ -473,6 +491,15 @@ fun DetailScreen(
       if (saved > 0L) ep.copy(currentProgressMs = saved) else ep
     }
   }
+
+  // Menu contestuale della riga episodio (pressione prolungata del tasto centrale).
+  // Aperto SOLO se almeno un'azione è disponibile: anteprime e chiamanti storici senza
+  // callback restano identici. Il menu vive in un Dialog separato ed è chiuso da ogni
+  // azione o da BACK.
+  val episodeMenuAvailable = onEpisodeWatchedChange != null ||
+    onMarkSeasonWatched != null ||
+    onBrowseEpisodeSources != null
+  var episodeContextMenu by remember(displayMedia.id) { mutableStateOf<Episode?>(null) }
 
   // Cast members from TMDB extended details or fallback from media item
   val castMembers = remember(displayMedia, extendedDetails) {
@@ -1176,6 +1203,13 @@ fun DetailScreen(
               onToggleFavorite = { onToggleFavorite(displayMedia.id) },
               isWatched = displayMedia.isWatched,
               onToggleWatched = { onToggleWatched?.invoke(displayMedia) },
+              // «Serie già vista»: solo serie TV reali (non canali live) e solo quando il
+              // chiamante espone l'azione. `completedAt` distingue la serie conclusa da
+              // una serie in corso con l'episodio corrente finito.
+              onToggleSeriesWatched = onToggleSeriesWatched
+                ?.takeIf { isTvSeries }
+                ?.let { callback -> { callback(displayMedia) } },
+              isSeriesWatched = displayMedia.completedAt != null,
               onPlayTrailer = { onPlayTrailer?.invoke(displayMedia) },
               // Selezione manuale: il target è lo stesso episodio del pulsante
               // Riproduci (resume), così il dialog mostra il contesto SxE corretto;
@@ -1551,6 +1585,13 @@ fun DetailScreen(
                 fallbackBackdropUrl = displayMedia.backdropUrl,
                 fallbackBackdropRes = displayMedia.backdropRes,
                 blurUnwatched = blurUnwatchedEpisodes,
+                onLongPress = if (episodeMenuAvailable) {
+                  {
+                    // UN SOLO menu alla volta: una seconda pressione prolungata mentre è
+                    // già aperto non lo sostituisce né lo riapre.
+                    if (episodeContextMenu == null) episodeContextMenu = episode
+                  }
+                } else null,
                 onClick = {
                   onEpisodeClick?.invoke(displayMedia, episode) ?: onPlayClick(displayMedia, episode)
                 },
@@ -1593,6 +1634,47 @@ fun DetailScreen(
           }
         }
       }
+    }
+
+    // Menu contestuale della riga episodio (pressione prolungata): vive qui, fuori dalla
+    // LazyColumn, così il Dialog non dipende dal riciclo degli item. Ogni azione chiude
+    // PRIMA il menu e poi invoca il callback: `onDismiss` trova lo stato già nullo e non
+    // riporta il focus sulla riga mentre la schermata sta navigando/aggiornandosi.
+    val episodeMenuSnapshot = episodeContextMenu
+    if (episodeMenuSnapshot != null) {
+      val episodeWatched = episodeMenuSnapshot.isCompleted ||
+        episodeMenuSnapshot.episodeNumber in simklWatchedEpisodes
+      EpisodeContextMenu(
+        media = displayMedia,
+        episode = episodeMenuSnapshot,
+        isWatched = episodeWatched,
+        onToggleWatched = {
+          episodeContextMenu = null
+          // Badge «Visto su SIMKL» aggiornato SUBITO: senza questo passaggio la
+          // miniatura continuava a mostrarlo finché la cache SIMKL non si riallineava.
+          if (simklAccount.isLoggedIn) {
+            simklWatchedEpisodes = if (episodeWatched) {
+              simklWatchedEpisodes - episodeMenuSnapshot.episodeNumber
+            } else {
+              simklWatchedEpisodes + episodeMenuSnapshot.episodeNumber
+            }
+          }
+          onEpisodeWatchedChange?.invoke(displayMedia, episodeMenuSnapshot, !episodeWatched)
+        },
+        onBrowseSources = {
+          episodeContextMenu = null
+          onBrowseEpisodeSources?.invoke(displayMedia, episodeMenuSnapshot)
+        },
+        onMarkSeasonWatched = {
+          episodeContextMenu = null
+          onMarkSeasonWatched?.invoke(
+            displayMedia,
+            episodeMenuSnapshot.seasonNumber,
+            episodesForSeason
+          )
+        },
+        onDismiss = { episodeContextMenu = null }
+      )
     }
 
     // Dialog del testo completo della sinossi: sola lettura (nessuna riproduzione,
@@ -1897,6 +1979,11 @@ fun EpisodeRowItem(
    * «Continua a guardare» ([ContinueWatchingRowPolicy]: `unwatched = progress <= 0`).
    */
   blurUnwatched: Boolean = false,
+  /**
+   * Pressione prolungata del tasto centrale: apre il menu contestuale dell'episodio
+   * (visto / da vedere, risfoglia fonti, stagione già vista). `null` = nessun menu.
+   */
+  onLongPress: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   // `Modifier.blur` usa RenderEffect e su API < 31 non ha effetto: sui TV box reali
@@ -1909,7 +1996,8 @@ fun EpisodeRowItem(
     modifier = modifier.fillMaxWidth(),
     shape = RoundedCornerShape(12.dp),
     focusedScale = 1.02f,
-    onClick = onClick
+    onClick = onClick,
+    onLongPress = onLongPress
   ) { isFocused ->
     Row(
       modifier = Modifier
