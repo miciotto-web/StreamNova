@@ -38,13 +38,13 @@ android {
     applicationId = "com.aistudio.streamnova.tvapp"
     minSdk = 24
     targetSdk = 36
-    // Release stabile ufficiale StreamNova V1.0.9 (hotfix: dialog Sync navigabili
-    // col telecomando; il versionName cresce perche' l'updater confronta SOLO
-    // major.minor.patch del tag - una 1.0.8 ricompilata non sarebbe mai offerta a
-    // chi ha gia' la 1.0.8, vedi UpdateRepository.evaluateUpdate).
+    // Release stabile ufficiale StreamNova V1.0.10 (profili utente + fix focus
+    // D-Pad Home<->sidebar; il versionName cresce perche' l'updater confronta SOLO
+    // major.minor.patch del tag - una 1.0.9 ricompilata non sarebbe mai offerta a
+    // chi ha gia' la 1.0.9, vedi UpdateRepository.evaluateUpdate).
     // Ogni release successiva deve incrementare versionCode.
-    versionCode = 1011
-    versionName = "1.0.9"
+    versionCode = 1012
+    versionName = "1.0.10"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     // TMDB API key is never hardcoded here: it would be committed and published.
