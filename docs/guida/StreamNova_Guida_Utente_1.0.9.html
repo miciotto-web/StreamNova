@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>StreamNova — Guida utente 1.0.9</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; color: #16222e;
+    font-family: "Segoe UI", Arial, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { position: relative; width: 210mm; height: 297mm; padding: 14mm 16mm 20mm;
+    overflow: hidden; page-break-after: always; background: #fff; }
+  .page:last-child { page-break-after: auto; }
+
+  .run { display: flex; justify-content: space-between; align-items: center;
+    border-bottom: .3mm solid #dbe6ef; padding-bottom: 2.2mm; margin-bottom: 5.5mm; }
+  .run .lbl { font-size: 7.3pt; color: #7a8a9a; letter-spacing: .55pt; text-transform: uppercase; font-weight: 600; }
+  .run img { height: 4.6mm; }
+
+  h2.sec { font-size: 17pt; line-height: 1.12; margin: 0 0 2.2mm; color: #0f1b26; font-weight: 700; letter-spacing: -.2pt; }
+  h2.sec .num { color: #009fe3; margin-right: 1.6mm; }
+  .lead { font-size: 9.7pt; color: #4d5f70; line-height: 1.5; margin: 0 0 3.6mm; }
+  h3 { font-size: 10.6pt; margin: 4.2mm 0 1.6mm; color: #0f1b26; font-weight: 700; }
+  h3 .mini { color: #009fe3; font-weight: 700; }
+  p { font-size: 9.15pt; line-height: 1.48; color: #324453; margin: 0 0 2.2mm; }
+  ul, ol { margin: 1.2mm 0 3mm 4.6mm; padding: 0; }
+  li { font-size: 9.15pt; line-height: 1.45; color: #324453; margin-bottom: 1.15mm; }
+  b, strong { color: #0f1b26; }
+  .muted { color: #6b7c8d; }
+  .small { font-size: 8.2pt; }
+
+  .figure { margin: 2.6mm 0 3mm; text-align: center; page-break-inside: avoid; }
+  .figure img { max-width: 100%; border: .35mm solid #cfdde9; border-radius: 2mm;
+    box-shadow: 0 1.2mm 3.2mm rgba(15,35,55,.11); }
+  .figcap { font-size: 7.5pt; color: #7a8a9a; margin-top: 1.3mm; line-height: 1.35; }
+  .figcap b { color: #5b6b7c; }
+
+  .note, .tip, .warn { border-radius: 1.7mm; padding: 2.7mm 3.2mm; margin: 2.8mm 0;
+    font-size: 8.55pt; line-height: 1.42; }
+  .note { background: #eef8fe; border-left: 1mm solid #009fe3; color: #17475f; }
+  .tip { background: #eefaf3; border-left: 1mm solid #16a34a; color: #14532d; }
+  .warn { background: #fff7e8; border-left: 1mm solid #f59e0b; color: #6b3f06; }
+  .note b, .tip b, .warn b { color: inherit; }
+
+  .tag { display: inline-block; background: #009fe3; color: #fff; font-size: 6.6pt;
+    font-weight: 700; letter-spacing: .5pt; padding: .75mm 1.5mm; border-radius: .9mm;
+    vertical-align: 1.1mm; margin-left: 1.2mm; }
+  .tag.green { background: #16a34a; }
+  .tag.violet { background: #7c3aed; }
+
+  table { width: 100%; border-collapse: collapse; margin: 1.8mm 0 3mm; font-size: 8.2pt; }
+  th { background: #f1f7fb; color: #0f1b26; text-align: left; padding: 1.5mm 2mm;
+    border-bottom: .3mm solid #cfdde9; font-weight: 700; }
+  td { padding: 1.3mm 2mm; border-bottom: .25mm solid #e4edf4; vertical-align: top; color: #354757; line-height: 1.38; }
+  tr:nth-child(even) td { background: #fafcfe; }
+  td b { color: #0f1b26; }
+
+  .two { display: flex; gap: 5mm; align-items: flex-start; }
+  .two > div { flex: 1; }
+  .cols2 { column-count: 2; column-gap: 7mm; }
+  .cols2 li { break-inside: avoid; }
+
+  .foot { position: absolute; left: 16mm; right: 16mm; bottom: 8mm; display: flex;
+    justify-content: space-between; align-items: center; font-size: 7.1pt; color: #8a99a7;
+    border-top: .3mm solid #e1eaf1; padding-top: 1.5mm; }
+  .foot b { color: #5b6b7c; font-weight: 600; }
+
+  /* ── COPERTINA ─────────────────────────────────────────────── */
+  .cover { background: linear-gradient(150deg, #07121f 0%, #0b1c2f 52%, #0a2740 100%); color: #fff; padding: 0; }
+  .cover .glow { position: absolute; width: 150mm; height: 150mm; border-radius: 50%;
+    background: radial-gradient(circle, rgba(0,159,227,.20) 0%, rgba(0,159,227,0) 68%);
+    right: -45mm; top: 10mm; }
+  .cover .glow2 { position: absolute; width: 110mm; height: 110mm; border-radius: 50%;
+    background: radial-gradient(circle, rgba(124,58,237,.18) 0%, rgba(124,58,237,0) 70%);
+    left: -35mm; bottom: 32mm; }
+  .cover .art { position: absolute; width: 125mm; right: -22mm; bottom: 26mm; opacity: .075; }
+  .cover .inner { position: relative; padding: 22mm 18mm 18mm; height: 100%; display: flex; flex-direction: column; }
+  .cover img.mark { width: 72mm; }
+  .cover .kicker { margin-top: 24mm; font-size: 8.2pt; letter-spacing: 3.2pt; color: #7fd6ff; font-weight: 700; }
+  .cover h1 { font-size: 30pt; line-height: 1.12; margin: 3.5mm 0 4mm; font-weight: 700; letter-spacing: -.6pt; }
+  .cover h1 span { color: #38c6ff; }
+  .cover .sub { font-size: 10.6pt; line-height: 1.6; color: #b9cbdb; max-width: 128mm; margin: 0 0 7mm; }
+  .cover .pills { display: flex; gap: 2.5mm; flex-wrap: wrap; }
+  .cover .pill { border: .35mm solid rgba(120,200,255,.35); background: rgba(0,159,227,.12);
+    color: #cdefff; border-radius: 10mm; padding: 2mm 4.2mm; font-size: 8pt; font-weight: 600; letter-spacing: .3pt; }
+  .cover .highlights { display: flex; gap: 4mm; margin-top: 15mm; }
+  .cover .highlights > div { flex: 1; border-top: .3mm solid rgba(150,200,240,.22); padding-top: 3.4mm; }
+  .cover .highlights b { display: block; font-size: 7.2pt; letter-spacing: 1.4pt; color: #38c6ff; margin-bottom: 1.1mm; }
+  .cover .highlights span { display: block; font-size: 7.9pt; line-height: 1.4; color: #9fb4c7; }
+  .cover .devices { margin-top: auto; font-size: 9.2pt; color: #9fb4c7; letter-spacing: .4pt; }
+  .cover .devices b { color: #eaf6ff; }
+  .cover .bottomline { margin-top: 5mm; padding-top: 4mm; border-top: .3mm solid rgba(150,200,240,.18);
+    display: flex; justify-content: space-between; font-size: 7.6pt; color: #8fa6ba; }
+  .cover .bottomline b { color: #cfe6f5; }
+
+  .toc { margin-top: 1mm; }
+  .toc .row { display: flex; align-items: baseline; border-bottom: .25mm dotted #d7e3ed;
+    padding: 1.55mm 0; font-size: 9.1pt; color: #2c4052; }
+  .toc .n { width: 8mm; color: #009fe3; font-weight: 700; }
+  .toc .p { margin-left: auto; color: #8a99a7; font-size: 8pt; }
+
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2.5mm; margin: 2.5mm 0 3mm; }
+  .card { border: .3mm solid #d7e3ed; border-radius: 2mm; padding: 2.8mm 3mm; background: #fbfdff; }
+  .card .t { font-size: 8.6pt; font-weight: 700; color: #0f1b26; margin-bottom: .8mm; }
+  .card .d { font-size: 7.8pt; color: #617284; line-height: 1.38; }
+  .card .ic { color: #009fe3; font-weight: 700; font-size: 8pt; letter-spacing: .4pt; }
+
+  .device-diagram { display: flex; align-items: center; justify-content: center; gap: 4mm;
+    margin: 4mm 0 3mm; }
+  .tv { width: 60mm; border: .35mm solid #cfdde9; border-radius: 2.2mm; background: #f8fbfe;
+    padding: 3mm; text-align: center; box-shadow: 0 1mm 2.4mm rgba(15,35,55,.08); }
+  .tv .screen { height: 26mm; border-radius: 1.4mm; background: #0c1726; position: relative;
+    display: flex; align-items: center; justify-content: center; color: #65d5ff; font-size: 8pt; font-weight: 700; letter-spacing: .6pt; }
+  .tv .nm { margin-top: 2mm; font-size: 8pt; color: #33475a; font-weight: 700; }
+  .tv .st { font-size: 7pt; color: #7a8a9a; }
+  .arrow { text-align: center; color: #009fe3; font-size: 8pt; font-weight: 700; line-height: 1.5; }
+  .arrow .line { font-size: 17pt; line-height: .8; }
+
+  .pill-list { display: flex; flex-wrap: wrap; gap: 1.8mm; margin: 2mm 0 3mm; }
+  .pill-list span { background: #eef8fe; color: #15536f; border: .3mm solid #c9e8f8;
+    border-radius: 8mm; padding: 1.2mm 2.6mm; font-size: 7.8pt; }
+
+  .appendix h3 { margin-top: 3mm; margin-bottom: 1mm; }
+  .appendix p { margin-bottom: 1.5mm; }
+  .appendix table { font-size: 7.8pt; }
+  .appendix td { padding: 1.1mm 2mm; }
+</style>
+</head>
+<body>
+
+<!-- ══════════ PAGINA 1 — COPERTINA ══════════ -->
+<section class="page cover">
+  <div class="glow"></div><div class="glow2"></div>
+  <img class="art" src="assets/streamnova_logo.png" alt="">
+  <div class="inner">
+    <img class="mark" src="assets/streamnova_wordmark.png" alt="StreamNova">
+    <div class="kicker">GUIDA UTENTE</div>
+    <h1>Impostazioni, riproduzione<br>e <span>integrazioni</span></h1>
+    <p class="sub">Tutto quello che serve per configurare StreamNova sul televisore: dalla Home
+      ai sottotitoli, dal player a TorBox, fino a SIMKL e alla nuova modalità Sync
+      tra dispositivi della stessa rete.</p>
+    <div class="pills">
+      <span class="pill">Versione 1.0.9 · build 1011</span>
+      <span class="pill">Novembre 2026</span>
+      <span class="pill">Lingua: Italiano</span>
+    </div>
+    <div class="highlights">
+      <div><b>SIMKL</b><span>Cronologia, watchlist e scrobbling sempre allineati.</span></div>
+      <div><b>SYNC</b><span>Configurazione e libreria copiate su un altro TV.</span></div>
+      <div><b>PLAYER</b><span>Seek preview e sottotitoli su misura.</span></div>
+    </div>
+    <div class="devices"><b>Google TV</b> &nbsp;·&nbsp; <b>Android TV</b> &nbsp;·&nbsp; <b>Fire TV Stick</b></div>
+    <div class="bottomline">
+      <span>Guida aggiornata alle versioni <b>1.0.6 – 1.0.9</b></span>
+      <span>StreamNova · Guida utente</span>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ PAGINA 2 — INDICE E NOVITÀ ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">Indice · Novità</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec">Contenuti della guida</h2>
+  <div class="toc">
+    <div class="row"><span class="n">1</span><span>Primi passi e navigazione col telecomando</span><span class="p">3</span></div>
+    <div class="row"><span class="n">2</span><span>Home e Piattaforme di streaming</span><span class="p">4</span></div>
+    <div class="row"><span class="n">3</span><span>Continua a guardare</span><span class="p">5</span></div>
+    <div class="row"><span class="n">4</span><span>Dettaglio, «Serie già vista» e menu episodio</span><span class="p">6</span></div>
+    <div class="row"><span class="n">5</span><span>Impostazioni di riproduzione</span><span class="p">8</span></div>
+    <div class="row"><span class="n">6</span><span>Il player: controlli, seek preview, sottotitoli e audio</span><span class="p">9</span></div>
+    <div class="row"><span class="n">7</span><span>Selezione flusso e cache</span><span class="p">11</span></div>
+    <div class="row"><span class="n">8</span><span>Motore di riproduzione: Web Streaming e Debrid TorBox</span><span class="p">12</span></div>
+    <div class="row"><span class="n">9</span><span>Addon Stremio e configurazione remota</span><span class="p">13</span></div>
+    <div class="row"><span class="n">10</span><span>Account SIMKL</span><span class="p">14</span></div>
+    <div class="row"><span class="n">11</span><span>Modalità Sync tra dispositivi</span><span class="p">15</span></div>
+    <div class="row"><span class="n">12</span><span>Generale: lingua, controllo genitori, aggiornamenti</span><span class="p">17</span></div>
+    <div class="row"><span class="n">13</span><span>Sottotitoli e OpenSubtitles</span><span class="p">18</span></div>
+    <div class="row"><span class="n">14</span><span>Impostazioni avanzate</span><span class="p">19</span></div>
+    <div class="row"><span class="n">15</span><span>Configurazione consigliata e checklist</span><span class="p">20</span></div>
+    <div class="row"><span class="n">16</span><span>Risoluzione dei problemi</span><span class="p">20</span></div>
+    <div class="row"><span class="n">A</span><span>Appendice A — Domande frequenti</span><span class="p">21</span></div>
+    <div class="row"><span class="n">B</span><span>Appendice B — Glossario</span><span class="p">21</span></div>
+  </div>
+
+  <h3 style="margin-top:6mm">Novità delle versioni 1.0.6 – 1.0.9</h3>
+  <div class="grid3">
+    <div class="card"><div class="ic">1.0.6</div><div class="t">BACK e Preferiti</div>
+      <div class="d">BACK più naturale su righe e griglie, filtri Film / Serie TV nei Preferiti e blur anti-spoiler.</div></div>
+    <div class="card"><div class="ic">1.0.7</div><div class="t">Blur su Android 9–11</div>
+      <div class="d">La sfocatura anti-spoiler funziona anche sui TV con Android 9, 10 e 11.</div></div>
+    <div class="card"><div class="ic">1.0.8</div><div class="t">Episodi</div>
+      <div class="d">Menu dell'episodio con pressione prolungata e pillola unificata «Serie già vista».</div></div>
+    <div class="card"><div class="ic">1.0.9</div><div class="t">SIMKL + Sync</div>
+      <div class="d">Account SIMKL con scrobbling e sincronizzazione, più la modalità Sync tra dispositivi.</div></div>
+    <div class="card"><div class="ic">Player</div><div class="t">Seek preview</div>
+      <div class="d">Anteprima video e orario mentre si scorre la timeline, con conferma del salto.</div></div>
+    <div class="card"><div class="ic">Player</div><div class="t">Sottotitoli su misura</div>
+      <div class="d">Dimensione, sfondo, opacità, posizione e sincronizzazione fine (±250 ms).</div></div>
+  </div>
+
+  <div class="note"><b>Come leggere questa guida.</b> Le voci dell'interfaccia sono scritte
+    <b>così</b>; i valori <b>ON / OFF</b> indicano lo stato mostrato a destra di ogni riga.
+    Il tasto <b>OK</b> è il tasto centrale del telecomando, <b>BACK</b> è il tasto indietro.
+    Le schermate sono state catturate da StreamNova 1.0.9 su Android TV; su Fire TV
+    l'aspetto può variare leggermente.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 2</span></div>
+</section>
+
+<!-- ══════════ PAGINA 3 — NAVIGAZIONE ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">01 · Primi passi</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">1</span>Primi passi e navigazione</h2>
+  <p class="lead">StreamNova si usa interamente col telecomando. La barra laterale sinistra
+    è il punto di partenza: da lì raggiungi Home, Film, Serie TV, Preferiti, Cerca,
+    Addon e Impostazioni.</p>
+
+  <p>All'avvio la Home mostra un contenuto in evidenza e, scorrendo verso il basso, le righe
+    <b>Continua a guardare</b>, <b>Piattaforme di Streaming</b> e i cataloghi.
+    Il contorno azzurro indica sempre l'elemento selezionato: premi <b>OK</b> per aprirlo.</p>
+
+  <h3>I tasti del telecomando</h3>
+  <table>
+    <tr><th style="width:24%">Tasto</th><th>Cosa fa</th></tr>
+    <tr><td><b>Su / Giù</b></td><td>Si sposta tra le righe e le voci di un elenco; nelle Impostazioni scorre le sezioni.</td></tr>
+    <tr><td><b>Sinistra / Destra</b></td><td>Scorre le card di una riga, cambia filtro o valore. Nel player, con i comandi nascosti, apre il <b>seek preview</b>.</td></tr>
+    <tr><td><b>OK</b></td><td>Apre il contenuto, attiva un interruttore, conferma una scelta. Tenuto premuto su un episodio apre il menu contestuale.</td></tr>
+    <tr><td><b>BACK</b></td><td>Torna indietro in modo intelligente (vedi sotto). Nel player chiude prima i pannelli aperti.</td></tr>
+    <tr><td><b>Play / Pausa</b></td><td>Avvia o mette in pausa la riproduzione, se il telecomando dispone del tasto.</td></tr>
+  </table>
+
+  <h3>BACK intelligente <span class="tag">1.0.6+</span></h3>
+  <ul>
+    <li><b>Su una riga della Home</b> (Continua a guardare, Piattaforme, cataloghi): un solo BACK riporta il focus alla <b>prima card</b> della riga.</li>
+    <li><b>In una griglia</b> di Film, Serie TV o di un provider: BACK riporta in cima alla scheda, con il filtro su <b>Tutti</b>.</li>
+    <li><b>Nelle Impostazioni</b>: BACK apre la barra laterale, così puoi cambiare sezione senza tornare alla Home.</li>
+    <li><b>Dalla Home</b>: il primo BACK mostra «Premi ancora indietro per uscire»; il secondo BACK chiude l'app.</li>
+    <li><b>Nel player</b>: chiude prima menu e pannelli (sottotitoli, audio, qualità); con tutto chiuso esce dalla riproduzione.</li>
+  </ul>
+
+  <div class="figure">
+    <img src="assets/back_sidebar.jpg" style="width:142mm" alt="BACK apre la barra laterale">
+    <div class="figcap"><b>Fig. 1</b> — La barra laterale aperta: il contorno azzurro indica la sezione corrente.</div>
+  </div>
+
+  <div class="tip"><b>Suggerimento.</b> Se ti perdi in una griglia lunga, premi BACK:
+    torni subito all'inizio della scheda senza dover risalire card per card.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 3</span></div>
+</section>
+
+<!-- ══════════ PAGINA 4 — HOME E PROVIDER ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">02 · Home e provider</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">2</span>Home e Piattaforme di streaming</h2>
+  <p class="lead">La Home riunisce in un'unica schermata ciò che stavi guardando, le
+    piattaforme disponibili e i cataloghi in evidenza.</p>
+
+  <h3>Le sezioni della Home</h3>
+  <table>
+    <tr><th style="width:30%">Sezione</th><th>Contenuto</th></tr>
+    <tr><td><b>In evidenza</b></td><td>Carosello di titoli principali con locandina, anno, durata o stagioni, generi, voto e sinossi. I puntini sotto indicano la posizione nel carosello.</td></tr>
+    <tr><td><b>Continua a guardare</b></td><td>Film e serie iniziati, con avanzamento, episodio corrente e minuti rimanenti. È personalizzabile nella sezione 3.</td></tr>
+    <tr><td><b>Piattaforme di Streaming</b></td><td>Le piattaforme configurate (Netflix, HBO Max, Disney+, Prime Video e altre). Apri una card per sfogliarne il catalogo.</td></tr>
+    <tr><td><b>In evidenza: Film / Serie TV</b></td><td>Classifiche e selezioni tematiche: Popolari, Novità, Top 10, tendenze della settimana, consigliati.</td></tr>
+    <tr><td><b>Catalogo personale</b></td><td>Le righe aggiunte dagli addon Stremio installati, quando il motore Debrid è attivo.</td></tr>
+  </table>
+
+  <h3>Filtri e «Seleziona Provider»</h3>
+  <p>Dentro una piattaforma o una sezione Film / Serie TV trovi i filtri <b>Tutti</b>,
+    <b>Film</b>, <b>Serie TV</b>, <b>Top 10</b> e i generi (Azione, Fantascienza, Dramma,
+    Commedia, Animazione e altri). Il collegamento <b>Seleziona Provider</b> apre la
+    configurazione delle piattaforme mostrate nella Home.</p>
+  <p>Se un genere non è coperto dai cataloghi configurati, StreamNova può usare
+    <b>TMDB come fallback</b>: l'opzione si trova in <b>Impostazioni → Ricerca e cataloghi</b>.</p>
+
+  <div class="figure">
+    <img src="assets/home_continue_watching.jpg" style="width:158mm" alt="Continua a guardare con blur anti-spoiler">
+    <div class="figcap"><b>Fig. 2</b> — La riga «Continua a guardare»: la prima card è sfocata perché l'episodio non è ancora stato iniziato (blur anti-spoiler attivo).</div>
+  </div>
+
+  <div class="note"><b>Card e avanzamento.</b> La barra azzurra sotto la card indica la
+    percentuale vista; il badge in alto a destra mostra i minuti rimanenti. Quando una
+    serie ha un episodio successivo, la card propone direttamente <b>S… E…</b> da riprendere.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 4</span></div>
+</section>
+
+<!-- ══════════ PAGINA 5 — CONTINUA A GUARDARE ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">03 · Continua a guardare</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">3</span>Continua a guardare</h2>
+  <p class="lead">La sezione <b>Impostazioni → Continua a guardare</b> controlla aspetto,
+    comportamento e ordinamento dell'omonima riga della Home.</p>
+
+  <table>
+    <tr><th style="width:38%">Voce</th><th style="width:17%">Predefinito</th><th>Cosa cambia</th></tr>
+    <tr><td><b>Mostra Continua a guardare</b></td><td>ON</td><td>Mostra o nasconde del tutto la riga nella Home.</td></tr>
+    <tr><td><b>Layout della riga</b></td><td>Scheda</td><td><b>Scheda</b> (16:9 con testo), <b>Larga</b> (horizontal card) o <b>Locandina</b> (poster verticale).</td></tr>
+    <tr><td><b>Usa miniature episodi</b></td><td>OFF</td><td>Usa lo still dell'episodio invece dello sfondo del titolo.</td></tr>
+    <tr><td><b>Sfoca non visti</b></td><td>OFF</td><td>Sfoca le miniature del prossimo episodio non ancora iniziato, per evitare spoiler. Vale anche per gli episodi mai visti nella scheda della serie.</td></tr>
+    <tr><td><b>Prossimo episodio dall'ultimo raggiunto</b></td><td>OFF</td><td>Calcola il successivo dall'episodio più avanti nella visione. Disattivalo se fai rewatch e preferisci l'episodio guardato più di recente.</td></tr>
+    <tr><td><b>Mostra episodi non ancora trasmessi</b></td><td>ON</td><td>Include in anticipo i prossimi episodi prima della messa in onda.</td></tr>
+    <tr><td><b>Ordinamento</b></td><td>Predefinito</td><td><b>Predefinito</b>, <b>Titolo (A–Z)</b> o <b>Voto TMDB</b>.</td></tr>
+  </table>
+
+  <div class="figure">
+    <img src="assets/settings_home_cw.jpg" style="width:140mm" alt="Impostazioni Continua a guardare">
+    <div class="figcap"><b>Fig. 3</b> — La sezione espandibile «Continua a guardare», con layout a Scheda selezionato.</div>
+  </div>
+
+  <h3>Quale layout scegliere</h3>
+  <ul>
+    <li><b>Scheda</b>: mostra titolo, episodio, barra di avanzamento e minuti rimanenti. È il più leggibile e il predefinito.</li>
+    <li><b>Larga</b>: privilegia lo still e il testo laterale; adatta TV con schermi larghi e poche card per riga.</li>
+    <li><b>Locandina</b>: usa il poster verticale e riduce l'ingombro, lasciando più spazio alle righe dei cataloghi.</li>
+  </ul>
+
+  <p class="small muted">Le opzioni successive — miniature, sfocatura, episodio successivo,
+    episodi non trasmessi e ordinamento — si trovano scorrendo la stessa sezione
+    espandibile, subito sotto il selettore del layout.</p>
+
+  <div class="tip"><b>Fine visione.</b> Quando un titolo è completato, esce automaticamente da
+    «Continua a guardare» sia in StreamNova sia su SIMKL: non resta in elenco come
+    «visto al 100%».</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 5</span></div>
+</section>
+
+<!-- ══════════ PAGINA 6 — DETTAGLIO + PILL ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">04 · Dettaglio</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">4</span>Dettaglio, «Serie già vista» e menu episodio</h2>
+  <p class="lead">La scheda di un titolo raccoglie azioni, cast, stagioni ed episodi.
+    Le serie TV hanno un comando in più per segnare l'intera serie come vista.</p>
+
+  <h3>Le azioni della scheda</h3>
+  <table>
+    <tr><th style="width:20%">Tipo</th><th>Ordine dei comandi</th></tr>
+    <tr><td><b>Film</b></td><td>Riproduci / Riprendi → Cuore (Preferiti) → <b>Occhio</b> (segna visto) → Trailer → <span class="muted">[Seleziona fonte, solo Debrid]</span>.</td></tr>
+    <tr><td><b>Serie TV</b></td><td>Riproduci / Riprendi S… E… → Cuore → <b>Serie già vista</b> → Trailer → <span class="muted">[Seleziona fonte, solo Debrid]</span>.</td></tr>
+  </table>
+
+  <h3>La pillola «Serie già vista» <span class="tag">1.0.8</span></h3>
+  <p>Nelle serie TV, subito a destra del cuore, trovi la pillola con l'icona dell'occhio.
+    Un solo comando segna <b>tutta la serie</b> come vista: tutti gli episodi conosciuti
+    risultano completati e la serie esce da «Continua a guardare». Quando è attiva,
+    la pillola diventa <b>«Serie vista»</b> e un secondo OK propone
+    <b>«Segna serie come da vedere»</b> per annullare.</p>
+  <div class="note"><b>Non è un toggle del singolo episodio.</b> Per segnare un solo episodio
+    usa il menu contestuale (pagina 7); per una sola stagione usa «Stagione già vista» dallo
+    stesso menu.</div>
+
+  <h3>Cast, produzione e dettagli</h3>
+  <p>Sotto le azioni scorri le card di <b>Creatore e Cast</b>. Più in basso le linguette
+    <b>Episodi</b>, <b>Produzione</b> e <b>Dettagli</b> mostrano rispettivamente le stagioni,
+    le case di produzione e le informazioni tecniche del titolo.</p>
+
+  <div class="figure">
+    <img src="assets/detail_series.jpg" style="width:150mm" alt="Scheda serie con pillola Serie già vista">
+    <div class="figcap"><b>Fig. 4</b> — Scheda di una serie: «Riprendi», cuore, pillola «Serie già vista» e trailer.</div>
+  </div>
+
+  <h3>Stagioni ed episodi</h3>
+  <p>La riga <b>Selezione stagione</b> mostra tutte le stagioni con il numero di episodi.
+    Sotto, ogni episodio riporta miniatura, numero, titolo, durata, data di uscita e sinossi.
+    Gli episodi già visti hanno un indicatore; quelli mai iniziati possono essere sfocati
+    se l'opzione <b>Sfoca non visti</b> è attiva.</p>
+
+  <div class="tip"><b>Pressione prolungata.</b> Tieni premuto OK su un episodio per aprire
+    il menu con «Segna episodio come visto», «Sfoglia di nuovo le fonti» e
+    «Stagione già vista».</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 6</span></div>
+</section>
+
+<!-- ══════════ PAGINA 7 — MENU EPISODIO ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">04 · Menu episodio</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">4.1</span>Menu dell'episodio <span class="tag">1.0.8</span></h2>
+  <p class="lead">Tieni premuto <b>OK</b> su una riga episodio: si apre una finestra con le
+    azioni rapide, senza avviare automaticamente la riproduzione.</p>
+
+  <table>
+    <tr><th style="width:40%">Voce</th><th>Cosa fa</th></tr>
+    <tr><td><b>Segna episodio come visto</b><br><span class="muted small">oppure «Segna episodio da vedere»</span></td><td>Cambia lo stato del singolo episodio. La voce si adatta allo stato corrente; badge, avanzamento della serie e «Continua a guardare» si aggiornano subito.</td></tr>
+    <tr><td><b>Sfoglia di nuovo le fonti</b></td><td>Riapre la scelta delle sorgenti per <b>quell'episodio</b>, senza riprodurre nulla in automatico. Utile quando un flusso non va o vuoi cambiarne uno.</td></tr>
+    <tr><td><b>Stagione già vista</b></td><td>Segna tutti gli episodi della stagione corrente come visti, con un solo comando.</td></tr>
+    <tr><td><b>Annulla</b></td><td>Chiude il menu senza modifiche. Anche BACK chiude la finestra.</td></tr>
+  </table>
+
+  <div class="figure">
+    <img src="assets/episode_menu.jpg" style="width:158mm" alt="Menu contestuale episodio">
+    <div class="figcap"><b>Fig. 5</b> — Il menu contestuale dell'episodio, aperto con pressione prolungata di OK.</div>
+  </div>
+
+  <h3>Comportamento e coerenza</h3>
+  <ul>
+    <li>Il menu è una <b>finestra separata</b>: mentre è aperto, il D-pad non può “fuggire” sulla scheda sottostante e il tasto che ha aperto il menu non viene letto come un clic sulla prima voce.</li>
+    <li>Le marcature valgono per <b>tutte le viste</b>: scheda, riga «Continua a guardare», badge degli episodi e stato inviato a SIMKL.</li>
+    <li>Se l'episodio era già visto, la prima voce diventa <b>«Segna episodio da vedere»</b>: la rimozione riporta la serie tra i titoli in corso, se era conclusa.</li>
+    <li>Dopo un riavvio dell'app lo stato resta salvato: non è un'anteprima temporanea.</li>
+  </ul>
+
+  <div class="note"><b>Episodi sfocati.</b> Se hai attivato «Sfoca non visti», le miniature
+    degli episodi mai iniziati sono sfocate ma restano selezionabili: puoi aprire il menu
+    e marcarle come viste anche senza riprodurle.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 7</span></div>
+</section>
+
+<!-- ══════════ PAGINA 8 — RIPRODUZIONE ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">05 · Riproduzione</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">5</span>Impostazioni di riproduzione</h2>
+  <p class="lead">Sono le preferenze che StreamNova applica all'avvio di ogni film o episodio.
+    Si trovano in <b>Impostazioni → Riproduzione</b>.</p>
+
+  <table>
+    <tr><th style="width:37%">Voce</th><th style="width:16%">Predefinito</th><th>Cosa fa</th></tr>
+    <tr><td><b>Avvio automatico (Autoplay)</b></td><td>OFF</td><td>Avvia da solo il contenuto selezionato, senza passare dalla schermata di scelta della fonte.</td></tr>
+    <tr><td><b>Risoluzione preferita</b></td><td>Auto</td><td><b>Auto</b> lascia scegliere al player; puoi forzare <b>4K</b>, <b>1080p</b> o <b>720p</b>.</td></tr>
+    <tr><td><b>Lingua audio preferita</b></td><td>Italiano</td><td>Lingua privilegiata all'avvio, se presente nella sorgente. «Originale / Qualsiasi» non impone nulla.</td></tr>
+    <tr><td><b>Privilegia tracce italiane</b></td><td>ON</td><td>Mette in cima le sorgenti in italiano quando disponibili.</td></tr>
+    <tr><td><b>Riproduci automaticamente il prossimo episodio</b></td><td>ON</td><td>A fine episodio mostra il countdown e passa al successivo.</td></tr>
+    <tr><td><b>Riprendi automaticamente la riproduzione</b></td><td>ON</td><td>Riparte dal punto in cui avevi interrotto, quando il progresso è disponibile.</td></tr>
+    <tr><td><b>Mostra overlay di caricamento</b></td><td>ON</td><td>Schermata cinematografica con poster e logo durante l'avvio. OFF usa l'indicatore compatto.</td></tr>
+    <tr><td><b>Mostra stato di caricamento</b></td><td>ON</td><td>Mostra la fase reale: preparazione sorgente, connessione, caricamento, buffering.</td></tr>
+    <tr><td><b>Overlay in pausa</b></td><td>OFF</td><td>Dopo qualche secondo di pausa mostra poster, titolo e sinossi; sparisce alla ripresa.</td></tr>
+    <tr><td><b>Avvisi sui contenuti</b></td><td>OFF</td><td>Brevi avvisi su volgarità, violenza, paura e alcol/droghe all'avvio di film e serie.</td></tr>
+  </table>
+
+  <div class="figure">
+    <img src="assets/settings_playback.jpg" style="width:140mm" alt="Impostazioni di riproduzione">
+    <div class="figcap"><b>Fig. 6</b> — «Riproduzione»: autoplay, risoluzione, lingua audio e priorità italiana.</div>
+  </div>
+
+  <p class="small muted">Le opzioni su overlay di caricamento, stato di caricamento,
+    overlay in pausa e avvisi sui contenuti si trovano nella stessa sezione, subito
+    sotto la ripresa automatica.</p>
+
+  <div class="tip"><b>Consiglio.</b> Lascia <b>Risoluzione Auto</b> e <b>Privilegia tracce
+    italiane ON</b>: StreamNova sceglie la qualità migliore disponibile senza forzare
+    flussi che il TV o la rete non reggono.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 8</span></div>
+</section>
+
+<!-- ══════════ PAGINA 9 — PLAYER ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">06 · Player</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">6</span>Il player: controlli e seek preview</h2>
+  <p class="lead">Premi un tasto direzionale per mostrare i comandi. La barra scompare da
+    sola dopo pochi secondi; mentre è visibile, il focus si sposta tra i pulsanti.</p>
+
+  <h3>La barra dei comandi</h3>
+  <table>
+    <tr><th style="width:33%">Pulsanti</th><th>Funzione</th></tr>
+    <tr><td><b>Play / Pausa</b> · <b>Episodio successivo</b></td><td>Avvia o sospende; solo serie TV, salta al prossimo episodio se disponibile.</td></tr>
+    <tr><td><b>Adatta</b> · <b>Qualità video</b></td><td>Cambia l'adattamento dell'immagine; apre la scelta della risoluzione del flusso.</td></tr>
+    <tr><td><b>Velocità</b> · <b>CC Sottotitoli</b></td><td>0,75× · 1,0× · 1,25× · 1,5×; apre il pannello completo dei sottotitoli.</td></tr>
+    <tr><td><b>Audio</b> · <b>Sorgente</b></td><td>Sceglie la traccia audio; riapre la selezione manuale delle fonti.</td></tr>
+  </table>
+
+  <div class="figure">
+    <img src="assets/player_controls.jpg" style="width:140mm" alt="Comandi del player">
+    <div class="figcap"><b>Fig. 7</b> — I comandi del player con titolo, episodio, qualità (1080p) e sorgente (VixSrc).</div>
+  </div>
+
+  <h3>Seek preview <span class="tag">nuovo</span></h3>
+  <p>Con i comandi nascosti, premi <b>◀</b> o <b>▶</b>: sopra la timeline compare
+    un'anteprima con il fotogramma del punto proposto, il tempo di destinazione
+    (ad esempio <b>1:56 / 20:27</b>) e il salto richiesto (<b>+10s</b>).
+    La riproduzione <b>non</b> salta subito: premi <b>OK</b> per confermare,
+    <b>BACK</b> per annullare.</p>
+  <ul>
+    <li>Se il decoder raggiunge un fotogramma leggermente precedente al punto richiesto, l'anteprima lo segnala come approssimato (<b>≈</b>) invece di mostrare un orario falso.</li>
+    <li>Se il fotogramma non è disponibile, restano l'orario e il segnaposto: lo scorrimento funziona comunque.</li>
+  </ul>
+
+  <div class="figure">
+    <img src="assets/seek_preview.jpg" style="width:95mm" alt="Seek preview sulla timeline">
+    <div class="figcap"><b>Fig. 8</b> — Seek preview: fotogramma, orario proposto e salto di 10 secondi.</div>
+  </div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 9</span></div>
+</section>
+
+<!-- ══════════ PAGINA 10 — SOTTOTITOLI/AUDIO NEL PLAYER ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">06 · Sottotitoli e audio</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">6.1</span>Sottotitoli e audio nel player</h2>
+  <p class="lead">Il pannello CC riunisce aspetto, sincronizzazione e tracce disponibili,
+    incluse quelle scaricate da OpenSubtitles.</p>
+
+  <h3>Pannello «Seleziona Sottotitoli»</h3>
+  <table>
+    <tr><th style="width:33%">Controllo</th><th>Cosa fa</th></tr>
+    <tr><td><b>Sottotitoli Forced</b></td><td>Attiva i sottotitoli forzati presenti nel video, di solito per i dialoghi in lingua straniera. ON/OFF.</td></tr>
+    <tr><td><b>Subtitle Appearance</b></td><td>Anteprima dal vivo di <b>Size</b>, <b>Background</b> e <b>Opacity</b>: le modifiche si applicano subito e restano salvate.</td></tr>
+    <tr><td><b>Sincronizzazione Offset</b></td><td>Sposta i sottotitoli di <b>−250 ms</b>, <b>0 ms</b> o <b>+250 ms</b>. «Ripristina (0 ms)» annulla l'offset.</td></tr>
+    <tr><td><b>Tracce Integrate</b></td><td>Elenca le tracce del flusso, ad esempio «Italiano», «Inglese — English [CC] (non udenti)»; <b>Nessuno</b> disattiva i sottotitoli.</td></tr>
+    <tr><td><b>OpenSubtitles</b></td><td>Se hai configurato la chiave API, il pannello mostra anche i risultati online e lo stato del download.</td></tr>
+  </table>
+
+  <div class="figure">
+    <img src="assets/subtitle_modal.jpg" style="width:120mm" alt="Pannello sottotitoli del player">
+    <div class="figcap"><b>Fig. 9</b> — Pannello sottotitoli: Forced, aspetto, offset e tracce integrate.</div>
+  </div>
+
+  <h3>Pannello audio</h3>
+  <p>Il pulsante con l'altoparlante apre le tracce audio con codec e dettagli. La scelta
+    vale <b>per la sessione corrente</b> e non modifica la preferenza globale
+    «Lingua audio preferita».</p>
+
+  <div class="figure">
+    <img src="assets/audio_panel.jpg" style="width:88mm" alt="Selezione traccia audio">
+    <div class="figcap"><b>Fig. 10</b> — Scelta della traccia audio: italiano o inglese, con codec AAC.</div>
+  </div>
+
+  <div class="tip"><b>Ordine consigliato.</b> Imposta lingua e aspetto dalle Impostazioni
+    (pagina 18); usa il pannello del player solo per correzioni al volo.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 10</span></div>
+</section>
+
+<!-- ══════════ PAGINA 11 — SELEZIONE FLUSSO ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">07 · Selezione flusso</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">7</span>Selezione flusso e cache</h2>
+  <p class="lead">StreamNova può riutilizzare l'ultimo flusso funzionante per lo stesso
+    film o episodio, risparmiando la ricerca delle sorgenti.</p>
+
+  <table>
+    <tr><th style="width:40%">Voce</th><th>Cosa fa</th></tr>
+    <tr><td><b>Riusa l'ultimo link</b></td><td>Riproduce automaticamente l'ultimo flusso funzionante per lo stesso contenuto, se la cache è ancora valida.</td></tr>
+    <tr><td><b>Durata cache ultimo link</b></td><td>Per quanto tempo conservare il riferimento: <b>6 ore</b>, <b>12 ore</b>, <b>1 giorno</b> (predefinito), <b>3 giorni</b> o <b>7 giorni</b>.</td></tr>
+  </table>
+
+  <p>Dalla scheda del titolo, <b>Seleziona fonte</b> apre l'elenco manuale delle sorgenti
+    con qualità, audio, sottotitoli e stato della cache. Il comando è disponibile solo
+    nel motore <b>Debrid TorBox</b>; con il Web Streaming la fonte viene scelta
+    automaticamente.</p>
+
+  <p>Nell'elenco delle fonti puoi riconoscere:</p>
+  <div class="pill-list">
+    <span><b>Cached</b> — già disponibile sul servizio Debrid</span>
+    <span><b>Non in cache</b> — deve essere preparato</span>
+    <span><b>Stato non noto</b> — informazione assente</span>
+    <span><b>Audio</b> — lingue della traccia</span>
+    <span><b>Sottotitoli</b> — tracce incluse</span>
+    <span><b>1080p / 4K</b> — risoluzione dichiarata</span>
+  </div>
+
+  <div class="figure">
+    <img src="assets/settings_stream_subs.jpg" style="width:158mm" alt="Selezione flusso e sottotitoli">
+    <div class="figcap"><b>Fig. 11</b> — «Selezione Flusso» con riuso dell'ultimo link e durata della cache.</div>
+  </div>
+
+  <div class="note"><b>Un link memorizzato può non essere più disponibile.</b> La cache
+    riduce l'attesa, non garantisce che la sorgente risponda: se il flusso fallisce,
+    StreamNova torna alla ricerca normale. Aumentare la durata è utile solo se usi
+    spesso gli stessi titoli.</div>
+
+  <div class="tip"><b>Quando cambiare.</b> Se noti che un titolo parte spesso da una
+    sorgente lenta, disattiva temporaneamente «Riusa l'ultimo link», scegli a mano una
+    fonte migliore e poi riattivalo: la nuova scelta diventa quella memorizzata.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 11</span></div>
+</section>
+
+<!-- ══════════ PAGINA 12 — MOTORE ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">08 · Motore di riproduzione</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">8</span>Web Streaming e Debrid TorBox</h2>
+  <p class="lead">StreamNova ha due motori alternativi. Si sceglie in
+    <b>Impostazioni → Motore di Riproduzione → Modalità di riproduzione</b>.</p>
+
+  <table>
+    <tr><th style="width:26%">Modalità</th><th>Come funziona</th><th style="width:24%">Cosa serve</th></tr>
+    <tr><td><b>Web Streaming Gratuito (HTTP Scraper)</b></td><td>Riproduce direttamente i flussi degli scraper web gratuiti (VixSrc, AnimeSaturn, CB01 e altri).</td><td>Nessun account o chiave API. La sezione Addon è nascosta.</td></tr>
+    <tr><td><b>Debrid TorBox (1080p / 4K Ultra HD)</b></td><td>Usa esclusivamente gli addon Stremio e TorBox Instant per risolvere sorgenti in alta definizione.</td><td>Account TorBox, chiave API e almeno un addon Stremio.</td></tr>
+  </table>
+
+  <h3>Configurare TorBox</h3>
+  <ol>
+    <li>Apri <b>Modalità di riproduzione</b> e scegli <b>Debrid TorBox (1080p / 4K Ultra HD)</b>.</li>
+    <li>Seleziona <b>Chiave API TorBox</b> e incolla la chiave personale da <b>torbox.app → Account → API</b>.</li>
+    <li>Seleziona <b>Stato account</b> / <b>Verifica Account</b>: se la chiave è valida compare <b>Collegato</b> in verde.</li>
+    <li>Lascia <b>Usa TorBox Instant Debrid</b> su ON per privilegiare i file già disponibili.</li>
+    <li>Installa almeno un addon Stremio (sezione 9) e avvia un titolo.</li>
+  </ol>
+
+  <div class="figure">
+    <img src="assets/engine_mode_dialog.jpg" style="width:126mm" alt="Scelta modalità di riproduzione">
+    <div class="figcap"><b>Fig. 12</b> — La scelta fra Debrid TorBox e Web Streaming gratuito.</div>
+  </div>
+
+  <div class="warn"><b>Le due modalità si escludono.</b> In Web Streaming gli addon non
+    partecipano alla risoluzione e la voce «Addon» sparisce dalla barra laterale.
+    In Debrid TorBox sono gli scraper web a restare spenti.</div>
+
+  <h3>Quale scegliere</h3>
+  <ul>
+    <li><b>Web Streaming</b>: configurazione immediata, nessun costo, qualità variabile e disponibilità legata agli scraper.</li>
+    <li><b>Debrid TorBox</b>: sorgenti 1080p/4K più stabili e cache condivisa, ma richiede account, chiave e addon aggiornati.</li>
+  </ul>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 12</span></div>
+</section>
+
+<!-- ══════════ PAGINA 13 — ADDON ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">09 · Addon Stremio</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">9</span>Addon Stremio e configurazione remota</h2>
+  <p class="lead">Gli addon compatibili con il protocollo Stremio aggiungono sorgenti
+    in 1080p e 4K al motore Debrid. Si gestiscono da <b>Addon</b> nella barra laterale.</p>
+
+  <h3>Installare un addon</h3>
+  <ol>
+    <li>Apri <b>Addon</b> e seleziona <b>Aggiungi Addon</b>.</li>
+    <li>Incolla l'URL del manifest, ad esempio <b>https://torrentio.strem.fun/manifest.json</b>, e conferma con <b>Installa</b>.</li>
+    <li>L'addon compare nell'elenco: puoi attivarlo o disattivarlo con l'interruttore <b>Attivo / Disattivo</b>.</li>
+    <li>Ripeti per altri addon; puoi rimuoverli in qualsiasi momento.</li>
+  </ol>
+
+  <h3>Configurazione remota con QR</h3>
+  <p>Per non digitare URL col telecomando, la schermata Addon mostra un <b>QR Code</b> e
+    l'indirizzo da aprire nel browser di smartphone o PC:</p>
+  <div class="note" style="font-size:9pt"><b>http://&lt;IP-del-TV&gt;:8080</b> — ad esempio
+    <b>http://10.0.2.16:8080</b>. Il telefono deve essere sulla <b>stessa rete Wi‑Fi</b>
+    del televisore.</div>
+  <ul>
+    <li>Scansiona il QR con la fotocamera: si apre la pagina di configurazione remota.</li>
+    <li>Da lì puoi incollare l'URL del manifest e installare l'addon senza usare il telecomando.</li>
+    <li>L'elenco si aggiorna sul TV; la pagina funziona finché l'app è aperta e sulla rete.</li>
+  </ul>
+
+  <div class="figure">
+    <img src="assets/addons_remote.jpg" style="width:160mm" alt="Schermata Addon con QR">
+    <div class="figcap"><b>Fig. 13</b> — «Addon Stremio» con configurazione remota: QR Code e indirizzo web locale.</div>
+  </div>
+
+  <div class="warn"><b>La sezione Addon esiste solo in modalità Debrid TorBox.</b>
+    Se non la vedi nella barra laterale, controlla il motore di riproduzione (sezione 8).</div>
+
+  <div class="tip"><b>Sicurezza.</b> La pagina di configurazione è raggiungibile da
+    qualunque dispositivo della stessa rete: usala su una rete domestica fidata e
+    chiudi la pagina al termine.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 13</span></div>
+</section>
+
+<!-- ══════════ PAGINA 14 — SIMKL ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">10 · Account SIMKL</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">10</span>Account SIMKL</h2>
+  <p class="lead">SIMKL tiene allineati watchlist, cronologia e avanzamento tra StreamNova
+    e gli altri servizi che usi. L'account è facoltativo: senza collegamento l'app
+    funziona normalmente.</p>
+
+  <h3>Cosa sincronizza</h3>
+  <table>
+    <tr><th style="width:26%">Dato</th><th>Effetto in StreamNova</th></tr>
+    <tr><td><b>Playback</b></td><td>I punti di pausa salvati diventano la riga <b>Continua a guardare</b>.</td></tr>
+    <tr><td><b>Watchlist / Plan to Watch</b></td><td>I titoli che vuoi guardare entrano nei <b>Preferiti</b>.</td></tr>
+    <tr><td><b>Libreria serie e anime</b></td><td>Badge «visto» nella scheda, prossimo episodio da guardare e stato delle stagioni.</td></tr>
+    <tr><td><b>Film completati</b></td><td>I titoli conclusi risultano visti e non restano in «Continua a guardare».</td></tr>
+    <tr><td><b>Scrobbling</b></td><td>Avvio, pausa e stop della riproduzione vengono inviati a SIMKL; se la rete manca, gli eventi restano in coda e vengono ritentati.</td></tr>
+  </table>
+
+  <h3>Collegare l'account</h3>
+  <ol>
+    <li>Apri <b>Impostazioni → Account SIMKL</b> e seleziona <b>Collega account SIMKL</b>.</li>
+    <li>Compare un <b>QR Code</b> con un codice: inquadralo con lo smartphone o apri il link indicato.</li>
+    <li>Autorizza StreamNova dal sito SIMKL. L'app attende la conferma e salva i token.</li>
+    <li>Quando la riga diventa <b>Account collegato</b> con il nome utente in verde, la sincronizzazione è attiva.</li>
+  </ol>
+
+  <h3>Dopo il collegamento</h3>
+  <ul>
+    <li><b>Sincronizza ora</b> avvia un allineamento manuale e mostra l'esito; la riga riporta anche l'ora dell'ultima sincronizzazione.</li>
+    <li>L'allineamento automatico parte all'avvio e al ritorno in primo piano, ma solo se SIMKL segnala modifiche e sono passati almeno <b>5 minuti</b> dall'ultimo tentativo.</li>
+    <li><b>Sessione scaduta</b>: l'app lo segnala in arancione e chiede di ricollegare l'account. I token non vengono cancellati per un errore di rete.</li>
+    <li><b>Sola lettura</b>: se l'autorizzazione non include la scrittura, lo scrobbling non funziona; ricollega l'account per concedere l'accesso completo.</li>
+  </ul>
+
+  <div class="figure">
+    <img src="assets/settings_simkl_sync.jpg" style="width:126mm" alt="Account SIMKL e sincronizzazione">
+    <div class="figcap"><b>Fig. 14</b> — «Account SIMKL» e «Sincronizzazione» nelle Impostazioni (nome utente oscurato).</div>
+  </div>
+
+  <div class="note"><b>Scollegamento.</b> Selezionando «Account collegato» puoi scollegare
+    l'account: StreamNova revoca il grant e rimuove i dati importati da SIMKL, ma
+    <b>non cancella</b> i dati locali né quelli sul sito SIMKL.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 14</span></div>
+</section>
+
+<!-- ══════════ PAGINA 15 — SYNC 1 ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">11 · Modalità Sync</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">11</span>Modalità Sync tra dispositivi <span class="tag">1.0.9</span></h2>
+  <p class="lead">Sync replica la configurazione completa di StreamNova su un altro
+    dispositivo della <b>stessa rete locale</b>: impostazioni, addon, account SIMKL,
+    preferiti e progressi. Nessun cloud: i dati passano direttamente da un TV all'altro.</p>
+
+  <h3>Cosa serve</h3>
+  <ul>
+    <li>Due dispositivi con StreamNova <b>1.0.9 o successiva</b>, sulla stessa rete Wi‑Fi o Ethernet.</li>
+    <li><b>Modalità Sync attiva su entrambi</b> e app aperta durante il trasferimento.</li>
+    <li>Rete domestica senza isolamento client (alcuni router Wi‑Fi ospiti bloccano la comunicazione tra dispositivi).</li>
+  </ul>
+
+  <h3>Procedura passo passo</h3>
+  <ol>
+    <li>Su entrambi i TV: <b>Impostazioni → Sincronizzazione</b> e attiva <b>Modalità Sync</b>.</li>
+    <li>Controlla che <b>Questo dispositivo</b> mostri un indirizzo <b>IP:8090</b> in verde.</li>
+    <li>Imposta un <b>Nome dispositivo</b> riconoscibile (es. «TV Soggiorno», «TV Camera»).</li>
+    <li>Su uno dei due premi <b>Cerca dispositivi</b>: l'altro appare nell'elenco. Se non appare, usa <b>Aggiungi per indirizzo IP</b>.</li>
+    <li>Seleziona il dispositivo di destinazione/origine.</li>
+    <li>Scegli la direzione: <b>Importa dal dispositivo</b> (copia sul TV corrente) oppure <b>Invia la tua configurazione</b>.</li>
+    <li>Seleziona le categorie da trasferire e premi <b>Avvia</b>.</li>
+    <li>Sull'altro TV compare <b>Richiesta di sincronizzazione</b>: controlla direzione e categorie e premi <b>Trasferisci</b>. La richiesta scade dopo <b>2 minuti</b>.</li>
+  </ol>
+
+  <div class="figure">
+    <img src="assets/sync_section.jpg" style="width:158mm" alt="Sezione Sincronizzazione">
+    <div class="figcap"><b>Fig. 15</b> — «Sincronizzazione» con Sync attiva, indirizzo locale, nome dispositivo e ricerca peer.</div>
+  </div>
+
+  <h3>Le categorie trasferibili</h3>
+  <table>
+    <tr><th style="width:36%">Categoria</th><th>Contenuto</th></tr>
+    <tr><td><b>Impostazioni e chiavi API</b></td><td>Tutte le preferenze generali, di riproduzione e avanzate; chiavi TorBox e OpenSubtitles; PIN del controllo genitori (solo hash).</td></tr>
+    <tr><td><b>Addon Stremio</b></td><td>Elenco degli addon installati con URL e stato attivo/disattivo.</td></tr>
+    <tr><td><b>Account SIMKL</b></td><td>Credenziali dell'account SIMKL, solo se il dispositivo sorgente è collegato.</td></tr>
+    <tr><td><b>Preferiti e progressi</b></td><td>Preferiti, riga «Continua a guardare» e avanzamento dei singoli episodi.</td></tr>
+  </table>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 15</span></div>
+</section>
+
+<!-- ══════════ PAGINA 16 — SYNC 2 ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">11 · Modalità Sync</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">11.1</span>Come vengono fusi i dati</h2>
+  <p class="lead">La sincronizzazione non è una copia cieca: le impostazioni vengono
+    applicate, mentre la libreria viene unita senza cancellare nulla.</p>
+
+  <div class="device-diagram">
+    <div class="tv"><div class="screen">TV SOGGIORNO</div><div class="nm">Sorgente</div><div class="st">Sync attiva · 192.168.1.20:8090</div></div>
+    <div class="arrow"><div class="line">⇄</div>stessa rete<br>Wi‑Fi / Ethernet</div>
+    <div class="tv"><div class="screen">TV CAMERA</div><div class="nm">Destinazione</div><div class="st">Sync attiva · 192.168.1.24:8090</div></div>
+  </div>
+
+  <table>
+    <tr><th style="width:28%">Dato</th><th>Regola</th></tr>
+    <tr><td><b>Impostazioni</b></td><td>Vengono applicate quelle del dispositivo sorgente, categoria per categoria.</td></tr>
+    <tr><td><b>Addon</b></td><td>Gli addon mancanti vengono installati, quelli non presenti nella sorgente vengono rimossi.</td></tr>
+    <tr><td><b>Preferiti</b></td><td>Unione: un titolo è preferito se lo è su almeno uno dei due dispositivi.</td></tr>
+    <tr><td><b>Progressi</b></td><td>Per ogni titolo vince la visione <b>più recente</b> (<span class="muted">lastWatchedAt</span>); per gli episodi vince la riga aggiornata più di recente. I titoli presenti solo sul ricevente restano.</td></tr>
+    <tr><td><b>SIMKL</b></td><td>Le credenziali vengono importate solo se la sorgente è collegata; una sorgente scollegata non disconnette il ricevente.</td></tr>
+  </table>
+
+  <h3>Sicurezza e limiti</h3>
+  <ul>
+    <li>Il trasferimento avviene <b>solo sulla rete locale</b>, sulla porta <b>8090</b>, con discovery automatica mDNS (<b>_streamnova._tcp</b>).</li>
+    <li>Ogni trasferimento richiede <b>l'approvazione esplicita</b> sul dispositivo che possiede i dati: nessuno può copiare la configurazione a tua insaputa.</li>
+    <li>Il PIN del controllo genitori viaggia come <b>hash</b>, mai in chiaro.</li>
+    <li>Le chiavi API (TorBox, OpenSubtitles) fanno parte della categoria Impostazioni: attiva la Sync solo su reti fidate.</li>
+    <li>Il ricevente rifiuta payload con schema più recente della propria build: aggiorna entrambi i dispositivi se la Sync non parte.</li>
+  </ul>
+
+  <h3>Se i dispositivi non si trovano</h3>
+  <table>
+    <tr><th style="width:38%">Controllo</th><th>Cosa fare</th></tr>
+    <tr><td>Stessa rete?</td><td>Wi‑Fi e Ethernet devono appartenere alla stessa subnet; evita reti «ospiti» o VLAN separate.</td></tr>
+    <tr><td>Sync attiva su entrambi?</td><td>L'interruttore deve essere ON e l'indirizzo IP:8090 visibile in verde.</td></tr>
+    <tr><td>App aperta?</td><td>Tieni StreamNova aperta su entrambi i TV durante ricerca e trasferimento.</td></tr>
+    <tr><td>Isolamento client?</td><td>Disattiva l'isolamento AP sul router, se presente.</td></tr>
+    <tr><td>Discovery bloccata?</td><td>Usa <b>Aggiungi per indirizzo IP</b> e inserisci l'IP mostrato dall'altro dispositivo.</td></tr>
+  </table>
+
+  <div class="tip"><b>Prima volta.</b> Prova la Sync con la sola categoria «Preferiti e
+    progressi»: è la meno invasiva e ti permette di verificare che i due TV si vedano
+    prima di trasferire impostazioni e chiavi API.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 16</span></div>
+</section>
+
+<!-- ══════════ PAGINA 17 — GENERALE ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">12 · Generale</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">12</span>Generale: lingua, controllo genitori, aggiornamenti</h2>
+  <p class="lead">Le impostazioni di base dell'app: lingua dell'interfaccia, protezione
+    dei contenuti e aggiornamento del pacchetto.</p>
+
+  <h3>Lingua dell'app</h3>
+  <p>Puoi scegliere <b>Italiano</b>, <b>Inglese</b>, <b>Spagnolo</b>, <b>Francese</b> o
+    <b>Tedesco</b>. La lingua cambia l'interfaccia di StreamNova; i titoli e le sinossi
+    seguono la lingua dei metadati TMDB.</p>
+
+  <h3>Controllo genitori</h3>
+  <ol>
+    <li>Seleziona <b>Controllo genitori</b> e crea un <b>PIN di 4 cifre</b>; confermalo.</li>
+    <li>Scegli la soglia di età: <b>14+</b>, <b>16+</b> o <b>18+</b>.</li>
+    <li>All'avvio di un contenuto oltre la soglia, StreamNova chiede il PIN.</li>
+    <li>Dalla stessa voce puoi <b>cambiare la soglia</b>, <b>modificare il PIN</b> o <b>disattivare</b> il controllo (con PIN).</li>
+  </ol>
+  <div class="note"><b>PIN dimenticato.</b> Il PIN non è recuperabile dall'app: se lo perdi,
+    l'unico modo per ripristinare l'accesso è cancellare i dati dell'app dal sistema,
+    perdendo anche le preferenze locali. Conservalo in un posto sicuro.</div>
+
+  <h3>Controlla aggiornamenti</h3>
+  <p>La voce verifica le release pubblicate su GitHub e propone la versione più recente.
+    StreamNova:</p>
+  <ul>
+    <li>sceglie l'APK compatibile con l'<b>architettura del dispositivo</b> (arm64, arm32, x86, x86_64);</li>
+    <li>verifica <b>dimensione</b> e <b>SHA-256</b> del file prima di installarlo;</li>
+    <li>mostra le novità della release e chiede conferma prima del download;</li>
+    <li>se manca l'autorizzazione a installare app da quella sorgente, offre il pulsante <b>Consenti installazioni</b>.</li>
+  </ul>
+  <p class="small muted">Se la release non contiene un APK installabile su quel dispositivo,
+    l'app lo dice esplicitamente e non avvia il download.</p>
+
+  <h3>Versione dell'app</h3>
+  <p>La riga <b>Versione dell'app</b> mostra la versione installata (in questa guida:
+    <b>1.0.9</b>). La sezione <b>Informazioni</b> in fondo alle Impostazioni riporta
+    versione, riconoscimenti TMDB ed ExoPlayer.</p>
+
+  <div class="figure">
+    <img src="assets/settings_general_engine.jpg" style="width:148mm" alt="Sezione Generale e Motore di Riproduzione">
+    <div class="figcap"><b>Fig. 16</b> — «Generale» con lingua, controllo genitori, aggiornamenti e versione.</div>
+  </div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 17</span></div>
+</section>
+
+<!-- ══════════ PAGINA 18 — SOTTOTITOLI GLOBALI ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">13 · Sottotitoli</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">13</span>Sottotitoli e OpenSubtitles</h2>
+  <p class="lead">Le preferenze globali dei sottotitoli si trovano in
+    <b>Impostazioni → Sottotitoli</b>; OpenSubtitles aggiunge la ricerca online.</p>
+
+  <table>
+    <tr><th style="width:38%">Voce</th><th style="width:17%">Predefinito</th><th>Cosa fa</th></tr>
+    <tr><td><b>Abilita automaticamente i sottotitoli</b></td><td>OFF</td><td>Attiva i sottotitoli all'avvio, se disponibili.</td></tr>
+    <tr><td><b>Lingua preferita</b></td><td>Italiano (it)</td><td>Italiano, inglese, spagnolo, francese, tedesco, portoghese oppure «Originale / Qualsiasi».</td></tr>
+    <tr><td><b>Dimensione sottotitoli</b></td><td>Media</td><td>Piccolissima, Piccola, Media, Grande, Molto grande.</td></tr>
+    <tr><td><b>Sfondo dei sottotitoli</b></td><td>Nero</td><td>Nessuno, Nero, Bianco, Blu.</td></tr>
+    <tr><td><b>Opacità sfondo</b></td><td>50%</td><td>100%, 75%, 50% o 25%. Il testo resta sempre opaco.</td></tr>
+    <tr><td><b>Posizione dei sottotitoli</b></td><td>Basso</td><td>Basso, Centro, Alto.</td></tr>
+    <tr><td><b>Sottotitoli Forced</b></td><td>ON</td><td>Privilegia i sottotitoli forzati presenti nel video, tipici dei dialoghi in lingua straniera.</td></tr>
+  </table>
+
+  <div class="figure">
+    <img src="assets/settings_subtitles.jpg" style="width:140mm" alt="Aspetto dei sottotitoli">
+    <div class="figcap"><b>Fig. 17</b> — Lingua, dimensione, sfondo, opacità e posizione dei sottotitoli.</div>
+  </div>
+
+  <h3>OpenSubtitles</h3>
+  <p>Inserisci la <b>chiave API personale</b> (da <b>opensubtitles.com</b>) e premi
+    <b>Verifica connessione</b>. La chiave viene usata subito, senza riavviare l'app.</p>
+  <ul>
+    <li><b>Senza chiave</b>: la ricerca ufficiale OpenSubtitles non è disponibile, ma i sottotitoli forniti dagli addon Stremio continuano a funzionare.</li>
+    <li><b>Chiave non valida</b>: l'app avvisa che la ricerca può fallire e invita a controllare la chiave.</li>
+    <li><b>Errore di rete o servizio</b>: il messaggio distingue connessione assente, chiave rifiutata ed errore HTTP.</li>
+  </ul>
+
+  <div class="tip"><b>Configurazione tipica.</b> Italiano (it), sfondo Nero al 50%,
+    dimensione Media, posizione Bassa, Forced ON. Sono gli stessi valori predefiniti:
+    se non hai esigenze particolari, non devi cambiare nulla.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 18</span></div>
+</section>
+
+<!-- ══════════ PAGINA 19 — AVANZATE ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">14 · Avanzate</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">14</span>Impostazioni avanzate</h2>
+  <p class="lead">Le opzioni di <b>Impostazioni → Avanzato</b> agiscono sul motore video e
+    audio. I valori predefiniti vanno bene nella maggior parte dei casi: modifica una
+    voce alla volta e verifica il risultato.</p>
+
+  <table>
+    <tr><th style="width:32%">Voce</th><th style="width:24%">Valori</th><th>Cosa fa</th></tr>
+    <tr><td><b>Dimensione Target Buffer</b></td><td>Predefinito 175 MB<br>Minimo 150 MB<br>Bilanciato 300 MB<br>Esteso 500 MB+ / 4K</td><td>Memoria destinata al buffering. Valori alti aiutano i flussi 4K ma consumano più memoria.</td></tr>
+    <tr><td><b>Buffer Iniziale (Avvio)</b></td><td>1,5 s · 2,5 s · 3,5 s</td><td>Attesa prima di partire: più alta = avvio più lento ma più stabile su reti lente.</td></tr>
+    <tr><td><b>Back Buffer</b></td><td>0 · 10 · 15 · 30 · 60 s</td><td>Conserva il video già visto per rendere istantanei i salti all'indietro.</td></tr>
+    <tr><td><b>Audio Passthrough / Bitstream</b></td><td>ON / OFF</td><td>Invia l'audio compatibile direttamente al sistema audio (soundbar, amplificatore).</td></tr>
+    <tr><td><b>Audio Tunneling</b></td><td>ON / OFF</td><td>Percorso audio dedicato su dispositivi compatibili; può ridurre la latenza.</td></tr>
+    <tr><td><b>Decoder Fallback (FFmpeg)</b></td><td>Disattivato<br>Attivo<br>Preferisci software</td><td>Decoder software alternativo per flussi non compatibili; può aumentare l'uso della CPU.</td></tr>
+    <tr><td><b>Auto Frame Rate Matching (AFR)</b></td><td>ON / OFF</td><td>Adatta la frequenza dello schermo a quella del contenuto, se il TV lo supporta.</td></tr>
+    <tr><td><b>Dolby Vision Fallback</b></td><td>ON / OFF</td><td>Gestione alternativa per la compatibilità Dolby Vision.</td></tr>
+    <tr><td><b>Statistiche Avanzate (Stats for Nerds)</b></td><td>ON / OFF</td><td>Mostra dati tecnici utili alla diagnosi: codec, risoluzione, buffer, frame persi.</td></tr>
+    <tr><td><b>Cancella Cache e Dati Temporanei</b></td><td>—</td><td>Elimina cache e dati temporanei; utile in caso di problemi persistenti.</td></tr>
+  </table>
+
+  <div class="figure">
+    <img src="assets/settings_advanced.jpg" style="width:128mm" alt="Impostazioni avanzate">
+    <div class="figcap"><b>Fig. 18</b> — Buffer, audio, decoder e AFR. In fondo alla sezione: Dolby Vision, statistiche e pulizia cache.</div>
+  </div>
+
+  <div class="warn"><b>Se un flusso non parte.</b> Prova prima un'altra fonte o una
+    risoluzione inferiore: il decoder software è più compatibile ma pesante e su
+    Fire TV Stick può causare scatti.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 19</span></div>
+</section>
+
+<!-- ══════════ PAGINA 20 — CONSIGLIATA + TROUBLESHOOTING ══════════ -->
+<section class="page">
+  <div class="run"><span class="lbl">15 · Configurazione e problemi</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">15</span>Configurazione consigliata</h2>
+  <p class="lead">Una configurazione equilibrata per l'uso quotidiano, adatta sia a
+    Google TV / Android TV sia a Fire TV Stick.</p>
+
+  <div class="grid3">
+    <div class="card"><div class="ic">RIPRODUZIONE</div><div class="t">Auto e italiano</div>
+      <div class="d">Risoluzione Auto · lingua audio Italiano · privilegia tracce italiane ON · prossimo episodio ON · ripresa automatica ON.</div></div>
+    <div class="card"><div class="ic">FLUSSO</div><div class="t">Riuso controllato</div>
+      <div class="d">Riusa l'ultimo link ON · cache 1 giorno. Se un titolo parte lento, scegli a mano la fonte.</div></div>
+    <div class="card"><div class="ic">SOTTOTITOLI</div><div class="t">Leggibili</div>
+      <div class="d">Italiano (it) · Media · sfondo Nero · opacità 50% · posizione Bassa · Forced ON.</div></div>
+    <div class="card"><div class="ic">CONTINUA A GUARDARE</div><div class="t">Senza spoiler</div>
+      <div class="d">Layout Scheda · miniature episodi ON · sfoca non visti ON · prossimo episodio dall'ultimo raggiunto ON.</div></div>
+    <div class="card"><div class="ic">AVANZATE</div><div class="t">Predefinite</div>
+      <div class="d">Target buffer predefinito · buffer iniziale standard · back buffer 15 s · passthrough e tunneling OFF.</div></div>
+    <div class="card"><div class="ic">ACCOUNT</div><div class="t">Facoltativi</div>
+      <div class="d">SIMKL per cronologia e watchlist · OpenSubtitles per la ricerca ufficiale · Sync per replicare tutto su un altro TV.</div></div>
+  </div>
+
+  <div class="tip"><b>Regola d'oro.</b> Cambia <b>una sola impostazione alla volta</b> e
+    prova lo stesso titolo: così capisci subito quale opzione ha migliorato (o peggiorato)
+    la riproduzione.</div>
+
+  <h2 class="sec" style="margin-top:6mm"><span class="num">16</span>Risoluzione dei problemi</h2>
+  <table>
+    <tr><th style="width:31%">Sintomo</th><th>Cosa controllare</th></tr>
+    <tr><td><b>Avvio lento o buffering</b></td><td>Rete instabile o sorgente lenta. Prova un'altra fonte o una qualità inferiore; aumenta il buffer iniziale solo se il problema è ricorrente.</td></tr>
+    <tr><td><b>Audio nella lingua sbagliata</b></td><td>Verifica «Lingua audio preferita» e «Privilegia tracce italiane». Nel player apri il pannello audio e scegli la traccia corretta.</td></tr>
+    <tr><td><b>Sottotitoli assenti</b></td><td>Controlla lingua, «Abilita automaticamente» e le tracce del pannello CC. Se usi OpenSubtitles, verifica la chiave API.</td></tr>
+    <tr><td><b>Flusso non riproducibile</b></td><td>Prova un'altra sorgente. Se persiste su tutti i titoli, cancella cache e dati temporanei; valuta il decoder fallback.</td></tr>
+    <tr><td><b>La serie è sparita da Continua a guardare</b></td><td>È stata completata (o segnata «Serie già vista»). Riapri la scheda e usa «Segna serie come da vedere».</td></tr>
+    <tr><td><b>Episodio sbagliato in Continua a guardare</b></td><td>Disattiva «Prossimo episodio dall'ultimo raggiunto» se stai facendo un rewatch: verrà usato l'episodio guardato più di recente.</td></tr>
+    <tr><td><b>SIMKL non sincronizza</b></td><td>Controlla di essere collegato, che la sessione non sia scaduta e che l'autorizzazione non sia di sola lettura. Premi «Sincronizza ora».</td></tr>
+    <tr><td><b>Sync non trova l'altro TV</b></td><td>Stessa rete, Sync ON su entrambi, app aperta, isolamento client disattivato. Usa «Aggiungi per indirizzo IP».</td></tr>
+    <tr><td><b>Sync rifiutata o scaduta</b></td><td>L'approvazione va data entro 2 minuti sul dispositivo che possiede i dati. Ripeti la procedura.</td></tr>
+    <tr><td><b>Aggiornamento non disponibile</b></td><td>La release potrebbe non contenere un APK per l'architettura del TV, oppure il file non supera la verifica di integrità. Riprova più tardi.</td></tr>
+    <tr><td><b>Addon non visibile</b></td><td>La sezione esiste solo con motore Debrid TorBox. Controlla «Modalità di riproduzione».</td></tr>
+  </table>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 20</span></div>
+</section>
+
+<!-- ══════════ PAGINA 21 — APPENDICI ══════════ -->
+<section class="page appendix">
+  <div class="run"><span class="lbl">Appendici</span><img src="assets/streamnova_wordmark.png" alt=""></div>
+  <h2 class="sec"><span class="num">A</span>Domande frequenti</h2>
+
+  <h3>Serve un account per usare StreamNova?</h3>
+  <p>No. Con il motore <b>Web Streaming</b> l'app funziona senza account. TorBox serve
+    solo per il motore Debrid; SIMKL e OpenSubtitles sono integrazioni facoltative.</p>
+
+  <h3>Sync sostituisce il backup?</h3>
+  <p>No: replica la configurazione tra due dispositivi accesi sulla stessa rete. Non è un
+    backup cloud e non recupera dati se entrambi i TV vengono resettati.</p>
+
+  <h3>La Sync cancella i dati del dispositivo che riceve?</h3>
+  <p>Non cancella la libreria: preferiti e progressi vengono uniti. Le <b>impostazioni</b>
+    della categoria selezionata vengono invece sostituite con quelle della sorgente, e
+    gli addon non presenti nella sorgente vengono rimossi.</p>
+
+  <h3>Perché «Serie già vista» non c'è sui film?</h3>
+  <p>La pillola è pensata per le serie, dove serve segnare intere stagioni. Per un film
+    usa il cuore (Preferiti) o «Segna come visto» nella scheda.</p>
+
+  <h3>Perché un episodio è sfocato?</h3>
+  <p>Hai attivato «Sfoca non visti in Continua a guardare». La sfocatura riguarda gli
+    episodi mai iniziati e serve a evitare spoiler: non blocca la riproduzione.</p>
+
+  <h3>Posso usare il telecomando del TV per i menu?</h3>
+  <p>Sì. Tutte le finestre di StreamNova sono progettate per il D-pad: OK conferma,
+    BACK chiude, le frecce spostano il focus. I dialoghi Sync e il menu episodio sono
+    finestre separate, quindi il focus non esce mai dalla finestra.</p>
+
+  <h3>Cosa succede se scollego SIMKL?</h3>
+  <p>StreamNova revoca l'accesso e rimuove i dati importati da SIMKL, ma conserva le
+    preferenze e i progressi creati localmente. Sul sito SIMKL non viene cancellato nulla.</p>
+
+  <h3>Dove trovo la versione installata?</h3>
+  <p>In <b>Impostazioni → Generale → Versione dell'app</b>, oppure in fondo alla sezione
+    <b>Informazioni</b>. La versione di questa guida è <b>1.0.9</b> (build 1011).</p>
+
+  <h2 class="sec" style="margin-top:6mm"><span class="num">B</span>Glossario</h2>
+  <table>
+    <tr><th style="width:24%">Termine</th><th>Significato</th></tr>
+    <tr><td><b>Debrid</b></td><td>Servizio che mette in cache i file su server veloci e li rende disponibili come stream (qui: TorBox).</td></tr>
+    <tr><td><b>Addon Stremio</b></td><td>Estensione che aggiunge sorgenti o cataloghi tramite un manifest URL.</td></tr>
+    <tr><td><b>Scrobble</b></td><td>Invio automatico a un servizio (SIMKL) di avvio, pausa e completamento di ciò che guardi.</td></tr>
+    <tr><td><b>mDNS / NSD</b></td><td>Protocollo che permette ai dispositivi della stessa rete di trovarsi senza inserire IP.</td></tr>
+    <tr><td><b>ABI</b></td><td>Architettura del processore (arm64, arm32, x86, x86_64): determina l'APK compatibile.</td></tr>
+    <tr><td><b>AFR</b></td><td>Auto Frame Rate Matching: adatta la frequenza del TV al contenuto.</td></tr>
+    <tr><td><b>Passthrough</b></td><td>Invio dell'audio non decodificato a un ricevitore esterno.</td></tr>
+    <tr><td><b>Seek preview</b></td><td>Anteprima del fotogramma e dell'orario mentre si scorre la timeline.</td></tr>
+    <tr><td><b>Forced</b></td><td>Sottotitoli “obbligatori” per i dialoghi in lingua straniera presenti nel video.</td></tr>
+  </table>
+
+  <div class="note" style="margin-top:4mm"><b>Informazioni sul documento.</b> Guida utente
+    StreamNova 1.0.9 (build 1011), novembre 2026. Schermate acquisite dall'app su Android TV;
+    alcune voci possono variare in base a versione, dispositivo e contenuto riprodotto.
+    StreamNova non è affiliata ai provider, ai servizi di streaming o agli studi citati.</div>
+
+  <div class="foot"><span><b>StreamNova</b> · Guida utente 1.0.9</span><span>Pagina 21</span></div>
+</section>
+
+</body>
+</html>

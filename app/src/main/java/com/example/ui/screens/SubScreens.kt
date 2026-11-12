@@ -2515,6 +2515,13 @@ fun SettingsScreen(
         )
       }
 
+      // ── PROFILI ──────────────────────────────────────────────────────────
+      // Ogni profilo ha la propria libreria (preferiti, progressi, cronologia) e il
+      // proprio account SIMKL; le impostazioni del televisore restano condivise.
+      // La sezione ospita anche i dialoghi di gestione (finestra separata, non vincolata
+      // allo scroll di questa lista).
+      item { ProfilesSection() }
+
       // ── ACCOUNT SIMKL ────────────────────────────────────────────────────
       // Nessun campo per il Client ID: è una configurazione dello sviluppatore che arriva
       // con la build. Qui l'utente trova solo "Collega account SIMKL" e la sincronizzazione.

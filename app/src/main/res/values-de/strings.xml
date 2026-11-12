@@ -563,5 +563,50 @@
      <string name="parental_playback_restricted_title">Geschützter Inhalt</string>
      <string name="parental_playback_restricted_subtitle">PIN eingeben, um fortzufahren</string>
      <string name="parental_playback_pin_incorrect">Falsche PIN</string>
+
+    <!-- Profile -->
+    <string name="profiles_default_name">Hauptprofil</string>
+    <string name="profiles_section">Profile</string>
+    <string name="profiles_active_label">Aktives Profil</string>
+    <string name="profiles_manage">Profile verwalten</string>
+    <string name="profiles_title">Wer schaut gerade?</string>
+    <string name="profiles_subtitle">Wähle dein Profil, um Favoriten, Fortschritt und Verlauf wiederzufinden.</string>
+    <string name="profiles_active_badge">Aktiv</string>
+    <string name="profiles_primary_badge">Hauptprofil</string>
+    <string name="profiles_create">Profil erstellen</string>
+    <string name="profiles_edit_avatar">Avatar ändern</string>
+    <string name="profiles_avatar_title">Profil-Avatar</string>
+    <string name="profiles_avatar_emoji">Emoji</string>
+    <string name="profiles_emoji_category_cinema">Kino &amp; Serien</string>
+    <string name="profiles_emoji_category_thriller">Thriller</string>
+    <string name="profiles_emoji_category_comedy">Komödie</string>
+    <string name="profiles_emoji_category_scifi">Sci-Fi &amp; Anime</string>
+    <string name="profiles_avatar_color">Farbe</string>
+    <string name="profiles_avatar_initial">Aa</string>
+    <string name="profiles_rename">Umbenennen</string>
+    <string name="profiles_delete">Profil löschen</string>
+    <string name="profiles_use">Dieses Profil verwenden</string>
+    <string name="profiles_new_title">Neues Profil</string>
+    <string name="profiles_name_hint">Profilname</string>
+    <string name="profiles_rename_title">Profil umbenennen</string>
+    <string name="profiles_color_title">Avatar-Farbe</string>
+    <string name="profiles_action_title">Profil „%1$s“</string>
+    <string name="profiles_error_empty">Gib einen Profilnamen ein.</string>
+    <string name="profiles_error_too_long">Der Name darf höchstens %1$d Zeichen enthalten.</string>
+    <string name="profiles_error_duplicate">Es existiert bereits ein Profil mit diesem Namen.</string>
+    <string name="profiles_error_save">Änderungen konnten nicht gespeichert werden. Versuche es erneut.</string>
+    <string name="profiles_limit_reached">Du hast das Maximum von %1$d Profilen erreicht.</string>
+    <string name="profiles_delete_title">Profil löschen?</string>
+    <string name="profiles_delete_message">Das Profil „%1$s“ und alle seine Daten (Favoriten, Fortschritt und Verlauf) werden von diesem Gerät dauerhaft gelöscht.</string>
+    <string name="profiles_delete_confirm">Löschen</string>
+    <string name="profiles_delete_primary">Das Hauptprofil kann nicht gelöscht werden.</string>
+    <string name="profiles_delete_active">Um dieses Profil zu löschen, wechsle zuerst zu einem anderen Profil.</string>
+    <string name="profiles_switch_title">Profilwechsel</string>
+    <string name="profiles_switch_message">StreamNova wird neu gestartet, um das Profil „%1$s“ zu laden.</string>
+    <string name="profiles_switch_confirm">Profil wechseln</string>
+    <string name="profiles_switching">Profil wird geladen…</string>
+    <string name="profiles_created">Profil „%1$s“ erstellt.</string>
+    <string name="profiles_renamed">Profil umbenannt.</string>
+    <string name="profiles_deleted">Profil „%1$s“ gelöscht.</string>
 </resources>
 

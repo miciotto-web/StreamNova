@@ -103,12 +103,18 @@ import androidx.compose.ui.focus.focusRestorer
 import com.example.ui.components.DpadVisibleRowBounds
 import com.example.ui.components.dpadVerticalFastScroll
 import com.example.ui.components.resolveFastScrollLandingRowKey
+import com.example.ui.components.HomeFocusOrigin
+import com.example.ui.components.HomeSidebarFocusLink
+import com.example.ui.components.HomeSidebarReturnTarget
+import com.example.ui.components.resolveHomeSidebarReturnTarget
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.runtime.withFrameNanos
 
@@ -118,6 +124,13 @@ fun HomeScreen(
   viewModel: StreamNovaViewModel,
   onProviderClick: (StreamingProvider) -> Unit = {},
   onMediaClick: ((MediaItem) -> Unit)? = null,
+  /**
+   * Ponte con la sidebar per il focus (vedi [HomeSidebarFocusLink]). MainActivity ne possiede
+   * un'istanza `remember` e la passa sia alla Home sia alla sidebar: quando la Home è composta
+   * vi installa la cattura della provenienza e il ripristino deterministico. `null` (anteprime,
+   * harness) crea un ponte locale inerte rispetto alla sidebar.
+   */
+  sidebarFocusLink: HomeSidebarFocusLink? = null,
   modifier: Modifier = Modifier
 ) {
   val currentSection by viewModel.currentSection.collectAsState()
@@ -173,6 +186,7 @@ fun HomeScreen(
           onProviderClick = onProviderClick,
           viewModel = viewModel,
           continueWatchingPreferences = continueWatchingPreferences,
+          sidebarFocusLink = sidebarFocusLink,
           modifier = modifier
         )
       }
@@ -548,6 +562,42 @@ class HomeRowFocusCoordinator(
     _pendingFocusRequest.value = null
     _pendingFocusIdentity.value = null
     return current
+  }
+
+  /**
+   * Ripristina il focus sull'elemento di provenienza dopo il ritorno dalla sidebar.
+   *
+   * NON è una nuova via di acquisizione del focus: la destinazione viene risolta sui dati
+   * correnti ([resolveHomeSidebarReturnTarget]) e pubblicata come RICHIESTA PENDENTE, cioè sul
+   * percorso autorevole unico della Home ([HomeVerticalFocusSync]): riga riportata interamente
+   * nel viewport, colonna composta, focus richiesto e CONFERMATO da `onFocusChanged`. Qui si
+   * aggiunge solo l'invio immediato quando la cella è già montata e la riga è già visibile:
+   * il RIGHT dalla sidebar deve togliere il focus dalla voce in quello stesso evento, senza
+   * un frame in cui il focus-repair di Compose può scegliere un altro elemento.
+   *
+   * @return la destinazione risolta, o `null` se nessuna riga della Home può ricevere il focus.
+   */
+  fun requestReturnToOrigin(origin: HomeFocusOrigin): HomeSidebarReturnTarget? {
+    val target = resolveHomeSidebarReturnTarget(
+      origin = origin,
+      activeRowKeys = _activeRowKeys.toList(),
+      rowItemCounts = _rowItemCounts.toMap(),
+      rowIdentities = _rowIdentities
+    ) ?: return null
+
+    requestPendingFocus(target.rowKey, target.colIndex)
+
+    val isReachableNow =
+      isCellAttached(target.rowKey, target.colIndex) && isRowFullyVisible(target.rowKey)
+    if (isReachableNow) {
+      try {
+        getRequester(target.rowKey, target.colIndex).requestFocus()
+      } catch (_: Exception) {
+        // Nodo smontato tra verifica e richiesta: resta la richiesta pendente, che la
+        // sincronizzazione completa quando la cella viene rimontata.
+      }
+    }
+    return target
   }
 
   /** Riga adiacente nella direzione richiesta: `null` su prima/ultima riga (nessun salto). */
@@ -1431,6 +1481,11 @@ fun HomeMainBrowsingContent(
    * il comportamento storico, così harness e anteprime che non le passano non cambiano.
    */
   continueWatchingPreferences: ContinueWatchingPreferences = ContinueWatchingPreferences(),
+  /**
+   * Ponte con la sidebar per il focus: la Home vi installa la cattura della provenienza e il
+   * ripristino al ritorno (vedi [HomeSidebarFocusLink] e [HomeRowFocusCoordinator.requestReturnToOrigin]).
+   */
+  sidebarFocusLink: HomeSidebarFocusLink? = null,
   modifier: Modifier = Modifier
 ) {
   // Lista della riga costruita in UN SOLO punto ([ContinueWatchingRowPolicy]): una card
@@ -1711,6 +1766,80 @@ fun HomeMainBrowsingContent(
   fun cardKeyAt(rowKey: String, colIndex: Int): String? =
     rowStates[rowKey]?.layoutInfo?.visibleItemsInfo
       ?.firstOrNull { it.index == colIndex }?.key as? String
+
+  // ---------------------------------------------------------------------------------------
+  // PONTE CON LA SIDEBAR: memoria della provenienza + ripristino deterministico.
+  //
+  // Il difetto corretto qui: uscendo dalla Home verso la sidebar e rientrando con RIGHT, il
+  // focus veniva scelto dalla RICERCA GEOMETRICA di Compose a partire dalla voce della
+  // sidebar (in cima alla colonna): atterrava quindi sull'Hero o su una riga diversa da
+  // quella di partenza, indipendentemente da dove l'utente si trovasse. Ora la provenienza è
+  // letta dal coordinatore (riga + identità + colonna + viewport) PRIMA che il focus lasci il
+  // contenuto e il rientro passa dal percorso autorevole della Home: richiesta pendente ->
+  // HomeVerticalFocusSync (riga in vista, colonna composta, focus CONFERMATO).
+  // ---------------------------------------------------------------------------------------
+  val homeSidebarFocusLink = sidebarFocusLink ?: remember { HomeSidebarFocusLink() }
+  val sidebarReturnScope = rememberCoroutineScope()
+
+  /**
+   * Provenienza del focus nella Home in questo istante.
+   *
+   * Lettura sincrona dello stato del coordinatore: viene invocata dall'handler del LEFT di
+   * MainActivity PRIMA del movimento, quando la cella di partenza ha ancora il focus reale.
+   * `null` se nessuna cella ha una posizione nota (in quel caso il ritorno usa il ripiego
+   * storico e non inventa una destinazione).
+   */
+  fun captureHomeFocusOrigin(): HomeFocusOrigin? {
+    val rowKey = coordinator.focusedRowKey ?: return null
+    val count = coordinator.rowItemCounts[rowKey] ?: 0
+    if (count <= 0) return null
+    // La cella confermata è la provenienza più fedele; la colonna ricordata della riga copre
+    // il caso in cui il focus sia già stato invalidato da un frame di assestamento.
+    val confirmedCol = coordinator.focusedCell?.takeIf { it.first == rowKey }?.second
+    val column = (confirmedCol ?: coordinator.lastFocusedColumn(rowKey) ?: return null)
+      .coerceIn(0, count - 1)
+    return HomeFocusOrigin(
+      rowKey = rowKey,
+      colIndex = column,
+      identity = coordinator.rowItemIdentities(rowKey).getOrNull(column),
+      cardKey = cardKeyAt(rowKey, column),
+      rowOrdinal = coordinator.activeRowKeys.indexOf(rowKey),
+      listFirstVisibleIndex = listState.firstVisibleItemIndex,
+      listFirstVisibleOffset = listState.firstVisibleItemScrollOffset
+    )
+  }
+
+  // Le lambda vengono riinstallate ad ogni ricomposizione: catturano i valori correnti di
+  // coordinator/listState senza che il ponte trattenga uno stato obsoleto.
+  SideEffect {
+    homeSidebarFocusLink.attach(
+      originProvider = { captureHomeFocusOrigin() },
+      returnHandler = { origin ->
+        if (coordinator.requestReturnToOrigin(origin) != null) {
+          true
+        } else {
+          // Nessuna riga della Home può ricevere il focus (contenuti non ancora composti):
+          // si riporta almeno il viewport alla posizione di provenienza. Il chiamante usa il
+          // ripiego storico per il focus.
+          sidebarReturnScope.launch {
+            try {
+              listState.scrollToItem(
+                origin.listFirstVisibleIndex,
+                origin.listFirstVisibleOffset
+              )
+            } catch (_: Exception) {
+              // Lista non ancora composta: nessuno scroll da ripristinare.
+            }
+          }
+          false
+        }
+      }
+    )
+  }
+
+  DisposableEffect(homeSidebarFocusLink) {
+    onDispose { homeSidebarFocusLink.detach() }
+  }
 
   /**
    * Apertura della scheda Dettaglio da una card di riga.

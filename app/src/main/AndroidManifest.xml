@@ -44,6 +44,22 @@
             </intent-filter>
         </activity>
 
+        <!--
+          Trampolino del cambio profilo: processo SEPARATO. Resta visibile mentre il
+          processo principale termina, poi rilancia MainActivity. In un processo
+          separato l'avvio dell'Activity non è bloccato dalle restrizioni Android
+          sulle background activity; l'Application salta l'inizializzazione in questo
+          processo (vedi StreamNovaApplication.isAuxiliaryProcess).
+        -->
+        <activity
+            android:name=".RestartProxyActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:process=":profile_restart"
+            android:screenOrientation="landscape"
+            android:taskAffinity="com.example.streamnova.restart"
+            android:theme="@style/Theme.MyApplication" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

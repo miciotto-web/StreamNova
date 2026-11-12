@@ -85,6 +85,8 @@ fun TextInputDialog(
   hint: String,
   initialText: String = "",
   confirmLabel: String? = null,
+  /** Messaggio di errore mostrato sotto il campo (es. nome profilo duplicato). */
+  errorMessage: String? = null,
   /**
    * Modalità "segreto" (chiavi API): il testo è mascherato come password; il pulsante
    * mostrare/nascondi consente di controllare l'inserimento senza rinunciare alla
@@ -282,6 +284,17 @@ fun TextInputDialog(
           }
         }
       )
+
+      if (errorMessage != null) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+          text = errorMessage,
+          color = com.example.ui.theme.NovaRed,
+          fontSize = 12.sp,
+          fontWeight = FontWeight.Medium,
+          modifier = Modifier.fillMaxWidth()
+        )
+      }
 
       if (secure) {
         Spacer(modifier = Modifier.height(10.dp))

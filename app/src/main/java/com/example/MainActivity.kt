@@ -53,12 +53,15 @@ import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
 import com.example.data.prefs.StreamingEngineMode
+import com.example.data.profiles.ProfilesRepository
 import com.example.data.repository.SimklSyncManager
 import com.example.data.streaming.StreamResult
 import com.example.data.update.UpdateRepository
 import com.example.data.update.shouldShowStartupUpdatePrompt
 import com.example.ui.components.HeroCarouselState
 import com.example.ui.components.AnchoredRowKeyState
+import com.example.ui.components.HomeFocusOrigin
+import com.example.ui.components.HomeSidebarFocusLink
 import com.example.ui.components.ModalOverlayState
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.TvPinDialog
@@ -78,6 +81,8 @@ import com.example.ui.screens.DetailScreen
 import com.example.ui.screens.HomeBackToRowStartState
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.PlayerScreen
+import com.example.ui.screens.ProfileScreen
+import com.example.ui.screens.ProfilesOverlayHost
 import com.example.ui.screens.ProviderScreen
 import com.example.ui.screens.PersonDetailScreen
 import com.example.ui.screens.CompanyDetailScreen
@@ -272,6 +277,31 @@ fun StreamNovaApp(
   val startupUpdatePrompt by viewModel.startupUpdatePrompt.collectAsState()
   val updateDownloadState by viewModel.updateDownloadState.collectAsState()
 
+  // ── Profili ───────────────────────────────────────────────────────────────
+  // Con più di un profilo, a ogni avvio "freddo" si chiede chi sta guardando. Il
+  // riavvio che segue un cambio profilo esplicito porta l'extra
+  // [AppRestarter.EXTRA_SKIP_PROFILE_GATE]: la scelta è già stata fatta e non va
+  // richiesta una seconda volta. L'extra viene consumato subito, così una successiva
+  // riapertura dal launcher torna a mostrare il picker.
+  val userProfiles by ProfilesRepository.profiles.collectAsState()
+  val activeUserProfileId by ProfilesRepository.activeProfileId.collectAsState()
+  val skipProfileGate = remember {
+    activity.intent?.getBooleanExtra(AppRestarter.EXTRA_SKIP_PROFILE_GATE, false) == true
+  }
+  // Il picker d'avvio è un evento ONE-SHOT, valutato una sola volta alla prima
+  // composizione: creare un secondo profilo dalle Impostazioni non deve far comparire
+  // il gate sopra la schermata di gestione. `rememberSaveable` conserva la decisione
+  // anche quando l'Activity viene ricreata.
+  var startupProfileGateVisible by rememberSaveable {
+    mutableStateOf(!skipProfileGate && userProfiles.size > 1)
+  }
+  // Selettore profili aperto dal blocco avatar in fondo alla sidebar: permette il
+  // cambio utente senza passare dalle Impostazioni.
+  var showSidebarProfileSwitcher by rememberSaveable { mutableStateOf(false) }
+  LaunchedEffect(Unit) {
+    activity.intent?.removeExtra(AppRestarter.EXTRA_SKIP_PROFILE_GATE)
+  }
+
   // Rientro dal player nella SCHEDA DETTAGLIO del contenuto appena riprodotto: la richiesta
   // arriva dal ViewModel (vedi [StreamNovaViewModel.playerDetailReturn]) e qui si traduce nella
   // navigazione del NavHost. La chiusura del player è DIFFERITA (vedi
@@ -328,7 +358,11 @@ fun StreamNovaApp(
   // filmato da capo una volta che l'intro è terminata. La Home resta composta
   // sotto la splash per tutta la riproduzione, quindi i dati si caricano in
   // parallelo al video e al termine non c'è nulla da ricaricare.
-  var isSplashActive by rememberSaveable { mutableStateOf(true) }
+  //
+  // Il cambio profilo riavvia il processo (AppRestarter) con
+  // [AppRestarter.EXTRA_SKIP_PROFILE_GATE]: in quel caso l'intro NON va replicata.
+  // La splash appartiene al primo avvio dell'app, non a un rilancio interno.
+  var isSplashActive by rememberSaveable { mutableStateOf(!skipProfileGate) }
 
   // Contenuto principale (Home + sidebar) composto solo DOPO il primo frame del
   // video splash.
@@ -341,7 +375,9 @@ fun StreamNovaApp(
   // frame, così continua a caricarsi/comporsi in parallelo alla riproduzione,
   // senza ritardarla e senza lasciare nulla da ricaricare alla fine.
   // `rememberSaveable`: alla ricreazione dell'Activity la Home è già pronta.
-  var isMainContentReady by rememberSaveable { mutableStateOf(false) }
+  // Quando la splash è saltata (cambio profilo) non c'è nulla che possa sbloccare la
+  // composizione della Home: il contenuto va composto subito.
+  var isMainContentReady by rememberSaveable { mutableStateOf(skipProfileGate) }
 
   // Primo frame del video realmente a schermo. La composizione della Home parte
   // poco dopo: il decoder deve poter mostrare il filmato senza contendere CPU
@@ -408,6 +444,14 @@ fun StreamNovaApp(
       ) {
         // Stato apertura sidebar: false sin dal primo frame.
         var isSidebarExpanded by remember { mutableStateOf(false) }
+
+        // PROVENIENZA DEL FOCUS NELLA HOME quando si apre la sidebar (LEFT) e BRIDGE verso la
+        // Home per ripristinarlo al ritorno (RIGHT). Vive quanto la destinazione Browsing, così
+        // sopravvive alle ricomposizioni della Home senza diventare uno stato globale.
+        // `sidebarReturnOrigin` viene azzerata al consumo e ad ogni cambio sezione: la
+        // navigazione interna alla sidebar (UP/DOWN) non la tocca mai.
+        var sidebarReturnOrigin by remember { mutableStateOf<HomeFocusOrigin?>(null) }
+        val homeSidebarFocusLink = remember { HomeSidebarFocusLink() }
 
         // FocusRequester per la sidebar e mappa per ogni singolo item (Punto 5: memoria focus)
         val sidebarFocusRequester = remember { FocusRequester() }
@@ -545,6 +589,26 @@ fun StreamNovaApp(
           }
         }
 
+        // Ritorno dalla sidebar al contenuto (RIGHT).
+        //
+        // RISOLUZIONE DEL DIFETTO: il focus NON viene più scelto dalla ricerca geometrica a
+        // destra della voce della sidebar (che, essendo le voci in cima alla colonna, cadeva
+        // sull'Hero o su una riga diversa da quella di partenza). La Home riceve l'elemento di
+        // provenienza (riga + identità stabile + colonna + viewport) memorizzato all'apertura
+        // della sidebar e lo ripristina sul proprio percorso autorevole: riga riportata in
+        // vista, colonna composta, focus confermato da `onFocusChanged`.
+        // Il ripiego geometrico resta SOLO se non esiste una provenienza (sidebar aperta da una
+        // sezione diversa dalla Home) o se la Home non ha alcuna cella su cui tornare.
+        val returnFromSidebarToContent: () -> Unit = {
+          val origin = sidebarReturnOrigin
+          sidebarReturnOrigin = null
+          isSidebarExpanded = false
+          val accepted = origin != null && homeSidebarFocusLink.requestReturn(origin)
+          if (!accepted) {
+            focusManager.moveFocus(FocusDirection.Right)
+          }
+        }
+
         Box(
           modifier = Modifier
             .fillMaxSize()
@@ -583,12 +647,18 @@ fun StreamNovaApp(
                 keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
                 keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT
               ) {
+                // PROVENIENZA: letta PRIMA del movimento, quando la cella della Home ha ancora
+                // il focus reale. È l'unico istante in cui l'origine è quella vera: dopo il
+                // LEFT il focus è sulla voce della sidebar (in cima alla colonna) e la
+                // geometria non contiene più alcuna informazione sulla riga di partenza.
+                val homeOrigin = homeSidebarFocusLink.captureOrigin()
                 val moved = focusManager.moveFocus(FocusDirection.Left)
                 when {
                   // CASO A: focus andato su un icon sidebar (prima card Home, bordo sinistro).
                   // sidebarHasFocus è già true perché onFocusChanged ha scattato sincrono
                   // dentro moveFocus(). Apriamo la sidebar e impostiamo il focus sul primo item.
                   sidebarHasFocus -> {
+                    sidebarReturnOrigin = homeOrigin
                     isSidebarExpanded = true
                     try {
                       (sidebarItemFocusRequesters[currentSection] ?: sidebarFocusRequester).requestFocus()
@@ -600,6 +670,7 @@ fun StreamNovaApp(
                   // CASO C: nessun elemento a sinistra (non dovrebbe accadere con la sidebar
                   // presente, ma lo gestiamo per sicurezza).
                   else -> {
+                    sidebarReturnOrigin = homeOrigin
                     isSidebarExpanded = true
                     try {
                       (sidebarItemFocusRequesters[currentSection] ?: sidebarFocusRequester).requestFocus()
@@ -632,6 +703,7 @@ fun StreamNovaApp(
                   viewModel.openProvider(provider)
                   navController.navigate(Screen.Provider.createRoute(provider.id))
                 },
+                sidebarFocusLink = homeSidebarFocusLink,
                 onMediaClick = { media ->
                   // NON chiamare viewModel.saveLastFocusedMedia(media.id) qui!
                   // HomeScreen.kt gestisce già internamente handleRowMediaClick salvando la rowKey specifica.
@@ -658,6 +730,9 @@ fun StreamNovaApp(
               currentSection = currentSection,
               itemFocusRequesters = sidebarItemFocusRequesters,
               onSectionSelected = { section ->
+                // Cambio sezione: la provenienza nella Home non è più un punto di ritorno
+                // valido (il contenuto sotto è un'altra schermata o la Home è ripartita).
+                sidebarReturnOrigin = null
                 if (section == SidebarSection.HOME) {
                   isSidebarExpanded = false
                   viewModel.requestHomeScrollToTop()
@@ -669,8 +744,14 @@ fun StreamNovaApp(
               },
               isSidebarExpanded = isSidebarExpanded,
               onCollapseRequest = { isSidebarExpanded = false },
+              // RIGHT: chiude la sidebar e riporta il focus sull'elemento di provenienza.
+              onReturnRequest = returnFromSidebarToContent,
               // La voce "Addon" è sempre presente nella sidebar, in ogni modalità del motore.
               showAddons = true,
+              // Identità in fondo alla sidebar: avatar e nome del profilo attivo.
+              // OK/click apre il selettore profili.
+              activeProfile = userProfiles.firstOrNull { it.id == activeUserProfileId },
+              onProfileClick = { showSidebarProfileSwitcher = true },
               modifier = Modifier
                 .align(Alignment.CenterStart)
                 .focusRequester(sidebarFocusRequester)
@@ -1047,6 +1128,9 @@ targetCompanyId = lastFocusedCompanyId,
     // per il download) e «Più tardi» (non riproporre in questa sessione).
     val pendingStartupUpdate = startupUpdatePrompt
     if (pendingStartupUpdate != null &&
+      // Un rilancio interno per cambio profilo non deve aprire popup di aggiornamento:
+      // l'utente ha appena scelto un profilo e si aspetta la Home di quel profilo.
+      !skipProfileGate &&
       shouldShowStartupUpdatePrompt(
         hasPrompt = true,
         isSplashActive = isSplashActive,
@@ -1118,6 +1202,28 @@ targetCompanyId = lastFocusedCompanyId,
           isMainContentReady = true
           isSplashActive = false
         }
+      )
+    }
+
+    // Profili: picker all'avvio, SOPRA la Home e dopo la splash. È un Dialog a
+    // finestra intera, quindi il D-pad resta confinato alla scelta del profilo e la
+    // Home sottostante non può ricevere comandi. Con un solo profilo non compare.
+    if (!isSplashActive &&
+      startupProfileGateVisible &&
+      screenState == ScreenState.BROWSING
+    ) {
+      ProfilesOverlayHost(
+        initialScreen = ProfileScreen.PICKER,
+        onDismiss = { startupProfileGateVisible = false }
+      )
+    }
+
+    // Selettore profili aperto dal blocco in fondo alla sidebar. Stessa finestra
+    // Dialog del gate d'avvio: da qui si può anche entrare in "Gestisci profili".
+    if (!isSplashActive && showSidebarProfileSwitcher) {
+      ProfilesOverlayHost(
+        initialScreen = ProfileScreen.PICKER,
+        onDismiss = { showSidebarProfileSwitcher = false }
       )
     }
   }

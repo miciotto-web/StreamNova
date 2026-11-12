@@ -227,18 +227,45 @@ abstract class StreamNovaDatabase : RoomDatabase() {
     @Volatile
     private var INSTANCE: StreamNovaDatabase? = null
 
-    fun init(context: Context): StreamNovaDatabase {
-      return INSTANCE ?: synchronized(this) {
-        INSTANCE ?: Room.databaseBuilder(
-          context.applicationContext,
-          StreamNovaDatabase::class.java,
-          "streamnova_database.db"
-        )
+    /** Nome storico del database: usato dal profilo principale. */
+    const val DEFAULT_DATABASE_NAME = "streamnova_database.db"
+
+    /**
+     * Nome del database aperto dal processo.
+     *
+     * Con i profili ogni profilo ha il proprio file Room; il profilo principale usa il
+     * nome storico, quindi i dati esistenti restano al loro posto. Il nome viene scelto
+     * dall'Application PRIMA di questa init e non cambia durante la vita del processo:
+     * il cambio profilo riavvia l'app (vedi ProfilesRepository).
+     */
+    @Volatile
+    private var openDatabaseName: String? = null
+
+    fun init(
+      context: Context,
+      databaseName: String = DEFAULT_DATABASE_NAME
+    ): StreamNovaDatabase {
+      val existing = INSTANCE
+      // `openDatabaseName == null` significa istanza iniettata dai test: va restituita
+      // come prima, qualunque sia il nome richiesto.
+      if (existing != null && (openDatabaseName == null || openDatabaseName == databaseName)) {
+        return existing
+      }
+      return synchronized(this) {
+        INSTANCE?.takeIf { openDatabaseName == null || openDatabaseName == databaseName }
+          ?: Room.databaseBuilder(
+            context.applicationContext,
+            StreamNovaDatabase::class.java,
+            databaseName
+          )
           .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
           .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
           .addMigrations(MIGRATION_10_11, MIGRATION_11_12)
           .build()
-          .also { INSTANCE = it }
+          .also {
+            INSTANCE = it
+            openDatabaseName = databaseName
+          }
       }
     }
 
@@ -250,6 +277,7 @@ abstract class StreamNovaDatabase : RoomDatabase() {
 
     fun setInstanceForTesting(db: StreamNovaDatabase?) {
       INSTANCE = db
+      openDatabaseName = null
     }
   }
 }

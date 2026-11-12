@@ -1,6 +1,7 @@
 package com.example
 
 import android.app.Application
+import android.os.Build
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -9,12 +10,15 @@ import com.example.data.local.StreamNovaDatabase
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.PersistentSubtitleRepository
 import com.example.data.prefs.SettingsRepository
+import com.example.data.profiles.ProfileStorage
+import com.example.data.profiles.ProfilesRepository
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
 import com.example.data.repository.SimklSyncManager
 import com.example.data.repository.LastWorkingStreamRepository
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.provider.ProviderCatalogResolvers
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -58,9 +62,22 @@ class StreamNovaApplication : Application(), ImageLoaderFactory {
 
   override fun onCreate() {
     super.onCreate()
+    // Il processo del trampolino di riavvio (cambio profilo) NON deve inizializzare
+    // Room, DataStore o Sync: girerebbe in parallelo al processo principale sugli
+    // stessi file. Gli serve solo mostrare un'attesa e lanciare MainActivity.
+    if (isAuxiliaryProcess()) return
     StartupTrace.mark("application_oncreate_enter")
-    // Initialize Room Database
-    val db = StartupTrace.trace("room_init") { StreamNovaDatabase.init(this) }
+    // Profili: PRIMA di Room. La scelta del profilo determina il file del database e i
+    // DataStore personali (account SIMKL, selezioni sottotitoli). Il profilo principale
+    // conserva i nomi storici, quindi l'aggiornamento non tocca i dati esistenti.
+    val profiles = StartupTrace.trace("profiles_init") { ProfilesRepository.init(this) }
+    val profileId = profiles.activeProfileId
+    StartupTrace.mark("profile_active_$profileId")
+
+    // Initialize Room Database (un file per profilo)
+    val db = StartupTrace.trace("room_init") {
+      StreamNovaDatabase.init(this, ProfileStorage.databaseName(profileId))
+    }
 
     // Initialize MediaRepository with Room database
     StartupTrace.trace("media_repository_init") { MediaRepository.init(this, db) }
@@ -73,8 +90,10 @@ class StreamNovaApplication : Application(), ImageLoaderFactory {
 
     // Preferenze Debrid/TorBox, credenziali SIMKL + lista addon Stremio installati (DataStore)
     StartupTrace.trace("app_settings_repository_init") { AppSettingsRepository.init(this) }
-    StartupTrace.trace("persistent_subtitle_repository_init") { PersistentSubtitleRepository.init(this) }
-    StartupTrace.trace("simkl_repository_init") { SimklRepository.init(this) }
+    StartupTrace.trace("persistent_subtitle_repository_init") {
+      PersistentSubtitleRepository.init(this, profileId)
+    }
+    StartupTrace.trace("simkl_repository_init") { SimklRepository.init(this, profileId = profileId) }
     StartupTrace.trace("stremio_addon_repository_init") { StremioAddonRepository.init() }
     // Contesto per il resolver catalogo -> provider: senza questo la sorgente
     // REGISTRY (res/raw/stremio_provider_bindings.json) resterebbe sempre vuota,
@@ -98,5 +117,17 @@ class StreamNovaApplication : Application(), ImageLoaderFactory {
         runCatching { SimklSyncManager.syncOnForeground() }
       }
     }
+  }
+
+  /** True nei processi di servizio dichiarati nel manifest (es. `:profile_restart`). */
+  private fun isAuxiliaryProcess(): Boolean {
+    val processName = runCatching {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        Application.getProcessName()
+      } else {
+        File("/proc/self/cmdline").readText().trim('\u0000', '\n')
+      }
+    }.getOrNull().orEmpty()
+    return processName.endsWith(":profile_restart")
   }
 }

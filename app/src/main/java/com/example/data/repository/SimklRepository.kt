@@ -2,12 +2,15 @@ package com.example.data.repository
 
 import android.content.Context
 import android.util.Log
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import com.example.BuildConfig
+import com.example.data.profiles.ProfileStorage
 import com.example.data.remote.simkl.SIMKL_MIN_PROGRESS
 import com.example.data.remote.simkl.SIMKL_STATUS_PLAN_TO_WATCH
 import com.example.data.remote.simkl.SIMKL_TYPE_ANIME
@@ -45,6 +48,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -60,7 +64,23 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.Response
 
-private val Context.simklDataStore by preferencesDataStore(name = "simkl_preferences")
+/**
+ * DataStore dell'account SIMKL per il profilo [profileId].
+ *
+ * Il profilo principale conserva il file storico (`simkl_preferences`); ogni profilo
+ * aggiuntivo ha il proprio file. Il token e i metadati di sincronizzazione sono dati
+ * personali: due profili sulla stessa TV non devono condividere l'account SIMKL.
+ */
+private fun simklDataStoreFor(context: Context, profileId: String): DataStore<Preferences> =
+  PreferenceDataStoreFactory.create(
+    produceFile = {
+      ProfileStorage.dataStoreFile(
+        context = context,
+        baseName = ProfileStorage.SIMKL_STORE_BASE,
+        profileId = profileId
+      )
+    }
+  )
 
 /**
  * Messaggio dell'eccezione quando manca la configurazione applicativa (Client ID). La UI
@@ -140,6 +160,14 @@ object SimklRepository {
 
   private var appContext: Context? = null
 
+  /**
+   * DataStore del profilo corrente. Non è più una property delegata sul Context perché
+   * il nome del file dipende dal profilo scelto per questo avvio.
+   */
+  private var profileDataStore: DataStore<Preferences>? = null
+  private var profileDataStoreProfileId: String? = null
+  private var storeObserverJob: Job? = null
+
   // L'API SIMKL (Retrofit + Moshi + OkHttp) veniva costruita durante
   // l'inizializzazione dell'oggetto, quindi PRIMA del primo frame (~150 ms,
   // misurato con StartupTrace). Ora il default è lazily: la costruzione avviene
@@ -181,15 +209,37 @@ object SimklRepository {
   private data class CacheEntry(val expiresAt: Long, val episodes: Set<Int>)
 
   @Synchronized
-  fun init(context: Context, simklApi: SimklApi? = null) {
+  fun init(
+    context: Context,
+    simklApi: SimklApi? = null,
+    profileId: String = ProfileStorage.PRIMARY_PROFILE_ID
+  ) {
     val applicationContext = context.applicationContext
-    // Rientrare con lo stesso contesto E la stessa implementazione è un no-op; se l'API
-    // iniettata cambia (test, ambiente alternativo) l'oggetto si riconfigura.
+    // Rientrare con lo stesso contesto, la stessa implementazione e lo stesso profilo è
+    // un no-op; se l'API iniettata o il profilo cambiano (test, ambiente alternativo)
+    // l'oggetto si riconfigura.
     // `simklApi == null` significa "usa il default lazy": non va risolto qui, altrimenti
     // Retrofit/Moshi/OkHttp tornerebbero sul percorso di avvio.
-    if (appContext === applicationContext && apiOverride === simklApi) return
+    if (appContext === applicationContext &&
+      apiOverride === simklApi &&
+      profileDataStoreProfileId == profileId
+    ) {
+      return
+    }
+    val profileChanged = profileDataStoreProfileId != null && profileDataStoreProfileId != profileId
     appContext = applicationContext
     apiOverride = simklApi
+    if (profileChanged) {
+      // Riconfigurazione in-process (test): lo stato dell'account del profilo vecchio non
+      // deve sopravvivere al cambio di file. In produzione il cambio profilo riavvia il
+      // processo, quindi questo ramo non viene percorso.
+      accountMutable.value = SimklAccountState()
+    }
+    val store = profileDataStore?.takeIf { profileDataStoreProfileId == profileId }
+      ?: simklDataStoreFor(applicationContext, profileId).also {
+        profileDataStore = it
+        profileDataStoreProfileId = profileId
+      }
     // I completamenti nati in LOCALE (player, toggle dell'utente) vengono trasmessi
     // all'account: è ciò che fa sparire film e serie concluse anche da SIMKL, non solo
     // dalla riga locale. I completamenti originati da SIMKL NON passano dal sink
@@ -212,8 +262,8 @@ object SimklRepository {
     // Con un'API iniettata il client va ricostruito subito attorno a quella (i test
     // usano un MockWebServer). Con il default resta differito al primo uso reale.
     authClientInstance = simklApi?.let { SimklAuthClient(it) }
-    scope.launch {
-      val store = applicationContext.simklDataStore
+    storeObserverJob?.cancel()
+    storeObserverJob = scope.launch {
       val first = store.data.first()
       loginFlowCache.set(parseFlow(first[KEY_AUTH_FLOW]))
       hydrateSyncMetadata(first)
@@ -373,7 +423,7 @@ object SimklRepository {
       flow = bundle.flow,
       sessionExpired = false
     )
-    appContext?.simklDataStore?.edit { prefs -> prefs.writeAccount(state) }
+    profileDataStore?.edit { prefs -> prefs.writeAccount(state) }
     accountMutable.value = state
     loginFlowCache.set(bundle.flow)
     invalidateWatchedCache()
@@ -409,7 +459,7 @@ object SimklRepository {
    */
   suspend fun importAccount(state: SimklAccountState) {
     if (!state.isLoggedIn) return
-    appContext?.simklDataStore?.edit { prefs -> prefs.writeAccount(state) }
+    profileDataStore?.edit { prefs -> prefs.writeAccount(state) }
     accountMutable.value = state
     lastSyncMutable.value = null
     loginFlowCache.set(state.flow)
@@ -444,7 +494,7 @@ object SimklRepository {
     val canRevoke = current.flow == SimklAuthFlow.V2_DEVICE &&
       token != null && hasClientId()
     withSessionGate {
-      appContext?.simklDataStore?.edit { prefs -> prefs.clear() }
+      profileDataStore?.edit { prefs -> prefs.clear() }
       accountMutable.value = SimklAccountState()
       lastSyncMutable.value = null
       // Gli eventi non consegnati appartengono all'account disconnesso: non devono
@@ -478,7 +528,7 @@ object SimklRepository {
     val current = accountMutable.value
     if (!current.isLoggedIn || current.sessionExpired) return
     val updated = current.copy(sessionExpired = true)
-    appContext?.simklDataStore?.edit { prefs -> prefs.writeAccount(updated) }
+    profileDataStore?.edit { prefs -> prefs.writeAccount(updated) }
     accountMutable.value = updated
     android.util.Log.w(TAG, "Sessione SIMKL non più valida: $message")
   }
@@ -946,12 +996,12 @@ object SimklRepository {
   // ── Persistenza dell'outbox ────────────────────────────────────────────────
 
   private suspend fun loadOutbox(): List<SimklOutboxEntry> {
-    val store = appContext?.simklDataStore ?: return emptyList()
+    val store = profileDataStore ?: return emptyList()
     return SimklScrobbleOutboxStore.decode(store.data.first()[KEY_SCROBBLE_OUTBOX])
   }
 
   private suspend fun appendOutboxEntry(entry: SimklOutboxEntry) {
-    val store = appContext?.simklDataStore ?: return
+    val store = profileDataStore ?: return
     store.edit { prefs ->
       val current = SimklScrobbleOutboxStore.decode(prefs[KEY_SCROBBLE_OUTBOX])
       prefs[KEY_SCROBBLE_OUTBOX] = SimklScrobbleOutboxStore.encode(current + entry)
@@ -959,7 +1009,7 @@ object SimklRepository {
   }
 
   private suspend fun updateOutboxEntry(entry: SimklOutboxEntry) {
-    val store = appContext?.simklDataStore ?: return
+    val store = profileDataStore ?: return
     store.edit { prefs ->
       val current = SimklScrobbleOutboxStore.decode(prefs[KEY_SCROBBLE_OUTBOX])
       val updated = current.map { if (it.id == entry.id) entry else it }
@@ -968,7 +1018,7 @@ object SimklRepository {
   }
 
   private suspend fun removeOutboxEntry(id: String) {
-    val store = appContext?.simklDataStore ?: return
+    val store = profileDataStore ?: return
     var removed = false
     store.edit { prefs ->
       val current = SimklScrobbleOutboxStore.decode(prefs[KEY_SCROBBLE_OUTBOX])
@@ -1376,14 +1426,14 @@ object SimklRepository {
    * volta per sincronizzazione) e non da una copia in memoria.
    */
   suspend fun loadPendingPlaybacks(): List<SimklPendingPlayback> = withContext(Dispatchers.IO) {
-    val store = appContext?.simklDataStore ?: return@withContext emptyList()
+    val store = profileDataStore ?: return@withContext emptyList()
     SimklPendingPlaybackStore.decode(store.data.first()[KEY_PENDING_PLAYBACKS])
   }
 
   /** Riscrive l'elenco delle voci rimandate (vuoto = chiave rimossa, niente residui). */
   suspend fun savePendingPlaybacks(pending: List<SimklPendingPlayback>) {
     val encoded = if (pending.isEmpty()) "" else SimklPendingPlaybackStore.encode(pending)
-    appContext?.simklDataStore?.edit { prefs ->
+    profileDataStore?.edit { prefs ->
       if (encoded.isEmpty()) prefs.remove(KEY_PENDING_PLAYBACKS) else prefs[KEY_PENDING_PLAYBACKS] = encoded
     }
   }
@@ -1500,7 +1550,7 @@ object SimklRepository {
   suspend fun saveActivitiesSnapshot(snapshot: SimklActivitiesSnapshot) {
     activitiesSnapshotCache = snapshot
     activitiesSnapshotRaw = snapshot.toStorageString()
-    appContext?.simklDataStore?.edit { prefs -> prefs[KEY_ACTIVITIES_SNAPSHOT] = snapshot.toStorageString() }
+    profileDataStore?.edit { prefs -> prefs[KEY_ACTIVITIES_SNAPSHOT] = snapshot.toStorageString() }
   }
 
   /** Data dell'ultima sincronizzazione riuscita (epoch millis), `null` se mai eseguita. */
@@ -1509,7 +1559,7 @@ object SimklRepository {
   suspend fun saveLastSync(result: SimklSyncResult) {
     lastSyncRaw = result.finishedAtEpochMs
     lastSyncMutable.value = result
-    appContext?.simklDataStore?.edit { prefs ->
+    profileDataStore?.edit { prefs ->
       prefs[KEY_LAST_SYNC_AT] = result.finishedAtEpochMs.toString()
     }
   }
@@ -1620,7 +1670,7 @@ object SimklRepository {
    * collegamento andrebbe perso al riavvio dell'app.
    */
   internal suspend fun persistedAccessToken(): String? =
-    appContext?.simklDataStore?.data?.first()?.get(KEY_ACCESS_TOKEN)
+    profileDataStore?.data?.first()?.get(KEY_ACCESS_TOKEN)
 
   private const val TAG = "SimklRepository"
 }

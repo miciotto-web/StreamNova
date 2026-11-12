@@ -3,18 +3,20 @@ package com.example.data.prefs
 import android.content.Context
 import android.util.Log
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.model.Episode
 import com.example.data.model.MediaItem
+import com.example.data.profiles.ProfileStorage
 import com.example.domain.model.Subtitle
 import java.io.File
 import java.io.FileFilter
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,9 +25,22 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-private val Context.persistentSubtitlesDataStore: DataStore<Preferences> by preferencesDataStore(
-  name = "persistent_subtitles"
-)
+/**
+ * DataStore delle selezioni sottotitoli per il profilo [profileId].
+ *
+ * La selezione è personale (un membro della famiglia può preferire un sottotitolo
+ * diverso), quindi segue il profilo. Il profilo principale conserva il file storico.
+ */
+private fun subtitleDataStoreFor(context: Context, profileId: String): DataStore<Preferences> =
+  PreferenceDataStoreFactory.create(
+    produceFile = {
+      ProfileStorage.dataStoreFile(
+        context = context,
+        baseName = ProfileStorage.SUBTITLE_STORE_BASE,
+        profileId = profileId
+      )
+    }
+  )
 
 /**
  * Repository per la selezione persistente dei sottotitoli OpenSubtitles.
@@ -51,6 +66,8 @@ object PersistentSubtitleRepository : PersistentSubtitleStore {
   private val KEY_SELECTIONS_JSON = stringPreferencesKey("selections_json")
 
   private var dataStore: DataStore<Preferences>? = null
+  private var dataStoreProfileId: String? = null
+  private var dataStoreObserverJob: Job? = null
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   @Volatile
@@ -68,18 +85,30 @@ object PersistentSubtitleRepository : PersistentSubtitleStore {
    */
   private val pendingRemovals = ConcurrentHashMap.newKeySet<String>()
 
-  fun init(context: Context) {
+  fun init(context: Context, profileId: String = ProfileStorage.PRIMARY_PROFILE_ID) {
     // Il contesto viene aggiornato anche se il DataStore è già inizializzato: in un
     // processo reale è sempre lo stesso Application, nei test Robolectric cambia.
     appContext = context.applicationContext
-    if (dataStore != null) return
-    val store = context.applicationContext.persistentSubtitlesDataStore
-    dataStore = store
+    if (dataStore != null && dataStoreProfileId == profileId) return
+    val existingStore = dataStore
+    val store = if (existingStore != null && dataStoreProfileId == profileId) {
+      existingStore
+    } else {
+      subtitleDataStoreFor(context.applicationContext, profileId).also {
+        dataStore = it
+        dataStoreProfileId = profileId
+      }
+    }
 
-    scope.launch {
-      store.data.collect { prefs ->
-        _selectionsMap.value = PersistentSubtitleCodec.decode(prefs[KEY_SELECTIONS_JSON])
-          .filterKeys { it !in pendingRemovals }
+    // Se in un test il repository viene riconfigurato su un altro profilo, il vecchio
+    // osservatore non deve continuare a pubblicare le selezioni dell'altro file.
+    if (store !== existingStore) dataStoreObserverJob?.cancel()
+    if (dataStoreObserverJob?.isActive != true) {
+      dataStoreObserverJob = scope.launch {
+        store.data.collect { prefs ->
+          _selectionsMap.value = PersistentSubtitleCodec.decode(prefs[KEY_SELECTIONS_JSON])
+            .filterKeys { it !in pendingRemovals }
+        }
       }
     }
   }
