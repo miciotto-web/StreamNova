@@ -926,7 +926,7 @@ private fun ProfileActionRow(
 // ── Avatar del profilo (emoji + colore) ─────────────────────────────────────
 
 @Composable
-private fun ProfileAvatarScreen(
+internal fun ProfileAvatarScreen(
   profile: UserProfile,
   onSave: (ProfileAvatar, String?) -> Unit,
   onBack: () -> Unit
@@ -953,6 +953,12 @@ private fun ProfileAvatarScreen(
   val colorFocusRequesters = remember {
     ProfileAvatar.entries.associateWith { FocusRequester() }
   }
+  // Requester della RIGA emoji visibile (quella della categoria selezionata). È l'unico
+  // punto di atterraggio del D-pad DOWN dai chip sempre agganciato: un requester della
+  // prima emoji di una categoria NON selezionata punta a un nodo che non esiste nella
+  // composizione e il focus search termina con `IllegalStateException: FocusRequester is
+  // not initialized` (stesso crash documentato in HeroBanner per le card riciclate).
+  val emojiRowFocusRequester = remember { FocusRequester() }
   val activeEmojis: List<String?> = remember(selectedCategory) {
     listOf<String?>(null) + ProfileRules.emojisFor(selectedCategory)
   }
@@ -1006,15 +1012,14 @@ private fun ProfileAvatarScreen(
             label = stringResource(category.labelRes()),
             selected = category == selectedCategory,
             focusRequester = categoryFocusRequesters.getValue(category),
-            downFocusRequester = emojiFocusRequesters.getValue(category)
-              .getValue(ProfileRules.emojisFor(category).firstOrNull()),
+            downFocusRequester = emojiRowFocusRequester,
             onClick = { selectedCategory = category }
           )
         }
       }
       Spacer(modifier = Modifier.height(10.dp))
       LazyRow(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().focusRequester(emojiRowFocusRequester),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         contentPadding = PaddingValues(horizontal = 2.dp)
       ) {
@@ -1087,8 +1092,9 @@ private fun ProfileEmojiCategoryChip(
     onClick = onClick,
     shape = RoundedCornerShape(50),
     focusedScale = 1.05f,
-    // DOWN porta sempre alla riga emoji della categoria: la ricerca geometrica, con
-    // due file sotto, può altrimenti scivolare sulla riga dei colori.
+    // DOWN porta sempre alla riga emoji VISIBILE: la ricerca geometrica, con due file
+    // sotto, può altrimenti scivolare sulla riga dei colori. Il requester appartiene alla
+    // riga stessa (sempre composta), non a una singola emoji che può non essere montata.
     modifier = Modifier
       .focusRequester(focusRequester)
       .focusProperties { down = downFocusRequester }
