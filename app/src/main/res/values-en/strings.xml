@@ -52,6 +52,10 @@
     <string name="filter_drama">Drama</string>
     <string name="filter_comedy">Comedy</string>
     <string name="filter_animation">Animation</string>
+    <!-- Sorting badges for Movies / TV Shows cards -->
+    <string name="category_sort_recent">Recent</string>
+    <string name="category_sort_rating">By Rating</string>
+    <string name="category_sort_popular">Popular</string>
     <string name="provider_loading_catalog">Loading %s catalog…</string>
     <string name="provider_empty_catalog">No titles available on %s</string>
     <string name="provider_empty_filter">No content found for filter \"%s\"</string>

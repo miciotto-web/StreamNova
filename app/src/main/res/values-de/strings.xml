@@ -52,6 +52,10 @@
     <string name="filter_drama">Drama</string>
     <string name="filter_comedy">Komödie</string>
     <string name="filter_animation">Animation</string>
+    <!-- Sortier-Badges für Film- / Serienkarten -->
+    <string name="category_sort_recent">Neueste</string>
+    <string name="category_sort_rating">Nach Bewertung</string>
+    <string name="category_sort_popular">Beliebt</string>
     <string name="provider_loading_catalog">%s-Katalog wird geladen…</string>
     <string name="provider_empty_catalog">Keine Titel verfügbar auf %s</string>
     <string name="provider_empty_filter">Keine Inhalte für Filter \"%s\" gefunden</string>

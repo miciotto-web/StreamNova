@@ -68,12 +68,15 @@ import androidx.compose.material.icons.filled.Opacity
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wallpaper
+import androidx.compose.material.icons.filled.Whatshot
 import android.widget.Toast
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.platform.LocalContext
@@ -161,10 +164,12 @@ import com.example.data.update.UpdateDownloadState
 import androidx.media3.common.MediaLibraryInfo
 import com.example.ui.components.ContinueWatchingCard
 import com.example.ui.components.FOCUS_ROW_ANY
+import com.example.ui.components.FocusRestoreConfirmation
 import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.PosterMediaCard
+import com.example.ui.components.requestFocusConfirmed
 import com.example.ui.components.requestFocusWhenAttached
 import com.example.ui.components.scrollToItemVerified
 import com.example.ui.components.stabilizeFirstSeenOrder
@@ -226,6 +231,62 @@ enum class CategoryCatalogFilter(
   COMEDY("comedy", labelRes = R.string.filter_comedy)
 }
 
+/**
+ * Ordinamento delle schede nelle sezioni Film e Serie TV, selezionato dai badge in alto.
+ *
+ * L'ordine è puramente CLIENT-SIDE e non cambia la sorgente del catalogo (Cinemeta, addon
+ * dell'utente o TMDB): i badge riordinano le schede già caricate e la paginazione continua a
+ * lavorare sulla lista originale.
+ *
+ * - [RECENTI]: uscita più recente per prima (`releaseDate`, poi `year`).
+ * - [PER_VALUTAZIONE]: voto più alto per primo (`rating`).
+ * - [POPOLARI]: ordine nativo del catalogo. È l'ordine in cui la sorgente restituisce i
+ *   contenuti (per Cinemeta/TMDB e per i cataloghi degli addon è l'ordine di popolarità
+ *   dichiarato dal provider): nessun riordino, quindi la selezione non altera ciò che
+ *   l'utente vedeva prima di scegliere un altro badge.
+ */
+enum class CategorySortOrder(
+  val id: String,
+  @StringRes val labelRes: Int,
+  val icon: ImageVector
+) {
+  RECENTI("recent", R.string.category_sort_recent, Icons.Default.Schedule),
+  PER_VALUTAZIONE("rating", R.string.category_sort_rating, Icons.Default.Star),
+  POPOLARI("popular", R.string.category_sort_popular, Icons.Default.Whatshot)
+}
+
+/**
+ * Applica l'ordinamento scelto alla lista GIÀ filtrata della schermata categoria.
+ *
+ * Regole di robustezza:
+ * - le liste sono ordinate con comparatori STABILI, quindi a parità di chiave resta l'ordine
+ *   di arrivo del catalogo (nessuna card "salta" tra due aggiornamenti identici);
+ * - `year = 0` (anno non disponibile) e `rating = 0` (voto non disponibile) finiscono in coda
+ *   invece di mescolarsi ai valori reali;
+ * - [CategorySortOrder.POPOLARI] restituisce la lista ORIGINALE (stessa istanza), così la
+ *   scelta «Popolari» ripristina esattamente l'ordine nativo del catalogo.
+ */
+internal fun sortCategoryItems(
+  items: List<MediaItem>,
+  order: CategorySortOrder
+): List<MediaItem> = when (order) {
+  CategorySortOrder.POPOLARI -> items
+  CategorySortOrder.RECENTI -> items.sortedWith(
+    compareByDescending<MediaItem> { it.year }
+      .thenByDescending { it.releaseDate ?: "" }
+      .thenByDescending { it.rating }
+  )
+  CategorySortOrder.PER_VALUTAZIONE -> items.sortedWith(
+    compareByDescending<MediaItem> { it.rating }
+      .thenByDescending { it.year }
+      .thenBy { it.title.lowercase() }
+  )
+}
+
+/** Tag di test del badge di ordinamento, stabile rispetto alla lingua dell'interfaccia. */
+internal fun sortBadgeTestTag(sort: CategorySortOrder): String =
+  "category_sort_${sort.id}"
+
 @Composable
 fun CategoryBrowsingScreen(
   title: String,
@@ -238,6 +299,10 @@ fun CategoryBrowsingScreen(
   modifier: Modifier = Modifier
 ) {
   var selectedFilter by remember { mutableStateOf(CategoryCatalogFilter.ALL) }
+  // Ordinamento dei badge in alto. `rememberSaveable`: la scelta deve sopravvivere al ritorno
+  // dal Dettaglio (la schermata viene smontata/rimontata) e restare coerente con la posizione
+  // della card ripristinata.
+  var selectedSort by rememberSaveable { mutableStateOf(CategorySortOrder.POPOLARI) }
   // Stato di scroll della griglia PERSISTENTE durante la navigazione: al Back dal Dettaglio la
   // griglia ritrova la stessa posizione (come la griglia Provider), quindi la card ripristinata
   // resta nella riga e nella posizione visiva da cui si era entrati.
@@ -259,6 +324,18 @@ fun CategoryBrowsingScreen(
     val filterChanged = appliedFilterName != null && appliedFilterName != selectedFilter.name
     appliedFilterName = selectedFilter.name
     if (filterChanged) {
+      gridState.scrollToItem(0)
+    }
+  }
+
+  // Stesso contratto per il cambio di ORDINAMENTO: la lista viene riordinata, quindi la
+  // posizione della griglia precedente non ha più significato. Alla prima composizione
+  // (`appliedSortName == null`) nessun reset: `gridState` è già quello salvato.
+  var appliedSortName by remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(selectedSort) {
+    val sortChanged = appliedSortName != null && appliedSortName != selectedSort.name
+    appliedSortName = selectedSort.name
+    if (sortChanged) {
       gridState.scrollToItem(0)
     }
   }
@@ -346,6 +423,12 @@ fun CategoryBrowsingScreen(
     }
   }
 
+  // Ordine MOSTRATO: il filtro decide QUALI schede, il badge decide IN CHE ORDINE.
+  // L'ordinamento è ricalcolato solo quando cambia la lista filtrata o il badge scelto.
+  val sortedItems = remember(filteredItems, selectedSort) {
+    sortCategoryItems(filteredItems, selectedSort)
+  }
+
   // Richieste di focus per IDENTITÀ di cella: il ripristino dal Dettaglio deve atterrare sulla
   // card salvata, non su una cella fissa della griglia (in precedenza il FocusRequester era
   // agganciato alla cella 0 della griglia e il focus finiva sempre sulla prima card della
@@ -365,33 +448,53 @@ fun CategoryBrowsingScreen(
     requestFocusWhenAttached(cellFocusRequester(anchorId))
   }
 
-  // BACK su una card della griglia: UNA sola pressione torna in cima alla scheda — griglia
-  // riportata al primo elemento e focus sul PRIMO badge «Tutti». Con il focus sui badge (o
-  // fuori dalla griglia) il gestore è disattivato e il BACK prosegue con la navigazione
-  // esistente (apertura sidebar / ritorno alla Home).
+  // BACK su una card della griglia: UNA sola pressione riporta il focus in cima alla scheda,
+  // SUL BADGE DI ORDINAMENTO ATTUALMENTE SCELTO (Recenti / Per Valutazione / Popolari), così
+  // dal telecomando si può cambiare ordinamento senza attraversare i filtri provider.
+  // La griglia torna al primo elemento, come prima di questa modifica: è il punto di partenza
+  // coerente con la nuova scelta di ordinamento. Con il focus sui badge o fuori dalla griglia
+  // il gestore è disattivato e il BACK prosegue con la navigazione esistente (sidebar / Home).
   var gridHasFocus by remember { mutableStateOf(false) }
+  val sortRowState = rememberLazyListState()
+  val sortBadgeRequesters = remember { mutableMapOf<String, FocusRequester>() }
+  fun sortBadgeRequester(sort: CategorySortOrder): FocusRequester =
+    sortBadgeRequesters.getOrPut(sort.name) { FocusRequester() }
+  // Conferma REALE del focus sul badge (onFocusChanged), non solo l'invio della richiesta:
+  // il BACK arriva mentre la griglia sta scrollando/ricomponendo, quindi `requestFocus()` può
+  // essere accettato e poi perso. Il token avvia un effetto FUORI dal dispatch del BACK, così
+  // la richiesta parte dopo che la ricomposizione ha stabilizzato la schermata.
+  val sortBadgeFocusConfirmations = remember {
+    mutableMapOf<String, FocusRestoreConfirmation>()
+  }
+  fun sortBadgeConfirmation(sort: CategorySortOrder): FocusRestoreConfirmation =
+    sortBadgeFocusConfirmations.getOrPut(sort.name) { FocusRestoreConfirmation() }
+  var sortBadgeFocusRequest by remember { mutableStateOf(0L) }
+  LaunchedEffect(sortBadgeFocusRequest) {
+    if (sortBadgeFocusRequest == 0L) return@LaunchedEffect
+    // La riga dei badge torna al badge scelto: il nodo deve essere montato prima che la
+    // richiesta di focus possa essere consegnata (badge riciclato fuori finestra).
+    try {
+      sortRowState.scrollToItem(selectedSort.ordinal)
+    } catch (_: Exception) {
+    }
+    // Il focus lascia la griglia PRIMA di riportarla in cima: la consegna al badge non
+    // dipende dallo stato della griglia e resta deterministica anche quando la card
+    // focalizzata viene smontata dallo scroll.
+    sortBadgeRequester(selectedSort).requestFocusConfirmed(sortBadgeConfirmation(selectedSort))
+    // «Inizio scheda»: anche la griglia riparte dal primo elemento, così discese successive
+    // dal badge riprendono dal catalogo dall'inizio.
+    try {
+      gridState.scrollToItem(0)
+    } catch (_: Exception) {
+    }
+  }
+  BackHandler(enabled = gridHasFocus) {
+    sortBadgeFocusRequest++
+  }
   val filterRowState = rememberLazyListState()
   val filterChipRequesters = remember { mutableMapOf<String, FocusRequester>() }
   fun filterChipRequester(filter: CategoryCatalogFilter): FocusRequester =
     filterChipRequesters.getOrPut(filter.name) { FocusRequester() }
-  val backToTopScope = rememberCoroutineScope()
-  BackHandler(enabled = gridHasFocus) {
-    backToTopScope.launch {
-      // La fila di badge torna all'inizio: il chip «Tutti» deve essere montato prima che
-      // la richiesta di focus possa essere consegnata (chip riciclata fuori finestra).
-      try {
-        filterRowState.scrollToItem(0)
-      } catch (_: Exception) {
-      }
-      // «Inizio scheda»: anche la griglia riparte dal primo elemento, così discese successive
-      // dal badge riprendono dal catalogo dall'inizio.
-      try {
-        gridState.scrollToItem(0)
-      } catch (_: Exception) {
-      }
-      requestFocusWhenAttached(filterChipRequester(CategoryCatalogFilter.ALL))
-    }
-  }
 
   // UNICO punto di ingresso del ripristino dal Dettaglio: risolve la cella per identità e
   // richiede il focus SU QUELLA cella. Lo scroll avviene solo quando la cella target non è
@@ -399,9 +502,9 @@ fun CategoryBrowsingScreen(
   // dal Dettaglio `layoutInfo` è ancora VUOTO e il vecchio controllo "target non visibile?"
   // era vacuamente vero — la griglia saltava con la card bersaglio allineata alla cella
   // in alto a sinistra (difetto "il focus va sempre alla prima scheda di qualsiasi fila").
-  LaunchedEffect(restoreMediaId, focusRestoreToken, filteredItems) {
+  LaunchedEffect(restoreMediaId, focusRestoreToken, sortedItems) {
     val mediaId = restoreMediaId ?: return@LaunchedEffect
-    val index = filteredItems.indexOfFirst { it.id == mediaId }
+    val index = sortedItems.indexOfFirst { it.id == mediaId }
     if (index < 0) {
       // Target non più disponibile (catalogo cambiato mentre il Dettaglio era aperto): il
       // target viene rilasciato così le card tornano focalizzabili, e l'ancora di recupero
@@ -451,19 +554,81 @@ fun CategoryBrowsingScreen(
       fontWeight = FontWeight.Bold
     )
 
+    // Badge di ordinamento (Recenti / Per Valutazione / Popolari).
+    //
+    // Riga separata dai filtri provider: il filtro decide QUALI schede mostrare, il badge
+    // decide IN CHE ORDINE. La riga è un LazyRow come quella dei filtri, quindi il D-pad la
+    // attraversa con la ricerca di focus standard: UP dai filtri entra qui, DOWN dalla griglia
+    // risale ai filtri e poi ai badge.
+    LazyRow(
+      state = sortRowState,
+      modifier = Modifier.padding(top = 14.dp),
+      horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+      items(CategorySortOrder.values(), key = { it.name }, contentType = { "sort_badge" }) { sort ->
+        val isSelected = selectedSort == sort
+        val label = stringResource(sort.labelRes)
+        TvFocusableBox(
+          // Requester del badge: il BACK dalla griglia deve consegnare il focus al badge
+          // di ordinamento SCELTO (vedi il BackHandler sopra). Il badge è montato perché la
+          // LazyRow è già stata riportata sulla sua posizione prima della richiesta.
+          modifier = Modifier
+            .focusRequester(sortBadgeRequester(sort))
+            .testTag(sortBadgeTestTag(sort))
+            // Conferma reale del focus per il BACK dalla griglia: la sola richiesta può essere
+            // accettata e persa durante una ricomposizione.
+            .onFocusChanged { sortBadgeConfirmation(sort).onFocusChanged(it.isFocused) },
+          shape = RoundedCornerShape(20.dp),
+          onClick = { selectedSort = sort }
+        ) { isFocused ->
+          Row(
+            modifier = Modifier
+              .background(
+                when {
+                  isFocused -> NovaCyanBright
+                  isSelected -> NovaCyan.copy(alpha = 0.25f)
+                  else -> NovaSurfaceVariant
+                },
+                RoundedCornerShape(20.dp)
+              )
+              .border(
+                1.dp,
+                if (isSelected || isFocused) NovaCyanBright else Color(0xFF1E293B),
+                RoundedCornerShape(20.dp)
+              )
+              .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Icon(
+              imageVector = sort.icon,
+              contentDescription = null,
+              tint = if (isFocused) NovaBackground else if (isSelected) NovaCyanBright else NovaTextSecondary,
+              modifier = Modifier.size(15.dp)
+            )
+            Text(
+              text = label,
+              color = if (isFocused) NovaBackground else if (isSelected) NovaCyanBright else NovaTextSecondary,
+              fontSize = 12.sp,
+              fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium
+            )
+          }
+        }
+      }
+    }
+
     // Filter Chips Row
     LazyRow(
       state = filterRowState,
-      modifier = Modifier.padding(vertical = 14.dp),
+      modifier = Modifier.padding(top = 10.dp, bottom = 14.dp),
       horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
       items(filters, key = { it.name }, contentType = { "filter_chip" }) { filter ->
         val isSelected = selectedFilter == filter
         val label = filter.labelRes?.let { stringResource(it) } ?: filter.brandName ?: ""
         TvFocusableBox(
-          // Requester del chip: il BACK dalla griglia deve consegnare il focus al primo
-          // badge «Tutti» (vedi il BackHandler sopra). Il chip è montato perché la LazyRow
-          // è già stata riportata all'inizio prima della richiesta.
+          // Requester del chip: identifica ogni filtro per la navigazione di focus della riga.
+          // Il BACK dalla griglia non lo usa più: torna al badge di ordinamento scelto.
           modifier = Modifier.focusRequester(filterChipRequester(filter)),
           shape = RoundedCornerShape(20.dp),
           onClick = { selectedFilter = filter }
@@ -496,7 +661,14 @@ fun CategoryBrowsingScreen(
       }
     }
 
-    TvFocusBringIntoView {
+    // Il viewport della griglia contiene poco più di una riga di card: la testata (titolo,
+    // badge e filtri) sta FUORI dalla griglia e i margini dello spec "a margini"
+    // (64dp sopra + 48dp sotto) non sono soddisfacibili — card a fuoco 298dp + 112dp di
+    // margini > 369dp di viewport. In quella condizione le due regole dello spec si
+    // annullano a vicenda e OGNI LEFT/RIGHT nella stessa riga produce un sobbalzo verticale
+    // di ~8dp. Lo spec per griglie centra la riga in ingresso e restituisce 0 quando la
+    // riga è già interamente visibile: gli spostamenti orizzontali non muovono il catalogo.
+    TvFocusGridBringIntoView {
       LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 150.dp),
         state = gridState,
@@ -506,11 +678,11 @@ fun CategoryBrowsingScreen(
         modifier = Modifier
           .fillMaxSize()
           // Tracking del focus nella griglia (hasFocus include le card): è la condizione
-          // del BackHandler «torna in cima al badge Tutti».
+          // del BackHandler «BACK → badge di ordinamento scelto».
           .onFocusChanged { gridHasFocus = it.hasFocus }
       ) {
-        itemsIndexed(filteredItems, key = { _, item -> item.id }, contentType = { _, _ -> "media_poster" }) { index, item ->
-          if (index >= filteredItems.size - 6) {
+        itemsIndexed(sortedItems, key = { _, item -> item.id }, contentType = { _, _ -> "media_poster" }) { index, item ->
+          if (index >= sortedItems.size - 6) {
             LaunchedEffect(Unit) {
               if (currentProviderId != null && currentTmdbProviderId != null && viewModel != null) {
                 viewModel.loadNextCategoryProviderPage(currentProviderId, currentTmdbProviderId, isTv)

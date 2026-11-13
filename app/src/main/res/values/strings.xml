@@ -52,6 +52,10 @@
     <string name="filter_drama">Dramma</string>
     <string name="filter_comedy">Commedia</string>
     <string name="filter_animation">Animazione</string>
+    <!-- Badge di ordinamento delle schede Film / Serie TV -->
+    <string name="category_sort_recent">Recenti</string>
+    <string name="category_sort_rating">Per Valutazione</string>
+    <string name="category_sort_popular">Popolari</string>
     <string name="provider_loading_catalog">Caricamento catalogo %s…</string>
     <string name="provider_empty_catalog">Nessun titolo disponibile su %s</string>
     <string name="provider_empty_filter">Nessun contenuto trovato per il filtro \"%s\"</string>

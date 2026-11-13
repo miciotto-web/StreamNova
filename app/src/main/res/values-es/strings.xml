@@ -52,6 +52,10 @@
     <string name="filter_drama">Drama</string>
     <string name="filter_comedy">Comedia</string>
     <string name="filter_animation">Animación</string>
+    <!-- Insignias de ordenación de las tarjetas de Películas / Series -->
+    <string name="category_sort_recent">Recientes</string>
+    <string name="category_sort_rating">Por valoración</string>
+    <string name="category_sort_popular">Populares</string>
     <string name="provider_loading_catalog">Cargando catálogo de %s…</string>
     <string name="provider_empty_catalog">No hay títulos disponibles en %s</string>
     <string name="provider_empty_filter">No se encontró contenido para el filtro \"%s\"</string>
