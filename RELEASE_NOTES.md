@@ -1,3 +1,63 @@
+# StreamNova V1.1.0 — Build 1100
+
+StreamNova 1.1.0 porta il motore HTTP alla versione successiva: nuovi provider verificati, la scelta del provider principale, il rinnovo automatico dei token HLS e le correzioni TV/D-pad rimaste in coda dopo la 1.0.10. Il `versionName` cresce (`1.1.0`) e il `versionCode` passa a `1100`, così l'aggiornamento in-app viene offerto a tutte le installazioni.
+
+## Novità principali
+
+### Nuovi provider HTTP
+
+- **Altadefinizione (nuovo provider).** Risolve i flussi tramite il player vidxgo: usa l'IMDb ID come chiave primaria (`tt0133093` → `0133093`, con zero-padding a 7 cifre) e, se manca, ricade sulla ricerca per titolo/anno dell'API pubblica del catalogo. Film: `/t/{id}`; serie: `/t/{id}/{stagione}/{episodio}`. La master HLS viene letta per ricavare la qualità massima; un errore in questa lettura non invalida la sorgente (resta «Auto»).
+- **VidxgoTokenInterceptor (rinnovo token HLS).** I flussi Altadefinizione usano un token che scade dopo circa 180 secondi: l'interceptor lo rinnova pochi istanti prima della scadenza e, su un 403 del CDN, forza un refresh e ritenta una sola volta. Agisce esclusivamente sugli host del CDN vidxgo (`*.d2b.you`): nessun'altra sorgente viene toccata. Un errore di refresh non interrompe la riproduzione.
+- **StreamingCommunity.** Il player attuale usa lo stesso backend vidxgo: la pagina HTML risponde 403 (gate anti-bot), mentre l'endpoint JSON pubblico `/t/{id}` restituisce la master HLS. Il provider ora usa questo percorso, lo stesso già verificato per Altadefinizione.
+- **CB01 / CB01 Uno.** Aggiornati i domini: `cb01one.uno` è il canonico, con `cb01uno.uno`, `cb01one.com` e `cb01.stream` come alias di fallback. I domini storici `cb01uno.top` e `cb01uno.skin` sono stati rimossi.
+- **Regole R8 per i payload vidxgo.** Aggiunte le keep rules Moshi per `TokenPayload`, `ArchivePayload` e `ArchiveItem`: senza di esse R8 poteva svuotare le classi e far fallire il parsing solo nella build di release minificata.
+
+### Scelta del provider HTTP
+
+- **Provider HTTP principale.** Nuova voce in Impostazioni → Motore di Riproduzione (visibile solo in modalità HTTP): si può lasciare «Automatico» oppure scegliere uno dei provider (MultiEmbed, VixSrc, Altadefinizione, 2Embed, SuperEmbed, StreamingCommunity, CB01, Eurostreaming). La scelta è persistita e sopravvive al riavvio.
+- **Solo provider scelto.** Con un provider principale selezionato è attivo per default: nessun fallback automatico sugli altri provider. Se il provider non risponde, la riproduzione non parte. L'opzione è disattivabile per riabilitare il fallback.
+- **Provider sperimentali.** Nuovo interruttore (default **disattivato**): in modalità automatica restano attivi solo i provider verificati (VixSrc e Altadefinizione). Attivandolo vengono eseguiti anche 2Embed, CB01, StreamingCommunity, MultiEmbed, SuperEmbed ed Eurostreaming. Il provider scelto manualmente viene sempre eseguito, anche se classificato come sperimentale.
+- **Ordinamento delle sorgenti.** Le sorgenti del provider preferito restano in cima sia nel fast-start sia nel selettore manuale, prima dei criteri di cache/lingua/qualità. La deduplica resta invariata: lo stesso URL restituito da due provider è una sola sorgente.
+- **Avvio e fallback.** Il fast-start attende il provider preferito fino a 3 secondi prima di ripiegare sulla migliore sorgente disponibile; l'auto-pick usa una finestra dedicata di 1,5 secondi e avvia subito una sorgente del provider scelto. La preferenza vale solo nel motore HTTP (in Debrid l'unico provider è TorBox).
+- **Robustezza.** Un id provider sconosciuto o non più attivo viene ignorato e la ricerca torna automatica, senza errori. Etichette localizzate in italiano, inglese, tedesco, spagnolo e francese.
+
+### TV, D-pad e interfaccia
+
+- **Badge di ordinamento Film/Serie TV.** Nuovi badge «Recenti», «Per Valutazione» e «Popolari» nelle schermate Film e Serie TV: riordinano client-side le schede già caricate (la paginazione resta sulla lista originale) e la scelta sopravvive al ritorno dal Dettaglio. Il BACK dalla griglia riporta il focus sul badge di ordinamento selezionato, con conferma reale del focus.
+- **Fix sobbalzo delle griglie.** La griglia di `CategoryBrowsingScreen` usa `TvFocusGridBringIntoView`: la riga in ingresso viene centrata e LEFT/RIGHT nella stessa riga non muovono più il catalogo in verticale (eliminato il sobbalzo di circa 8 dp per pressione).
+- **Fix crash D-pad nel selettore avatar.** Il DOWN dai chip categoria puntava alla prima emoji della categoria: se quella riga non era composta, il focus search terminava con `IllegalStateException: FocusRequester is not initialized`. I chip ora puntano a un requester agganciato alla riga emoji visibile, sempre composta.
+
+### Altri fix
+
+- **OpenSubtitles.** Una scrittura asincrona già in volo non può più atterrare su disco dopo la rimozione della chiave API: il job precedente viene annullato e lo store catturato al momento della chiamata.
+- **Selettore sorgenti.** Il provider preferito viene passato anche al dialog di selezione, così l'ordine resta coerente con l'auto-pick.
+
+## Versione e compatibilità
+
+- App version: `1.1.0`
+- Version code: `1100`
+- Application ID: `com.aistudio.streamnova.tvapp`
+- Artifacts: APK separati per `armeabi-v7a`, `arm64-v8a`, `x86`, `x86_64`, più l'APK universale
+- Firma: stessa chiave di distribuzione ufficiale delle release precedenti (certificato SHA-256 `3175a7df…`), aggiornamento in place senza disinstallare
+
+## Verifica
+
+- Suite unitaria completa eseguita sullo stato di questa release: **2.658 test, 0 fallimenti, 3 saltati** (i tre test di rete, saltati per progetto). Include i nuovi test su Altadefinizione/Vidxgo, sul rinnovo del token, sulla scelta del provider, sui badge di ordinamento e sul crash D-pad degli avatar.
+- Compilazione Release con R8/minificazione e risorse ottimizzate: 5 APK (quattro split ABI + Universal).
+- Ogni APK è stato verificato con `apksigner` e `aapt2`: firma valida con il certificato SHA-256 `3175a7df6ea50a1be756c4a0b74c2623757128b620d28f40e678eed715fd2cd7` (la stessa chiave di distribuzione delle release precedenti), `versionName=1.1.0`, `versionCode=1100` e ABI dichiarate corrette su ogni split.
+
+### SHA-256
+
+```
+054589d13d44e85da079b04e6538778f2cfff206b789b1e0053eb2e5ab357bc4  StreamNova-arm64-v8a-release.apk
+e5b1849b526584efbd34cac8eb870642fd9bdefea1eb82ebf6e3539b5c335427  StreamNova-armeabi-v7a-release.apk
+ddf6a64c1b64d25c7a463d54c5dd6f6fdbca0669f00ee4d58a5e283047272e2f  StreamNova-universal-release.apk
+ec139397680bccbd7812a5b4e5f751a9f7c059014473ef52de730ae196fd090b  StreamNova-x86_64-release.apk
+ecb085ef4f2a4c8838270ccc1f5fb29d15e3c42b6d2dca297ba7f732fb433705  StreamNova-x86-release.apk
+```
+
+---
+
 # StreamNova V1.0.2 - Official Stable Release
 
 StreamNova V1.0.2 follows V1.0.1 and closes the update problem that left installations on 1.0.0 stuck: the updater shipped inside 1.0.0 could not tell the architecture of a release apart — it simply took the first APK of the release (or any file literally named `app-release.apk`), and on the published 1.0.1 release that first file is the 64-bit ARM build, which a 32-bit-only device such as a Fire TV Stick rejects with `INSTALL_FAILED_NO_MATCHING_ABIS`. No player, catalog, provider or extractor behaviour is touched.

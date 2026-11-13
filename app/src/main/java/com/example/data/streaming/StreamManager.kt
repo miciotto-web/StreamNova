@@ -2,6 +2,8 @@ package com.example.data.streaming
 
 import android.util.Log
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import com.example.data.prefs.AppSettingsRepository
+import com.example.data.prefs.HttpProviderChoices
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.provider.AnimeStreamProvider
 import com.example.data.stremio.StremioAddonRepository
@@ -21,8 +23,10 @@ import com.example.data.streaming.diagnostics.StreamSearchMetrics
 import com.example.data.streaming.diagnostics.StreamSearchMetricsCollector
 import com.example.data.streaming.diagnostics.toLogLine
 import com.example.data.streaming.diagnostics.record
+import com.example.data.streaming.providers.AltadefinizioneProvider
 import com.example.data.streaming.providers.Cb01Provider
 import com.example.data.streaming.providers.EurostreamingProvider
+import com.example.data.streaming.providers.ImdbAwareStreamProvider
 import com.example.data.streaming.providers.MultiEmbedProvider
 import com.example.data.streaming.providers.StreamingCommunityProvider
 import com.example.data.streaming.providers.SuperEmbedProvider
@@ -93,6 +97,11 @@ class StreamManager(
    * vengono annullati con lo scope).
    */
   private val maxConcurrentProviders: Int = DEFAULT_MAX_CONCURRENT_PROVIDERS,
+  /**
+   * Grazia concessa al provider HTTP preferito prima del fallback automatico.
+   * Configurabile nei test; in produzione resta [PRIMARY_PROVIDER_GRACE_MS].
+   */
+  private val preferredProviderGraceMs: Long = PRIMARY_PROVIDER_GRACE_MS,
   /** Recupera gli stream degli addon Stremio; iniettabile per testare l'isolamento tra modalità. */
   private val addonStreamsFetcher: suspend (Int, Boolean, Int?, Int?, String?) -> List<StremioStreamCandidate> =
     { tmdbId, isTv, season, episode, imdbId ->
@@ -129,7 +138,25 @@ class StreamManager(
     providerTag: String? = null,
     genres: List<String> = emptyList(),
     streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB,
-    imdbId: String? = null
+    imdbId: String? = null,
+    /**
+     * Provider HTTP da avviare per primo e da tenere in cima alle sorgenti.
+     * `null` o [HttpProviderChoices.AUTO_ID] mantengono il comportamento
+     * automatico storico. Un id non presente tra i provider attivi viene
+     * ignorato con un log (fallback automatico).
+     */
+    httpPrimaryProviderId: String? = null,
+    /**
+     * `true`: usa **solo** [httpPrimaryProviderId] (nessun fallback sugli altri
+     * provider HTTP). Ignorato se [httpPrimaryProviderId] è null/auto.
+     */
+    httpPrimaryProviderStrict: Boolean = false,
+    /**
+     * `true`: include anche i provider sperimentali (spesso bloccati). Default
+     * `false`: solo i provider verificati (`VixSrc`, `Altadefinizione`), più
+     * l'eventuale provider scelto manualmente.
+     */
+    httpExperimentalProvidersEnabled: Boolean = false
   ): Flow<List<StreamSource>> {
     var metricsToPublish: StreamSearchMetrics? = null
     var cancelledMetricsSink: (() -> StreamSearchMetrics?)? = null
@@ -148,7 +175,10 @@ class StreamManager(
           providerTag = providerTag,
           genres = genres,
           streamingEngineMode = streamingEngineMode,
-          imdbId = imdbId
+          imdbId = imdbId,
+          httpPrimaryProviderId = httpPrimaryProviderId,
+          httpPrimaryProviderStrict = httpPrimaryProviderStrict,
+          httpExperimentalProvidersEnabled = httpExperimentalProvidersEnabled
         )
       } finally {
         // Il producer puo' essere gia' cancellato (collector andato via): la
@@ -182,7 +212,10 @@ class StreamManager(
     providerTag: String?,
     genres: List<String>,
     streamingEngineMode: StreamingEngineMode,
-    imdbId: String?
+    imdbId: String?,
+    httpPrimaryProviderId: String?,
+    httpPrimaryProviderStrict: Boolean,
+    httpExperimentalProvidersEnabled: Boolean
   ) {
     val flowId = NEXT_SEARCH_ID.incrementAndGet()
     searchIdCounter = flowId.toInt()
@@ -217,6 +250,15 @@ class StreamManager(
     var emittedFirst = false
     var fastStartWindowPassed = false
     var currentSelectedUrl: String? = null
+    // Assegnato più sotto, dopo il filtro provider: la lambda mergeSources lo
+    // legge quando i provider iniziano a produrre (dopo l'assegnazione).
+    var preferredProviderId: String? = null
+    // Diventa true appena il provider preferito produce una sorgente; fino ad
+    // allora le sorgenti degli altri provider vengono raccolte ma NON emesse.
+    var preferredProviderProduced = false
+    // Timer di grazia: se il provider preferito non risponde entro il limite,
+    // emette la migliore sorgente disponibile (fallback trasparente).
+    var preferredGraceJob: Job? = null
 
     suspend fun logAndSendSelected(sources: List<StreamSource>) {
       if (sources.isNotEmpty()) {
@@ -264,12 +306,23 @@ class StreamManager(
       Log.i(TAG, "$origin -> ${sources.size} sorgente/i trovate")
       var added = 0
       var dropped = 0
+      // Ogni sorgente porta con sé il provider che l'ha prodotta: serve al
+      // selettore e alla priorità del provider HTTP scelto dall'utente.
+      // La chiave di deduplica resta URL+header (il provider non entra nella
+      // chiave): lo stesso flusso da due provider resta una sola sorgente.
+      val taggedSources = sources.map { source ->
+        if (source.sourceProviderId.isNullOrBlank()) {
+          source.copy(sourceProviderId = origin)
+        } else {
+          source
+        }
+      }
       mutex.withLock {
         // La deduplica distingue lo stesso URL con header di autorizzazione o
         // riproduzione differenti (es. token Debrid diversi): sono sorgenti
         // realmente diverse e non vanno collassate in una sola.
         val before = collected.size
-        addDistinctSources(collected, sources)
+        addDistinctSources(collected, taggedSources)
         added = collected.size - before
         dropped = sources.size - added
         // Contatori per provider, non solo per addon: almeno una delle
@@ -284,10 +337,21 @@ class StreamManager(
           DIAG_TAG,
           "DIAG-C origin=$origin incoming=${sources.size} added=$added dropped_dup=$dropped collected=${collected.size}"
         )
+        // Il provider scelto come principale precede sempre gli altri: la sua
+        // sorgente viene emessa per prima dal Fast-Start e resta in cima al
+        // selettore. Dentro ciascun gruppo resta il ranking per qualità.
+        val primaryId = preferredProviderId
         collected.sortWith(
-          compareByDescending<StreamSource> { qualityScore(it) }
+          compareByDescending<StreamSource> {
+            primaryId != null && it.sourceProviderId == primaryId
+          }
+            .thenByDescending { qualityScore(it) }
             .thenByDescending { if (it.serverName.contains("TorBox", ignoreCase = true)) 1 else 0 }
         )
+
+        val preferredSourceAdded = preferredProviderId != null &&
+          taggedSources.any { it.sourceProviderId == preferredProviderId }
+        if (preferredSourceAdded) preferredProviderProduced = true
 
         if (collected.any { isFullHdOrHigher(it) }) {
           // Sorgente Full HD/4K reale presente: il fallback timer non e'
@@ -298,8 +362,16 @@ class StreamManager(
         // a qualsiasi qualita' (anche 720p/Auto/SD): la riproduzione non
         // attende l'arrivo di 1080p/4K. Il ranking e' mantenuto e le
         // sorgenti migliori arrivate successivamente aggiornano il flusso.
-        emittedFirst = true
-        logAndSendSelected(collected.toList())
+        //
+        // Con un provider HTTP preferito, le sorgenti degli altri provider
+        // vengono raccolte ma NON emesse finché il provider scelto non ha
+        // risposto: altrimenti un provider più veloce scavalcherebbe la scelta
+        // manuale prima ancora che quella preferita arrivi. Se il provider
+        // scelto non risponde, il timer di grazia emette la migliore disponibile.
+        if (preferredProviderId == null || preferredProviderProduced) {
+          emittedFirst = true
+          logAndSendSelected(collected.toList())
+        }
       }
     }
 
@@ -333,11 +405,107 @@ class StreamManager(
       modeProviders
     }
 
+    // --- Provider HTTP principale scelto dall'utente ---------------------
+    // La preferenza vale solo in HTTP_WEB: in Debrid l'unico provider è TorBox.
+    // Un id sconosciuto/non attivo (provider rimosso, TMDB mancante, provider
+    // filtrato) viene ignorato: la ricerca torna automatica senza errori.
+    val preferredProvider = if (streamingEngineMode == StreamingEngineMode.HTTP_WEB) {
+      httpPrimaryProviderId
+        ?.trim()
+        ?.takeIf { it.isNotBlank() && it != HttpProviderChoices.AUTO_ID }
+        ?.let { id -> filteredProviders.firstOrNull { it.providerId == id } }
+    } else {
+      null
+    }
+
+    if (preferredProvider != null) {
+      Log.i(TAG, "Provider HTTP principale: ${preferredProvider.providerId} (avviato per primo)")
+    } else if (
+      streamingEngineMode == StreamingEngineMode.HTTP_WEB &&
+      !httpPrimaryProviderId.isNullOrBlank() &&
+      httpPrimaryProviderId != HttpProviderChoices.AUTO_ID
+    ) {
+      Log.w(TAG, "Provider HTTP preferito '$httpPrimaryProviderId' non disponibile: uso automatico")
+    }
+    preferredProviderId = preferredProvider?.providerId
+
+    // Provider sperimentali (spesso bloccati): in automatico restano spenti.
+    // Il provider scelto manualmente è sempre incluso (scelta esplicita),
+    // anche quando è classificato come sperimentale.
+    val enabledProviders = if (
+      streamingEngineMode == StreamingEngineMode.HTTP_WEB && !httpExperimentalProvidersEnabled
+    ) {
+      filteredProviders.filter { provider ->
+        provider.providerId !in HttpProviderChoices.experimentalIds ||
+          provider === preferredProvider
+      }
+    } else {
+      filteredProviders
+    }
+
+    if (preferredProvider != null) {
+      // Con un provider preferito il fallback Fast-Start standard (1.2 s) non
+      // deve emettere una sorgente di un altro provider: si attende il provider
+      // scelto fino a PRIMARY_PROVIDER_GRACE_MS, poi si ripiega sulla migliore.
+      // In modalità "solo provider scelto" non esiste alcun fallback: si attende
+      // semplicemente la sua risposta (o la sua assenza).
+      fallbackTimerJob.cancel()
+      if (!httpPrimaryProviderStrict) {
+        preferredGraceJob = launch {
+          delay(preferredProviderGraceMs)
+          mutex.withLock {
+            fastStartWindowPassed = true
+            if (!emittedFirst && collected.isNotEmpty()) {
+              emittedFirst = true
+              Log.i(
+                TAG,
+                "Provider preferito senza sorgenti entro ${preferredProviderGraceMs}ms: fallback automatico"
+              )
+              logAndSendSelected(collected.toList())
+            }
+          }
+        }
+      }
+    }
+
+    // Il provider scelto viene messo davanti agli altri: con il semaforo dei
+    // provider (FIFO) è il primo a partire e, grazie a sourceProviderId, le sue
+    // sorgenti restano in cima anche dopo il merge. Per gli anime il provider
+    // dedicato resta comunque il primo: la preferenza HTTP viene subito dopo.
+    // In modalità "solo provider scelto" viene eseguito esclusivamente lui.
+    val providersWithPreference = if (preferredProvider != null) {
+      if (httpPrimaryProviderStrict) {
+        listOf(preferredProvider)
+      } else {
+        val others = enabledProviders.filterNot { it === preferredProvider }
+        if (isAnime) {
+          val anime = enabledProviders.firstOrNull { it is AnimeStreamProvider }
+          if (anime != null) {
+            listOf(anime, preferredProvider) + others.filterNot { it === anime }
+          } else {
+            listOf(preferredProvider) + others
+          }
+        } else {
+          listOf(preferredProvider) + others
+        }
+      }
+    } else {
+      enabledProviders
+    }
+
     orderedProviders.forEach { p ->
       val pName = p.javaClass.simpleName
-      val active = filteredProviders.contains(p)
+      val active = providersWithPreference.contains(p)
       if (active) {
         Log.i(TAG, "Provider $pName [ATTIVO] per modalità $streamingEngineMode (tmdbId=$tmdbId isTv=$isTv S=$season E=$episode)")
+      } else if (httpPrimaryProviderStrict && preferredProvider != null && p !== preferredProvider) {
+        Log.i(TAG, "Provider $pName [ESCLUSO] modalità solo provider scelto (${preferredProvider.providerId})")
+      } else if (
+        streamingEngineMode == StreamingEngineMode.HTTP_WEB &&
+        !httpExperimentalProvidersEnabled &&
+        p.providerId in HttpProviderChoices.experimentalIds
+      ) {
+        Log.i(TAG, "Provider $pName [SALTATO] provider sperimentale disabilitato")
       } else if (missingTmdbId && modeProviders.contains(p) && p.requiresTmdbId()) {
         Log.i(TAG, "Provider $pName [SALTATO] richiede un ID TMDB non disponibile (si prosegue con imdbId=$imdbId)")
       } else {
@@ -436,7 +604,7 @@ class StreamManager(
         jobs += stremioAddonJob
       }
 
-      jobs += filteredProviders.map { provider ->
+      jobs += providersWithPreference.map { provider ->
         launch {
           metrics.onProviderStarted()
           if (isAnime && provider !is AnimeStreamProvider) {
@@ -473,6 +641,10 @@ class StreamManager(
                   } else if (provider is TwoEmbedProvider) {
                     // IMDb ID disponibile: fallback per `var Q` quando il player
                     // espone solo un ID numerico o nessun identificativo.
+                    provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
+                  } else if (provider is ImdbAwareStreamProvider) {
+                    // Altadefinizione: il player vidxgo usa l'IMDb ID come chiave
+                    // primaria; senza IMDb il provider ricade sulla ricerca per titolo.
                     provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
                   } else {
                     provider.getStreams(tmdbId, isTv, season, episode, title, year)
@@ -564,6 +736,7 @@ class StreamManager(
       }
     }
     fallbackTimerJob.cancel()
+    preferredGraceJob?.cancel()
     // Emissione finale best-effort: se il collector e' gia' andato via (ricerca
     // annullata) il send fallisce con CancellationException; le metriche sono
     // comunque pubblicate dal finally non-suspending di resolveFlow.
@@ -664,9 +837,27 @@ class StreamManager(
     providerTag: String? = null,
     genres: List<String> = emptyList(),
     streamingEngineMode: StreamingEngineMode = StreamingEngineMode.HTTP_WEB,
-    imdbId: String? = null
+    imdbId: String? = null,
+    httpPrimaryProviderId: String? = null,
+    httpPrimaryProviderStrict: Boolean = false,
+    httpExperimentalProvidersEnabled: Boolean = false
   ): List<StreamSource> {
-    return resolveFlow(tmdbId, isTv, season, episode, title, year, originalTitle, providerTag, genres, streamingEngineMode, imdbId)
+    return resolveFlow(
+      tmdbId = tmdbId,
+      isTv = isTv,
+      season = season,
+      episode = episode,
+      title = title,
+      year = year,
+      originalTitle = originalTitle,
+      providerTag = providerTag,
+      genres = genres,
+      streamingEngineMode = streamingEngineMode,
+      imdbId = imdbId,
+      httpPrimaryProviderId = httpPrimaryProviderId,
+      httpPrimaryProviderStrict = httpPrimaryProviderStrict,
+      httpExperimentalProvidersEnabled = httpExperimentalProvidersEnabled
+    )
       .firstOrNull { it.isNotEmpty() }
       ?: emptyList()
   }
@@ -707,7 +898,11 @@ class StreamManager(
       providerTag = media.provider,
       genres = media.genres,
       streamingEngineMode = streamingEngineMode,
-      imdbId = effectiveImdb
+      imdbId = effectiveImdb,
+      httpPrimaryProviderId = AppSettingsRepository.httpPrimaryProviderId.value,
+      httpPrimaryProviderStrict = AppSettingsRepository.httpPrimaryProviderStrict.value,
+      httpExperimentalProvidersEnabled =
+        AppSettingsRepository.httpExperimentalProvidersEnabled.value
     )
 
     for (candidate in sources) {
@@ -737,6 +932,13 @@ class StreamManager(
     const val DEFAULT_TIMEOUT_MS = 15_000L
     const val FAST_START_FALLBACK_DELAY_MS = 1200L
 
+    /**
+     * Tempo massimo concesso al provider HTTP preferito per produrre una
+     * sorgente prima di ripiegare automaticamente sulla migliore disponibile.
+     * Vale solo quando l'utente ha scelto un provider manuale.
+     */
+    const val PRIMARY_PROVIDER_GRACE_MS = 3_000L
+
     /** Provider interrogati contemporaneamente quando il chiamante non specifica un limite. */
     const val DEFAULT_MAX_CONCURRENT_PROVIDERS = 3
 
@@ -744,7 +946,7 @@ class StreamManager(
      * Provider predefiniti. I provider catalogo condividono il sink diagnostico
      * per registrare i tentativi per mirror ed extractor con lo stesso contesto.
      */
-    private fun defaultProviders(diagnostics: StreamDiagnosticSink): List<StreamProvider> = listOf(
+    internal fun defaultProviders(diagnostics: StreamDiagnosticSink): List<StreamProvider> = listOf(
       // Debrid: risolve gli infoHash degli addon Stremio/scraper con TorBox Instant Debrid.
       // E' il primo elemento perché le sorgenti 4K/1080p debrid hanno priorità massima.
       TorBoxStreamProvider(),
@@ -753,6 +955,11 @@ class StreamManager(
       AnimeStreamProvider(),
       MultiEmbedProvider(diagnostics = diagnostics),
       VixSrcProvider(diagnostics = diagnostics),
+      // Altadefinizione: risolve per IMDb ID (fallback per titolo) e ricava la
+      // master HLS dal player vidxgo. Inserito presto nella lista perché è
+      // veloce e produce sorgenti 720p/1080p: con 3 slot concorrenti parte
+      // nella prima finestra insieme a MultiEmbed/VixSrc.
+      AltadefinizioneProvider(diagnostics = diagnostics),
       // 2Embed: il sink alimenta i record diagnostici per-mirror (come i cataloghi).
       TwoEmbedProvider(diagnostics = diagnostics),
       SuperEmbedProvider(diagnostics = diagnostics),
@@ -771,7 +978,8 @@ class StreamManager(
      *
      * Gli altri provider restano utilizzabili senza TMDB: gli addon Stremio e TorBox
      * interrogano la risorsa `stream` con l'ID IMDb `tt...`, mentre
-     * StreamingCommunity, CB01, Eurostreaming e AnimeStreamProvider cercano per titolo.
+     * StreamingCommunity, CB01, Eurostreaming, Altadefinizione e AnimeStreamProvider
+     * cercano per titolo/IMDb.
      */
     fun providerRequiresTmdbId(provider: StreamProvider): Boolean =
       provider is VixSrcProvider ||

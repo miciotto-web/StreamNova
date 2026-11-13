@@ -203,6 +203,13 @@
 -keep,allowobfuscation class com.example.data.update.GitHubReleaseDto { *; }
 -keep,allowobfuscation class com.example.data.update.GitHubReleaseAssetDto { *; }
 
+# Altadefinizione / vidxgo payloads parsed with KotlinJsonAdapterFactory
+# (no @JsonClass: without these rules R8 may empty the classes and Moshi would
+# fail at runtime with a missing-property/abstract-class error).
+-keep,allowobfuscation class com.example.data.streaming.providers.TokenPayload { *; }
+-keep,allowobfuscation class com.example.data.streaming.providers.ArchivePayload { *; }
+-keep,allowobfuscation class com.example.data.streaming.providers.ArchiveItem { *; }
+
 # ---------------------------------------------------------------------------
 # 6. Warnings from optional/compile-only dependencies
 # ---------------------------------------------------------------------------

@@ -149,6 +149,7 @@ import com.example.data.prefs.BackBufferOption
 import com.example.data.prefs.ContinueWatchingLayout
 import com.example.data.prefs.ContinueWatchingSort
 import com.example.data.prefs.DecoderFallbackMode
+import com.example.data.prefs.HttpProviderChoices
 import com.example.data.prefs.InitialBufferOption
 import com.example.data.prefs.LastStreamCacheDuration
 import com.example.data.prefs.PlaybackSettings
@@ -2531,6 +2532,10 @@ fun SettingsScreen(
   val openSubtitlesConnectionState = viewModel?.openSubtitlesConnectionState?.collectAsState()?.value
     ?: OpenSubtitlesConnectionState.Unknown
   val streamingEngineMode = AppSettingsRepository.streamingEngineMode.collectAsState().value ?: StreamingEngineMode.HTTP_WEB
+  val httpPrimaryProviderId = AppSettingsRepository.httpPrimaryProviderId.collectAsState().value
+  val httpPrimaryProviderStrict = AppSettingsRepository.httpPrimaryProviderStrict.collectAsState().value
+  val httpExperimentalProvidersEnabled =
+    AppSettingsRepository.httpExperimentalProvidersEnabled.collectAsState().value
   val autoplayEnabled = viewModel?.autoplayEnabled?.collectAsState()?.value ?: false
   val tmdbGenreFallbackEnabled = viewModel?.tmdbGenreFallbackEnabled?.collectAsState()?.value ?: true
   val hideUnreleasedContent = viewModel?.hideUnreleasedContent?.collectAsState()?.value
@@ -2563,6 +2568,7 @@ fun SettingsScreen(
   var showAudioLanguageDialog by remember { mutableStateOf(false) }
   var showAppLanguageDialog by remember { mutableStateOf(false) }
   var showStreamingEngineModeDialog by remember { mutableStateOf(false) }
+  var showHttpPrimaryProviderDialog by remember { mutableStateOf(false) }
   var showParentalPinDialog by remember { mutableStateOf(false) }
   var parentalPinStep by remember { mutableStateOf<ParentalPinStep>(ParentalPinStep.None) }
   var parentalPinErrorMessage by remember { mutableStateOf<String?>(null) }
@@ -2866,6 +2872,35 @@ fun SettingsScreen(
             onClick = { showStreamingEngineModeDialog = true }
           )
           
+          // Visibile solo nel motore HTTP: in Debrid l'unico provider è TorBox.
+          if (streamingEngineMode == StreamingEngineMode.HTTP_WEB) {
+            SettingsRow(
+              icon = Icons.Default.Language,
+              title = stringResource(R.string.settings_http_primary_provider),
+              value = if (httpPrimaryProviderId == HttpProviderChoices.AUTO_ID) {
+                stringResource(R.string.settings_http_primary_provider_auto)
+              } else {
+                HttpProviderChoices.labelFor(httpPrimaryProviderId)
+                  ?: stringResource(R.string.settings_http_primary_provider_auto)
+              },
+              onClick = { showHttpPrimaryProviderDialog = true }
+            )
+            if (httpPrimaryProviderId != HttpProviderChoices.AUTO_ID) {
+              SettingsSwitchRow(
+                title = stringResource(R.string.settings_http_primary_provider_strict),
+                subtitle = stringResource(R.string.settings_http_primary_provider_strict_desc),
+                checked = httpPrimaryProviderStrict,
+                onCheckedChange = { AppSettingsRepository.setHttpPrimaryProviderStrict(it) }
+              )
+            }
+            SettingsSwitchRow(
+              title = stringResource(R.string.settings_http_experimental_providers),
+              subtitle = stringResource(R.string.settings_http_experimental_providers_desc),
+              checked = httpExperimentalProvidersEnabled,
+              onCheckedChange = { AppSettingsRepository.setHttpExperimentalProvidersEnabled(it) }
+            )
+          }
+
           if (streamingEngineMode == StreamingEngineMode.DEBRID_TORBOX) {
             // Chiave API: dialog con campo di testo (incolla da torbox.app/account)
             SettingsRow(
@@ -3461,6 +3496,22 @@ fun SettingsScreen(
         showStreamingEngineModeDialog = false
       },
       onDismiss = { showStreamingEngineModeDialog = false }
+    )
+  }
+
+  if (showHttpPrimaryProviderDialog) {
+    val providerIds = listOf(HttpProviderChoices.AUTO_ID) + HttpProviderChoices.all.map { it.id }
+    val providerLabels = listOf(stringResource(R.string.settings_http_primary_provider_auto)) +
+      HttpProviderChoices.all.map { it.label }
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_http_primary_provider),
+      options = providerLabels,
+      selectedIndex = providerIds.indexOf(httpPrimaryProviderId).coerceAtLeast(0),
+      onSelect = { idx ->
+        AppSettingsRepository.setHttpPrimaryProviderId(providerIds[idx])
+        showHttpPrimaryProviderDialog = false
+      },
+      onDismiss = { showHttpPrimaryProviderDialog = false }
     )
   }
 

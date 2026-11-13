@@ -18,8 +18,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Provider del catalogo italiano **CB01** (`cb01uno.skin` -> redirect sul mirror
- * attivo `cb01uno.top`, con fallback `cb01.stream`).
+ * Provider del catalogo italiano **CB01** (brand "CB01 Uno"): il dominio
+ * canonico attuale è `cb01one.uno`; gli alias `cb01uno.uno`, `cb01one.com` e
+ * `cb01.stream` restano come fallback e redirigono sullo stesso catalogo.
  *
  * Flusso (ogni passaggio è loggato su Logcat con tag `Cb01Provider`):
  *  1. **Ricerca per titolo/anno**: `GET {base}/?s={titolo} {anno}` (WordPress),
@@ -254,13 +255,14 @@ class Cb01Provider internal constructor(
     const val MIRROR_BUDGET_MS = 12_000L
 
     /**
-     * Dominio attuale per primo (evita un redirect per ogni richiesta), poi i
-     * mirror storici che oggi redirigono su di esso.
+     * Dominio canonico attuale ("CB01 Uno") per primo: evita un redirect per
+     * ogni richiesta. Gli alias storici restano come fallback perché in alcune
+     * reti il dominio principale può essere bloccato e l'alias no.
      */
     private val BASE_URLS = listOf(
+      "https://cb01one.uno",
+      "https://cb01uno.uno",
       "https://cb01one.com",
-      "https://cb01uno.top",
-      "https://cb01uno.skin",
       "https://cb01.stream"
     )
 

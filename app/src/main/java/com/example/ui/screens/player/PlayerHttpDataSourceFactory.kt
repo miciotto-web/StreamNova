@@ -72,6 +72,10 @@ internal class PlayerHttpDataSourceFactory(
      * Client condiviso dalle richieste media: pool di connessioni riusato fra
      * player principale e decoder di anteprima, redirect cross-protocol
      * consentiti e stessi timeout del trasporto precedente.
+     *
+     * [VidxgoTokenInterceptor] rinnova il token HLS dei flussi Altadefinizione
+     * (`*.d2b.you`, scadenza ~180 s) prima che il CDN risponda 403. L'interceptor
+     * è host-scoped: le altre sorgenti non vengono toccate.
      */
     fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
       .connectionPool(NuvioExoPlayerPerformanceHelper.sharedConnectionPool)
@@ -79,6 +83,7 @@ internal class PlayerHttpDataSourceFactory(
       .readTimeout(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
       .followRedirects(true)
       .followSslRedirects(true)
+      .addInterceptor(VidxgoTokenInterceptor())
       .build()
   }
 }

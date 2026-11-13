@@ -130,6 +130,8 @@ fun TorBoxSourceSelectionScreen(
   sources: List<StreamSource>,
   target: com.example.ui.viewmodel.SourceDialogTarget?,
   settings: PlaybackSettings = PlaybackSettings(),
+  /** Provider HTTP scelto come principale: le sue sorgenti restano in cima. */
+  preferredProviderId: String? = null,
   onSelect: (StreamSource) -> Unit,
   onDismiss: () -> Unit,
   modifier: Modifier = Modifier,
@@ -139,6 +141,7 @@ fun TorBoxSourceSelectionScreen(
     media = target?.media,
     episode = target?.episode,
     settings = settings,
+    preferredProviderId = preferredProviderId,
     onSelect = onSelect,
     onDismiss = onDismiss,
     modifier = modifier
@@ -152,6 +155,7 @@ fun TorBoxSourceSelectionScreen(
   media: MediaItem?,
   episode: Episode? = null,
   settings: PlaybackSettings = PlaybackSettings(),
+  preferredProviderId: String? = null,
   onSelect: (StreamSource) -> Unit,
   onDismiss: () -> Unit,
   modifier: Modifier = Modifier,
@@ -159,7 +163,10 @@ fun TorBoxSourceSelectionScreen(
   // Ordinamento deterministico applicato prima di mostrare la lista. Le preferenze
   // dell'utente ("Privilegia tracce italiane" e "Risoluzione preferita") guidano
   // l'ordine: prima venivano ignorate perché il sort usava solo i valori di default.
-  val ordered = remember(sources, settings) { TorBoxSourceOrdering.sort(sources, settings) }
+  // Il provider HTTP scelto come principale precede sempre gli altri.
+  val ordered = remember(sources, settings, preferredProviderId) {
+    TorBoxSourceOrdering.sort(sources, settings, preferredProviderId)
+  }
 
   // Provider dedotti SOLO dai dati gia' presenti nello StreamSource (nessuna nuova
   // discovery): l'ordine rispetta la prima comparsa nella lista ordinata.

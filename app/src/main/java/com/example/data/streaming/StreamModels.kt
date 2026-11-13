@@ -73,6 +73,16 @@ data class StreamSource(
    * configurazioni distinte resta una sorgente per ciascuna installazione.
    */
   val addonInstallId: String? = null,
+  /**
+   * Provider che ha prodotto questa sorgente (`StreamProvider.providerId`).
+   *
+   * Impostato da [com.example.data.streaming.StreamManager] al merge (es.
+   * "Cb01Provider", "Altadefinizione", "StremioAddons"). Non fa parte della
+   * chiave di deduplica: lo stesso URL restituito da due provider resta una
+   * sola sorgente. Serve a dare priorità al provider HTTP scelto dall'utente
+   * nelle impostazioni.
+   */
+  val sourceProviderId: String? = null,
 ) {
   val title: String
     get() = releaseTitle?.takeIf { it.isNotBlank() } ?: serverName
@@ -214,6 +224,8 @@ sealed interface StreamResult {
  * la lista.
  *
  * Criteri, in ordine di priorità:
+ *  0. se [preferredProviderId] è valorizzato, le sorgenti di quel provider
+ *     precedono tutte le altre (scelta manuale del provider HTTP principale);
  *  1. risultati **cached** prima di quelli non cached; lo stato **sconosciuto**
  *     non viene mai trattato come cached (stessa fascia dei non cached, senza
  *     penalizzazione basata su un dato mancante);
@@ -229,12 +241,22 @@ sealed interface StreamResult {
  */
 object TorBoxSourceOrdering {
 
-  fun sort(sources: List<StreamSource>, settings: PlaybackSettings? = null): List<StreamSource> {
+  fun sort(
+    sources: List<StreamSource>,
+    settings: PlaybackSettings? = null,
+    /**
+     * Provider HTTP scelto come principale: le sue sorgenti precedono sempre
+     * le altre, indipendentemente da cache/qualità. `null` = ordinamento
+     * storico, senza preferenze di provider.
+     */
+    preferredProviderId: String? = null
+  ): List<StreamSource> {
     val prioritizeItalian = settings?.prioritizeItalianAudio ?: true
     val preferredRes = settings?.preferredResolution ?: PreferredResolution.AUTO
 
     return sources.sortedWith(
-      compareBy<StreamSource> { cacheTier(it) }
+      compareBy<StreamSource> { providerPriority(it, preferredProviderId) }
+        .thenBy { cacheTier(it) }
         .thenByDescending { if (prioritizeItalian) italianPriority(it) else 0 }
         .thenByDescending { resolutionScore(it, preferredRes) }
         .thenByDescending { videoQualityScore(it) }
@@ -242,6 +264,10 @@ object TorBoxSourceOrdering {
         .thenBy { stableKey(it) }
     )
   }
+
+  /** 0 = sorgente del provider preferito, 1 = tutte le altre. */
+  private fun providerPriority(source: StreamSource, preferredProviderId: String?): Int =
+    if (preferredProviderId != null && source.sourceProviderId == preferredProviderId) 0 else 1
 
   /** 0 = cached, 1 = non cached o stato sconosciuto (mai classificato cached). */
   internal fun cacheTier(source: StreamSource): Int =

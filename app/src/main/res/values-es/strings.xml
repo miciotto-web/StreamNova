@@ -294,6 +294,12 @@
     <string name="settings_update_install_failed_generic">No se pudo iniciar el instalador del sistema</string>
      <string name="settings_sec_playback_engine">Motor de Reproducción</string>
      <string name="settings_playback_mode">Modo de reproducción</string>
+     <string name="settings_http_primary_provider">Proveedor HTTP principal</string>
+     <string name="settings_http_primary_provider_auto">Automático</string>
+     <string name="settings_http_primary_provider_strict">Solo el proveedor elegido</string>
+     <string name="settings_http_primary_provider_strict_desc">Sin fallback automático: si el proveedor no responde, la reproducción no se inicia.</string>
+     <string name="settings_http_experimental_providers">Proveedores experimentales</string>
+     <string name="settings_http_experimental_providers_desc">Activa también los proveedores alternativos (2Embed, CB01, StreamingCommunity, MultiEmbed, SuperEmbed, Eurostreaming). Desactivado: solo VixSrc y Altadefinizione.</string>
      <string name="settings_mode_debrid">Debrid TorBox (1080p / 4K Ultra HD)</string>
      <string name="settings_mode_web_scraper">Streaming Web Gratuito (HTTP Scraper)</string>
      <string name="settings_torbox_api_key">Clave API TorBox</string>

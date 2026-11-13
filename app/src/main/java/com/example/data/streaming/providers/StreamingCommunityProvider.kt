@@ -362,6 +362,14 @@ class StreamingCommunityProvider(
     referer: String,
     out: MutableMap<String, StreamSource>
   ): String? {
+    // Il deployment attuale usa lo stesso player vidxgo di Altadefinizione.
+    // La pagina HTML del player risponde 403 (gate anti-bot), ma l'endpoint
+    // JSON `/t/{id}` restituisce la master HLS: stesso percorso già verificato
+    // dal provider Altadefinizione. Nessun bypass: si usa l'endpoint pubblico.
+    Vidxgo.tokenPathForPlayerUrl(embedUrl)?.let { tokenPath ->
+      return collectFromVidxgo(tokenPath, out)
+    }
+
     val host = hostOf(embedUrl)
     val body = try {
       ExtractorHttp.get(embedUrl, referer = referer)
@@ -380,6 +388,57 @@ class StreamingCommunityProvider(
     collectDirectMedia(body, antiHotlinkHeaders(embedUrl), out)
     if (out.isNotEmpty()) return null
     return "player $host: nessuna sorgente diretta (${body.length} byte)"
+  }
+
+  /**
+   * Risolve una sorgente dal player vidxgo tramite l'endpoint JSON del token.
+   *
+   * @param tokenPath `/t/{id}` (film) o `/t/{id}/{s}/{e}` (serie).
+   * @return il motivo del fallimento, oppure null se [out] è stato popolato.
+   */
+  private suspend fun collectFromVidxgo(
+    tokenPath: String,
+    out: MutableMap<String, StreamSource>
+  ): String? {
+    val tokenUrl = "${Vidxgo.ORIGIN}$tokenPath"
+    val body = try {
+      ExtractorHttp.get(tokenUrl, referer = "${Vidxgo.ORIGIN}/")
+    } catch (ex: CancellationException) {
+      throw ex
+    } catch (ex: Exception) {
+      return "player vidxgo: ${ex.message}"
+    }
+    val streamUrl = TOKEN_URL_REGEX.find(body)?.groupValues?.get(1)
+      ?.replace("\\/", "/")
+      ?.trim()
+      ?.takeIf { it.startsWith("http") }
+      ?: return "player vidxgo: token senza URL"
+
+    // La master HLS richiede gli header CDN (User-Agent browser + Origin/
+    // Referer/Sec-Fetch); l'errore di probe non invalida la sorgente.
+    val quality = try {
+      val playlist = ExtractorHttp.get(
+        streamUrl,
+        referer = "${Vidxgo.ORIGIN}/",
+        extraHeaders = Vidxgo.CDN_HEADERS
+      )
+      Vidxgo.qualityFromPlaylist(playlist)
+    } catch (ex: CancellationException) {
+      throw ex
+    } catch (ex: Exception) {
+      "Auto"
+    }
+
+    out[streamUrl] = StreamSource(
+      streamUrl = streamUrl,
+      quality = quality,
+      serverName = SERVER_NAME,
+      headers = Vidxgo.CDN_HEADERS,
+      declaredQuality = quality,
+      isProgressive = false,
+      isItalian = true
+    )
+    return null
   }
 
   /** Referer/Origin/User-Agent coerenti con l'origin della pagina indicata. */
@@ -489,6 +548,8 @@ class StreamingCommunityProvider(
     private val IFRAME_REGEX = Regex("""<iframe[^>]{0,400}?src="([^"]+)"""", RegexOption.IGNORE_CASE)
     private val DATA_SRC_REGEX = Regex("""data-(?:src|url)="([^"]+)"""", RegexOption.IGNORE_CASE)
     private val JSON_URL_REGEX = Regex(""""(?:url|link|slug)"\s*:\s*"([^"]+)"""")
+    /** Risposta dell'endpoint `/t/...` del player vidxgo: `{"url":"...","expire":...}`. */
+    private val TOKEN_URL_REGEX = Regex("\"url\"\\s*:\\s*\"([^\"]+)\"")
 
     /** L'iframe del trailer convive con quello del player: va scartato. */
     private val TRAILER_URL_REGEX = Regex("""content=trailer|player=false""", RegexOption.IGNORE_CASE)

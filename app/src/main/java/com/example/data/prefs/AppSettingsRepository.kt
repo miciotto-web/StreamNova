@@ -72,6 +72,11 @@ object AppSettingsRepository {
   private val KEY_INSTALLED_ADDONS_JSON = stringPreferencesKey("installed_addons_json")
   private val KEY_USER_PROVIDER_BINDINGS_JSON = stringPreferencesKey("user_provider_bindings_json")
   private val KEY_STREAMING_ENGINE_MODE = stringPreferencesKey("streaming_engine_mode")
+  private val KEY_HTTP_PRIMARY_PROVIDER = stringPreferencesKey("http_primary_provider")
+  private val KEY_HTTP_PRIMARY_PROVIDER_STRICT =
+    booleanPreferencesKey("http_primary_provider_strict")
+  private val KEY_HTTP_EXPERIMENTAL_PROVIDERS =
+    booleanPreferencesKey("http_experimental_providers_enabled")
   private val KEY_AUTOPLAY_ENABLED = booleanPreferencesKey("autoplay_enabled")
   private val KEY_APP_LANGUAGE = stringPreferencesKey("app_language")
   private val KEY_PARENTAL_CONTROL_ENABLED = booleanPreferencesKey("parental_control_enabled")
@@ -139,6 +144,33 @@ object AppSettingsRepository {
   /** Modalità del motore di streaming. */
   val streamingEngineMode: StateFlow<StreamingEngineMode> = _streamingEngineMode.asStateFlow()
 
+  private val _httpPrimaryProviderId = MutableStateFlow(HttpProviderChoices.AUTO_ID)
+  /**
+   * Provider HTTP scelto come principale, oppure [HttpProviderChoices.AUTO_ID]
+   * per il comportamento automatico (tutti i provider, ordine storico).
+   *
+   * Il valore è persistito su DataStore e viene letto da
+   * [com.example.data.streaming.StreamManager] a ogni ricerca.
+   */
+  val httpPrimaryProviderId: StateFlow<String> = _httpPrimaryProviderId.asStateFlow()
+
+  private val _httpPrimaryProviderStrict = MutableStateFlow(true)
+  /**
+   * `true`: quando è impostato un provider HTTP principale, viene usato
+   * **solo** quello (nessun fallback automatico). Default `true`: la scelta
+   * manuale è rispettata; l'utente può disattivarlo per riattivare il fallback.
+   */
+  val httpPrimaryProviderStrict: StateFlow<Boolean> = _httpPrimaryProviderStrict.asStateFlow()
+
+  private val _httpExperimentalProvidersEnabled = MutableStateFlow(false)
+  /**
+   * `true`: esegue anche i provider HTTP sperimentali (spesso bloccati da
+   * captcha/403). Default `false`: in modalità automatica restano attivi solo
+   * i provider verificati (VixSrc, Altadefinizione).
+   */
+  val httpExperimentalProvidersEnabled: StateFlow<Boolean> =
+    _httpExperimentalProvidersEnabled.asStateFlow()
+
   private val _autoplayEnabled = MutableStateFlow(false)
   /** Se false, mostra il dialog di selezione sorgente invece di autoplay. */
   val autoplayEnabled: StateFlow<Boolean> = _autoplayEnabled.asStateFlow()
@@ -202,6 +234,13 @@ object AppSettingsRepository {
   private var dataStoreCollectorJob: Job? = null
 
   /**
+   * Ultima scrittura della chiave OpenSubtitles. Le scritture sono asincrone:
+   * annullare quella precedente prima di avviarne una nuova garantisce che un
+   * valore vecchio non possa atterrare su disco DOPO la rimozione.
+   */
+  private var openSubtitlesWriteJob: Job? = null
+
+  /**
    * Meccanismo di cifratura per la chiave API OpenSubtitles prima della persistenza:
    * Android Keystore in produzione, finto in test. La sostituzione avviene in [init],
    * prima di qualsiasi lettura/scrittura.
@@ -222,6 +261,9 @@ object AppSettingsRepository {
   @Volatile private var addonsLocalWrite = false
   @Volatile private var userBindingsLocalWrite = false
   @Volatile private var streamingModeLocalWrite = false
+  @Volatile private var httpPrimaryProviderLocalWrite = false
+  @Volatile private var httpPrimaryProviderStrictLocalWrite = false
+  @Volatile private var httpExperimentalProvidersLocalWrite = false
   @Volatile private var autoplayLocalWrite = false
   @Volatile private var languageLocalWrite = false
   @Volatile private var parentalEnabledLocalWrite = false
@@ -279,6 +321,21 @@ object AppSettingsRepository {
             "DEBRID_TORBOX" -> StreamingEngineMode.DEBRID_TORBOX
             else -> StreamingEngineMode.HTTP_WEB
           }
+        }
+        if (!httpPrimaryProviderLocalWrite) {
+          // Un id sconosciuto (provider rimosso in una versione futura) torna
+          // automatico: nessuna ricerca deve restare bloccata su un valore vecchio.
+          _httpPrimaryProviderId.value = prefs[KEY_HTTP_PRIMARY_PROVIDER]
+            ?.takeIf { HttpProviderChoices.isKnown(it) }
+            ?: HttpProviderChoices.AUTO_ID
+        }
+        if (!httpPrimaryProviderStrictLocalWrite) {
+          _httpPrimaryProviderStrict.value =
+            prefs[KEY_HTTP_PRIMARY_PROVIDER_STRICT] ?: true
+        }
+        if (!httpExperimentalProvidersLocalWrite) {
+          _httpExperimentalProvidersEnabled.value =
+            prefs[KEY_HTTP_EXPERIMENTAL_PROVIDERS] ?: false
         }
         if (!autoplayLocalWrite) {
           _autoplayEnabled.value = prefs[KEY_AUTOPLAY_ENABLED] ?: false
@@ -364,6 +421,10 @@ object AppSettingsRepository {
   internal fun resetForTesting() {
     dataStoreCollectorJob?.cancel()
     dataStoreCollectorJob = null
+    // NON annullare openSubtitlesWriteJob: un reset di test non deve perdere una
+    // scrittura già avviata; la cancellazione avviene solo quando arriva un nuovo
+    // valore dallo stesso setter.
+    openSubtitlesWriteJob = null
     dataStore = null
     _torBoxApiKey.value = null
     _openSubtitlesApiKey.value = null
@@ -372,6 +433,9 @@ object AppSettingsRepository {
     _installedAddonsJson.value = "[]"
     _userProviderBindingsJson.value = "[]"
     _streamingEngineMode.value = StreamingEngineMode.HTTP_WEB
+    _httpPrimaryProviderId.value = HttpProviderChoices.AUTO_ID
+    _httpPrimaryProviderStrict.value = true
+    _httpExperimentalProvidersEnabled.value = false
     _autoplayEnabled.value = false
     _appLanguage.value = "it"
     _parentalControlEnabled.value = false
@@ -387,6 +451,9 @@ object AppSettingsRepository {
     addonsLocalWrite = false
     userBindingsLocalWrite = false
     streamingModeLocalWrite = false
+    httpPrimaryProviderLocalWrite = false
+    httpPrimaryProviderStrictLocalWrite = false
+    httpExperimentalProvidersLocalWrite = false
     autoplayLocalWrite = false
     languageLocalWrite = false
     parentalEnabledLocalWrite = false
@@ -457,8 +524,12 @@ object AppSettingsRepository {
     // Il cipher viene catturato alla chiamata: una eventuale re-init (test) con un
     // altro cipher non altera una scrittura già in volo.
     val cipher = openSubtitlesCipher
-    scope.launch {
-      dataStore?.edit { prefs ->
+    // Cattura anche lo store: un reset concorrente (test) non deve far perdere
+    // una scrittura già avviata.
+    val store = dataStore
+    openSubtitlesWriteJob?.cancel()
+    openSubtitlesWriteJob = scope.launch {
+      store?.edit { prefs ->
         if (normalized == null) prefs.remove(KEY_OPENSUBTITLES_API_KEY)
         else prefs[KEY_OPENSUBTITLES_API_KEY] = cipher.encrypt(normalized)
       }
@@ -495,6 +566,57 @@ object AppSettingsRepository {
     scope.launch {
       dataStore?.edit { prefs ->
         prefs[KEY_STREAMING_ENGINE_MODE] = mode.name
+      }
+    }
+  }
+
+  /**
+   * Imposta il provider HTTP principale.
+   *
+   * @param id `"auto"` per il comportamento automatico, oppure l'id di un
+   * provider presente in [HttpProviderChoices]. Un valore sconosciuto viene
+   * riportato ad `"auto"`: un provider rimosso in futuro non lascia l'app in
+   * uno stato non valido.
+   */
+  fun setHttpPrimaryProviderId(id: String?) {
+    val normalized = id?.trim()?.takeIf { HttpProviderChoices.isKnown(it) }
+      ?: HttpProviderChoices.AUTO_ID
+    httpPrimaryProviderLocalWrite = true
+    _httpPrimaryProviderId.value = normalized
+    val store = dataStore
+    scope.launch {
+      store?.edit { prefs ->
+        prefs[KEY_HTTP_PRIMARY_PROVIDER] = normalized
+      }
+    }
+  }
+
+  /**
+   * Attiva/disattiva la modalità "solo provider scelto": con `true` non viene
+   * eseguito alcun fallback automatico sugli altri provider HTTP.
+   */
+  fun setHttpPrimaryProviderStrict(enabled: Boolean) {
+    httpPrimaryProviderStrictLocalWrite = true
+    _httpPrimaryProviderStrict.value = enabled
+    val store = dataStore
+    scope.launch {
+      store?.edit { prefs ->
+        prefs[KEY_HTTP_PRIMARY_PROVIDER_STRICT] = enabled
+      }
+    }
+  }
+
+  /**
+   * Abilita/disabilita i provider HTTP sperimentali (spesso bloccati) nella
+   * modalità automatica. Il provider scelto manualmente resta sempre eseguito.
+   */
+  fun setHttpExperimentalProvidersEnabled(enabled: Boolean) {
+    httpExperimentalProvidersLocalWrite = true
+    _httpExperimentalProvidersEnabled.value = enabled
+    val store = dataStore
+    scope.launch {
+      store?.edit { prefs ->
+        prefs[KEY_HTTP_EXPERIMENTAL_PROVIDERS] = enabled
       }
     }
   }

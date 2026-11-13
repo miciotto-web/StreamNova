@@ -31,6 +31,7 @@ import com.example.data.prefs.AppSettingsRepository
 import com.example.data.prefs.ContinueWatchingLayout
 import com.example.data.prefs.ContinueWatchingPreferences
 import com.example.data.prefs.ContinueWatchingSort
+import com.example.data.prefs.HttpProviderChoices
 import com.example.data.prefs.PlaybackSettings
 import com.example.data.prefs.PreferredResolution
 import com.example.data.prefs.SettingsRepository
@@ -289,6 +290,18 @@ internal const val REUSED_STREAM_UNLOCK_TIMEOUT_MS = 6_000L
  * sospesa indefinitamente e il download non viene mai ricaricato a meta'.
  */
 internal const val AUTO_PICK_SETTLE_WINDOW_MS = 1_200L
+
+/**
+ * Finestra di assestamento quando l'utente ha scelto un **provider HTTP
+ * principale**.
+ *
+ * [com.example.data.streaming.StreamManager] attende già il provider preferito
+ * fino a `PRIMARY_PROVIDER_GRACE_MS` prima di emettere un fallback. Questa
+ * finestra copre gli ultimi istanti: se l'emissione ricevuta non è ancora del
+ * provider scelto, si concede un breve margine perché possa arrivare, prima di
+ * aprire la migliore sorgente disponibile.
+ */
+internal const val PRIMARY_PROVIDER_SETTLE_WINDOW_MS = 1_500L
 
 /**
  * Priorita' assoluta del bingewatching: risolve il nuovo episodio DALLA STESSA
@@ -4328,6 +4341,20 @@ class StreamNovaViewModel(
     val currentJobGeneration = loadStreamGeneration
     streamJob = viewModelScope.launch(ioDispatcher) {
       val mode = AppSettingsRepository.streamingEngineMode.value
+      // Scelta manuale del provider HTTP principale: vale solo nel motore HTTP.
+      // "auto" (o un id non più valido) lascia l'ordinamento automatico storico.
+      val preferredHttpProviderId = if (mode == StreamingEngineMode.HTTP_WEB) {
+        AppSettingsRepository.httpPrimaryProviderId.value
+          .takeIf { it != HttpProviderChoices.AUTO_ID }
+      } else {
+        null
+      }
+      // "Solo provider scelto": nessun fallback sugli altri provider HTTP.
+      val strictHttpProvider = preferredHttpProviderId != null &&
+        AppSettingsRepository.httpPrimaryProviderStrict.value
+      // Provider sperimentali (spesso bloccati): spenti di default.
+      val experimentalHttpProviders =
+        AppSettingsRepository.httpExperimentalProvidersEnabled.value
       val resolvedMediaItem = if (baseForResolution.tmdbId == null && baseForResolution.id.startsWith("tt", ignoreCase = true)) {
         val resolvedId = MediaRepository.resolveImdbToTmdbId(baseForResolution.id, isTv)
         if (resolvedId != null && resolvedId > 0) baseForResolution.copy(tmdbId = resolvedId) else baseForResolution
@@ -4600,7 +4627,10 @@ class StreamNovaViewModel(
         providerTag = resolvedMediaItem.provider,
         genres = resolvedMediaItem.genres,
         streamingEngineMode = mode,
-        imdbId = effectiveImdb
+        imdbId = effectiveImdb,
+        httpPrimaryProviderId = preferredHttpProviderId,
+        httpPrimaryProviderStrict = strictHttpProvider,
+        httpExperimentalProvidersEnabled = experimentalHttpProviders
       )
       val collectBlock: suspend (List<StreamSource>) -> Unit = collect@{ rawSources ->
         // L'auto-pick valuta SOLO liste non vuote: un primo tick senza risultati
@@ -4631,7 +4661,11 @@ class StreamNovaViewModel(
         // solo la lista del selettore manuale. Senza questo passaggio una sorgente
         // 4K inglese arrivata per prima scavalcava una sorgente italiana e il video
         // partiva in inglese pur con la preferenza italiana attiva.
-        val userOrderedSources = TorBoxSourceOrdering.sort(finalSources, playbackSettings.value)
+        val userOrderedSources = TorBoxSourceOrdering.sort(
+          sources = finalSources,
+          settings = playbackSettings.value,
+          preferredProviderId = preferredHttpProviderId
+        )
         val affinitySources = if (pinnedSource != null) {
           rankBySameSourceAffinity(userOrderedSources, pinnedSource)
         } else {
@@ -4697,16 +4731,31 @@ class StreamNovaViewModel(
               // viene ricreato da zero. L'arricchimento successivo resta
               // disponibile per il selettore sorgenti (_availableSources).
               pendingAutoPick = chosenStream
-              if (StreamManager.isFullHdOrHigher(chosenStream)) {
-                // Sorgente gia' Full HD/4K: si parte subito, senza attese.
+              // Con un provider HTTP scelto manualmente la prima sorgente può
+              // arrivare da un provider più veloce ma non preferito: si attende
+              // fino a PRIMARY_PROVIDER_SETTLE_WINDOW_MS che arrivi quella del
+              // provider scelto. La sorgente del provider preferito, invece,
+              // parte subito (anche se non è Full HD): è la scelta dell'utente.
+              val isPreferredProviderSource = preferredHttpProviderId != null &&
+                chosenStream.sourceProviderId == preferredHttpProviderId
+              val canStartImmediately = isPreferredProviderSource ||
+                (preferredHttpProviderId == null && StreamManager.isFullHdOrHigher(chosenStream))
+              if (canStartImmediately) {
                 settleJob?.cancel()
                 settleJob = null
                 openAutoPickedSource(chosenStream)
               } else if (settleJob == null) {
-                // Sorgente sotto 1080p: si attende una breve finestra perche'
-                // i provider piu' lenti possono portare una qualita' migliore.
+                // Senza provider preferito: breve finestra per le sorgenti
+                // migliori dei provider più lenti (comportamento storico).
+                // Con provider preferito: finestra più ampia per dargli il
+                // tempo di rispondere, poi fallback sulla migliore disponibile.
+                val settleWindowMs = if (preferredHttpProviderId != null) {
+                  PRIMARY_PROVIDER_SETTLE_WINDOW_MS
+                } else {
+                  AUTO_PICK_SETTLE_WINDOW_MS
+                }
                 settleJob = launch {
-                  delay(AUTO_PICK_SETTLE_WINDOW_MS)
+                  delay(settleWindowMs)
                   val pending = pendingAutoPick
                   if (pending != null) {
                     Log.i(

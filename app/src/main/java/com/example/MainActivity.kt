@@ -52,6 +52,8 @@ import com.example.data.model.Episode
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
+import com.example.data.prefs.AppSettingsRepository
+import com.example.data.prefs.HttpProviderChoices
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.profiles.ProfilesRepository
 import com.example.data.repository.SimklSyncManager
@@ -1104,6 +1106,9 @@ targetCompanyId = lastFocusedCompanyId,
     // Preferenze di riproduzione: guidano l'ordinamento della lista sorgenti
     // ("Privilegia tracce italiane", "Risoluzione preferita").
     val playbackSettings by viewModel.playbackSettings.collectAsState()
+    // Provider HTTP principale scelto nelle impostazioni: le sue sorgenti restano
+    // in cima anche nel selettore manuale.
+    val httpPrimaryProviderId by AppSettingsRepository.httpPrimaryProviderId.collectAsState()
 
     val showParentalPinDialog by viewModel.showParentalPinDialog.collectAsState()
     val parentalPinErrorResId by viewModel.parentalPinErrorResId.collectAsState()
@@ -1162,6 +1167,8 @@ targetCompanyId = lastFocusedCompanyId,
         sources = availableSources,
         target = sourceDialogMedia,
         settings = playbackSettings,
+        preferredProviderId = httpPrimaryProviderId
+          .takeIf { it != HttpProviderChoices.AUTO_ID },
         onSelect = { source -> viewModel.selectSource(source) },
         onDismiss = { viewModel.dismissSourceDialog() }
       )
