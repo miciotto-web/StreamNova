@@ -62,6 +62,7 @@ import com.example.data.repository.StremioCatalogRepository
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import com.example.ui.components.ContinueWatchingCard
+import com.example.ui.components.FeaturedCinemaCard
 import com.example.ui.components.MediaContextMenu
 import com.example.ui.components.HeroBanner
 import com.example.ui.components.PosterMediaCard
@@ -1555,6 +1556,13 @@ fun HomeMainBrowsingContent(
   // di attribuire a TMDB (o a un addon) contenuti che non provengono da lì.
   val stockBadgesAreTmdb = homeCatalogs?.stockSourceOrigin == CatalogSourceOrigin.TMDB_NATIVE
 
+  // Metadati arricchiti delle card «In evidenza» (logo, certificazione, stagioni),
+  // indicizzati per MediaItem.id. L'arricchimento parte SOLO quando una card riceve
+  // il focus (vedi FeaturedCinemaCard): la mappa si popola progressivamente e la
+  // riga si aggiorna senza richieste ripetute a cambio focus.
+  val featuredCardMetaState = viewModel?.featuredCardMeta?.collectAsState()
+  val featuredCardMetaMap = featuredCardMetaState?.value ?: emptyMap()
+
   val top10Movies = remember(homeCatalogs) {
     if (hasCustomCatalogMovies) emptyList()
     else homeCatalogs?.top10Movies?.take(StremioCatalogRepository.HOME_TOP_10_SIZE) ?: emptyList()
@@ -2618,10 +2626,12 @@ fun HomeMainBrowsingContent(
             horizontalArrangement = Arrangement.spacedBy(Top10RowSpacing)
           ) {
             itemsIndexed(top10Movies, key = { _, item -> "top10_film_${item.id}" }, contentType = { _, _ -> "top10" }) { index, item ->
-              Top10RankedMediaCard(
+              FeaturedCinemaCard(
                 rank = index + 1,
                 media = item,
                 onClick = { handleRowMediaClick("section_top_10_film", index, item) },
+                meta = featuredCardMetaMap[item.id],
+                onRequestMeta = { target -> viewModel?.ensureFeaturedCardMeta(target) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_film", index),
                 focusRequester = coordinator.getRequester("section_top_10_film", index),
                 rowKey = "section_top_10_film",
@@ -2651,10 +2661,12 @@ fun HomeMainBrowsingContent(
             horizontalArrangement = Arrangement.spacedBy(Top10RowSpacing)
           ) {
             itemsIndexed(top10Series, key = { _, item -> "top10_serie_${item.id}" }, contentType = { _, _ -> "top10" }) { index, item ->
-              Top10RankedMediaCard(
+              FeaturedCinemaCard(
                 rank = index + 1,
                 media = item,
                 onClick = { handleRowMediaClick("section_top_10_serie", index, item) },
+                meta = featuredCardMetaMap[item.id],
+                onRequestMeta = { target -> viewModel?.ensureFeaturedCardMeta(target) },
                 modifier = Modifier.rowFocusProperties(coordinator, "section_top_10_serie", index),
                 focusRequester = coordinator.getRequester("section_top_10_serie", index),
                 rowKey = "section_top_10_serie",

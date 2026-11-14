@@ -4283,6 +4283,201 @@ object MediaRepository {
   }
 
   /**
+   * Metadati arricchiti della card «In evidenza» selezionata (righe Top 10 della Home):
+   * clear logo, certificazione ufficiale (es. `PG-13`, `TV-MA`, `VM14`), numero di
+   * stagioni (serie), sinossi nella lingua dell'app e generi TMDB localizzati.
+   *
+   * Sinossi e generi servono perché i cataloghi stock Cinemeta consegnano descrizioni
+   * in inglese non localizzabili a monte; il testo italiano arriva dal dettaglio TMDB
+   * già richiesto per la certificazione (nessuna chiamata aggiuntiva). Ogni campo è
+   * `null` quando TMDB non lo espone: la UI omette il segmento invece di inventarlo.
+   */
+  data class FeaturedCardMeta(
+    val logoUrl: String? = null,
+    val certification: String? = null,
+    val seasonsCount: Int? = null,
+    val localizedOverview: String? = null,
+    val localizedGenres: List<String> = emptyList()
+  )
+
+  /** Memo di sessione dell'arricchimento «In evidenza»: zero richieste ripetute a cambio focus. */
+  private val featuredCardMetaMemo = java.util.concurrent.ConcurrentHashMap<String, FeaturedCardMeta>()
+
+  /** Chiave stabile della memo per un titolo TMDB (film e serie hanno id che possono collidere). */
+  private fun featuredCardMemoKey(tmdbId: Int, isTv: Boolean): String =
+    "${if (isTv) "tv" else "mv"}_$tmdbId"
+
+  private suspend fun readCachedTmdbString(cacheKey: String): String? {
+    val db = database ?: return null
+    return try {
+      val cached = db.tmdbResponseCacheDao().getCache(cacheKey)
+      cached?.jsonResponse?.takeIf { it.isNotBlank() && !cached.isExpired() }
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Errore lettura cache TMDB [$cacheKey]: ${e.message}")
+      null
+    }
+  }
+
+  private suspend fun writeCachedTmdbString(cacheKey: String, value: String) {
+    val db = database ?: return
+    try {
+      db.tmdbResponseCacheDao().insertCache(
+        TmdbResponseCacheEntity(
+          endpointKey = cacheKey,
+          jsonResponse = value,
+          cachedAt = System.currentTimeMillis()
+        )
+      )
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Salvataggio cache TMDB fallito [$cacheKey]: ${e.message}")
+    }
+  }
+
+  /**
+   * Arricchimento della card «In evidenza» Home con SOLO i dati mancanti:
+   *
+   * - `certification` da `release_dates` (film) / `content_ratings` (serie): una sola
+   *   chiamata ai dettagli TMDB con `append_to_response` ridotto (niente credits/similar),
+   *   così la risposta resta leggera.
+   * - `seasonsCount` (solo serie) dallo stesso dettaglio (`number_of_seasons`).
+   * - `localizedOverview` / `localizedGenres`: overview e generi nella lingua dell'app
+   *   dallo stesso dettaglio (`append` include `translations` per il fallback di lingua,
+   *   stessa strategia dell'Hero con [HeroSynopsisLocalizer]). Serve alle righe stock
+   *   Cinemeta, che consegnano descrizioni inglesi non localizzabili a monte.
+   * - `logoUrl` delegata a [resolveLogoUrl], che ha già la sua cache Room dedicata.
+   *
+   * Ogni valore è cachato in Room 12h con chiave dedicata (stringa vuota = TMDB non lo
+   * espone: niente re-fetch a ogni cambio di focus) e memoizzato in memoria per la
+   * sessione. In assenza di rete si restituisce comunque quanto in cache/memo: la card
+   * mostra solo i segmenti disponibili, mai segnaposto inventati.
+   *
+   * @param originalSynopsis sinossi già presente sull'item (serve a
+   *   [HeroSynopsisLocalizer.pickSynopsis] per scartare una "traduzione" identica
+   *   all'originale e per il fallback finale).
+   */
+  suspend fun fetchFeaturedCardMeta(
+    tmdbId: Int,
+    isTv: Boolean,
+    originalSynopsis: String = ""
+  ): FeaturedCardMeta =
+    withContext(Dispatchers.IO) {
+      if (tmdbId <= 0) return@withContext FeaturedCardMeta()
+      val memoKey = featuredCardMemoKey(tmdbId, isTv)
+      featuredCardMetaMemo[memoKey]?.let { return@withContext it }
+
+      val logoKey = if (isTv) "tv_logo_$tmdbId" else "movie_logo_$tmdbId"
+      val certKey = if (isTv) "tv_cert_$tmdbId" else "movie_cert_$tmdbId"
+      val seasonsKey = "tv_seasons_$tmdbId"
+      val overviewKey = if (isTv) "tv_ovl_$tmdbId" else "movie_ovl_$tmdbId"
+      val genresKey = if (isTv) "tv_gen_$tmdbId" else "movie_gen_$tmdbId"
+
+      var certification = readCachedTmdbString(certKey)
+      var seasonsCount = readCachedTmdbString(seasonsKey)?.toIntOrNull()
+      var localizedOverview = readCachedTmdbString(overviewKey)
+      var localizedGenres = readCachedTmdbString(genresKey)?.split(GENRE_CACHE_SEPARATOR)
+
+      val needsDetailCall = certification == null ||
+        (isTv && seasonsCount == null) ||
+        localizedOverview == null ||
+        localizedGenres == null
+      if (needsDetailCall) {
+        try {
+          val apiKey = getEffectiveApiKey()
+          val language = HeroSynopsisLocalizer.language()
+          if (isTv) {
+            val dto = TmdbApiClient.service.getTvDetails(
+              seriesId = tmdbId,
+              apiKey = apiKey,
+              language = language,
+              append = "content_ratings,translations"
+            )
+            if (certification == null) {
+              certification = DetailFactsMapper.tvCertification(dto.contentRatings) ?: ""
+            }
+            if (seasonsCount == null) {
+              seasonsCount = dto.numberOfSeasons?.takeIf { it > 0 }
+            }
+            if (localizedOverview == null) {
+              localizedOverview = pickFeaturedSynopsis(dto.overview, translationsOfTv(dto), originalSynopsis, language)
+            }
+            if (localizedGenres == null) {
+              localizedGenres = dto.genres?.map { it.name }?.filter { it.isNotBlank() }
+            }
+          } else {
+            val dto = TmdbApiClient.service.getMovieDetails(
+              movieId = tmdbId,
+              apiKey = apiKey,
+              language = language,
+              append = "release_dates,translations"
+            )
+            if (certification == null) {
+              certification = DetailFactsMapper.movieCertification(dto.releaseDates) ?: ""
+            }
+            if (localizedOverview == null) {
+              localizedOverview = pickFeaturedSynopsis(dto.overview, translationsOfMovie(dto), originalSynopsis, language)
+            }
+            if (localizedGenres == null) {
+              localizedGenres = dto.genres?.map { it.name }?.filter { it.isNotBlank() }
+            }
+          }
+        } catch (e: Exception) {
+          Log.w("MediaRepository", "Arricchimento card «In evidenza» fallito ($tmdbId): ${e.message}")
+        }
+        // Cache anche del risultato vuoto: un titolo senza certificazione non deve
+        // rifare la richiesta a ogni nuovo focus sulla sua card.
+        if (certification != null) writeCachedTmdbString(certKey, certification)
+        if (isTv && seasonsCount == null) writeCachedTmdbString(seasonsKey, "")
+        if (localizedOverview != null) writeCachedTmdbString(overviewKey, localizedOverview)
+        if (localizedGenres != null) writeCachedTmdbString(genresKey, localizedGenres.joinToString(GENRE_CACHE_SEPARATOR))
+      }
+
+      val logoUrl = readCachedTmdbString(logoKey) ?: resolveLogoUrl(tmdbId, isTv)
+
+      val meta = FeaturedCardMeta(
+        logoUrl = logoUrl?.takeIf { it.isNotBlank() },
+        certification = certification?.takeIf { it.isNotBlank() },
+        seasonsCount = seasonsCount,
+        localizedOverview = localizedOverview?.takeIf { it.isNotBlank() },
+        localizedGenres = localizedGenres.orEmpty().filter { it.isNotBlank() }
+      )
+      featuredCardMetaMemo[memoKey] = meta
+      meta
+    }
+
+  /** Separatore dei generi nella cache Room (i nomi TMDB non contengono `|`). */
+  private const val GENRE_CACHE_SEPARATOR = "|"
+
+  /**
+   * Sinossi della card «In evidenza» scelta con le regole dell'Hero: overview nella
+   * lingua dell'app → traduzione esplicita della lingua app → inglese → originale.
+   * Mai una sinossi vuota se l'item ne aveva una.
+   */
+  private fun pickFeaturedSynopsis(
+    localized: String?,
+    translations: List<Pair<String, String?>>,
+    originalSynopsis: String,
+    language: String
+  ): String =
+    HeroSynopsisLocalizer.pickSynopsis(
+      // A pickSynopsis serve solo la sinossi originale dell'item (item.synopsis): un
+      // id fittizio è sufficiente, il resto dei campi non viene letto.
+      item = MediaItem(id = "featured_synopsis", title = "", synopsis = originalSynopsis, videoUrl = ""),
+      localized = localized,
+      translations = translations,
+      code = HeroSynopsisLocalizer.languageCode(language)
+    )
+
+  private fun translationsOfMovie(dto: TmdbMovieDetailDto): List<Pair<String, String?>> =
+    dto.translations?.translations.orEmpty().map { translation ->
+      translation.iso6391.orEmpty().lowercase() to translation.data?.overview
+    }
+
+  private fun translationsOfTv(dto: TmdbTvDetailDto): List<Pair<String, String?>> =
+    dto.translations?.translations.orEmpty().map { translation ->
+      translation.iso6391.orEmpty().lowercase() to translation.data?.overview
+    }
+
+  /**
    * Chiave YouTube del trailer interno, con priorita' all'italiano ([TmdbMediaAssets.pickTrailerKey]).
    *
    * Film e serie TV usano lo stesso schema: `movie/{id}/videos` e `tv/{id}/videos`

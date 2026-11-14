@@ -1856,6 +1856,60 @@ class StreamNovaViewModel(
     viewModelScope.launch { MediaRepository.refreshEpisodeThumbnails(items) }
   }
 
+  /**
+   * Metadati arricchiti delle card «In evidenza» (righe Top 10 della Home), indicizzati
+   * per [MediaItem.id]: logo originale, certificazione e numero di stagioni.
+   *
+   * L'arricchimento parte SOLO quando una card riceve il focus ([ensureFeaturedCardMeta]):
+   * nessuna richiesta sprecata per titoli mai selezionati. Il repository deduplica via
+   * cache Room 12h + memo di sessione, quindi i cambi di focus ripetuti sulla stessa card
+   * non producono nuove chiamate TMDB.
+   */
+  private val _featuredCardMeta = MutableStateFlow<Map<String, MediaRepository.FeaturedCardMeta>>(emptyMap())
+  val featuredCardMeta: StateFlow<Map<String, MediaRepository.FeaturedCardMeta>> = _featuredCardMeta.asStateFlow()
+
+  private val featuredCardMetaInFlight = mutableSetOf<String>()
+
+  /**
+   * Richiede i metadati arricchiti di un titolo «In evidenza». Idempotente: richieste
+   * concorrenti per lo stesso id collassano in una sola e l'esito già noto non refetcha.
+   * Mai bloccante per la UI: la card mostra subito ciò che ha e si aggiorna all'arrivo.
+   *
+   * Le righe stock Cinemeta non hanno `tmdbId`: lo si risolve dall'IMDb id via TMDB
+   * `/find` ([MediaRepository.resolveImdbToTmdbId], cachato per processo, una chiamata
+   * per titolo). Se nemmeno la risoluzione va a buon fine si registra un metadato vuoto:
+   * la card mostra il logo Cinemeta già presente nel [MediaItem] e i segmenti mancanti
+   * (classificazione, stagioni) restano omessi, senza re-fetch a ogni cambio focus.
+   */
+  fun ensureFeaturedCardMeta(media: MediaItem) {
+    if (_featuredCardMeta.value.containsKey(media.id)) return
+    if (!featuredCardMetaInFlight.add(media.id)) return
+    viewModelScope.launch {
+      try {
+        val isTv = media.type == MediaType.SERIE_TV
+        var tmdbId = media.tmdbId
+        if (tmdbId == null || tmdbId <= 0) {
+          tmdbId = MediaRepository.resolveImdbToTmdbId(media.imdbId, isTv)
+        }
+        val meta = if (tmdbId != null && tmdbId > 0) {
+          MediaRepository.fetchFeaturedCardMeta(
+            tmdbId = tmdbId,
+            isTv = isTv,
+            originalSynopsis = media.synopsis
+          )
+        } else {
+          Log.i(TAG, "Card «In evidenza» ${media.id}: nessun id TMDB risolvibile, uso i soli metadati locali")
+          MediaRepository.FeaturedCardMeta()
+        }
+        _featuredCardMeta.update { current -> current + (media.id to meta) }
+      } catch (e: Exception) {
+        Log.w(TAG, "Arricchimento card «In evidenza» non riuscito per ${media.id}: ${e.message}")
+      } finally {
+        featuredCardMetaInFlight.remove(media.id)
+      }
+    }
+  }
+
   fun refreshCatalog() {
     viewModelScope.launch {
       _isRefreshing.value = true
