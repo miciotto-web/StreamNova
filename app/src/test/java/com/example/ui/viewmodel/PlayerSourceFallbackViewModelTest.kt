@@ -156,11 +156,19 @@ class PlayerSourceFallbackViewModelTest {
     return viewModel
   }
 
-  private val primaUrl = "https://cdn.example/prima/720p/index.m3u8"
-  private val secondaUrl = "https://cdn.example/seconda/1080p/index.m3u8"
+  private val primaUrl = "https://cdn.example/prima/1080p/index.m3u8"
+  private val secondaUrl = "https://cdn.example/seconda/720p/index.m3u8"
   private val terzaUrl = "https://cdn.example/terza/480p/index.m3u8"
 
-  /** Avvia la riproduzione della prima sorgente (720p) lasciando le alternative in lista. */
+  /**
+   * Avvia la riproduzione della prima sorgente lasciando le alternative in lista.
+   *
+   * La prima sorgente e' Full HD: con l'auto-pick in modalita' automatica (che da
+   * quando esiste la finestra Full-HD premia il provider con il contenuto in
+   * 1080p) parte subito via `canStartImmediately`, cosi' il test del fallback ha
+   * una sorgente attiva e delle alternative raccolte, indipendentemente dalla
+   * finestra di assestamento.
+   */
   private suspend fun TestScope.startPlaybackWithAlternative(viewModel: StreamNovaViewModel) {
     viewModel.openStreamForMedia(movieFixture(), allowReuse = false)
     advanceUntilIdle()
@@ -173,8 +181,8 @@ class PlayerSourceFallbackViewModelTest {
     useHttpWebMode()
     val viewModel = createViewModel(
       listOf(
-        provider(source("Prima 720p", primaUrl, quality = "720p")),
-        provider(source("Seconda 1080p", secondaUrl), delayMs = 3_000L)
+        provider(source("Prima 1080p", primaUrl)),
+        provider(source("Seconda 720p", secondaUrl, quality = "720p"), delayMs = 3_000L)
       )
     )
     startPlaybackWithAlternative(viewModel)
@@ -204,7 +212,7 @@ class PlayerSourceFallbackViewModelTest {
     )
     assertEquals(
       "La sorgente in riproduzione deve essere aggiornata (header e metadati)",
-      "Seconda 1080p",
+      "Seconda 720p",
       viewModel.playbackState.value.currentSource?.serverName
     )
     assertEquals(
@@ -225,7 +233,7 @@ class PlayerSourceFallbackViewModelTest {
   fun erroreSenzaAlternativeMantieneLErroreEIlSelettoreManuale() = runTest(testDispatcher) {
     useHttpWebMode()
     val viewModel = createViewModel(
-      listOf(provider(source("Unica 1080p", secondaUrl)))
+      listOf(provider(source("Unica 720p", secondaUrl, quality = "720p")))
     )
     startPlaybackWithAlternative(viewModel)
     val tokenBefore = viewModel.manualSourceSelectionToken.value
@@ -273,8 +281,8 @@ class PlayerSourceFallbackViewModelTest {
     useHttpWebMode()
     val viewModel = createViewModel(
       listOf(
-        provider(source("Prima 720p", primaUrl, quality = "720p")),
-        provider(source("Seconda 1080p", secondaUrl), delayMs = 3_000L)
+        provider(source("Prima 1080p", primaUrl)),
+        provider(source("Seconda 720p", secondaUrl, quality = "720p"), delayMs = 3_000L)
       )
     )
     startPlaybackWithAlternative(viewModel)
@@ -315,9 +323,9 @@ class PlayerSourceFallbackViewModelTest {
     useHttpWebMode()
     val viewModel = createViewModel(
       listOf(
-        provider(source("Prima 720p", primaUrl, quality = "720p")),
+        provider(source("Prima 1080p", primaUrl)),
         provider(
-          source("Seconda 1080p", secondaUrl),
+          source("Seconda 720p", secondaUrl, quality = "720p"),
           source("Terza 480p", terzaUrl, quality = "480p"),
           delayMs = 3_000L
         )
@@ -368,14 +376,15 @@ class PlayerSourceFallbackViewModelTest {
     val quartaUrl = "https://cdn.example/quarta/4k/index.m3u8"
     val viewModel = createViewModel(
       listOf(
-        provider(source("Prima 720p", primaUrl, quality = "720p")),
-        provider(source("Seconda 1080p", secondaUrl), delayMs = 3_000L),
+        provider(source("Prima 1080p", primaUrl)),
+        provider(source("Seconda 720p", secondaUrl, quality = "720p"), delayMs = 3_000L),
         provider(source("Quarta 4K", quartaUrl, quality = "4K"), delayMs = 8_000L)
       )
     )
 
     viewModel.openStreamForMedia(movieFixture(), allowReuse = false)
-    // t=4s: la prima sorgente e' in riproduzione, la seconda e' gia' arrivata.
+    // t=4s: la prima sorgente (Full HD, partita subito) e' in riproduzione,
+    // la seconda e' gia' arrivata dopo (nessuna sostituzione del flusso attivo).
     advanceTimeBy(4_000L)
     assertEquals(primaUrl, viewModel.playbackState.value.streamUrl)
 
@@ -410,15 +419,15 @@ class PlayerSourceFallbackViewModelTest {
     useHttpWebMode()
     val viewModel = createViewModel(
       listOf(
-        provider(source("Prima 720p", primaUrl, quality = "720p")),
-        provider(source("Seconda 1080p", secondaUrl), delayMs = 3_000L)
+        provider(source("Prima 1080p", primaUrl)),
+        provider(source("Seconda 720p", secondaUrl, quality = "720p"), delayMs = 3_000L)
       )
     )
     startPlaybackWithAlternative(viewModel)
     val tokenBefore = viewModel.manualSourceSelectionToken.value
 
     // L'utente sceglie a mano la seconda sorgente: la scelta e' autorevole.
-    viewModel.selectSource(source("Seconda 1080p", secondaUrl))
+    viewModel.selectSource(source("Seconda 720p", secondaUrl, quality = "720p"))
     // Errore della sorgente precedente mentre la scelta e' in applicazione.
     assertFalse(
       "Il fallback non deve inserirsi in una scelta manuale in corso",
@@ -447,7 +456,7 @@ class PlayerSourceFallbackViewModelTest {
     val viewModel = createViewModel(
       listOf(
         failingProvider(),
-        provider(source("Seconda 1080p", secondaUrl))
+        provider(source("Seconda 720p", secondaUrl, quality = "720p"))
       )
     )
 
@@ -487,8 +496,8 @@ class PlayerSourceFallbackViewModelTest {
     useHttpWebMode()
     val viewModel = createViewModel(
       listOf(
-        provider(source("Prima 720p", primaUrl, quality = "720p")),
-        provider(source("Seconda 1080p", secondaUrl), delayMs = 3_000L)
+        provider(source("Prima 1080p", primaUrl)),
+        provider(source("Seconda 720p", secondaUrl, quality = "720p"), delayMs = 3_000L)
       )
     )
     startPlaybackWithAlternative(viewModel)

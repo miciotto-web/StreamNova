@@ -277,19 +277,57 @@ internal const val NEXT_EPISODE_RESOLUTION_TIMEOUT_MS = 10_000L
 internal const val REUSED_STREAM_UNLOCK_TIMEOUT_MS = 6_000L
 
 /**
- * Finestra di assestamento (ms) dell'auto-pick.
+ * Finestra di assestamento (ms) dell'auto-pick **senza attesa Full-HD**.
  *
- * I provider HTTP rispondono in tempi molto diversi: il primo arrivo puo'
- * essere una sorgente a qualita' bassa, mentre quella migliore arriva piu'
- * tardi. Dopo la prima emissione si attende questo breve lasso di tempo per
- * raccogliere le sorgenti migliori e POI il player viene avviato una volta
- * sola con la migliore disponibile.
+ * Usata solo quando attendere una sorgente >= 1080p non ha senso: provider
+ * HTTP principale scelto manualmente (la finestra e' del provider preferito)
+ * oppure utente con "Risoluzione preferita" = 720p.
  *
  * La finestra e' volutamente breve (stesso ordine di grandezza del fast-start
  * di [com.example.data.streaming.StreamManager]): la riproduzione non resta
  * sospesa indefinitamente e il download non viene mai ricaricato a meta'.
  */
 internal const val AUTO_PICK_SETTLE_WINDOW_MS = 1_200L
+
+/**
+ * Finestra Full-HD (ms) della selezione automatica: **provider HTTP principale
+ * = Automatico** e risoluzione preferita non limitata a 720p.
+ *
+ * In automatico il primo provider che risponde (es. VixSrc) vince il Fast-Start
+ * anche con una sorgente 720p, mentre i provider che hanno il titolo in 1080p
+ * (Altadefinizione, CB01, StreamingCommunity...) rispondono piu' tardi: con la
+ * vecchia finestra di 1.2s la riproduzione partiva quasi sempre in 720p.
+ *
+ * Entro questa finestra una sorgente >= 1080p arriva, parte SUBITO
+ * (`canStartImmediately`), scavalcando il provider piu' veloce; scaduta la
+ * finestra (o conclusa la ricerca, evento che apre subito il pending pick)
+ * vince la migliore sorgente disponibile, comunque non inferiore a quella
+ * gia' raccolta. Il limite esiste solo per non lasciare la riproduzione
+ * sospesa se un provider resta bloccato fino al timeout di ricerca.
+ */
+internal const val AUTO_PICK_FULLHD_SETTLE_WINDOW_MS = 8_000L
+
+/**
+ * Finestra di assestamento dell'auto-pick per la configurazione corrente.
+ * Funzione pura (verificabile in unit test) che incapsula la scelta tra:
+ *  - [PRIMARY_PROVIDER_SETTLE_WINDOW_MS]: provider HTTP principale scelto
+ *    manualmente (la scelta dell'utente ha priorità, finestra corta);
+ *  - [AUTO_PICK_FULLHD_SETTLE_WINDOW_MS]: selezione automatica HTTP con
+ *    risoluzione preferita compatibile col 1080p — attende i provider capaci
+ *    di Full HD prima di ripiegare sulla migliore sorgente raccolta;
+ *  - [AUTO_PICK_SETTLE_WINDOW_MS]: casi restanti (Debrid/TorBox, o utente con
+ *    "Risoluzione preferita" = 720p) dove attendere il 1080p non avrebbe senso.
+ */
+internal fun autoPickSettleWindowMs(
+  streamingEngineMode: StreamingEngineMode,
+  preferredHttpProviderId: String?,
+  preferredResolution: PreferredResolution
+): Long = when {
+  preferredHttpProviderId != null -> PRIMARY_PROVIDER_SETTLE_WINDOW_MS
+  streamingEngineMode == StreamingEngineMode.HTTP_WEB &&
+    preferredResolution != PreferredResolution.HD_720P -> AUTO_PICK_FULLHD_SETTLE_WINDOW_MS
+  else -> AUTO_PICK_SETTLE_WINDOW_MS
+}
 
 /**
  * Finestra di assestamento quando l'utente ha scelto un **provider HTTP
@@ -4394,6 +4432,15 @@ class StreamNovaViewModel(
 
     val currentJobGeneration = loadStreamGeneration
     streamJob = viewModelScope.launch(ioDispatcher) {
+      // Scope del job di risoluzione: i timer lanciati durante il collect
+      // (finestra di assestamento) devono essere FIGLI DI QUESTO scope e non
+      // dello scope `withContext(Dispatchers.Main)` in cui il collect gira.
+      // `withContext` attende il completamento di TUTTI i figli lanciati nel
+      // suo scope: un timer figlio bloccherebbe il collector per tutta la
+      // durata della finestra, impedendo di processare le emissioni successive
+      // dei provider piu' lenti (es. la 1080p che deve scavalcare il 720p del
+      // Fast-Start) fino a quando la finestra non e' scaduta.
+      val streamScope = this
       val mode = AppSettingsRepository.streamingEngineMode.value
       // Scelta manuale del provider HTTP principale: vale solo nel motore HTTP.
       // "auto" (o un id non più valido) lascia l'ordinamento automatico storico.
@@ -4799,16 +4846,25 @@ class StreamNovaViewModel(
                 settleJob = null
                 openAutoPickedSource(chosenStream)
               } else if (settleJob == null) {
-                // Senza provider preferito: breve finestra per le sorgenti
-                // migliori dei provider più lenti (comportamento storico).
-                // Con provider preferito: finestra più ampia per dargli il
-                // tempo di rispondere, poi fallback sulla migliore disponibile.
-                val settleWindowMs = if (preferredHttpProviderId != null) {
-                  PRIMARY_PROVIDER_SETTLE_WINDOW_MS
-                } else {
-                  AUTO_PICK_SETTLE_WINDOW_MS
-                }
-                settleJob = launch {
+                // Selezione automatica (provider HTTP "auto") con sorgente in
+                // attesa NON Full HD: finestra Full-HD estesa per dare il tempo
+                // ai provider capaci di 1080p (piu' lenti del Fast-Start di
+                // VixSrc) di rispondere. Una sorgente >= 1080p arrivata nella
+                // finestra parte subito (canStartImmediately); a scadenza — o
+                // alla conclusione della ricerca — vince la migliore raccolta
+                // finora. La scelta della finestra (provider preferito, motore
+                // Debrid, risoluzione preferita 720p) e' in autoPickSettleWindowMs.
+                val settleWindowMs = autoPickSettleWindowMs(
+                  streamingEngineMode = mode,
+                  preferredHttpProviderId = preferredHttpProviderId,
+                  preferredResolution = playbackSettings.value.preferredResolution
+                )
+                // Il timer DEVE essere figlio dello scope del job di ricerca
+                // (streamScope), NON dello scope `withContext` corrente:
+                // withContext attende il completamento dei figli e il collector
+                // restere' bloccato per l'intera finestra, senza poter
+                // processare le emissioni successive dei provider piu' lenti.
+                settleJob = streamScope.launch {
                   delay(settleWindowMs)
                   val pending = pendingAutoPick
                   if (pending != null) {
