@@ -78,7 +78,7 @@ import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material.icons.filled.Whatshot
 import android.widget.Toast
-import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -92,7 +92,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -179,6 +183,7 @@ import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusGridBringIntoView
+import com.example.ui.components.TvFocusScrollAnimationSpec
 import com.example.ui.components.TvFocusAttachment
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.components.guard
@@ -330,6 +335,12 @@ fun CategoryBrowsingScreen(
   // destinazione richiesta, così cinque Giù consecutivi scendono di cinque righe invece di
   // ripetere la stessa destinazione o di farsi riprendere dalla focus search nativa.
   var verticalAnchorKey by remember { mutableStateOf<String?>(null) }
+  // Destinazione verticale dell'ULTIMA pressione non ancora raggiunta dal focus. Serve a
+  // distinguere un arrivo di focus LEGITTIMO (la card richiesta) da uno RITARDATO su una
+  // card intermedia di una raffica: il secondo non deve riportare indietro l'ancora.
+  var pendingVerticalKey by remember { mutableStateOf<String?>(null) }
+  // Scroll + retry di focus dell'ultimo passo: una nuova pressione li annulla.
+  val verticalStepSlot = remember { GridVerticalStepSlot() }
 
   // Stato di ripristino del focus al ritorno dal Dettaglio: il target è la coppia
   // (FOCUS_ROW_ANY, mediaId) salvata al click (griglia = superficie unica di focus), il token
@@ -568,6 +579,10 @@ fun CategoryBrowsingScreen(
   // in alto a sinistra (difetto "il focus va sempre alla prima scheda di qualsiasi fila").
   LaunchedEffect(restoreMediaId, focusRestoreToken, sortedItems) {
     val mediaId = restoreMediaId ?: return@LaunchedEffect
+    // Il rientro dal Dettaglio riparte da zero: nessuna destinazione verticale pendente e
+    // nessun retry della raffica precedente deve contendere il focus alla card ripristinata.
+    pendingVerticalKey = null
+    verticalStepSlot.cancel()
     val index = sortedItems.indexOfFirst { it.id == mediaId }
     if (index < 0) {
       // Target non più disponibile (catalogo cambiato mentre il Dettaglio era aperto): il
@@ -755,12 +770,24 @@ fun CategoryBrowsingScreen(
               requesterOf = { cellFocusRequester(it.id) },
               scope = categoryFocusScope,
               rowSpacingPx = categoryGridRowSpacingPx,
-              onTargetResolved = { verticalAnchorKey = it.id }
+              onTargetResolved = {
+                verticalAnchorKey = it.id
+                pendingVerticalKey = it.id
+              },
+              stepSlot = verticalStepSlot
             )
           }
           // Tracking del focus nella griglia (hasFocus include le card): è la condizione
-          // del BackHandler «BACK → badge di ordinamento scelto».
-          .onFocusChanged { gridHasFocus = it.hasFocus }
+          // del BackHandler «BACK → badge di ordinamento scelto». Uscendo dalla griglia non
+          // esiste più una destinazione verticale pendente: la si dimentica (e si fermano i
+          // retry), così il rientro non eredita un'ancora di una raffica precedente.
+          .onFocusChanged { state ->
+            gridHasFocus = state.hasFocus
+            if (!state.hasFocus) {
+              pendingVerticalKey = null
+              verticalStepSlot.cancel()
+            }
+          }
       ) {
         itemsIndexed(sortedItems, key = { _, item -> item.id }, contentType = { _, _ -> "media_poster" }) { index, item ->
           if (index >= sortedItems.size - 6) {
@@ -780,6 +807,8 @@ fun CategoryBrowsingScreen(
             PosterMediaCard(
               media = item,
               onClick = {
+                pendingVerticalKey = null
+                verticalStepSlot.cancel()
                 viewModel?.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
                 onMediaClick(item)
               },
@@ -788,7 +817,14 @@ fun CategoryBrowsingScreen(
               modifier = Modifier.onFocusChanged { state ->
                 if (state.isFocused) {
                   focusedMediaKey = item.id
-                  verticalAnchorKey = item.id
+                  // Un arrivo di focus su una card INTERMEDIA di una raffica (il retry di una
+                  // pressione precedente) non deve spostare l'ancora all'indietro: l'ancora
+                  // segue solo la destinazione più recente, oppure un movimento senza target
+                  // pendente (es. LEFT/RIGHT nella riga).
+                  if (pendingVerticalKey == null || pendingVerticalKey == item.id) {
+                    verticalAnchorKey = item.id
+                    pendingVerticalKey = null
+                  }
                 }
               },
               // Il requester DELLA CARD SELZIONATA vive sul nodo FOCALIZZABILE della card
@@ -1484,6 +1520,74 @@ internal fun LazyGridState.exactColumnCount(): Int? {
 }
 
 /**
+ * Distanza di PRE-SCROLL che porta la riga [targetRow] appena dentro il viewport, senza
+ * allinearla alla posizione finale.
+ *
+ * Perché non si scorre direttamente di una riga intera: il bring-into-view del focus
+ * considera soddisfatta una riga già interamente visibile e restituisce 0f (nessuna
+ * animazione). Con un salto secco di una riga la destinazione finiva esattamente nella
+ * posizione della riga precedente, già visibile: il catalogo si spostava di colpo e le card
+ * sembravano apparire/sparire. Qui la riga viene rivelata di pochi pixel: la sua
+ * composizione parte, il focus arriva e il bring-into-view anima il resto del movimento.
+ *
+ * La distanza è calcolata dalla posizione REALE della prima riga visibile ([visibleRow] e
+ * [visibleRowOffset]), non dalla riga dell'ancora: con pressioni rapide ogni richiesta
+ * ricalcola il bersaglio dal layout corrente, quindi le animazioni che si sostituiscono
+ * restano coerenti e non perdono righe.
+ *
+ * @return distanza (positiva verso il basso, negativa verso l'alto); `null` quando la riga
+ *   è già entrata nel viewport o i dati di layout non sono utilizzabili.
+ */
+internal fun gridRowRevealScrollDelta(
+  targetRow: Int,
+  visibleRow: Int,
+  visibleRowOffset: Float,
+  rowHeight: Float,
+  rowSpacingPx: Float,
+  viewportHeight: Float,
+  direction: SearchGridVerticalDirection
+): Float? {
+  if (targetRow < 0 || visibleRow < 0 || rowHeight <= 0f || viewportHeight <= 0f) return null
+  val rowPitch = rowHeight + rowSpacingPx
+  val targetTop = visibleRowOffset + (targetRow - visibleRow) * rowPitch
+  return when (direction) {
+    SearchGridVerticalDirection.DOWN -> {
+      val delta = targetTop - viewportHeight + GRID_ROW_REVEAL_MARGIN_PX
+      delta.takeIf { it > 0f }
+    }
+    SearchGridVerticalDirection.UP -> {
+      val delta = targetTop + rowHeight - GRID_ROW_REVEAL_MARGIN_PX
+      delta.takeIf { it < 0f }
+    }
+  }
+}
+
+/** Quanti pixel della riga di destinazione devono entrare nel viewport per comporla. */
+private const val GRID_ROW_REVEAL_MARGIN_PX = 1f
+
+/**
+ * Slot dell'ultimo passo verticale di una griglia.
+ *
+ * Una nuova pressione del D-pad ANNULLA lo scroll e i tentativi di focus del passo
+ * precedente: senza questo, un retry ritardato della pressione precedente può chiedere il
+ * focus a una card intermedia e riportare indietro l'ancora della navigazione, facendo
+ * perdere una riga alle raffiche di Giù/Su. Ogni griglia ne ha uno (remember).
+ */
+internal class GridVerticalStepSlot {
+  private var job: Job? = null
+
+  fun launch(scope: CoroutineScope, block: suspend CoroutineScope.() -> Unit) {
+    job?.cancel()
+    job = scope.launch(block = block)
+  }
+
+  fun cancel() {
+    job?.cancel()
+    job = null
+  }
+}
+
+/**
  * Navigazione verticale ESPLICITA delle griglie di poster (Ricerca, Film, Serie TV).
  *
  * Il focus system di Compose, quando la riga successiva non è ancora composta (viewport TV
@@ -1515,7 +1619,12 @@ internal fun moveGridFocusVertically(
    * richiesta, non dalla card vecchia, quindi il movimento resta cumulativo e sulla stessa
    * colonna.
    */
-  onTargetResolved: (MediaItem) -> Unit = {}
+  onTargetResolved: (MediaItem) -> Unit = {},
+  /**
+   * Slot condiviso della griglia: annulla il passo verticale precedente quando ne parte uno
+   * nuovo (v. [GridVerticalStepSlot]). `null` = nessuna serializzazione.
+   */
+  stepSlot: GridVerticalStepSlot? = null
 ): Boolean {
   if (event.type != KeyEventType.KeyDown) return false
   val direction = when (event.key) {
@@ -1543,29 +1652,77 @@ internal fun moveGridFocusVertically(
   val targetItem = items[targetIndex]
   onTargetResolved(targetItem)
   val targetRequester = requesterOf(targetItem)
-  scope.launch {
-    if (grid.layoutInfo.visibleItemsInfo.none { it.index == targetIndex }) {
-      // La riga di destinazione non è composta. Si scorre ESATTAMENTE della distanza in
-      // righe necessaria a portarla nella stessa posizione visiva della riga corrente
-      // (una riga intera per un movimento normale, N righe per una raffica di Giù): così
-      // il nodo viene composto e il bring-into-view condiviso può centrarlo come per il
-      // movimento nativo. Una mezza riga non basta quando più pressioni arrivano prima del
-      // frame di scroll: la destinazione resterebbe fuori composizione e il focus non
-      // verrebbe consegnato.
-      val rowHeight: Float = (currentInfo?.size?.height
-        ?: grid.layoutInfo.visibleItemsInfo.firstOrNull()?.size?.height
-        ?: 0).toFloat()
-      if (rowHeight > 0f) {
-        val targetRow = targetIndex / columns
-        val delta = (targetRow - currentRow) * (rowHeight + rowSpacingPx)
+  val step: suspend CoroutineScope.() -> Unit = {
+    if (currentInfo == null) {
+      // RAFFICA: l'ancora della navigazione è già OLTRE la finestra composta (più pressioni
+      // arrivate prima che il focus raggiungesse la card richiesta). Qui l'animazione del
+      // passo singolo non è utilizzabile: ogni nuova richiesta cancellerebbe quella in volo
+      // e il movimento resterebbe indietro di una riga. Si salta direttamente alla riga di
+      // destinazione, in modo ASSOLUTO: l'ultima pressione vince, senza accumuli sbagliati.
+      if (grid.layoutInfo.visibleItemsInfo.none { it.index == targetIndex }) {
         try {
-          grid.scrollBy(delta)
+          grid.scrollToItem(targetIndex)
+        } catch (cancellation: CancellationException) {
+          throw cancellation
         } catch (_: Exception) {
           // La richiesta di focus sotto attende comunque il montaggio della card.
         }
       }
+      requestFocusWhenAttached(targetRequester, maxAttempts = 8)
+    } else {
+      // PASSO SINGOLO. La riga di destinazione è fuori dal viewport: la si fa ENTRARE con uno
+      // scroll animato minimo (pochi pixel appena oltre il bordo). Così il nodo viene
+      // composto, il focus può essere consegnato e il bring-into-view condiviso anima il resto
+      // del movimento. Il vecchio `scrollBy` secco di una riga intera lasciava la destinazione
+      // già centrata/allineata: lo spec la considerava visibile e restituiva 0f, quindi il
+      // catalogo saltava di colpo (le card sembravano apparire e sparire).
+      coroutineScope {
+        launch {
+          val layout = grid.layoutInfo
+          if (layout.visibleItemsInfo.none { it.index == targetIndex }) {
+            val firstVisible = layout.visibleItemsInfo.firstOrNull { it.row >= 0 }
+            val rowHeight: Float = (firstVisible?.size?.height
+              ?: currentInfo.size.height).toFloat()
+            val revealDelta = if (firstVisible != null) {
+              gridRowRevealScrollDelta(
+                targetRow = targetIndex / columns,
+                visibleRow = firstVisible.row,
+                visibleRowOffset = firstVisible.offset.y.toFloat(),
+                rowHeight = rowHeight,
+                rowSpacingPx = rowSpacingPx,
+                viewportHeight = layout.viewportSize.height.toFloat(),
+                direction = direction
+              )
+            } else {
+              null
+            }
+            if (revealDelta != null && abs(revealDelta) > 0.5f) {
+              try {
+                grid.animateScrollBy(revealDelta, TvFocusScrollAnimationSpec)
+              } catch (_: CancellationException) {
+                // Il bring-into-view del focus ha preso il controllo dello scroll, oppure è
+                // arrivata una nuova pressione: prosegue l'altro movimento.
+              } catch (_: Exception) {
+                // La richiesta di focus sotto attende comunque il montaggio della card.
+              }
+            }
+          }
+        }
+        // Richiesta di focus IN PARALLELO al pre-scroll: la card riceve il focus appena
+        // entra in composizione (il retry copre l'intera durata dell'animazione), così
+        // l'evidenziazione non aspetta la fine dello scroll.
+        launch {
+          requestFocusWhenAttached(targetRequester, maxAttempts = 24)
+        }
+      }
     }
-    requestFocusWhenAttached(targetRequester, maxAttempts = 8)
+  }
+  // Un nuovo passo annulla scroll e retry del passo precedente: evita che un focus ritardato
+  // su una card intermedia riporti indietro l'ancora durante una raffica.
+  if (stepSlot != null) {
+    stepSlot.launch(scope, step)
+  } else {
+    scope.launch(block = step)
   }
   return true
 }
@@ -1677,6 +1834,11 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   // Passo verticale tra le righe della griglia (16dp): serve alla navigazione verticale per
   // far ENTRARE la riga di destinazione dal bordo del viewport quando non è ancora composta.
   val gridRowSpacingPx = with(LocalDensity.current) { 16.dp.toPx() }
+
+  // Un passo verticale per griglia: una nuova pressione annulla scroll/focus del precedente,
+  // così le pressioni rapide non si contendono il focus su card intermedie.
+  val categoryGridStepSlot = remember { GridVerticalStepSlot() }
+  val resultGridStepSlot = remember { GridVerticalStepSlot() }
 
   // Stessa struttura per la griglia della CATEGORIA selezionata: la chiave replica la key
   // della griglia (una film e una serie possono condividere lo stesso id grezzo).
@@ -2345,7 +2507,8 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                           focusedKey = focusedCategoryKey,
                           requesterOf = { categoryResultFocusRequester(cat, it) },
                           scope = searchFocusScope,
-                          rowSpacingPx = gridRowSpacingPx
+                          rowSpacingPx = gridRowSpacingPx,
+                          stepSlot = categoryGridStepSlot
                         )
                       }
                   ) {
@@ -2463,7 +2626,8 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                           focusedKey = focusedResultKey,
                           requesterOf = { resultFocusRequester(it.id) },
                           scope = searchFocusScope,
-                          rowSpacingPx = gridRowSpacingPx
+                          rowSpacingPx = gridRowSpacingPx,
+                          stepSlot = resultGridStepSlot
                         )
                       }
                   ) {

@@ -15,6 +15,17 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 
 /**
+ * Moto condiviso da TUTTE le animazioni di scroll verticale delle griglie TV.
+ *
+ * Lo usano sia il bring-into-view (centraggio/allineamento della riga focalizzata) sia il
+ * pre-scroll che fa ENTRARE in composizione una riga non ancora visibile. Le due animazioni
+ * si passano il testimone a metà strada quando il focus arriva sulla card: con durata ed
+ * easing identici il passaggio non produce scatti di velocità.
+ */
+internal val TvFocusScrollAnimationSpec: AnimationSpec<Float> =
+  tween(durationMillis = 150, easing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f))
+
+/**
  * Bring-into-view spec TV condiviso per contenitori scrollabili (LazyVerticalGrid, LazyColumn).
  *
  * Risolve i problemi di navigazione TV con telecomando (D-pad):
@@ -38,8 +49,7 @@ open class TvFocusBringIntoViewSpec(
     bottomMarginPx = 48f
   )
 
-  override val scrollAnimationSpec: AnimationSpec<Float> =
-    tween(durationMillis = 150, easing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f))
+  override val scrollAnimationSpec: AnimationSpec<Float> = TvFocusScrollAnimationSpec
 
   override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
     if (size <= 0f || containerSize <= 0f) return 0f
@@ -107,8 +117,7 @@ object TvFocusRowBringIntoViewSpec : BringIntoViewSpec {
    */
   private const val FOCUS_EDGE_MARGIN_FRACTION = 0.07f
 
-  override val scrollAnimationSpec: AnimationSpec<Float> =
-    tween(durationMillis = 150, easing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f))
+  override val scrollAnimationSpec: AnimationSpec<Float> = TvFocusScrollAnimationSpec
 
   override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
     if (size <= 0f || containerSize <= 0f) return 0f
@@ -199,8 +208,7 @@ class TvFocusGridBringIntoViewSpec : BringIntoViewSpec {
   /** True mentre stiamo centrando una riga che e' entrata in scena dal bordo. */
   private var centering = false
 
-  override val scrollAnimationSpec: AnimationSpec<Float> =
-    tween(durationMillis = 150, easing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f))
+  override val scrollAnimationSpec: AnimationSpec<Float> = TvFocusScrollAnimationSpec
 
   override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
     if (size <= 0f || containerSize <= 0f) {
