@@ -15,6 +15,19 @@ import com.example.domain.model.Subtitle
 enum class CacheState { Cached, NotCached, Unknown }
 
 /**
+ * Stato di **riproducibilità effettiva** di una sorgente.
+ *
+ *  - [Unknown]: nessuna verifica eseguita (o provider che non ha ancora
+ *    controllato il manifest). La selezione automatica che richiede una
+ *    verifica tratta questo stato come "da verificare", mai come valido.
+ *  - [Verified]: manifest (e, quando previsto, primo segmento) raggiungibile
+ *    con gli stessi header usati dal player.
+ *  - [Unavailable]: la verifica ha stabilito che la risorsa non è utilizzabile
+ *    (HTTP 4xx, manifest non HLS, segmento inaccessibile).
+ */
+enum class SourceAvailability { Unknown, Verified, Unavailable }
+
+/**
  * Sorgente video singola per streaming Debrid (TorBox Instant).
  *
  * NOTA: `streamUrl` e' NULL fino al click dell'utente. Il flusso viene sbloccato
@@ -83,30 +96,23 @@ data class StreamSource(
    * nelle impostazioni.
    */
   val sourceProviderId: String? = null,
+  /**
+   * Esito della verifica di riproducibilità (manifest/segmento). Default
+   * [SourceAvailability.Unknown]: la sola presenza di un URL non è una prova.
+   */
+  val availability: SourceAvailability = SourceAvailability.Unknown,
 ) {
   val title: String
     get() = releaseTitle?.takeIf { it.isNotBlank() } ?: serverName
 
   val effectiveHeight: Int
-    get() = verifiedHeight ?: when {
-      quality.contains("4k", ignoreCase = true) || quality.contains("2160") -> 2160
-      quality.contains("1080") -> 1080
-      quality.contains("720") -> 720
-      quality.contains("480") -> 480
-      else -> 0
-    }
+    get() = StreamResolution.heightOf(this)
 
   val isVerifiedFhdOrHigher: Boolean
     get() = (verifiedHeight ?: 0) >= 1080
 
   val resolution: String
-    get() = when {
-      effectiveHeight >= 2160 -> "4K"
-      effectiveHeight >= 1080 -> "1080p"
-      effectiveHeight >= 720 -> "720p"
-      effectiveHeight >= 480 -> "480p"
-      else -> "Auto"
-    }
+    get() = StreamResolution.labelForHeight(effectiveHeight)
 
   /**
    * Lingue audio riconosciute nel testo della release/nome file quando l'addon
@@ -283,6 +289,7 @@ object TorBoxSourceOrdering {
     return when (preferredRes) {
       PreferredResolution.FULL_HD_1080P -> when {
         height == 1080 -> 100
+        height == 1440 -> 90
         height == 720 -> 80
         height == 2160 -> 60
         else -> 40
@@ -290,17 +297,20 @@ object TorBoxSourceOrdering {
       PreferredResolution.HD_720P -> when {
         height == 720 -> 100
         height == 1080 -> 80
+        height == 1440 -> 70
         height == 2160 -> 60
         else -> 40
       }
       PreferredResolution.UHD_4K -> when {
         height == 2160 -> 100
+        height == 1440 -> 90
         height == 1080 -> 80
         height == 720 -> 60
         else -> 40
       }
       PreferredResolution.AUTO -> when {
         height == 2160 -> 100
+        height == 1440 -> 90
         height == 1080 -> 80
         height == 720 -> 60
         height == 480 -> 40
@@ -310,17 +320,7 @@ object TorBoxSourceOrdering {
   }
 
   /** Altezza effettiva stimata dalla risoluzione dichiarata (0 = ignota). */
-  internal fun resolutionHeight(source: StreamSource): Int {
-    source.verifiedHeight?.let { return it }
-    val q = "${source.quality} ${source.declaredQuality}".lowercase()
-    return when {
-      q.contains("4k") || q.contains("2160") || q.contains("uhd") -> 2160
-      q.contains("1080") || q.contains("fhd") -> 1080
-      q.contains("720") -> 720
-      q.contains("480") || q.contains("sd") -> 480
-      else -> 0
-    }
-  }
+  internal fun resolutionHeight(source: StreamSource): Int = StreamResolution.heightOf(source)
 
   /** Punteggio combinato qualità video + completezza metadati (solo campi presenti). */
   internal fun videoQualityScore(source: StreamSource): Int {

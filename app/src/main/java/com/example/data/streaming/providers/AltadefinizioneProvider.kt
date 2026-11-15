@@ -1,7 +1,10 @@
 package com.example.data.streaming.providers
 
 import android.util.Log
+import com.example.data.streaming.HlsVariant
+import com.example.data.streaming.SourceAvailability
 import com.example.data.streaming.StreamProvider
+import com.example.data.streaming.StreamResolution
 import com.example.data.streaming.StreamSource
 import com.example.data.streaming.diagnostics.StreamAttemptOutcome
 import com.example.data.streaming.diagnostics.StreamDiagnosticSink
@@ -110,35 +113,67 @@ class AltadefinizioneProvider internal constructor(
       val masterUrl = token.url?.trim().orEmpty()
       if (masterUrl.isBlank()) throw IOException("token Altadefinizione senza URL HLS")
 
-      val quality = try {
-        detectQuality(masterUrl)
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: Exception) {
-        Log.w(TAG, "qualità non rilevata: ${StreamDiagnostics.sanitize(e.message) ?: "errore"}")
-        "Auto"
+      // La master playlist dichiara tutte le varianti disponibili: ognuna
+      // diventa una sorgente separata, così il livello di selezione può
+      // verificare e scegliere 4K/1440p/1080p/720p nell'ordine richiesto.
+      // Un errore in questo passaggio non invalida il flusso: resta la master.
+      val masterPlaylist = fetchMasterPlaylist(masterUrl)
+      val variants = masterPlaylist
+        ?.let { Vidxgo.variantsFromMaster(it, masterUrl) }
+        .orEmpty()
+      val sources = if (variants.isNotEmpty()) {
+        variants
+          .sortedWith(
+            compareByDescending<HlsVariant> { it.height ?: StreamResolution.UNKNOWN }
+              .thenByDescending { it.bandwidth ?: 0L }
+          )
+          .map { variant ->
+            val quality = Vidxgo.qualityForVariantHeight(variant.height)
+            StreamSource(
+              streamUrl = variant.url,
+              quality = quality,
+              serverName = SERVER_NAME,
+              headers = Vidxgo.CDN_HEADERS,
+              declaredQuality = quality,
+              verifiedHeight = variant.height,
+              isProgressive = false,
+              isItalian = true,
+              // La risoluzione è dichiarata dal manifest: la disponibilità
+              // effettiva della variante e dei suoi segmenti viene verificata
+              // dal livello di selezione automatica.
+              availability = SourceAvailability.Unknown
+            )
+          }
+      } else {
+        val quality = masterPlaylist?.let { qualityFromMaster(it) } ?: "Auto"
+        listOf(
+          StreamSource(
+            streamUrl = masterUrl,
+            quality = quality,
+            serverName = SERVER_NAME,
+            headers = Vidxgo.CDN_HEADERS,
+            declaredQuality = quality,
+            isProgressive = false,
+            isItalian = true
+          )
+        )
       }
 
       val elapsed = System.currentTimeMillis() - startedAt
-      Log.i(TAG, "sorgente Altadefinizione imdb=$resolvedImdb quality=$quality in ${elapsed}ms")
+      val qualitySummary = sources.joinToString("/") { it.quality }
+      Log.i(
+        TAG,
+        "sorgente Altadefinizione imdb=$resolvedImdb quality=$qualitySummary " +
+          "variants=${sources.size} in ${elapsed}ms"
+      )
       diagnostics.record(
         providerId = PROVIDER_ID,
         outcome = StreamAttemptOutcome.SUCCESS,
         durationMs = elapsed,
-        message = "imdb=$resolvedImdb quality=$quality"
+        message = "imdb=$resolvedImdb quality=$qualitySummary variants=${sources.size}"
       )
 
-      listOf(
-        StreamSource(
-          streamUrl = masterUrl,
-          quality = quality,
-          serverName = SERVER_NAME,
-          headers = Vidxgo.CDN_HEADERS,
-          declaredQuality = quality,
-          isProgressive = false,
-          isItalian = true
-        )
-      )
+      sources
     } catch (e: CancellationException) {
       diagnostics.record(
         providerId = PROVIDER_ID,
@@ -202,12 +237,16 @@ class AltadefinizioneProvider internal constructor(
     return payload
   }
 
-  /** Legge la master playlist e ricava la qualità massima dichiarata. */
-  private suspend fun detectQuality(masterUrl: String): String {
-    val playlist = withTimeoutOrNull(MASTER_BUDGET_MS) {
+  /** Scarica la master playlist per classificare le varianti; `null` su errore. */
+  private suspend fun fetchMasterPlaylist(masterUrl: String): String? = try {
+    withTimeoutOrNull(MASTER_BUDGET_MS) {
       http.get(masterUrl, "$playerOrigin/", Vidxgo.CDN_HEADERS)
-    } ?: return "Auto"
-    return qualityFromMaster(playlist)
+    }
+  } catch (e: CancellationException) {
+    throw e
+  } catch (e: Exception) {
+    Log.w(TAG, "qualità non rilevata: ${StreamDiagnostics.sanitize(e.message) ?: "errore"}")
+    null
   }
 
   /** Sceglie il risultato migliore per titolo/anno/tipo (verificabile offline). */

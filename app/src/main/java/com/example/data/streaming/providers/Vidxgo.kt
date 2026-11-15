@@ -1,5 +1,8 @@
 package com.example.data.streaming.providers
 
+import com.example.data.streaming.HlsPlaylist
+import com.example.data.streaming.HlsVariant
+import com.example.data.streaming.StreamResolution
 import java.net.URI
 
 /**
@@ -120,14 +123,24 @@ object Vidxgo {
     if (resolutions.isEmpty()) return "Auto"
     val maxWidth = resolutions.maxOf { it.first }
     val maxHeight = resolutions.maxOf { it.second }
-    return when {
-      maxWidth >= 3000 || maxHeight >= 2000 -> "4K"
-      maxWidth >= 1800 || maxHeight >= 1000 -> "1080p"
-      maxWidth >= 1100 || maxHeight >= 650 -> "720p"
-      maxWidth >= 700 -> "480p"
-      else -> "Auto"
-    }
+    return StreamResolution.labelForHeight(
+      StreamResolution.heightOfResolution(maxWidth, maxHeight)
+    )
   }
+
+  /**
+   * Varianti dichiarate da una master playlist, con URL risolte e altezza
+   * convenzionale già normalizzata (1920x800 -> 1080p, 2560x1440 -> 1440p).
+   *
+   * Le varianti senza `RESOLUTION` restano con altezza `null`: non viene
+   * dedotta una qualità non dichiarata.
+   */
+  fun variantsFromMaster(playlist: String, masterUrl: String): List<HlsVariant> =
+    HlsPlaylist.variants(playlist, masterUrl)
+
+  /** Etichetta di qualità per l'altezza convenzionale di una variante. */
+  fun qualityForVariantHeight(height: Int?): String =
+    StreamResolution.labelForHeight(height ?: StreamResolution.UNKNOWN)
 
   private val RESOLUTION_REGEX = Regex("""RESOLUTION=(\d+)x(\d+)""")
 }

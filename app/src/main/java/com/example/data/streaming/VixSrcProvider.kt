@@ -277,7 +277,11 @@ class VixSrcProvider(
         serverName = serverName,
         headers = headers,
         declaredQuality = declared,
-        verifiedHeight = verifiedHeight
+        verifiedHeight = verifiedHeight,
+        // La playlist è stata scaricata e validata (`#EXTM3U`) con gli stessi
+        // header usati dal player: la sorgente è già verificata dal resolver,
+        // non serve una seconda richiesta nella selezione automatica.
+        availability = SourceAvailability.Verified
       )
     }
     if (sources.isEmpty()) throw IOException("Nessun server attivo nell'embed per $base")

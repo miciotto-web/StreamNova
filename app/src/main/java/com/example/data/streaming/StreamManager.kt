@@ -35,6 +35,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -64,13 +66,28 @@ import java.util.concurrent.atomic.AtomicLong
  *    (e gli scraper) restituiscono anche `infoHash` **grezzi**: se nelle Impostazioni è configurata
  *    la chiave TorBox, l'hash viene verificato in cache (`checkcached`) e sbloccato (`requestdl`),
  *    restituendo a ExoPlayer un flusso CDN diretto con badge **[TorBox Instant 1080p/4K]**.
- *  - **Provider HTTP gratuiti** (VixSrc, AnimeStreamProvider...): restano il fallback trasparente
+ *  - **Provider HTTP gratuiti** (VixSrc, Altadefinizione...): restano il fallback trasparente
  *    se TorBox o gli addon non trovano sorgenti o falliscono.
  *
- * Tutte le sorgenti confluiscono in un'unica lista ordinata per qualità:
- * **4K > 1080p > 720p > provider HTTP gratuiti** (a parità di qualità vincono le sorgenti Debrid).
+ * SELEZIONE AUTOMATICA (`automaticSelection = true`, solo HTTP_WEB e senza provider
+ * principale scelto manualmente):
+ *  1. **Altadefinizione** è sempre il primo provider interrogato e valutato. Le sue
+ *     varianti HLS diventano sorgenti distinte e vengono verificate in ordine di
+ *     risoluzione decrescente: 4K/UHD (2160p) → 1440p/QHD → 1080p/FHD → 720p.
+ *  2. Solo se **nessuna** variante Altadefinizione è realmente riproducibile si passa
+ *     a **VixSrc**, poi a **Streaming Community**, poi agli altri provider abilitati.
+ *  3. La verifica di riproducibilità ([SourceVerifier]) sonda manifest, playlist di
+ *     variante e primo segmento **in sequenza**: mai più player in parallelo. Una
+ *     risoluzione dichiarata ma non accessibile non viene selezionata.
+ *  4. La gerarchia vale anche a parità di risoluzione: una 720p riproducibile di
+ *     Altadefinizione batte una 4K di un provider alternativo.
  *
- * Logica di prioritizzazione:
+ * SELEZIONE MANUALE (`automaticSelection = false`, dialog «Seleziona fonte» o
+ * provider HTTP principale scelto): resta il percorso storico, con tutti i
+ * provider interrogati in parallelo e tutte le sorgenti mostrate all'utente.
+ * Anche la modalità Debrid/TorBox resta invariata.
+ *
+ * Logica di prioritizzazione storica (percorso parallelo/manuale):
  *  0. Se il contenuto è **anime** (provider "crunchyroll"/283 oppure genere anime dedicato,
  *     esclusi i generi cinematografici generici Animazione/Animation), [AnimeStreamProvider]
  *     viene lanciato per primo con un head-start rispetto ai provider generici.
@@ -113,11 +130,27 @@ class StreamManager(
    */
   private val clock: DiagnosticClock = DiagnosticClock.SYSTEM,
   /** Riceve le metriche aggregate a fine ricerca. Default: nessun costo. */
-  private val onSearchMetrics: (StreamSearchMetrics) -> Unit = {}
+  private val onSearchMetrics: (StreamSearchMetrics) -> Unit = {},
+  /**
+   * Verifica la riproducibilità effettiva delle sorgenti che la selezione
+   * automatica non può considerare già validate dal provider (varianti
+   * Altadefinizione). Iniettabile nei test; in produzione usa la sonda HTTP.
+   */
+  private val sourceVerifier: SourceVerifier = StreamSourceVerifier.DEFAULT
 ) {
 
   /** Esito singolo per provider: utile per log e diagnostica. */
   data class Outcome(val provider: String, val sources: Int, val error: String?)
+
+  /** Esito di un tentativo provider con i tempi usati dalle metriche. */
+  private data class ProviderAttemptResult(
+    val sources: List<StreamSource>,
+    val outcome: StreamAttemptOutcome,
+    val message: String?,
+    val enqueuedAt: Long,
+    val runStart: Long,
+    val finishedAt: Long
+  )
 
   /**
    * Risoluzione concorrente reattiva via Flow con priorità 1080p e finestra di sicurezza 1.2s.
@@ -156,7 +189,15 @@ class StreamManager(
      * `false`: solo i provider verificati (`VixSrc`, `Altadefinizione`), più
      * l'eventuale provider scelto manualmente.
      */
-    httpExperimentalProvidersEnabled: Boolean = false
+    httpExperimentalProvidersEnabled: Boolean = false,
+    /**
+     * `true`: applica la gerarchia della **selezione automatica**
+     * (Altadefinizione → VixSrc → Streaming Community, risoluzione più alta
+     * realmente riproducibile). Vale solo per HTTP_WEB e senza provider
+     * principale scelto manualmente. `false` mantiene il comportamento storico
+     * ed è il percorso della selezione manuale delle sorgenti.
+     */
+    automaticSelection: Boolean = false
   ): Flow<List<StreamSource>> {
     var metricsToPublish: StreamSearchMetrics? = null
     var cancelledMetricsSink: (() -> StreamSearchMetrics?)? = null
@@ -178,7 +219,8 @@ class StreamManager(
           imdbId = imdbId,
           httpPrimaryProviderId = httpPrimaryProviderId,
           httpPrimaryProviderStrict = httpPrimaryProviderStrict,
-          httpExperimentalProvidersEnabled = httpExperimentalProvidersEnabled
+          httpExperimentalProvidersEnabled = httpExperimentalProvidersEnabled,
+          automaticSelection = automaticSelection
         )
       } finally {
         // Il producer puo' essere gia' cancellato (collector andato via): la
@@ -215,7 +257,8 @@ class StreamManager(
     imdbId: String?,
     httpPrimaryProviderId: String?,
     httpPrimaryProviderStrict: Boolean,
-    httpExperimentalProvidersEnabled: Boolean
+    httpExperimentalProvidersEnabled: Boolean,
+    automaticSelection: Boolean
   ) {
     val flowId = NEXT_SEARCH_ID.incrementAndGet()
     searchIdCounter = flowId.toInt()
@@ -282,6 +325,106 @@ class StreamManager(
      */
     fun isPlayableCandidate(source: StreamSource): Boolean =
       isPlayableDirectUrl(source.streamUrl.orEmpty()) || !source.infoHash.isNullOrBlank()
+
+    /** Invocazione del provider con la variante di firma che gli compete. */
+    suspend fun invokeProvider(provider: StreamProvider): List<StreamSource> = when {
+      provider is AnimeStreamProvider && originalTitle != null ->
+        provider.getStreams(tmdbId, isTv, season, episode, title, originalTitle, year)
+      provider is TorBoxStreamProvider ->
+        provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
+      // IMDb ID disponibile: fallback per `var Q` quando il player espone solo
+      // un ID numerico o nessun identificativo.
+      provider is TwoEmbedProvider ->
+        provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
+      // Altadefinizione: il player vidxgo usa l'IMDb ID come chiave primaria;
+      // senza IMDb il provider ricade sulla ricerca per titolo.
+      provider is ImdbAwareStreamProvider ->
+        provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
+      else ->
+        provider.getStreams(tmdbId, isTv, season, episode, title, year)
+    }
+
+    /**
+     * Esegue un tentativo provider con slot, timeout, metriche e diagnostica.
+     *
+     * L'attesa del semaforo non consuma il budget del tentativo: `withTimeout`
+     * è dentro il permit. La cancellazione esterna viene rilanciata dopo aver
+     * registrato l'esito ([StreamAttemptOutcome.CANCELLED]).
+     */
+    suspend fun runAttempt(provider: StreamProvider): ProviderAttemptResult {
+      val name = provider.providerId
+      val enqueuedAt = clock.nowMs()
+      var runStart = enqueuedAt
+      var outcome = StreamAttemptOutcome.NO_RESULTS
+      var failureMessage: String? = null
+      var sources: List<StreamSource> = emptyList()
+      var finishedAt = enqueuedAt
+      try {
+        Log.i(HTTP_TRACE, "[SM] Provider source START name=$name searchId=$flowId tmdbId=$tmdbId")
+        sources = providerSlots.withPermit {
+          runStart = clock.nowMs()
+          concurrency.increment()
+          try {
+            withTimeout(timeoutMs) { invokeProvider(provider) }
+          } finally {
+            concurrency.decrement()
+          }
+        }
+        val elapsed = clock.nowMs() - runStart
+        Log.i(
+          HTTP_TRACE,
+          "[SM] Provider source END name=$name searchId=$flowId duration=${elapsed}ms sources=${sources.size}"
+        )
+        if (sources.isNotEmpty()) {
+          Log.i(TAG, "$name -> ${sources.size} sorgente/i trovate in ${elapsed}ms")
+          outcome = StreamAttemptOutcome.SUCCESS
+        } else {
+          Log.d(TAG, "$name -> nessuna sorgente prodotta in ${elapsed}ms")
+        }
+      } catch (e: TimeoutCancellationException) {
+        outcome = StreamAttemptOutcome.TIMEOUT
+        failureMessage = e.message
+        Log.w(TAG, "$name -> timeout dopo ${clock.nowMs() - runStart}ms")
+      } catch (e: CancellationException) {
+        // Cancellazione strutturata: non e' un errore del provider e non va
+        // soppressa. Il tentativo viene comunque registrato per diagnostica.
+        outcome = StreamAttemptOutcome.CANCELLED
+        failureMessage = "ricerca annullata"
+        throw e
+      } catch (e: Exception) {
+        outcome = StreamDiagnostics.classify(e)
+        failureMessage = e.message
+        Log.w(TAG, "$name -> eccezione dopo ${clock.nowMs() - runStart}ms: ${e.message}")
+      } finally {
+        finishedAt = clock.nowMs()
+        metrics.onAttemptOutcome(outcome)
+        metrics.onProviderCompleted()
+        Log.i(
+          DIAG_TAG,
+          "DIAG-P provider=$name request='${(title ?: "").take(80)}' isTv=$isTv " +
+            "S=${season ?: "-"} E=${episode ?: "-"} outcome=$outcome " +
+            "durationMs=${finishedAt - enqueuedAt} sources=${sources.size} " +
+            "error=${StreamDiagnostics.sanitize(failureMessage) ?: "-"}"
+        )
+        diagnostics.record(
+          providerId = name,
+          outcome = outcome,
+          durationMs = finishedAt - enqueuedAt,
+          message = failureMessage,
+          searchId = flowId,
+          queueMs = runStart - enqueuedAt,
+          runMs = finishedAt - runStart
+        )
+      }
+      return ProviderAttemptResult(
+        sources = sources,
+        outcome = outcome,
+        message = failureMessage,
+        enqueuedAt = enqueuedAt,
+        runStart = runStart,
+        finishedAt = finishedAt
+      )
+    }
 
     // Fallback timer: se entro 1.2 secondi nessun provider restituisce >= 1080p,
     // emetti il miglior flusso disponibile finora (es. 720p) come Fast-Start.
@@ -441,6 +584,230 @@ class StreamManager(
       }
     } else {
       filteredProviders
+    }
+
+    // --- Gerarchia della selezione automatica ----------------------------
+    // Solo in HTTP_WEB, senza provider principale scelto e con almeno uno dei
+    // provider della gerarchia configurato: Altadefinizione → VixSrc →
+    // Streaming Community → altri provider abilitati. La selezione manuale
+    // (dialog «Seleziona fonte») e il provider preferito restano sul percorso
+    // storico, invariato. Senza provider della gerarchia non c'è nulla da
+    // prioritizzare: si mantiene il Fast-Start parallelo storico.
+    val hasPriorityProviders = filteredProviders.any {
+      AutoSourcePriority.isPriorityProvider(it.providerId)
+    }
+    val useAutomaticPriority = automaticSelection &&
+      streamingEngineMode == StreamingEngineMode.HTTP_WEB &&
+      preferredProvider == null &&
+      hasPriorityProviders
+
+    /**
+     * Riproducibilità effettiva di un candidato.
+     *
+     *  - una sorgente già verificata dal resolver (VixSrc scarica e valida la
+     *    playlist con gli stessi header del player) è utilizzabile senza una
+     *    seconda richiesta;
+     *  - le varianti Altadefinizione (e Streaming Community) vengono sondate
+     *    qui: manifest, playlist di variante e primo segmento;
+     *  - i provider "altri" mantengono il comportamento storico: i loro
+     *    resolver hanno già validato l'estrazione.
+     */
+    suspend fun isPlayableForAutomaticSelection(source: StreamSource, tier: Int): Boolean =
+      when {
+        source.availability == SourceAvailability.Verified -> true
+        source.availability == SourceAvailability.Unavailable -> false
+        tier >= 3 -> true
+        else -> when (sourceVerifier.verify(source)) {
+          SourcePlayability.Playable -> true
+          SourcePlayability.Unavailable -> false
+          SourcePlayability.TransientFailure -> {
+            // Errore temporaneo: non prova che la sorgente non esista. Si passa
+            // al candidato successivo ma la sorgente resta nel catalogo manuale.
+            Log.w(
+              TAG,
+              "[AutoPriority] verifica transitoria non conclusiva per " +
+                "${source.serverName} ${source.quality}: si valuta la risoluzione successiva"
+            )
+            false
+          }
+        }
+      }
+
+    /**
+     * Cascata deterministica: per ogni fascia interroga i provider una sola
+     * volta, ordina le sorgenti per risoluzione decrescente e verifica i
+     * candidati **in sequenza**. La prima sorgente riproducibile avvia la
+     * riproduzione.
+     *
+     * Dopo la selezione la ricerca **continua** sulle fasce successive per
+     * popolare il selettore sorgenti interno al player: l'utente deve poter
+     * scegliere un provider alternativo se quello principale dà problemi.
+     * Le sorgenti raccolte dopo la selezione non sostituiscono mai il flusso
+     * in riproduzione: il ViewModel le usa solo per il selettore manuale.
+     */
+    suspend fun runAutomaticPriorityCascade(
+      tiers: List<List<StreamProvider>>
+    ): StreamSource? {
+      var selectedSource: StreamSource? = null
+      // Catalogo emesso al ViewModel: la sorgente selezionata è sempre la prima,
+      // le alternative raccolte dopo servono al selettore interno al player.
+      val manualCatalog = mutableListOf<StreamSource>()
+
+      for ((tierIndex, tierProviders) in tiers.withIndex()) {
+        if (tierProviders.isEmpty()) continue
+        Log.i(
+          TAG,
+          "[AutoPriority] valuto tier=$tierIndex provider=${tierProviders.map { it.providerId }}"
+        )
+        tierProviders.forEach { metrics.onProviderStarted() }
+        val attempts = supervisorScope {
+          tierProviders.map { provider ->
+            async {
+              // Head-start anime solo per la fascia "altri": le tre fasce
+              // prioritarie seguono l'ordine richiesto senza attese.
+              if (isAnime && tierIndex >= 3 && provider !is AnimeStreamProvider) {
+                delay(ANIME_HEAD_START_MS)
+              }
+              provider to runAttempt(provider)
+            }
+          }.awaitAll()
+        }
+
+        val tierSources = mutableListOf<StreamSource>()
+        attempts.forEach { (provider, attempt) ->
+          if (attempt.sources.isNotEmpty()) {
+            val tagged = attempt.sources.map { source ->
+              if (source.sourceProviderId.isNullOrBlank()) {
+                source.copy(sourceProviderId = provider.providerId)
+              } else {
+                source
+              }
+            }
+            addDistinctSources(tierSources, tagged)
+          }
+        }
+        if (tierSources.isEmpty()) {
+          Log.i(TAG, "[AutoPriority] tier=$tierIndex senza sorgenti: fascia successiva")
+          continue
+        }
+
+        if (selectedSource == null) {
+          val ordered = AutoSourcePriority.sortForAutomaticSelection(tierSources)
+          var selected: StreamSource? = null
+          for (candidate in ordered) {
+            val playable = isPlayableForAutomaticSelection(candidate, tierIndex)
+            Log.i(
+              TAG,
+              "[AutoPriority] candidato provider=${candidate.sourceProviderId} " +
+                "quality=${candidate.quality} height=${StreamResolution.heightOf(candidate)} " +
+                "verifica=${if (playable) "OK" else "SCARTATO"}"
+            )
+            if (playable) {
+              selected = candidate.copy(availability = SourceAvailability.Verified)
+              break
+            }
+          }
+
+          if (selected == null) {
+            Log.i(
+              TAG,
+              "[AutoPriority] tier=$tierIndex senza sorgenti riproducibili: fascia successiva"
+            )
+            continue
+          }
+
+          selectedSource = selected
+          addDistinctSources(manualCatalog, listOf(selected))
+          // Le altre sorgenti della stessa fascia già validate dal resolver
+          // restano disponibili nel selettore del player.
+          ordered.forEach { candidate ->
+            if (candidate.availability == SourceAvailability.Verified) {
+              addDistinctSources(manualCatalog, listOf(candidate))
+            }
+          }
+          emittedFirst = true
+          Log.i(
+            TAG,
+            "[AutoPriority] selezionata ${selected.serverName} ${selected.quality} " +
+              "(tier=$tierIndex) per la riproduzione; raccolgo le alternative per il selettore"
+          )
+          logAndSendSelected(manualCatalog.toList())
+        } else {
+          // Arricchimento del solo catalogo manuale: nessuna verifica (non deve
+          // ritardare né cambiare la riproduzione già avviata) e nessuna
+          // sostituzione del flusso attivo.
+          val before = manualCatalog.size
+          addDistinctSources(manualCatalog, tierSources)
+          val added = manualCatalog.size - before
+          if (added > 0) {
+            Log.i(
+              TAG,
+              "[AutoPriority] selettore sorgenti arricchito: tier=$tierIndex " +
+                "aggiunte=$added totale=${manualCatalog.size}"
+            )
+            logAndSendSelected(manualCatalog.toList())
+          } else {
+            Log.i(
+              TAG,
+              "[AutoPriority] selettore sorgenti: tier=$tierIndex senza nuove sorgenti"
+            )
+          }
+        }
+      }
+
+      if (selectedSource == null) {
+        Log.w(
+          TAG,
+          "[AutoPriority] nessuna sorgente riproducibile in Altadefinizione, VixSrc, " +
+            "Streaming Community o provider successivi"
+        )
+      }
+      return selectedSource
+    }
+
+    if (useAutomaticPriority) {
+      fun providersById(id: String): List<StreamProvider> =
+        filteredProviders.filter { it.providerId.equals(id, ignoreCase = true) }
+
+      val altadefinizioneProviders = providersById(AutoSourcePriority.ALTADEFINIZIONE_ID)
+      val vixsrcProviders = providersById(AutoSourcePriority.VIXSRC_ID)
+      val streamingCommunityProviders =
+        providersById(AutoSourcePriority.STREAMING_COMMUNITY_ID)
+
+      // Streaming Community è un'alternativa esplicita della gerarchia: viene
+      // eseguita solo quando Altadefinizione e VixSrc non hanno sorgenti
+      // riproducibili, quindi non può duplicare il backend di Altadefinizione.
+      val hierarchyProviders =
+        altadefinizioneProviders + vixsrcProviders + streamingCommunityProviders
+      val remainingProviders = enabledProviders
+        .filterNot { provider -> hierarchyProviders.any { it === provider } }
+        .let { list ->
+          if (isAnime) list.sortedByDescending { it is AnimeStreamProvider } else list
+        }
+
+      val tiers = listOf(
+        altadefinizioneProviders,
+        vixsrcProviders,
+        streamingCommunityProviders,
+        remainingProviders
+      )
+
+      Log.i(
+        TAG,
+        "[AutoPriority] avvio ricerca automatica: " +
+          "Altadefinizione=${altadefinizioneProviders.size} VixSrc=${vixsrcProviders.size} " +
+          "StreamingCommunity=${streamingCommunityProviders.size} altri=${remainingProviders.size}"
+      )
+      val selected = runAutomaticPriorityCascade(tiers)
+      fallbackTimerJob.cancel()
+      preferredGraceJob?.cancel()
+      metricsSink(metrics.build(peakConcurrent = concurrency.peakCount))
+      Log.i(
+        DIAG_TAG,
+        "DIAG-E automaticPriority COMPLETE searchId=$flowId selected=" +
+          "${selected?.sourceProviderId ?: "-"} quality=${selected?.quality ?: "-"}"
+      )
+      return@resolveFlowBody
     }
 
     if (preferredProvider != null) {
@@ -616,102 +983,15 @@ class StreamManager(
           if (isPittDebug) {
             Log.d("THE_PITT_STREAM", "[StreamManager] $name resolving TMDB=$tmdbId isTv=$isTv season=$season episode=$episode")
           }
-          // Candidato in coda da qui: queueMs e' l'attesa del semaforo,
-          // runMs l'esecuzione effettiva sotto slot. L'attesa in coda non
-          // consuma il budget del tentativo (withTimeout e' dentro il permit).
-          val enqueuedAt = clock.nowMs()
-          var runStart = enqueuedAt
-          var outcome = StreamAttemptOutcome.NO_RESULTS
-          var failureMessage: String? = null
-          var produced = 0
-          try {
-            Log.i(HTTP_TRACE, "[SM] Provider source START name=$name searchId=$flowId tmdbId=$tmdbId")
-            // Lo slot viene acquisito PRIMA del timeout: l'attesa in coda non
-            // consuma il budget del tentativo. withPermit e' cancellabile,
-            // quindi l'annullamento della ricerca libera anche i job in attesa.
-            val sources = providerSlots.withPermit {
-              runStart = clock.nowMs()
-              concurrency.increment()
-              try {
-                withTimeout(timeoutMs) {
-                  if (provider is AnimeStreamProvider && originalTitle != null) {
-                    provider.getStreams(tmdbId, isTv, season, episode, title, originalTitle, year)
-                  } else if (provider is TorBoxStreamProvider) {
-                    provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
-                  } else if (provider is TwoEmbedProvider) {
-                    // IMDb ID disponibile: fallback per `var Q` quando il player
-                    // espone solo un ID numerico o nessun identificativo.
-                    provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
-                  } else if (provider is ImdbAwareStreamProvider) {
-                    // Altadefinizione: il player vidxgo usa l'IMDb ID come chiave
-                    // primaria; senza IMDb il provider ricade sulla ricerca per titolo.
-                    provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
-                  } else {
-                    provider.getStreams(tmdbId, isTv, season, episode, title, year)
-                  }
-                }
-              } finally {
-                concurrency.decrement()
-              }
+          val attempt = runAttempt(provider)
+          if (attempt.sources.isNotEmpty()) {
+            if (isPittDebug) {
+              Log.d("THE_PITT_STREAM", "[StreamManager] $name SUCCESS: ${attempt.sources.size} sources, first URL: ${attempt.sources.first().streamUrl}")
             }
-            val elapsed = clock.nowMs() - runStart
-            Log.i(HTTP_TRACE, "[SM] Provider source END name=$name searchId=$flowId duration=${elapsed}ms sources=${sources?.size ?: 0}")
-            produced = sources?.size ?: 0
-            if (sources.isNotEmpty()) {
-              Log.i(TAG, "$name -> ${sources.size} sorgente/i trovate in ${elapsed}ms")
-              if (isPittDebug) {
-                Log.d("THE_PITT_STREAM", "[StreamManager] $name SUCCESS: ${sources.size} sources, first URL: ${sources.first().streamUrl}")
-              }
-              mergeSources(name, sources)
-              outcome = StreamAttemptOutcome.SUCCESS
-            } else {
-              Log.d(TAG, "$name -> nessuna sorgente prodotta in ${elapsed}ms")
-            }
-          } catch (e: TimeoutCancellationException) {
-            outcome = StreamAttemptOutcome.TIMEOUT
-            failureMessage = e.message
-            val elapsed = clock.nowMs() - runStart
-            Log.w(TAG, "$name -> timeout dopo ${elapsed}ms")
-            if (tmdbId == 318508 && isTv) {
-              Log.d("THE_PITT_STREAM", "[StreamManager] $name TIMEOUT after ${elapsed}ms")
-            }
-          } catch (e: CancellationException) {
-            // Cancellazione strutturata: non e' un errore del provider e non va
-            // soppressa. Il tentativo viene comunque registrato per diagnostica.
-            outcome = StreamAttemptOutcome.CANCELLED
-            failureMessage = "ricerca annullata"
-            throw e
-          } catch (e: Exception) {
-            val elapsed = clock.nowMs() - runStart
-            outcome = StreamDiagnostics.classify(e)
-            failureMessage = e.message
-            Log.w(TAG, "$name -> eccezione dopo ${elapsed}ms: ${e.message}")
-            if (tmdbId == 318508 && isTv) {
-              Log.d("THE_PITT_STREAM", "[StreamManager] $name ERROR: ${e.message}")
-            }
-          } finally {
-            val finishedAt = clock.nowMs()
-            metrics.onAttemptOutcome(outcome)
-            metrics.onProviderCompleted()
-            // Diagnostica per provider richiesta: titolo/episodio, esito,
-            // durata, sorgenti prodotte ed errore finale. Nessun header,
-            // cookie o token viene registrato.
-            Log.i(
-              DIAG_TAG,
-              "DIAG-P provider=$name request='${(title ?: "").take(80)}' isTv=$isTv " +
-                "S=${season ?: "-"} E=${episode ?: "-"} outcome=$outcome " +
-                "durationMs=${finishedAt - enqueuedAt} sources=$produced " +
-                "error=${StreamDiagnostics.sanitize(failureMessage) ?: "-"}"
-            )
-            diagnostics.record(
-              providerId = name,
-              outcome = outcome,
-              durationMs = finishedAt - enqueuedAt,
-              message = failureMessage,
-              searchId = flowId,
-              queueMs = runStart - enqueuedAt,
-              runMs = finishedAt - runStart
-            )
+            mergeSources(name, attempt.sources)
+          }
+          if (isPittDebug && attempt.outcome == StreamAttemptOutcome.TIMEOUT) {
+            Log.d("THE_PITT_STREAM", "[StreamManager] $name TIMEOUT")
           }
         }
       }
@@ -840,7 +1120,8 @@ class StreamManager(
     imdbId: String? = null,
     httpPrimaryProviderId: String? = null,
     httpPrimaryProviderStrict: Boolean = false,
-    httpExperimentalProvidersEnabled: Boolean = false
+    httpExperimentalProvidersEnabled: Boolean = false,
+    automaticSelection: Boolean = false
   ): List<StreamSource> {
     return resolveFlow(
       tmdbId = tmdbId,
@@ -856,7 +1137,8 @@ class StreamManager(
       imdbId = imdbId,
       httpPrimaryProviderId = httpPrimaryProviderId,
       httpPrimaryProviderStrict = httpPrimaryProviderStrict,
-      httpExperimentalProvidersEnabled = httpExperimentalProvidersEnabled
+      httpExperimentalProvidersEnabled = httpExperimentalProvidersEnabled,
+      automaticSelection = automaticSelection
     )
       .firstOrNull { it.isNotEmpty() }
       ?: emptyList()
@@ -902,7 +1184,9 @@ class StreamManager(
       httpPrimaryProviderId = AppSettingsRepository.httpPrimaryProviderId.value,
       httpPrimaryProviderStrict = AppSettingsRepository.httpPrimaryProviderStrict.value,
       httpExperimentalProvidersEnabled =
-        AppSettingsRepository.httpExperimentalProvidersEnabled.value
+        AppSettingsRepository.httpExperimentalProvidersEnabled.value,
+      // Helper di risoluzione automatica: stessa gerarchia della riproduzione.
+      automaticSelection = true
     )
 
     for (candidate in sources) {
@@ -1193,9 +1477,12 @@ class StreamManager(
     }
 
     fun isFullHdOrHigher(quality: String): Boolean {
+      val height = StreamResolution.heightOf(quality)
+      if (height != StreamResolution.UNKNOWN) return height >= 1080
       val q = quality.lowercase()
       if (q == "auto") return false
-      return q.contains("1080") || q.contains("4k") || q.contains("2160") || q.contains("fhd") || q.contains("uhd")
+      return q.contains("1080") || q.contains("4k") || q.contains("2160") ||
+        q.contains("fhd") || q.contains("uhd") || q.contains("1440") || q.contains("qhd")
     }
 
     fun qualityScore(source: StreamSource): Int {
@@ -1203,6 +1490,7 @@ class StreamManager(
       if (vHeight != null) {
         return when {
           vHeight >= 2160 -> 250 // 4K verificato
+          vHeight >= 1440 -> 220 // 1440p/QHD verificato
           vHeight >= 1080 -> 200 // 1080p FHD verificato
           vHeight >= 720  -> 100 // 720p HD verificato
           vHeight >= 480  -> 50  // 480p SD verificato
@@ -1216,6 +1504,7 @@ class StreamManager(
       val q = quality.lowercase()
       return when {
         q.contains("4k") || q.contains("2160") || q.contains("uhd") -> 180
+        q.contains("1440") || q.contains("qhd") -> 170
         q.contains("1080") || q.contains("fhd") -> 150
         q.contains("720") || q.contains("hd") -> 80
         q.contains("auto") -> 40

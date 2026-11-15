@@ -1,5 +1,6 @@
 package com.example.data.streaming.providers
 
+import com.example.data.streaming.SourceAvailability
 import com.example.data.streaming.diagnostics.StreamDiagnosticSink
 import com.example.data.streaming.extractors.ExtractorHttp
 import java.io.IOException
@@ -52,8 +53,12 @@ class AltadefinizioneProviderTest {
     )
 
     val source = sources.single()
-    assertEquals(MASTER_1080_URL, source.streamUrl)
+    assertEquals(
+      "https://cdn.test/hls/0133093/index-v1-a1.m3u8?t=abc&e=9999999999&b=3098&p=",
+      source.streamUrl
+    )
     assertEquals("1080p", source.quality)
+    assertEquals(1080, source.verifiedHeight)
     assertEquals("Altadefinizione", source.serverName)
     assertTrue(source.isItalian)
     assertEquals(Vidxgo.BROWSER_USER_AGENT, source.headers["User-Agent"])
@@ -61,6 +66,39 @@ class AltadefinizioneProviderTest {
     assertEquals("${Vidxgo.ORIGIN}/", source.headers["Referer"])
     assertEquals("cors", source.headers["Sec-Fetch-Mode"])
     assertTrue(http.requests.any { it == "https://player.test/t/0133093" })
+  }
+
+  @Test
+  fun variantiMultipleOrdinatePerRisoluzioneDecrescente() = runBlocking {
+    val http = FakeHttp { url, _, _ ->
+      when {
+        url.endsWith("/t/0133093/1/1") -> tokenJson(MASTER_MULTI_URL)
+        url.startsWith(MASTER_MULTI_URL) -> MASTER_MULTI
+        else -> error("URL inatteso: $url")
+      }
+    }
+
+    val sources = provider(http).getStreams(
+      tmdbId = 603,
+      isTv = true,
+      season = 1,
+      episode = 1,
+      title = "Matrix",
+      year = 1999,
+      imdbId = "tt0133093"
+    )
+
+    assertEquals(
+      "la variante 4K deve precedere 1440p, 1080p e 720p",
+      listOf("4K", "1440p", "1080p", "720p"),
+      sources.map { it.quality }
+    )
+    assertEquals(listOf(2160, 1440, 1080, 720), sources.map { it.verifiedHeight })
+    assertEquals(4, sources.map { it.streamUrl }.distinct().size)
+    assertTrue(
+      "le varianti non sono ancora state verificate: la selezione automatica deve sondarle",
+      sources.all { it.availability == SourceAvailability.Unknown }
+    )
   }
 
   @Test
@@ -280,6 +318,20 @@ class AltadefinizioneProviderTest {
       "https://cdn.test/hls/0133093/master.m3u8?t=abc&e=9999999999&b=3098"
     private const val MASTER_TV_URL =
       "https://cdn.test/hls/tv/16358384/2/1/master.m3u8?t=abc&e=9999999999&b=3098"
+    private const val MASTER_MULTI_URL =
+      "https://cdn.test/hls/0133093/master.m3u8?t=abc&e=9999999999&b=3098"
+
+    private val MASTER_MULTI = """
+      #EXTM3U
+      #EXT-X-STREAM-INF:BANDWIDTH=15000000,RESOLUTION=3840x2160,CODECS="hvc1.2.4.L153.B0"
+      index-4k.m3u8?t=abc&e=9999999999&b=3098&p=
+      #EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=2560x1440,CODECS="avc1.640033"
+      index-1440.m3u8?t=abc&e=9999999999&b=3098&p=
+      #EXT-X-STREAM-INF:BANDWIDTH=3098676,RESOLUTION=1920x800,CODECS="avc1.4d4028,mp4a.40.2"
+      index-1080.m3u8?t=abc&e=9999999999&b=3098&p=
+      #EXT-X-STREAM-INF:BANDWIDTH=1521314,RESOLUTION=1206x720,CODECS="avc1.4d401f,mp4a.40.2"
+      index-720.m3u8?t=abc&e=9999999999&b=3098&p=
+    """.trimIndent()
 
     private val MASTER_1080 = """
       #EXTM3U

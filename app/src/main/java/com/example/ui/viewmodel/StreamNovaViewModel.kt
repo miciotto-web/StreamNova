@@ -60,15 +60,16 @@ import com.example.data.stremio.InstalledAddon
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.StremioCatalogEngine
 import com.example.data.stremio.StremioLiveChannelClassifier
-import com.example.data.torbox.TorBoxRepository
-import com.example.data.update.UpdateCheckState
-import com.example.data.update.UpdateDownloadState
-import com.example.data.update.UpdateRepository
+import com.example.data.streaming.SourceAvailability
 import com.example.data.streaming.StreamManager
 import com.example.data.streaming.StreamResult
 import com.example.data.streaming.StreamSource
 import com.example.data.streaming.TorBoxSourceOrdering
 import com.example.data.streaming.diagnostics.StreamDiagnosticSinkFactory
+import com.example.data.torbox.TorBoxRepository
+import com.example.data.update.UpdateCheckState
+import com.example.data.update.UpdateDownloadState
+import com.example.data.update.UpdateRepository
 import com.example.data.opensubtitles.OpenSubtitlesConnectionCheck
 import com.example.data.opensubtitles.OpenSubtitlesConnectionVerifier
 import com.example.data.opensubtitles.OpenSubtitlesDownloadError
@@ -4456,6 +4457,13 @@ class StreamNovaViewModel(
       // Provider sperimentali (spesso bloccati): spenti di default.
       val experimentalHttpProviders =
         AppSettingsRepository.httpExperimentalProvidersEnabled.value
+      // Gerarchia della selezione automatica (Altadefinizione → VixSrc →
+      // Streaming Community) attiva solo quando non c'è una scelta manuale:
+      // né il dialog «Seleziona fonte» né un provider HTTP principale scelto
+      // nelle Impostazioni. La modalità manuale resta invariata.
+      val automaticProviderPriority = !manualSelection &&
+        mode == StreamingEngineMode.HTTP_WEB &&
+        preferredHttpProviderId == null
       val resolvedMediaItem = if (baseForResolution.tmdbId == null && baseForResolution.id.startsWith("tt", ignoreCase = true)) {
         val resolvedId = MediaRepository.resolveImdbToTmdbId(baseForResolution.id, isTv)
         if (resolvedId != null && resolvedId > 0) baseForResolution.copy(tmdbId = resolvedId) else baseForResolution
@@ -4731,7 +4739,11 @@ class StreamNovaViewModel(
         imdbId = effectiveImdb,
         httpPrimaryProviderId = preferredHttpProviderId,
         httpPrimaryProviderStrict = strictHttpProvider,
-        httpExperimentalProvidersEnabled = experimentalHttpProviders
+        httpExperimentalProvidersEnabled = experimentalHttpProviders,
+        // La gerarchia automatica vale solo per la riproduzione automatica:
+        // il dialog «Seleziona fonte» continua a interrogare tutti i provider
+        // e a mostrare tutte le sorgenti (comportamento invariato).
+        automaticSelection = automaticProviderPriority
       )
       val collectBlock: suspend (List<StreamSource>) -> Unit = collect@{ rawSources ->
         // L'auto-pick valuta SOLO liste non vuote: un primo tick senza risultati
@@ -4840,6 +4852,13 @@ class StreamNovaViewModel(
               val isPreferredProviderSource = preferredHttpProviderId != null &&
                 chosenStream.sourceProviderId == preferredHttpProviderId
               val canStartImmediately = isPreferredProviderSource ||
+                // Sorgente selezionata dalla cascata automatica: è già stata
+                // verificata e classificata dal StreamManager, non c'è nulla da
+                // attendere (nessuna finestra arbitraria). La sola modalità
+                // automatica non basta: senza provider della gerarchia il
+                // resolver usa il Fast-Start storico e vale la finestra Full-HD.
+                (automaticProviderPriority &&
+                  chosenStream.availability == SourceAvailability.Verified) ||
                 (preferredHttpProviderId == null && StreamManager.isFullHdOrHigher(chosenStream))
               if (canStartImmediately) {
                 settleJob?.cancel()
