@@ -407,6 +407,21 @@
      <string name="settings_info_tmdb_attribution">This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.</string>
      <string name="settings_info_tmdb_url">https://www.themoviedb.org/</string>
      <string name="settings_info_legal_disclaimer">All logos, trademarks, posters, and related artwork shown within the app are the property of their respective owners. StreamNova is an independent product and is not affiliated with, endorsed by, or sponsored by any content provider, streaming service, or studio.</string>
+
+     <!-- Official disclaimer and limitation of liability («Disclaimer and
+          responsibility» entry, Legal Information section in Settings). Read-only
+          informational panel: no effect on sources, providers or the player.
+          Segments wrapped in <b> are the highlighted sentences, rendered as
+          emphasized text by the panel. -->
+     <string name="settings_disclaimer_entry">Disclaimer and responsibility</string>
+     <string name="settings_disclaimer_title">Disclaimer and limitation of liability</string>
+     <string name="settings_disclaimer_p1">StreamNova is a software application that operates exclusively as a container and technology interface, enabling the user to organize, manage and access content and services through third-party sources and services.</string>
+     <string name="settings_disclaimer_p2"><b>StreamNova does not host, own, produce, distribute or control the audiovisual content accessible through the application.</b> It does not own the servers, catalogues, media files or external sources possibly used by the user, nor is it affiliated with or officially connected to the respective rights holders.</string>
+     <string name="settings_disclaimer_p3">The application does not promote, encourage, authorize or in any way support piracy, the unauthorized distribution of copyright-protected works or any other use contrary to applicable law.</string>
+     <string name="settings_disclaimer_p4"><b>The user is solely responsible for the sources, services and content they choose to access</b>, as well as for verifying that their use, reproduction and any download comply with applicable law and respect the rights of the respective rights holders.</string>
+     <string name="settings_disclaimer_p5">The StreamNova developer exercises no editorial control over content provided by external services and does not intend to be associated with unlawful or improper use of the application.</string>
+     <string name="settings_disclaimer_p6">By using StreamNova, the user declares that they understand and accept the above and undertakes to use the application in compliance with applicable law and intellectual property rights.</string>
+     <string name="settings_disclaimer_p7"><b>StreamNova is a technology tool. Responsibility for the use of external sources and content rests solely with the user.</b></string>
  
      <!-- Language Labels -->
      <string name="lang_italian">Italian</string>

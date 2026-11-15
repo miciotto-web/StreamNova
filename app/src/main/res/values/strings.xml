@@ -447,6 +447,21 @@
     <string name="settings_info_tmdb_url">https://www.themoviedb.org/</string>
     <string name="settings_info_legal_disclaimer">All logos, trademarks, posters, and related artwork shown within the app are the property of their respective owners. StreamNova is an independent product and is not affiliated with, endorsed by, or sponsored by any content provider, streaming service, or studio.</string>
 
+    <!-- Disclaimer ufficiale e limitazione di responsabilità (voce «Disclaimer e
+         responsabilità», sezione Informazioni legali delle Impostazioni). Pannello
+         informativo di sola lettura: nessun effetto su sorgenti, provider o player.
+         I segmenti tra <b> e </b> sono le frasi evidenziate del testo ufficiale,
+         renderizzate dal pannello come testo in evidenza. -->
+    <string name="settings_disclaimer_entry">Disclaimer e responsabilità</string>
+    <string name="settings_disclaimer_title">Disclaimer e limitazione di responsabilità</string>
+    <string name="settings_disclaimer_p1">StreamNova è un\'applicazione software che opera esclusivamente come contenitore e interfaccia tecnologica, consentendo all\'utente di organizzare, gestire e accedere a contenuti e servizi attraverso sorgenti e servizi di terze parti.</string>
+    <string name="settings_disclaimer_p2"><b>StreamNova non ospita, non possiede, non produce, non distribuisce e non controlla i contenuti audiovisivi accessibili tramite l\'applicazione.</b> Non è proprietaria dei server, dei cataloghi, dei file multimediali o delle sorgenti esterne eventualmente utilizzate dall\'utente, né è affiliata o collegata ufficialmente ai rispettivi titolari dei diritti.</string>
+    <string name="settings_disclaimer_p3">L\'applicazione non promuove, incoraggia, autorizza né sostiene in alcun modo la pirateria, la distribuzione non autorizzata di opere protette da copyright o qualsiasi altro utilizzo contrario alle normative vigenti.</string>
+    <string name="settings_disclaimer_p4"><b>L\'utente è l\'unico responsabile delle sorgenti, dei servizi e dei contenuti ai quali decide di accedere</b>, nonché della verifica che il loro utilizzo, la loro riproduzione e il loro eventuale download siano conformi alle leggi applicabili e rispettino i diritti dei rispettivi titolari.</string>
+    <string name="settings_disclaimer_p5">Lo sviluppatore di StreamNova non esercita alcun controllo editoriale sui contenuti forniti da servizi esterni e non intende essere associato a utilizzi illeciti o impropri dell\'applicazione.</string>
+    <string name="settings_disclaimer_p6">Utilizzando StreamNova, l\'utente dichiara di comprendere e accettare quanto sopra e si impegna a utilizzare l\'applicazione nel rispetto delle leggi vigenti e dei diritti di proprietà intellettuale.</string>
+    <string name="settings_disclaimer_p7"><b>StreamNova è uno strumento tecnologico. La responsabilità dell\'utilizzo delle sorgenti e dei contenuti esterni rimane in capo all\'utente.</b></string>
+
     <!-- Language Labels -->
     <string name="lang_italian">Italiano</string>
     <string name="lang_english">Inglese</string>

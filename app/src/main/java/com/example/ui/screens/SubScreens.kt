@@ -2559,6 +2559,10 @@ fun SettingsScreen(
   val openSubtitlesKeyRowFocusRequester = remember { FocusRequester() }
   var restoreTorBoxKeyRowFocus by remember { mutableStateOf(false) }
   var restoreOpenSubtitlesKeyRowFocus by remember { mutableStateOf(false) }
+  // Stesso schema per il pannello «Disclaimer e responsabilità»: alla chiusura
+  // (BACK o «Chiudi») il focus torna sulla riga che lo ha aperto.
+  val disclaimerRowFocusRequester = remember { FocusRequester() }
+  var restoreDisclaimerRowFocus by remember { mutableStateOf(false) }
   var showResolutionDialog by remember { mutableStateOf(false) }
   var showSubtitleLanguageDialog by remember { mutableStateOf(false) }
   var showSubtitleSizeDialog by remember { mutableStateOf(false) }
@@ -2581,6 +2585,8 @@ fun SettingsScreen(
   var showDecoderFallbackDialog by remember { mutableStateOf(false) }
   var isClearingCache by remember { mutableStateOf(false) }
   var showUpdateResultDialog by remember { mutableStateOf(false) }
+  // Pannello informativo «Disclaimer e responsabilità» (Informazioni legali).
+  var showDisclaimerDialog by remember { mutableStateOf(false) }
   // Sezione «Continua a guardare»: aperta di default (come nelle immagini di
   // riferimento); lo stato vive solo nella composizione, le preferenze interne sono
   // persistite singolarmente.
@@ -2652,6 +2658,18 @@ fun SettingsScreen(
     withFrameNanos { }
     try {
       openSubtitlesKeyRowFocusRequester.requestFocus()
+    } catch (_: Exception) {
+    }
+  }
+
+  // Chiusura del pannello disclaimer (BACK o «Chiudi»): il focus torna sulla riga
+  // che l'ha aperto, con la stessa riga di frame di margine dei popup chiave API.
+  LaunchedEffect(restoreDisclaimerRowFocus) {
+    if (!restoreDisclaimerRowFocus) return@LaunchedEffect
+    restoreDisclaimerRowFocus = false
+    withFrameNanos { }
+    try {
+      disclaimerRowFocusRequester.requestFocus()
     } catch (_: Exception) {
     }
   }
@@ -3361,6 +3379,24 @@ fun SettingsScreen(
         }
       }
 
+      // ── INFORMAZIONI LEGALI ─────────────────────────────────────────────
+      // Voce «Disclaimer e responsabilità»: apre il pannello informativo di sola
+      // lettura ([SettingsDisclaimerDialog]). Nessun effetto su sorgenti, provider o
+      // player: l'intervento resta esclusivamente informativo e grafico. La sezione
+      // è una riga interattiva dedicata accanto alla card statica Informazioni,
+      // che per design resta un unico target del D-pad.
+      item {
+        SettingsSection(title = stringResource(R.string.settings_legal_info)) {
+          SettingsRow(
+            icon = Icons.Default.Gavel,
+            title = stringResource(R.string.settings_disclaimer_entry),
+            onClick = { showDisclaimerDialog = true },
+            showChevron = true,
+            modifier = Modifier.focusRequester(disclaimerRowFocusRequester)
+          )
+        }
+      }
+
       // ── RICONOSCIMENTI ───────────────────────────────────────────────────
       // TMDB: logo ufficiale e testi di attribuzione esatti, in inglese in tutte
       // le localizzazioni come richiede l'attribuzione stessa. ExoPlayer: la
@@ -3479,6 +3515,15 @@ fun SettingsScreen(
         restoreOpenSubtitlesKeyRowFocus = true
       }
     )
+  }
+
+  // Pannello informativo «Disclaimer e responsabilità»: sola lettura, chiusura con
+  // BACK o «Chiudi». Nessuna conferma obbligatoria all'avvio: si apre solo da qui.
+  if (showDisclaimerDialog) {
+    SettingsDisclaimerDialog(onDismiss = {
+      showDisclaimerDialog = false
+      restoreDisclaimerRowFocus = true
+    })
   }
 
   if (showStreamingEngineModeDialog) {
