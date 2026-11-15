@@ -152,6 +152,7 @@
     <string name="detail_loading_episodes">Loading Season %d episodes from TMDB…</string>
     <string name="detail_main_cast">Creator &amp; Cast</string>
     <string name="cast_main_role">Main Cast</string>
+    <string name="detail_collection_title">%1$s - Collection</string>
     <string name="detail_duration_min">%d min</string>
     <string name="detail_watched_badge">✓ Watched</string>
     <string name="detail_trailer_loading">Fetching trailer from TMDB…</string>

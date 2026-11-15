@@ -205,6 +205,32 @@ data class TmdbCompanyDetailDto(
   @Json(name = "origin_country") val originCountry: String? = null
 )
 
+/**
+ * Riferimento alla collezione/franchise TMDB a cui appartiene un film
+ * (`belongs_to_collection` nella risposta `movie/{id}`, es. «Harry Potter Collection»).
+ * `null` = TMDB non associa il film a nessuna collezione.
+ */
+data class TmdbCollectionDto(
+  val id: Int,
+  val name: String?,
+  @Json(name = "poster_path") val posterPath: String? = null,
+  @Json(name = "backdrop_path") val backdropPath: String? = null
+)
+
+/**
+ * Risposta `collection/{id}`: metadati della collezione e l'elenco completo dei
+ * titoli che ne fanno parte (`parts`, oggetti film nello stesso formato dei
+ * cataloghi discover). Le collezioni TMDB esistono solo per i film.
+ */
+data class TmdbCollectionDetailDto(
+  val id: Int,
+  val name: String?,
+  val overview: String? = null,
+  @Json(name = "poster_path") val posterPath: String? = null,
+  @Json(name = "backdrop_path") val backdropPath: String? = null,
+  val parts: List<TmdbMovieDto>? = emptyList()
+)
+
 data class TmdbPersonDetailDto(
   val id: Int,
   val name: String,
@@ -258,6 +284,12 @@ data class TmdbMovieDetailDto(
   val status: String? = null,
   val credits: TmdbCreditsDto? = null,
   val similar: TmdbPaginatedResponse<TmdbMovieDto>? = null,
+  /**
+   * Collezione/franchise TMDB del film (`belongs_to_collection`). Fonte della
+   * sezione «Franchise - Collezione» della scheda Dettaglio: `null` = nessuna
+   * collezione, la sezione non viene mostrata.
+   */
+  @Json(name = "belongs_to_collection") val belongsToCollection: TmdbCollectionDto? = null,
   @Json(name = "release_dates") val releaseDates: TmdbMovieReleaseDatesResponseDto? = null,
   @Json(name = "production_companies") val productionCompanies: List<TmdbProductionCompanyDto>? = emptyList(),
   /** Codici ISO dei paesi d'origine (`origin_country`, es. `["US"]`). */
@@ -735,6 +767,17 @@ interface TmdbApiService {
     @Path("company_id") companyId: Int,
     @Query("api_key") apiKey: String
   ): TmdbCompanyDetailDto
+
+  /**
+   * Titoli appartenenti a una collezione/franchise TMDB (`collection/{id}` → `parts`).
+   * Fonte della riga «Franchise - Collezione» nella scheda Dettaglio dei film.
+   */
+  @GET("collection/{collection_id}")
+  suspend fun getCollectionDetails(
+    @Path("collection_id") collectionId: Int,
+    @Query("api_key") apiKey: String,
+    @Query("language") language: String = "it-IT"
+  ): TmdbCollectionDetailDto
 }
 
 object TmdbApiClient {

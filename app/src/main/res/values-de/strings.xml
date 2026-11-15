@@ -152,6 +152,7 @@
     <string name="detail_loading_episodes">Episoden der Staffel %d werden von TMDB geladen…</string>
     <string name="detail_main_cast">Schöpfer &amp; Besetzung</string>
     <string name="cast_main_role">Hauptbesetzung</string>
+    <string name="detail_collection_title">%1$s - Kollektion</string>
     <string name="detail_duration_min">%d Min</string>
     <string name="detail_watched_badge">✓ Gesehen</string>
     <string name="detail_trailer_loading">Trailer wird von TMDB geladen…</string>

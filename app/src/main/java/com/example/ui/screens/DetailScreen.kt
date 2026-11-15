@@ -41,6 +41,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
@@ -117,6 +118,7 @@ import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklRepository
 import com.example.data.stremio.StremioCatalogMapper
 import com.example.data.util.DetailFactsMapper
+import com.example.ui.components.CardMediaImage
 import com.example.ui.components.EpisodeContextMenu
 import com.example.ui.components.MediaActionBar
 import com.example.ui.components.MediaActionBarFocus
@@ -1246,6 +1248,23 @@ fun DetailScreen(
         }
       }
 
+      // Riga orizzontale «Franchise - Collezione»: i titoli TMDB della stessa
+      // collezione del film aperto (es. Harry Potter), subito dopo il Cast.
+      // Appare solo quando TMDB associa il film a una collezione con almeno un
+      // titolo: le serie TV non hanno collezioni TMDB e la sezione resta nascosta.
+      val collectionInfo = extendedDetails?.collection
+      val collectionItems = extendedDetails?.collectionItems.orEmpty()
+      if (collectionInfo != null && collectionItems.isNotEmpty()) {
+        item(key = "franchise_collection") {
+          FranchiseCollectionSection(
+            collectionName = collectionInfo.name,
+            items = collectionItems,
+            onMediaClick = onMediaClick
+          )
+          Spacer(modifier = Modifier.height(24.dp))
+        }
+      }
+
       // Tabs Header: "Episodi", "Consigliati", "Dettagli Tecnici"
       item {
         Row(
@@ -1960,6 +1979,165 @@ fun CastMemberCard(
         modifier = Modifier
           .fillMaxWidth()
           .padding(horizontal = 2.dp)
+      )
+    }
+  }
+}
+
+/**
+ * Parole con cui TMDB nomina già una collezione nelle varie lingue ("Harry Potter -
+ * Collezione" in italiano, "Harry Potter Collection" in inglese, ...). Se il nome
+ * restituito da TMDB ne contiene una, l'etichetta della sezione NON aggiunge il
+ * suffisso localizzato per evitare dopioni («Harry Potter - Collezione - Collezione»).
+ */
+internal val COLLECTION_NAME_SUFFIX_WORDS = listOf(
+  "collezione", "collection", "kollektion", "colección", "coleccion",
+  "saga", "trilogia", "trilogy", "trilogie"
+)
+
+/** True se [name] contiene già una parola di [COLLECTION_NAME_SUFFIX_WORDS]. */
+internal fun hasCollectionSuffixWord(name: String): Boolean {
+  val normalized = name.trim().lowercase()
+  return COLLECTION_NAME_SUFFIX_WORDS.any { normalized.contains(it) }
+}
+
+/**
+ * Sezione «Nome Franchise - Collezione»: riga orizzontale di card 16:9 con i titoli
+ * TMDB della stessa collezione del film aperto (es. «Harry Potter - Collezione»),
+ * subito dopo «Creatore e Cast». Stile coerente con [CastCarousel]: header
+ * icona+etichetta e riga di [FranchiseCollectionCard] con scroll D-pad gestito da
+ * [TvFocusRow]. Il click su una card apre la scheda di quel titolo ([onMediaClick],
+ * già cablato per la navigazione verso il Dettaglio).
+ */
+@Composable
+fun FranchiseCollectionSection(
+  collectionName: String,
+  items: List<MediaItem>,
+  onMediaClick: ((MediaItem) -> Unit)? = null,
+  modifier: Modifier = Modifier
+) {
+  Column(modifier = modifier.fillMaxWidth()) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+      modifier = Modifier.padding(horizontal = 32.dp, vertical = 4.dp)
+    ) {
+      Icon(
+        imageVector = Icons.Default.Bookmarks,
+        contentDescription = null,
+        tint = NovaCyanBright,
+        modifier = Modifier.size(18.dp)
+      )
+      val trimmedName = collectionName.trim()
+      Text(
+        text = if (hasCollectionSuffixWord(trimmedName)) {
+          trimmedName
+        } else {
+          stringResource(R.string.detail_collection_title, trimmedName)
+        },
+        color = NovaTextMuted,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.sp
+      )
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+
+    val collectionState = rememberLazyListState()
+    TvFocusRow {
+      LazyRow(
+        state = collectionState,
+        contentPadding = PaddingValues(horizontal = 32.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+      ) {
+        items(items, key = { it.id }, contentType = { "collection_media" }) { media ->
+          FranchiseCollectionCard(
+            media = media,
+            onClick = { onMediaClick?.invoke(media) }
+          )
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Card 16:9 della sezione «Franchise - Collezione», fedele al riferimento visivo:
+ * il backdrop TMDB (16:9) con SOPRAIMPRESSO il logo originale del film (clear logo
+ * TMDB, `logoUrl`), senza contenitore sotto; sotto l'immagine solo titolo e anno
+ * di produzione. Focus D-pad gestito da [TvFocusableBox] (bordo ciano + scala SOLO
+ * sull'immagine, il testo resta fermo, come nel riferimento).
+ */
+@Composable
+fun FranchiseCollectionCard(
+  media: MediaItem,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  Column(modifier = modifier.width(220.dp)) {
+    TvFocusableBox(
+      modifier = Modifier.width(220.dp),
+      shape = RoundedCornerShape(14.dp),
+      focusedScale = 1.08f,
+      onClick = onClick
+    ) { _ ->
+      Box(
+        modifier = Modifier
+          .width(220.dp)
+          .height(124.dp)
+          .clip(RoundedCornerShape(14.dp))
+      ) {
+        val fallbackRes = (media.backdropRes ?: media.posterRes)?.takeIf { it != R.drawable.banner_dune }
+        CardMediaImage(
+          primaryUrl = media.backdropUrl,
+          secondaryUrl = media.posterUrl,
+          fallbackRes = fallbackRes,
+          contentDescription = media.title,
+          modifier = Modifier.fillMaxSize(),
+          contentScale = ContentScale.Crop
+        )
+
+        // Logo originale del film (titolo grafico) impresso sul backdrop: PICCOLO,
+        // ancorato in basso a sinistra e contenuto in un BOX FISSO 120x42 — con
+        // ContentScale.Fit la scala resta uniforme tra film (i logo TMDB hanno aspect
+        // ratio molto diversi: da ~2.5:1 a ~6:1) e il logo non copre mai l'artwork.
+        // Nascosto se TMDB non ha un logo renderizzabile per il film.
+        if (!media.logoUrl.isNullOrBlank()) {
+          AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+              .data(media.logoUrl)
+              .crossfade(true)
+              .build(),
+            contentDescription = media.title,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+              .align(Alignment.BottomStart)
+              .padding(start = 10.dp, end = 10.dp, bottom = 8.dp)
+              .width(120.dp)
+              .height(42.dp)
+          )
+        }
+      }
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+
+    Text(
+      text = media.title,
+      color = NovaTextPrimary,
+      fontSize = 14.sp,
+      fontWeight = FontWeight.Bold,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis
+    )
+
+    if (media.year > 0) {
+      Spacer(modifier = Modifier.height(2.dp))
+      Text(
+        text = media.displayYear,
+        color = NovaTextSecondary,
+        fontSize = 12.sp
       )
     }
   }

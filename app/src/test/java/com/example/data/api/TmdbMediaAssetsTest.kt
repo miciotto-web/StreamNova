@@ -10,8 +10,8 @@ import org.junit.Test
 
 class TmdbMediaAssetsTest {
 
-  private fun logo(path: String, language: String?, width: Int? = null) =
-    TmdbLogoItemDto(filePath = path, language = language, aspectRatio = 1.5f, width = width, height = null)
+  private fun logo(path: String, language: String?, width: Int? = null, height: Int? = null) =
+    TmdbLogoItemDto(filePath = path, language = language, aspectRatio = 1.5f, width = width, height = height)
 
   private fun video(
     key: String?,
@@ -72,6 +72,72 @@ class TmdbMediaAssetsTest {
     assertNull(TmdbMediaAssets.pickLogo(null))
     assertNull(TmdbMediaAssets.pickLogo(emptyList()))
     assertNull(TmdbMediaAssets.pickLogo(listOf(logo("  ", "it"))))
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Clear logo (regole 2026-11: niente SVG, preferenza logo-titolo wide)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * Jurassic Park (1993): il primo logo `en` di TMDB e' un SVG che Coil non renderizza
+   * (nessun decoder SVG nel progetto) — con il vecchio pick il logo spariva dalla scheda
+   * e dalle card della collezione. Gli SVG devono essere scartati.
+   */
+  @Test
+  fun pickLogoSkipsSvgLogos() {
+    val logos = listOf(
+      logo("/vector.svg", "en", width = 32, height = 24),
+      logo("/title.png", "en", width = 785, height = 156)
+    )
+    assertEquals("/title.png", TmdbMediaAssets.pickLogo(logos)?.filePath)
+  }
+
+  @Test
+  fun pickLogoReturnsNullWhenOnlySvgLogosExist() {
+    val logos = listOf(logo("/only.svg", "it", width = 500, height = 100))
+    assertNull(TmdbMediaAssets.pickLogo(logos))
+  }
+
+  /**
+   * Collezione Jurassic Park: per i sequel TMDB elenca PRIMA il logo-art QUADRATO
+   * (AR ≈ 1.35, esplode in altezza su card/hero) e solo dopo il logo-titolo WIDE.
+   * Il pick deve preferire il wide dentro la lingua migliore disponibile (it > en).
+   */
+  @Test
+  fun pickLogoPrefersWideTitleLogoWithinBestLanguage() {
+    // Jurassic World (135397): primo en quadrato, wide en piu' in fondo.
+    val jurassicWorld = listOf(
+      logo("/square.png", "en", width = 1386, height = 1030),
+      logo("/wide.png", "en", width = 1499, height = 263)
+    )
+    assertEquals("/wide.png", TmdbMediaAssets.pickLogo(jurassicWorld)?.filePath)
+
+    // Dominion (507086): quadrato it prima, ma esiste un wide it -> vince il wide it.
+    val dominion = listOf(
+      logo("/it-square.png", "it", width = 1280, height = 957),
+      logo("/en-wide.png", "en", width = 4317, height = 1100),
+      logo("/it-wide.png", "it", width = 4927, height = 1427)
+    )
+    assertEquals("/it-wide.png", TmdbMediaAssets.pickLogo(dominion)?.filePath)
+  }
+
+  /**
+   * Senza nessun wide la scelta resta quella storica (primo it, poi primo en): il logo
+   * quadrato e' comunque mostrato (nella card collezione viene contenuto nel box fisso).
+   */
+  @Test
+  fun pickLogoFallsBackToSquareLogoWhenNoWideExists() {
+    val fallenKingdom = listOf(
+      logo("/it-square.png", "it", width = 390, height = 290),
+      logo("/en-square.png", "en", width = 1024, height = 762)
+    )
+    assertEquals("/it-square.png", TmdbMediaAssets.pickLogo(fallenKingdom)?.filePath)
+
+    val onlySquareEnglish = listOf(
+      logo("/en-square.png", "en", width = 1024, height = 762),
+      logo("/xx-square.png", "xx", width = 2000, height = 1500)
+    )
+    assertEquals("/en-square.png", TmdbMediaAssets.pickLogo(onlySquareEnglish)?.filePath)
   }
 
   // ---------------------------------------------------------------------------------

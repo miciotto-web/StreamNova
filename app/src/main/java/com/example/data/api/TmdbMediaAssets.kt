@@ -16,6 +16,16 @@ object TmdbMediaAssets {
   /** Priorita' delle lingue per logo e trailer. */
   private val LANGUAGE_PRIORITY = listOf("it", "en")
 
+  /**
+   * Aspect ratio di un logo «titolo» (wide): entro questa finestra il logo si imprime
+   * bene su hero/card senza esplodere in altezza. I logo QUADRATI di TMDB (logo-art con
+   * l'illustrazione del film, AR ≈ 1.3) renderizzati a larghezza fissa coprono tutta la
+   * card — vedi collezione Jurassic Park: Jurassic World/Fallen Kingdom/Dominion hanno
+   * SOLO logo quadrato come primo `en`/`it` e logo wide più in fondo alla lista.
+   */
+  private const val WIDE_LOGO_MIN_ASPECT = 1.8f
+  private const val WIDE_LOGO_MAX_ASPECT = 8f
+
   private const val TRAILER_TYPE = "Trailer"
   private const val TEASER_TYPE = "Teaser"
   private const val YOUTUBE_SITE = "YouTube"
@@ -25,19 +35,44 @@ object TmdbMediaAssets {
 
   /**
    * Sceglie il clear logo da `images.logos` con priorita':
-   * 1. lingua italiana (`iso_639_1 == "it"`);
-   * 2. lingua inglese (`"en"`);
-   * 3. primo disponibile con la risoluzione (larghezza) piu' alta.
+   * 1. logo «titolo» (wide, aspect ratio in [WIDE_LOGO_MIN_ASPECT..WIDE_LOGO_MAX_ASPECT])
+   *    in lingua italiana (`iso_639_1 == "it"`);
+   * 2. logo «titolo» (wide) in lingua inglese (`"en"`);
+   * 3. primo disponibile in lingua italiana;
+   * 4. primo disponibile in lingua inglese;
+   * 5. primo disponibile con la risoluzione (larghezza) piu' alta.
+   *
+   * Gli **SVG vengono sempre scartati**: Coil non li renderizza (nessun decoder SVG nel
+   * progetto) e il logo scelto diventerebbe un'immagine vuota — difetto visto su
+   * Jurassic Park (1993), il cui primo logo `en` e' un SVG 32x24.
+   * I passi 3-4 garantiscono il fallback ai logo quadrati (logo-art) quando non esiste
+   * nessun wide: nel dettaglio/hero resta comunque un logo, nella card collezione viene
+   * contenuto nel box fisso.
    */
   fun pickLogo(logos: List<TmdbLogoItemDto>?): TmdbLogoItemDto? {
-    val usable = logos.orEmpty().filter { it.filePath.isNotBlank() }
+    val usable = logos.orEmpty()
+      .filter { it.filePath.isNotBlank() }
+      .filterNot { it.filePath.endsWith(".svg", ignoreCase = true) }
     if (usable.isEmpty()) return null
+
+    for (language in LANGUAGE_PRIORITY) {
+      usable.firstOrNull {
+        it.language.equals(language, ignoreCase = true) && it.isWideLogo()
+      }?.let { return it }
+    }
 
     for (language in LANGUAGE_PRIORITY) {
       usable.firstOrNull { it.language.equals(language, ignoreCase = true) }?.let { return it }
     }
 
     return usable.maxByOrNull { it.width ?: 0 } ?: usable.first()
+  }
+
+  /** true se le dimensioni dichiarate collocano il logo nella finestra «titolo» wide. */
+  private fun TmdbLogoItemDto.isWideLogo(): Boolean {
+    val w = width?.takeIf { it > 0 } ?: return false
+    val h = height?.takeIf { it > 0 } ?: return false
+    return (w.toFloat() / h) in WIDE_LOGO_MIN_ASPECT..WIDE_LOGO_MAX_ASPECT
   }
 
   /**

@@ -37,6 +37,7 @@ import com.example.data.model.CrewMember
 import com.example.data.model.Episode
 import com.example.data.model.EpisodeItem
 import com.example.data.model.ExtendedMediaDetails
+import com.example.data.model.CollectionInfo
 import com.example.data.model.MediaDetailUiState
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
@@ -3961,11 +3962,14 @@ object MediaRepository {
     baseMedia: MediaItem? = null
   ): ExtendedMediaDetails = withContext(Dispatchers.IO) {
     val apiKey = getEffectiveApiKey()
-    // v2: la risposta contiene ora `next_episode_to_air` (badge "Prossima puntata").
-    // La chiave versionata costringe un solo recupero per serie dopo l'aggiornamento:
-    // le voci `tv_details_*` precedenti non contengono il campo e resterebbero senza
-    // badge fino alla scadenza del TTL. Scadono comunque con la pulizia periodica.
-    val cacheKey = if (isTv) "tv_details_v2_$tmdbId" else "movie_details_$tmdbId"
+    // v2 (serie): la risposta contiene ora `next_episode_to_air` (badge "Prossima
+    // puntata"). La chiave versionata costringe un solo recupero per serie dopo
+    // l'aggiornamento: le voci `tv_details_*` precedenti non contengono il campo e
+    // resterebbero senza badge fino alla scadenza del TTL. Scadono comunque con la
+    // pulizia periodica.
+    // v2 (film): stesso rationale per `belongs_to_collection` (sezione «Franchise -
+    // Collezione»): le voci `movie_details_*` pre-aggiornamento non hanno il campo.
+    val cacheKey = if (isTv) "tv_details_v2_$tmdbId" else "movie_details_v2_$tmdbId"
 
     detailsSingleFlight.run(cacheKey) {
       val db = database
@@ -3987,7 +3991,7 @@ object MediaRepository {
                 Log.d("MediaRepository", "TMDB Details Cache HIT [$cacheKey]")
                 val logoUrl = resolveLogoUrl(tmdbId, isTv, deserialized.logoUrl ?: baseMedia?.logoUrl)
                 if (deserialized.ageRating != null) {
-                  return@run deserialized.copy(logoUrl = logoUrl)
+                  return@run withCollectionItems(deserialized.copy(logoUrl = logoUrl))
                 }
                 // Se la cache precedente non aveva release_dates/content_ratings, recuperiamo il rating dall'endpoint dedicato
                 val fetchedRating = try {
@@ -4001,10 +4005,10 @@ object MediaRepository {
                 } catch (_: Exception) {
                   null
                 }
-                return@run deserialized.copy(
+                return@run withCollectionItems(deserialized.copy(
                   ageRating = fetchedRating ?: baseMedia?.ageRating,
                   logoUrl = logoUrl
-                )
+                ))
               }
             }
           }
@@ -4052,10 +4056,104 @@ object MediaRepository {
 
       // 4. Clear logo (images.logos) con priorita' it -> en -> miglior disponibile.
       //    Decorativo e non bloccante: in caso di errore si conserva il logo gia' noto.
-      details.copy(
-        logoUrl = details.logoUrl ?: resolveLogoUrl(tmdbId, isTv, baseMedia?.logoUrl)
+      withCollectionItems(
+        details.copy(
+          logoUrl = details.logoUrl ?: resolveLogoUrl(tmdbId, isTv, baseMedia?.logoUrl)
+        )
       )
     }
+  }
+
+  /**
+   * Aggiunge al dettaglio gli item della collezione/franchise TMDB (solo film:
+   * le serie TV non hanno `belongs_to_collection`). Aggiornamento decorativo e
+   * non bloccante: in caso di errore la scheda resta valida senza la sezione.
+   */
+  private suspend fun withCollectionItems(details: ExtendedMediaDetails): ExtendedMediaDetails {
+    val info = details.collection ?: return details
+    val items = fetchCollectionItems(info.id)
+    if (items.isEmpty()) return details
+    return details.copy(collectionItems = items)
+  }
+
+  /**
+   * Film della collezione/franchise TMDB [collectionId] (`collection/{id}` → `parts`).
+   * La risposta è messa in cache in `tmdb_response_cache` (chiave `collection_$id`,
+   * stesso TTL 12h del resto del dettaglio) così la riga «Franchise - Collezione»
+   * riappare senza richieste di rete a ogni riapertura della scheda.
+   * Restituisce i titoli deduplicati per id TMDB e ordinati per data di uscita
+   * (cronologici, come da riferimento visivo); lista vuota in caso di errore.
+   */
+  private suspend fun fetchCollectionItems(collectionId: Int): List<MediaItem> {
+    if (collectionId <= 0) return emptyList()
+    val cacheKey = "collection_$collectionId"
+    val db = database
+
+    val cached = try {
+      db?.tmdbResponseCacheDao()?.getCache(cacheKey)
+        ?.takeIf { !it.isExpired() }
+        ?.let { MediaCacheMapper.deserializeCollectionDetail(it.jsonResponse) }
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Errore lettura cache collezione [$cacheKey]: ${e.message}")
+      null
+    }
+
+    val detail = cached ?: run {
+      val fetched = try {
+        TmdbApiClient.service.getCollectionDetails(
+          collectionId = collectionId,
+          apiKey = getEffectiveApiKey(),
+          language = "it-IT"
+        )
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Recupero collezione TMDB fallito ($collectionId): ${e.message}")
+        return emptyList()
+      }
+      try {
+        db?.tmdbResponseCacheDao()?.insertCache(
+          TmdbResponseCacheEntity(
+            endpointKey = cacheKey,
+            jsonResponse = MediaCacheMapper.serializeCollectionDetail(fetched),
+            cachedAt = System.currentTimeMillis()
+          )
+        )
+      } catch (e: Exception) {
+        Log.w("MediaRepository", "Salvataggio cache collezione fallito [$cacheKey]: ${e.message}")
+      }
+      fetched
+    }
+
+    return detail.parts.orEmpty()
+      .filter { it.id > 0 && !(it.title.isNullOrBlank() && it.originalTitle.isNullOrBlank()) }
+      // Part «fantasma» annunciati da TMDB ma non ancora reali (es. «Untitled Jurassic
+      // World Rebirth Sequel»: nessuna data di uscita e nessun artwork): renderebbero
+      // solo una card placeholder grigia in cima alla riga.
+      .filter { !it.releaseDate.isNullOrBlank() || !it.backdropPath.isNullOrBlank() || !it.posterPath.isNullOrBlank() }
+      .distinctBy { it.id }
+      // Cronologici. ATENZIONE: TMDB usa STRINGA VUOTA (non null) quando manca la data
+      // («Untitled ... Sequel»): `?:` non scatta e "" ordinerebbe PRIMA di tutte le
+      // date — quindi i blank vanno esplicitamente in fondo.
+      .sortedWith(compareBy({ it.releaseDate.isNullOrBlank() }, { it.releaseDate.orEmpty() }))
+      .map { part ->
+        coroutineScope {
+          // Logo originale (clear logo = titolo grafico) per la card 16:9 della
+          // collezione: stessa sorgente del logo della scheda (`images.logos`, scelta
+          // con `TmdbMediaAssets.pickLogo`) con cache `movie_logo_v2_$id`, quindi
+          // nessuna chiamata extra per i titoli già aperti in dettaglio. I fetch sono
+          // PARALLELI: la prima apertura di una collezione grande non deve allungare
+          // il caricamento della scheda con una catena seriale di richieste immagini.
+          async {
+            val item = movieToMediaItem(part, _mediaList.value)
+            val logo = try {
+              resolveLogoUrl(part.id, isTv = false)
+            } catch (_: Exception) {
+              null
+            }
+            item.copy(logoUrl = logo ?: item.logoUrl)
+          }
+        }
+      }
+      .awaitAll()
   }
 
   suspend fun fetchMoviesByCompany(
@@ -4239,7 +4337,11 @@ object MediaRepository {
    */
   private suspend fun resolveLogoUrl(tmdbId: Int, isTv: Boolean, fallback: String? = null): String? {
     if (tmdbId <= 0) return fallback
-    val cacheKey = if (isTv) "tv_logo_$tmdbId" else "movie_logo_$tmdbId"
+    // v2: le voci `*_logo_*` precedenti contengono URL scelti con la vecchia `pickLogo`
+    // (primo `it`/`en` a prescindere da formato e tipo) — tra cui SVG non renderizzabili
+    // (Jurassic Park 1993) e logo-art quadrati al posto dei logo-titolo wide. La chiave
+    // versionata costringe un solo recupero per titolo dopo l'aggiornamento.
+    val cacheKey = if (isTv) "tv_logo_v2_$tmdbId" else "movie_logo_v2_$tmdbId"
     val db = database
     var stale: String? = null
 
@@ -4583,6 +4685,10 @@ object MediaRepository {
     val releaseDate = ReleaseDateUtils.normalizeIsoDate(dto.releaseDate)
     val certification = DetailFactsMapper.movieCertification(dto.releaseDates)
     val originCountry = DetailFactsMapper.originCountry(dto.productionCountries, dto.originCountry)
+    // Collezione/franchise TMDB (es. «Harry Potter Collection»): fonte della sezione
+    // «Franchise - Collezione» della scheda. Solo i film la espongono.
+    val collection = dto.belongsToCollection?.takeIf { it.id > 0 && !it.name.isNullOrBlank() }
+      ?.let { CollectionInfo(id = it.id, name = it.name!!) }
 
     return ExtendedMediaDetails(
       tmdbId = dto.id,
@@ -4619,7 +4725,8 @@ object MediaRepository {
           originCountry = it.originCountry
         )
       } ?: emptyList(),
-      originCountry = originCountry
+      originCountry = originCountry,
+      collection = collection
     )
   }
 

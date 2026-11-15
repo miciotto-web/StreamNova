@@ -152,6 +152,7 @@
     <string name="detail_loading_episodes">Chargement des épisodes de la saison %d depuis TMDB…</string>
     <string name="detail_main_cast">Créateur et Casting</string>
     <string name="cast_main_role">Casting principal</string>
+    <string name="detail_collection_title">%1$s - Collection</string>
     <string name="detail_duration_min">%d min</string>
     <string name="detail_watched_badge">✓ Vu</string>
     <string name="detail_trailer_loading">Récupération de la bande-annonce depuis TMDB…</string>

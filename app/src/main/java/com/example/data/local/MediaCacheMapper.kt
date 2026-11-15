@@ -1,6 +1,7 @@
 package com.example.data.local
 
 import com.example.data.api.TmdbApiClient
+import com.example.data.api.TmdbCollectionDetailDto
 import com.example.data.api.TmdbMovieDetailDto
 import com.example.data.api.TmdbMovieDto
 import com.example.data.api.TmdbPaginatedResponse
@@ -24,6 +25,9 @@ object MediaCacheMapper {
 
   private val seasonDetailAdapter: JsonAdapter<TmdbSeasonDetailDto> =
     TmdbApiClient.moshi.adapter(TmdbSeasonDetailDto::class.java)
+
+  private val collectionDetailAdapter: JsonAdapter<TmdbCollectionDetailDto> =
+    TmdbApiClient.moshi.adapter(TmdbCollectionDetailDto::class.java)
 
   private val movieResponseType = Types.newParameterizedType(
     TmdbPaginatedResponse::class.java,
@@ -94,6 +98,18 @@ object MediaCacheMapper {
   fun deserializeSeasonDetail(json: String): TmdbSeasonDetailDto? {
     return try {
       seasonDetailAdapter.fromJson(json)
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  fun serializeCollectionDetail(dto: TmdbCollectionDetailDto): String {
+    return collectionDetailAdapter.toJson(dto)
+  }
+
+  fun deserializeCollectionDetail(json: String): TmdbCollectionDetailDto? {
+    return try {
+      collectionDetailAdapter.fromJson(json)
     } catch (_: Exception) {
       null
     }

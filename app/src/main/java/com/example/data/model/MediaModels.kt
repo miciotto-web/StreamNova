@@ -302,6 +302,16 @@ data class ProductionCompany(
   val originCountry: String? = null
 )
 
+/**
+ * Collezione/franchise TMDB a cui appartiene un film (`belongs_to_collection`,
+ * es. «Harry Potter Collection»). Solo i film TMDB hanno collezioni: per le
+ * serie TV il campo resta `null` e la sezione dedicata non viene mostrata.
+ */
+data class CollectionInfo(
+  val id: Int,
+  val name: String
+)
+
 data class PersonDetails(
   val id: Int,
   val name: String,
@@ -371,7 +381,18 @@ data class ExtendedMediaDetails(
    */
   val originCountry: String? = null,
   /** Prossima puntata annunciata da TMDB (`next_episode_to_air`), `null` se assente. */
-  val nextEpisode: NextEpisodeInfo? = null
+  val nextEpisode: NextEpisodeInfo? = null,
+  /**
+   * Collezione/franchise TMDB del titolo (solo film). `null` = TMDB non associa
+   * il titolo a nessuna collezione: la sezione «Franchise - Collezione» non
+   * viene mostrata.
+   */
+  val collection: CollectionInfo? = null,
+  /**
+   * Titoli della stessa collezione di [collection] (`collection/{id}` → `parts`),
+   * ordinati per data di uscita. Vuoto o [collection] null = sezione nascosta.
+   */
+  val collectionItems: List<MediaItem> = emptyList()
 )
 
 sealed interface MediaDetailUiState {
