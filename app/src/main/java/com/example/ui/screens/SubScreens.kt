@@ -91,6 +91,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.runtime.setValue
@@ -299,7 +300,12 @@ fun CategoryBrowsingScreen(
   onLoadMore: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
-  var selectedFilter by remember { mutableStateOf(CategoryCatalogFilter.ALL) }
+  // Filtro provider selezionato. `rememberSaveable` come l'ordinamento: la scelta deve
+  // sopravvivere al ritorno dal Dettaglio e al passaggio a un'altra sezione. Con il vecchio
+  // `remember` il filtro tornava a «Tutti» mentre il badge di ordinamento restava: al rientro
+  // il catalogo cambiava e le card (compresa quella ripristinata) finivano in posizioni
+  // diverse, anche se l'ordinamento scelto era lo stesso.
+  var selectedFilter by rememberSaveable { mutableStateOf(CategoryCatalogFilter.ALL) }
   // Ordinamento dei badge in alto. `rememberSaveable`: la scelta deve sopravvivere al ritorno
   // dal Dettaglio (la schermata viene smontata/rimontata) e restare coerente con la posizione
   // della card ripristinata.
@@ -308,6 +314,22 @@ fun CategoryBrowsingScreen(
   // griglia ritrova la stessa posizione (come la griglia Provider), quindi la card ripristinata
   // resta nella riga e nella posizione visiva da cui si era entrati.
   val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+
+  // Navigazione verticale ESPLICITA della griglia (stesso protocollo della Ricerca): le
+  // pressioni RAPIDE del D-pad non possono più perdere la COLONNA. Con la sola focus search
+  // nativa, quando la riga successiva non è ancora composta, il focus atterrava sulla prima
+  // cella della riga nuova (es. colonna 4 -> colonna 1): il catalogo sembrava rimescolarsi.
+  val categoryFocusScope = rememberCoroutineScope()
+  val categoryGridRowSpacingPx = with(LocalDensity.current) { 16.dp.toPx() }
+  // Card REALMENTE focalizzata, espressa con la STESSA key del LazyVerticalGrid (id del
+  // contenuto): la cella di destinazione viene risolta sulla lista corrente, quindi un
+  // aggiornamento del catalogo non fa atterrare il movimento sulla colonna sbagliata.
+  var focusedMediaKey by remember { mutableStateOf<String?>(null) }
+  // Ancora della navigazione verticale: con pressioni RAPIDE il focus può non essere
+  // ancora arrivato quando parte il tasto successivo. L'ancora viene spostata SUBITO sulla
+  // destinazione richiesta, così cinque Giù consecutivi scendono di cinque righe invece di
+  // ripetere la stessa destinazione o di farsi riprendere dalla focus search nativa.
+  var verticalAnchorKey by remember { mutableStateOf<String?>(null) }
 
   // Stato di ripristino del focus al ritorno dal Dettaglio: il target è la coppia
   // (FOCUS_ROW_ANY, mediaId) salvata al click (griglia = superficie unica di focus), il token
@@ -424,10 +446,51 @@ fun CategoryBrowsingScreen(
     }
   }
 
-  // Ordine MOSTRATO: il filtro decide QUALI schede, il badge decide IN CHE ORDINE.
-  // L'ordinamento è ricalcolato solo quando cambia la lista filtrata o il badge scelto.
-  val sortedItems = remember(filteredItems, selectedSort) {
-    sortCategoryItems(filteredItems, selectedSort)
+  // Ordine VISUALE CONGELATO della selezione corrente (filtro + ordinamento).
+  //
+  // Perché non basta `sortCategoryItems` a ogni ricalcolo: anno e voto delle schede
+  // arrivano anche DOPO la prima composizione (dettagli TMDB persistiti) e le pagine
+  // successive si accodano al catalogo. Riordinare l'intera lista a ogni arrivo ricolloca
+  // le card già a schermo sotto il focus: è il difetto «le card si mescolano mentre
+  // scorro». L'ordine viene quindi deciso UNA VOLTA, quando l'utente sceglie il badge o
+  // cambia filtro; le novità si accodano (ordinate tra loro) senza spostare le card già
+  // presenti. La chiave di selezione è parte della memoria: POPOLARI/RECENTI/PER VALUTAZIONE
+  // e ogni filtro hanno il proprio ordine congelato.
+  //
+  // Entrambe le memorie sono Saveable: al BACK dal Dettaglio (e al rientro nella sezione)
+  // filtro, badge e posizione delle card restano esattamente quelli lasciati.
+  var frozenDisplaySelection by rememberSaveable { mutableStateOf("") }
+  val frozenDisplayOrder = rememberSaveable(
+    saver = listSaver<MutableList<String>, String>(
+      save = { order -> order.toList() },
+      restore = { saved -> saved.toMutableList() }
+    )
+  ) { mutableListOf<String>() }
+
+  val sortedItems = remember(filteredItems, selectedSort, selectedFilter) {
+    val selectionKey = "${selectedFilter.name}|${selectedSort.name}"
+    if (frozenDisplaySelection != selectionKey) {
+      // Selezione ESPLICITA (badge o filtro): è l'unico momento in cui il riordino
+      // dell'intera lista è quello atteso.
+      frozenDisplaySelection = selectionKey
+      frozenDisplayOrder.clear()
+    }
+    // Le schede già mostrate restano nella posizione congelata; quelle nuove (pagine
+    // successive) vengono ordinate tra loro e accodate.
+    val pendingById = linkedMapOf<String, MediaItem>()
+    filteredItems.forEach { item ->
+      if (!pendingById.containsKey(item.id)) pendingById[item.id] = item
+    }
+    val result = ArrayList<MediaItem>(pendingById.size)
+    for (id in frozenDisplayOrder) {
+      pendingById.remove(id)?.let { result.add(it) }
+    }
+    val newItems = sortCategoryItems(pendingById.values.toList(), selectedSort)
+    for (item in newItems) {
+      frozenDisplayOrder.add(item.id)
+      result.add(item)
+    }
+    result
   }
 
   // Richieste di focus per IDENTITÀ di cella: il ripristino dal Dettaglio deve atterrare sulla
@@ -678,6 +741,23 @@ fun CategoryBrowsingScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier
           .fillMaxSize()
+          // Su/Giù ESPLICITI: mantengono la COLONNA corrente anche quando la riga
+          // successiva non è ancora composta. È il fix delle pressioni rapide del D-pad
+          // (colonna 4 -> colonna 1, card che sembravano rimescolarsi). Dalla prima riga
+          // il Su non ha una destinazione verticale e il tasto prosegue verso i filtri.
+          .onPreviewKeyEvent { event ->
+            moveGridFocusVertically(
+              event = event,
+              grid = gridState,
+              items = sortedItems,
+              keyOf = { it.id },
+              focusedKey = verticalAnchorKey ?: focusedMediaKey,
+              requesterOf = { cellFocusRequester(it.id) },
+              scope = categoryFocusScope,
+              rowSpacingPx = categoryGridRowSpacingPx,
+              onTargetResolved = { verticalAnchorKey = it.id }
+            )
+          }
           // Tracking del focus nella griglia (hasFocus include le card): è la condizione
           // del BackHandler «BACK → badge di ordinamento scelto».
           .onFocusChanged { gridHasFocus = it.hasFocus }
@@ -702,6 +782,14 @@ fun CategoryBrowsingScreen(
               onClick = {
                 viewModel?.saveLastFocusedMedia(FOCUS_ROW_ANY, item.id)
                 onMediaClick(item)
+              },
+              // Identità della card che ha REALMENTE il focus: è l'ancora della navigazione
+              // verticale esplicita (riga/colonna calcolate sulla lista corrente).
+              modifier = Modifier.onFocusChanged { state ->
+                if (state.isFocused) {
+                  focusedMediaKey = item.id
+                  verticalAnchorKey = item.id
+                }
               },
               // Il requester DELLA CARD SELZIONATA vive sul nodo FOCALIZZABILE della card
               // (come ProviderScreen): una richiesta via `focusRequester` attaccato a una Box
@@ -1395,6 +1483,93 @@ internal fun LazyGridState.exactColumnCount(): Int? {
   return visible.filter { it.row == 0 }.maxOfOrNull { it.column + 1 }
 }
 
+/**
+ * Navigazione verticale ESPLICITA delle griglie di poster (Ricerca, Film, Serie TV).
+ *
+ * Il focus system di Compose, quando la riga successiva non è ancora composta (viewport TV
+ * alto quanto una riga), scorre la griglia e consegna il focus alla PRIMA cella composta
+ * della nuova riga: con la terza card selezionata il Giù "tornava" alla prima colonna. Con
+ * pressioni RAPIDE il difetto è ancora più evidente: la colonna di partenza viene persa e
+ * l'intero catalogo sembra rimescolarsi. Qui la cella di destinazione è calcolata dalla
+ * riga/colonna REALI del layout (colonna preservata, in una riga più corta si sceglie la
+ * colonna valida più vicina), la riga viene portata in composizione e solo allora si chiede
+ * il focus a QUELLA card.
+ *
+ * @return `true` se il tasto è stato gestito (e consumato); `false` quando non esiste una
+ *   destinazione verticale valida: in quel caso decide il focus system (es. Su dalla prima
+ *   riga verso la riga dei filtri).
+ */
+internal fun moveGridFocusVertically(
+  event: androidx.compose.ui.input.key.KeyEvent,
+  grid: LazyGridState,
+  items: List<MediaItem>,
+  keyOf: (MediaItem) -> String,
+  focusedKey: String?,
+  requesterOf: (MediaItem) -> FocusRequester,
+  scope: CoroutineScope,
+  rowSpacingPx: Float,
+  /**
+   * Invocata SINCRONAMENTE con la card di destinazione, prima che il focus arrivi. Il
+   * chiamante la usa per spostare la propria ancora: con pressioni RAPIDE (più tasti prima
+   * che il frame consegni il focus) la mossa successiva parte dalla destinazione già
+   * richiesta, non dalla card vecchia, quindi il movimento resta cumulativo e sulla stessa
+   * colonna.
+   */
+  onTargetResolved: (MediaItem) -> Unit = {}
+): Boolean {
+  if (event.type != KeyEventType.KeyDown) return false
+  val direction = when (event.key) {
+    Key.DirectionDown -> SearchGridVerticalDirection.DOWN
+    Key.DirectionUp -> SearchGridVerticalDirection.UP
+    else -> return false
+  }
+  val currentIndex = items.indexOfFirst { keyOf(it) == focusedKey }
+  if (currentIndex < 0) return false
+  val visible = grid.layoutInfo.visibleItemsInfo
+  val columns = grid.exactColumnCount() ?: return false
+  // Riga/colonna ricavabili anche quando la card ancora non è composta (pressione rapida
+  // arrivata prima del frame di scroll): con una griglia a righe piene l'indice basta.
+  val currentInfo = visible.firstOrNull { it.index == currentIndex }
+  val currentRow = currentInfo?.row ?: (currentIndex / columns)
+  val currentColumn = currentInfo?.column ?: (currentIndex % columns)
+  if (currentColumn >= columns) return false
+  val targetIndex = searchGridVerticalTargetIndex(
+    currentRow = currentRow,
+    currentColumn = currentColumn,
+    itemCount = items.size,
+    columns = columns,
+    direction = direction
+  ) ?: return false
+  val targetItem = items[targetIndex]
+  onTargetResolved(targetItem)
+  val targetRequester = requesterOf(targetItem)
+  scope.launch {
+    if (grid.layoutInfo.visibleItemsInfo.none { it.index == targetIndex }) {
+      // La riga di destinazione non è composta. Si scorre ESATTAMENTE della distanza in
+      // righe necessaria a portarla nella stessa posizione visiva della riga corrente
+      // (una riga intera per un movimento normale, N righe per una raffica di Giù): così
+      // il nodo viene composto e il bring-into-view condiviso può centrarlo come per il
+      // movimento nativo. Una mezza riga non basta quando più pressioni arrivano prima del
+      // frame di scroll: la destinazione resterebbe fuori composizione e il focus non
+      // verrebbe consegnato.
+      val rowHeight: Float = (currentInfo?.size?.height
+        ?: grid.layoutInfo.visibleItemsInfo.firstOrNull()?.size?.height
+        ?: 0).toFloat()
+      if (rowHeight > 0f) {
+        val targetRow = targetIndex / columns
+        val delta = (targetRow - currentRow) * (rowHeight + rowSpacingPx)
+        try {
+          grid.scrollBy(delta)
+        } catch (_: Exception) {
+          // La richiesta di focus sotto attende comunque il montaggio della card.
+        }
+      }
+    }
+    requestFocusWhenAttached(targetRequester, maxAttempts = 8)
+  }
+  return true
+}
+
 @OptIn(ExperimentalLayoutApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun SearchScreen(  viewModel: StreamNovaViewModel,
@@ -1631,66 +1806,6 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
       },
       maxAttempts = 5
     )
-  }
-
-  /**
-   * Navigazione verticale ESPLICITA delle griglie della Ricerca.
-   *
-   * Il focus system di Compose, quando la riga successiva non è ancora composta (viewport TV
-   * alto quanto una riga), scorre la griglia e consegna il focus alla PRIMA cella composta
-   * della nuova riga: con la terza card selezionata il Giù "tornava" alla prima colonna. Qui
-   * la cella di destinazione è calcolata dalla riga/colonna REALI del layout (colonna
-   * preservata, in una riga più corta si sceglie la colonna valida più vicina), la riga viene
-   * portata in composizione e solo allora si chiede il focus a QUELLA card.
-   *
-   * @return `true` se il tasto è stato gestito (e consumato); `false` quando non esiste una
-   *   destinazione verticale valida: in quel caso decide il focus system (es. Su dalla prima
-   *   riga verso la riga dei filtri).
-   */
-  fun moveGridFocusVertically(
-    event: androidx.compose.ui.input.key.KeyEvent,
-    grid: LazyGridState,
-    items: List<MediaItem>,
-    keyOf: (MediaItem) -> String,
-    focusedKey: String?,
-    requesterOf: (MediaItem) -> FocusRequester
-  ): Boolean {
-    if (event.type != KeyEventType.KeyDown) return false
-    val direction = when (event.key) {
-      Key.DirectionDown -> SearchGridVerticalDirection.DOWN
-      Key.DirectionUp -> SearchGridVerticalDirection.UP
-      else -> return false
-    }
-    val currentIndex = items.indexOfFirst { keyOf(it) == focusedKey }
-    if (currentIndex < 0) return false
-    val current = grid.layoutInfo.visibleItemsInfo.firstOrNull { it.index == currentIndex }
-      ?: return false
-    val columns = grid.exactColumnCount() ?: return false
-    val targetIndex = searchGridVerticalTargetIndex(
-      currentRow = current.row,
-      currentColumn = current.column,
-      itemCount = items.size,
-      columns = columns,
-      direction = direction
-    ) ?: return false
-    val targetRequester = requesterOf(items[targetIndex])
-    searchFocusScope.launch {
-      if (grid.layoutInfo.visibleItemsInfo.none { it.index == targetIndex }) {
-        // La riga di destinazione non è composta: la si fa ENTRARE dal bordo del viewport
-        // (mezza riga) invece di incollarla in alto con `scrollToItem`. Così resta composta
-        // insieme a quella corrente (nessun frame senza focus) e il bring-into-view
-        // condiviso può centrarla esattamente come per il movimento nativo.
-        val halfRowPx = (current.size.height + gridRowSpacingPx) / 2f
-        val delta = if (direction == SearchGridVerticalDirection.DOWN) halfRowPx else -halfRowPx
-        try {
-          grid.scrollBy(delta)
-        } catch (_: Exception) {
-          // La richiesta di focus sotto attende comunque il montaggio della card.
-        }
-      }
-      requestFocusWhenAttached(targetRequester, maxAttempts = 8)
-    }
-    return true
   }
 
   /**
@@ -2228,7 +2343,9 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                           items = displayedCategoryMedia,
                           keyOf = { searchCategoryGridItemKey(cat, it) },
                           focusedKey = focusedCategoryKey,
-                          requesterOf = { categoryResultFocusRequester(cat, it) }
+                          requesterOf = { categoryResultFocusRequester(cat, it) },
+                          scope = searchFocusScope,
+                          rowSpacingPx = gridRowSpacingPx
                         )
                       }
                   ) {
@@ -2344,7 +2461,9 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                           items = results,
                           keyOf = { searchResultGridItemKey(it) },
                           focusedKey = focusedResultKey,
-                          requesterOf = { resultFocusRequester(it.id) }
+                          requesterOf = { resultFocusRequester(it.id) },
+                          scope = searchFocusScope,
+                          rowSpacingPx = gridRowSpacingPx
                         )
                       }
                   ) {

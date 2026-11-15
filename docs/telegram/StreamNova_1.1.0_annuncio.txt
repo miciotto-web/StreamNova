@@ -1,0 +1,37 @@
+🎬 STREAMNOVA 1.1.0 È DISPONIBILE!
+
+La nuova versione porta il motore HTTP al livello successivo e chiude le correzioni TV/D-pad rimaste in coda dopo la 1.0.10.
+
+✨ NOVITÀ PRINCIPALI
+
+🌐 Nuovi provider HTTP
+• Altadefinizione: nuovo provider basato sul player vidxgo, con ricerca per IMDb ID e rinnovo automatico del token HLS durante la riproduzione.
+• StreamingCommunity: risolve i flussi tramite l'endpoint pubblico vidxgo (la pagina HTML risponde 403).
+• CB01 / CB01 Uno: domini aggiornati (cb01one.uno come canonico, con alias di fallback).
+
+⚙️ Scelta del provider
+• Provider HTTP principale: Automatico oppure un provider specifico.
+• Solo provider scelto: nessun fallback se il provider non risponde (disattivabile).
+• Provider sperimentali: spenti per default; in Automatico restano attivi solo VixSrc e Altadefinizione. Il provider scelto manualmente viene sempre eseguito.
+• Le sorgenti del provider preferito restano in cima al selettore.
+
+📺 TV e D-pad
+• Badge di ordinamento Film/Serie TV: Recenti, Per Valutazione, Popolari.
+• Griglie senza sobbalzi: LEFT/RIGHT non muovono più il catalogo in verticale.
+• Fix crash D-pad nel selettore avatar.
+
+🔧 Altri fix
+• Una scrittura OpenSubtitles in volo non può più sovrascrivere la rimozione della chiave.
+• Regole R8 per i payload vidxgo: parsing stabile anche nella release minificata.
+
+📥 COME AGGIORNARE
+• Dall'app: Impostazioni → Controlla aggiornamenti
+• Da GitHub: https://github.com/miciotto-web/StreamNova/releases/tag/v1.1.0-build.1100
+
+APK disponibili: arm64-v8a, armeabi-v7a, x86, x86_64 e Universal. Firma ufficiale StreamNova (certificato 3175a7df…), aggiornamento in place senza disinstallare.
+
+📘 In allegato: Guida Utente 1.1.0 (22 pagine), con la nuova sezione 8.1 “Provider HTTP: scelta e configurazione”.
+
+Buona visione! 🍿
+
+#StreamNova #Aggiornamento #AndroidTV #FireTV

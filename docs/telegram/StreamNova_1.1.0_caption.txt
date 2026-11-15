@@ -1,0 +1,18 @@
+🎬 StreamNova 1.1.0 è disponibile!
+
+Novità principali:
+🌐 Altadefinizione, nuovo provider HTTP con player vidxgo e rinnovo automatico del token HLS
+🔄 StreamingCommunity via vidxgo e domini CB01 aggiornati
+⚙️ Provider HTTP principale, “Solo provider scelto” e provider sperimentali
+📺 Badge di ordinamento Film/Serie TV, griglie stabili e fix D-pad avatar
+🔧 Fix OpenSubtitles e regole R8 per i nuovi payload
+
+📥 Aggiorna dall'app: Impostazioni → Controlla aggiornamenti
+oppure scarica da GitHub:
+https://github.com/miciotto-web/StreamNova/releases/tag/v1.1.0-build.1100
+
+📘 In allegato la Guida Utente 1.1.0 (22 pagine) con la nuova sezione “Provider HTTP: scelta e configurazione”.
+
+Versione 1.1.0 · build 1100 · firma ufficiale StreamNova
+
+#StreamNova #Aggiornamento #AndroidTV #FireTV
