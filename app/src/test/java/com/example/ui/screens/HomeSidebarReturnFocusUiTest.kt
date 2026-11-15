@@ -27,6 +27,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.unit.dp
@@ -223,15 +224,21 @@ class HomeSidebarReturnFocusUiTest {
   private fun focusedTopPx(): Float =
     rule.onNode(isFocused()).fetchSemanticsNode().boundsInRoot.top
 
+  /** Porta in composizione la riga contenente [title] (il catalogo può essere fuori viewport). */
+  private fun scrollHomeTo(title: String) {
+    rule.onNodeWithTag("home_content_list").performScrollToNode(hasText(title))
+    rule.waitForIdle()
+  }
+
   // ------------------------------------------------- Prove A: riga piattaforme, Netflix
 
   @Test
   fun rightDallaSidebarRiportaSulPrimoElementoDellaRigaPiattaforme() {
     renderHome()
 
-    // La riga delle piattaforme è l'ultima riga prima delle card: la si raggiunge con il D-pad.
+    // La riga delle piattaforme è raggiungibile con il D-pad risalendo: TF -> Studios -> provider.
     focusCard("TF 1")
-    pressKey(Key.DirectionUp)
+    pressKey(Key.DirectionUp, times = 2)
     assertFocusedIsProvider("Netflix")
 
     val origin = leaveHomeToSidebar()
@@ -251,7 +258,7 @@ class HomeSidebarReturnFocusUiTest {
     renderHome()
 
     focusCard("TF 1")
-    pressKey(Key.DirectionUp)
+    pressKey(Key.DirectionUp, times = 2)
     pressKey(Key.DirectionRight, times = 2)
     assertFocusedIsProvider("Disney+")
 
@@ -299,7 +306,7 @@ class HomeSidebarReturnFocusUiTest {
 
     // PROVA A — riga piattaforme nella posizione iniziale (nessuna riga sopra l'hub).
     focusCard("TF 1")
-    pressKey(Key.DirectionUp)
+    pressKey(Key.DirectionUp, times = 2)
     pressKey(Key.DirectionRight, times = 2)
     assertFocusedIsProvider("Disney+")
     val originIniziale = leaveHomeToSidebar()
@@ -320,8 +327,9 @@ class HomeSidebarReturnFocusUiTest {
     }
     rule.waitForIdle()
 
+    scrollHomeTo("TF 1")
     focusCard("TF 1")
-    pressKey(Key.DirectionUp)
+    pressKey(Key.DirectionUp, times = 2)
     pressKey(Key.DirectionRight, times = 2)
     assertFocusedIsProvider("Disney+")
 
@@ -352,8 +360,11 @@ class HomeSidebarReturnFocusUiTest {
     )
     renderHome()
 
+    // Con la riga «Studios» + «Continua a guardare» il catalogo film può restare fuori dal
+    // viewport: lo scroll porta la riga TF in composizione prima del focus.
+    scrollHomeTo("TF 1")
     focusCard("TF 1")
-    pressKey(Key.DirectionUp, times = 2)
+    pressKey(Key.DirectionUp, times = 3)
     assertFocusedCard("CW 1")
 
     val origin = leaveHomeToSidebar()

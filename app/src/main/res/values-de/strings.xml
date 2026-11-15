@@ -23,6 +23,8 @@
     <string name="category_all_tv_series">Alle TV-Serien</string>
     <string name="home_section_streaming_platforms">Streaming-Plattformen</string>
     <string name="home_badge_select_provider">Anbieter auswählen</string>
+    <string name="home_section_studios">Studios</string>
+    <string name="home_badge_studios_production">Produktionsfirmen</string>
     <string name="home_section_continue_watching">Weiterschauen</string>
     <string name="home_badge_in_progress">%d Titel fortsetzen</string>
     <string name="home_section_top_10_movies">Im Fokus: Filme</string>
@@ -52,6 +54,14 @@
     <string name="filter_drama">Drama</string>
     <string name="filter_comedy">Komödie</string>
     <string name="filter_animation">Animation</string>
+    <string name="filter_latest_movies">Neueste Filme</string>
+    <string name="filter_latest_tv">Neueste Serien</string>
+    <string name="filter_horror">Horror</string>
+    <string name="filter_fantasy">Fantasy</string>
+    <!-- Studio-Ansicht (Studios-Hub der Startseite) -->
+    <string name="studio_loading_catalog">%s-Katalog wird geladen…</string>
+    <string name="studio_loading_more">Weitere Titel von %s werden geladen…</string>
+    <string name="studio_empty_catalog">Keine Titel verfügbar für %s</string>
     <!-- Sortier-Badges für Film- / Serienkarten -->
     <string name="category_sort_recent">Neueste</string>
     <string name="category_sort_rating">Nach Bewertung</string>

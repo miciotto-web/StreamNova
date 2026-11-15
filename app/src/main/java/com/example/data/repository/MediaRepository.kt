@@ -4157,19 +4157,25 @@ object MediaRepository {
   }
 
   suspend fun fetchMoviesByCompany(
-    companyId: Int,
+    companyId: String,
     page: Int = 1,
     sortBy: String = "popularity.desc",
-    minVoteCount: Int? = null
+    minVoteCount: Int? = null,
+    withGenres: String? = null,
+    withKeywords: String? = null,
+    releaseDateLte: String? = null
   ): List<MediaItem> = withContext(Dispatchers.IO) {
     try {
       val apiKey = getEffectiveApiKey()
       val response = TmdbApiClient.service.discoverMoviesByCompany(
         apiKey = apiKey,
-        companyId = companyId.toString(),
+        companyId = companyId,
         sortBy = sortBy,
         page = page,
-        voteCountGte = minVoteCount
+        voteCountGte = minVoteCount,
+        withGenres = withGenres,
+        withKeywords = withKeywords,
+        primaryReleaseDateLte = releaseDateLte
       )
       val currentList = _mediaList.value
       response.results.map { movieToMediaItem(it, currentList) }
@@ -4180,19 +4186,25 @@ object MediaRepository {
   }
 
   suspend fun fetchTvByCompany(
-    companyId: Int,
+    companyId: String,
     page: Int = 1,
     sortBy: String = "popularity.desc",
-    minVoteCount: Int? = null
+    minVoteCount: Int? = null,
+    withGenres: String? = null,
+    withKeywords: String? = null,
+    firstAirDateLte: String? = null
   ): List<MediaItem> = withContext(Dispatchers.IO) {
     try {
       val apiKey = getEffectiveApiKey()
       val response = TmdbApiClient.service.discoverTvByCompany(
         apiKey = apiKey,
-        companyId = companyId.toString(),
+        companyId = companyId,
         sortBy = sortBy,
         page = page,
-        voteCountGte = minVoteCount
+        voteCountGte = minVoteCount,
+        withGenres = withGenres,
+        withKeywords = withKeywords,
+        firstAirDateLte = firstAirDateLte
       )
       val currentList = _mediaList.value
       response.results.map { tvToMediaItem(it, currentList) }
@@ -4209,6 +4221,86 @@ object MediaRepository {
     } catch (e: Exception) {
       Log.e("MediaRepository", "Errore getCompanyDetails($companyId): ${e.message}")
       null
+    }
+  }
+
+  /** Pagina del catalogo TMDB di UN gruppo di production companies, con metadati di paginazione. */
+  data class CompanyCatalogPage(
+    val items: List<MediaItem>,
+    val totalPages: Int,
+    val totalResults: Int
+  )
+
+  /**
+   * Pagina discover film per la scheda Studio: come [fetchMoviesByCompany] ma espone
+   * `total_pages` (l'esaurimento del catalogo non si deduce dalla cardinalità della pagina)
+   * e accetta i filtri dei badge (generi, keyword, cap data). Gli id azienda sono
+   * pipe-separated (`420|7505`): TMDB li tratta in OR.
+   */
+  suspend fun fetchCompanyMoviesPage(
+    companyIds: String,
+    page: Int = 1,
+    sortBy: String = "popularity.desc",
+    minVoteCount: Int? = null,
+    withGenres: String? = null,
+    withKeywords: String? = null,
+    releaseDateLte: String? = null
+  ): CompanyCatalogPage = withContext(Dispatchers.IO) {
+    try {
+      val apiKey = getEffectiveApiKey()
+      val response = TmdbApiClient.service.discoverMoviesByCompany(
+        apiKey = apiKey,
+        companyId = companyIds,
+        sortBy = sortBy,
+        page = page,
+        voteCountGte = minVoteCount,
+        withGenres = withGenres,
+        withKeywords = withKeywords,
+        primaryReleaseDateLte = releaseDateLte
+      )
+      val currentList = _mediaList.value
+      CompanyCatalogPage(
+        items = response.results.map { movieToMediaItem(it, currentList) },
+        totalPages = response.totalPages ?: 0,
+        totalResults = response.totalResults ?: 0
+      )
+    } catch (e: Exception) {
+      Log.e("MediaRepository", "Errore fetchCompanyMoviesPage($companyIds): ${e.message}")
+      CompanyCatalogPage(emptyList(), 0, 0)
+    }
+  }
+
+  /** Pagina discover serie TV per la scheda Studio (stesso contratto di [fetchCompanyMoviesPage]). */
+  suspend fun fetchCompanyTvPage(
+    companyIds: String,
+    page: Int = 1,
+    sortBy: String = "popularity.desc",
+    minVoteCount: Int? = null,
+    withGenres: String? = null,
+    withKeywords: String? = null,
+    firstAirDateLte: String? = null
+  ): CompanyCatalogPage = withContext(Dispatchers.IO) {
+    try {
+      val apiKey = getEffectiveApiKey()
+      val response = TmdbApiClient.service.discoverTvByCompany(
+        apiKey = apiKey,
+        companyId = companyIds,
+        sortBy = sortBy,
+        page = page,
+        voteCountGte = minVoteCount,
+        withGenres = withGenres,
+        withKeywords = withKeywords,
+        firstAirDateLte = firstAirDateLte
+      )
+      val currentList = _mediaList.value
+      CompanyCatalogPage(
+        items = response.results.map { tvToMediaItem(it, currentList) },
+        totalPages = response.totalPages ?: 0,
+        totalResults = response.totalResults ?: 0
+      )
+    } catch (e: Exception) {
+      Log.e("MediaRepository", "Errore fetchCompanyTvPage($companyIds): ${e.message}")
+      CompanyCatalogPage(emptyList(), 0, 0)
     }
   }
 

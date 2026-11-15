@@ -14,6 +14,7 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,12 +23,15 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -293,6 +297,30 @@ object StremioAddonRepository {
         }
       }
     }
+    scope.launch {
+      // Refresh dei manifest al primo avvio: gli addon aggiornano i propri cataloghi
+      // tra le versioni (Xperience aggiunge cataloghi `studio_*` senza cambiare id),
+      // e l'app deve usarli SENZA attendere che l'utente reinstalli l'addon. Silenzioso:
+      // un fallimento conserva il manifest locale e viene solo loggato.
+      //
+      // RETRY: il primo valore del DataStore può arrivare con parecchi secondi di ritardo
+      // (avvio TV lento, splash video). Il refresh deve partire appena la lista addon è
+      // disponibile — non su un singolo tentativo a orologio: si attende la lista e si
+      // riprova finché un tentativo non si conclude (lista vuota = utente senza addon).
+      runCatching { AppSettingsRepository.awaitLoaded() }
+      var attempts = 0
+      while (attempts < 8) {
+        attempts++
+        if (_addons.value.isEmpty()) {
+          withTimeoutOrNull(12_000L) {
+            _addons.first { it.isNotEmpty() }
+          }
+        }
+        val done = runCatching { refreshInstalledManifests() }.getOrDefault(false)
+        if (done) break
+        delay(5_000L)
+      }
+    }
   }
 
   // ── URL ────────────────────────────────────────────────────────────────
@@ -533,6 +561,60 @@ object StremioAddonRepository {
     localWrites = true
     _addons.value = list
     AppSettingsRepository.setInstalledAddonsJson(json)
+  }
+
+  /**
+   * Riscarica i manifest degli addon installati e persiste quelli cambiati.
+   *
+   * MOTIVAZIONE: il manifest viene salvato ALL'INSTALLAZIONE e l'addon può aggiornarlo
+   * in seguito (nuovi cataloghi o extra — es. Xperience aggiunge cataloghi `studio_*`
+   * tra le versioni senza cambiare id). Senza refresh l'app continuerebbe a usare il
+   * manifest vecchio e i NUOVI cataloghi resterebbero invisibili finché l'utente non
+   * reinstalla l'addon. Un addon NON raggiungibile conserva il manifest locale: nessuna
+   * perdita di funzionalità offline.
+   *
+   * @return `true` se ALMENO un manifest è stato aggiornato.
+   */
+  suspend fun refreshInstalledManifests(): Boolean = withContext(Dispatchers.IO) {
+    if (!localWrites) {
+      runCatching { AppSettingsRepository.awaitLoaded() }
+    }
+    val current = _addons.value
+    if (current.isEmpty()) return@withContext false
+
+    val successes = AtomicInteger(0)
+    val refreshed = coroutineScope {
+      current.map { addon ->
+        async {
+          try {
+            val fresh = fetchManifest(addon.baseUrl)
+            successes.incrementAndGet()
+            if (fresh == addon.manifest) null else addon.copy(manifest = fresh)
+          } catch (e: Exception) {
+            Log.w(TAG, "Refresh manifest ${diagAddonLabel(addon)} fallito: ${e.message}")
+            null
+          }
+        }
+      }.awaitAll()
+    }
+    // Nessun manifest scaricato: il chiamante deve poter riprovare più tardi.
+    if (successes.get() == 0) return@withContext false
+
+    val changed = current.zip(refreshed).map { (old, new) -> new ?: old }
+    if (changed == current) {
+      Log.i(TAG, "Refresh manifest addon: ${current.size} manifest già aggiornati")
+      return@withContext true
+    }
+
+    persist(changed)
+    // I cataloghi sono dati del manifest: un manifest aggiornato invalida la cache.
+    StremioCatalogEngine.clearCache()
+    Log.i(
+      TAG,
+      "Refresh manifest addon: aggiornate ${current.size - changed.count { it in current }} " +
+        "di ${current.size} installazioni"
+    )
+    true
   }
 
   private fun parse(json: String): List<InstalledAddon> = try {

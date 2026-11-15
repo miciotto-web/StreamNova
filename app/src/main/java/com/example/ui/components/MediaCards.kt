@@ -127,6 +127,19 @@ val LocalLastFocusedProviderId = compositionLocalOf<String?> { null }
 val LocalClearLastFocusedProvider = compositionLocalOf<(() -> Unit)?> { null }
 
 /**
+ * CompositionLocal del target di ripristino per le CARD STUDIO dell'hub «Studios» della Home.
+ *
+ * Canale DEDICATO (stesso motivo di [LocalLastFocusedProviderId]): le card studio
+ * (Marvel, A24, Pixar, …) non sono [com.example.data.model.MediaItem] e la scheda Studio
+ * consuma il target media al primo ingresso; condividere il canale media azzererebbe il
+ * ripristino al ritorno. Salvato al click della card, consumato quando riceve DAVVERO il focus.
+ */
+val LocalLastFocusedStudioId = compositionLocalOf<String?> { null }
+
+/** CompositionLocal per cancellare il target studio non appena la card studio riceve il focus. */
+val LocalClearLastFocusedStudio = compositionLocalOf<(() -> Unit)?> { null }
+
+/**
  * Componente neutro ed elegante per Android TV in sostituzione definitiva di qualsiasi
  * immagine placeholder generica (es. deserto). Mostra un gradiente scuro moderno, un'icona
  * stilizzata del film/play al centro e il titolo del contenuto in basso (Punto 4).

@@ -85,6 +85,20 @@ sealed class Screen(val route: String) {
       return "company/$companyId?companyName=$encodedName&logoUrl=$encodedLogo"
     }
   }
+
+  /**
+   * Scheda STUDIO dedicata (hub «Studios» della Home): catalogo TMDB del gruppo di
+   * production companies con badge filtro ([Tutti, Ultimi Film, Ultime Serie TV, Top 10,
+   * Azione, Fantascienza, Dramma, Commedia, Animazione, Horror, Fantasy]). La definizione
+   * completa ([StudioDefinition]) vive in [StudioConstants.ALL]: qui viaggia solo l'id.
+   */
+  object Studio : Screen("studio/{studioId}") {
+    const val ARG_STUDIO_ID = "studioId"
+    val arguments: List<NamedNavArgument> = listOf(
+      navArgument(ARG_STUDIO_ID) { type = NavType.StringType }
+    )
+    fun createRoute(studioId: String): String = "studio/$studioId"
+  }
 }
 
 data class DetailNavArgs(

@@ -66,6 +66,7 @@ import com.example.ui.components.HomeFocusOrigin
 import com.example.ui.components.HomeSidebarFocusLink
 import com.example.ui.components.ModalOverlayState
 import com.example.ui.components.ProviderConstants
+import com.example.ui.components.StudioConstants
 import com.example.ui.components.TvPinDialog
 import com.example.ui.components.SidebarNavigation
 import com.example.ui.components.TorBoxSourceSelectionScreen
@@ -77,6 +78,8 @@ import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.components.LocalLastFocusedProviderId
 import com.example.ui.components.LocalClearLastFocusedProvider
+import com.example.ui.components.LocalLastFocusedStudioId
+import com.example.ui.components.LocalClearLastFocusedStudio
 import com.example.ui.navigation.DetailNavArgs
 import com.example.ui.navigation.Screen
 import com.example.ui.screens.DetailScreen
@@ -88,6 +91,7 @@ import com.example.ui.screens.ProfilesOverlayHost
 import com.example.ui.screens.ProviderScreen
 import com.example.ui.screens.PersonDetailScreen
 import com.example.ui.screens.CompanyDetailScreen
+import com.example.ui.screens.StudioScreen
 import com.example.ui.screens.SyncApprovalOverlay
 import com.example.ui.screens.TrailerErrorOverlay
 import com.example.ui.screens.TrailerLoadingOverlay
@@ -275,6 +279,7 @@ fun StreamNovaApp(
   val lastFocusedMediaId by viewModel.lastFocusedMediaId.collectAsState()
   val lastFocusedTarget by viewModel.lastFocusedTarget.collectAsState()
   val lastFocusedProviderId by viewModel.lastFocusedProviderId.collectAsState()
+  val lastFocusedStudioId by viewModel.lastFocusedStudioId.collectAsState()
   val focusRestoreToken by viewModel.focusRestoreToken.collectAsState()
   val startupUpdatePrompt by viewModel.startupUpdatePrompt.collectAsState()
   val updateDownloadState by viewModel.updateDownloadState.collectAsState()
@@ -537,10 +542,11 @@ fun StreamNovaApp(
             } else if (pendingContentFocusRestore) {
               val savedTargetId = viewModel.lastFocusedMediaId.value
               val savedProviderId = viewModel.lastFocusedProviderId.value
+              val savedStudioId = viewModel.lastFocusedStudioId.value
               FocusTrace.log(
                 "HOME",
                 "pendingContentFocusRestore: plan=${contentFocusRestorePlan(savedTargetId)} " +
-                  "savedTarget=$savedTargetId provider=$savedProviderId " +
+                  "savedTarget=$savedTargetId provider=$savedProviderId studio=$savedStudioId " +
                   "focusRestoreRequested=${viewModel.focusRestoreRequested.value}"
               )
               when (contentFocusRestorePlan(savedTargetId)) {
@@ -550,13 +556,22 @@ fun StreamNovaApp(
                   pendingContentFocusRestore = false
                   viewModel.signalFocusRestore(savedTargetId!!)
                 }
-                ContentFocusRestorePlan.ANCHOR_CONTENT -> if (savedProviderId != null) {
-                  // Provenienza da una CARD PROVIDER dell'hub della Home (es. HBO Max): il
-                  // focus deve tornare su QUELLA card, non sull'Hero. Canale dedicato: il
-                  // token avanza e la Home ripristina l'hub per identità del provider.
-                  pendingContentFocusRestore = false
-                  viewModel.signalFocusRestore(savedProviderId)
-                } else {
+                ContentFocusRestorePlan.ANCHOR_CONTENT -> when {
+                  savedProviderId != null -> {
+                    // Provenienza da una CARD PROVIDER dell'hub della Home (es. HBO Max): il
+                    // focus deve tornare su QUELLA card, non sull'Hero. Canale dedicato: il
+                    // token avanza e la Home ripristina l'hub per identità del provider.
+                    pendingContentFocusRestore = false
+                    viewModel.signalFocusRestore(savedProviderId)
+                  }
+                  savedStudioId != null -> {
+                    // Provenienza da una CARD STUDIO dell'hub «Studios» (stesso schema dei
+                    // provider): il token avanza e la Home ripristina l'hub per identità
+                    // dello studio ([StreamNovaViewModel.saveLastFocusedStudio]).
+                    pendingContentFocusRestore = false
+                    viewModel.signalFocusRestore(savedStudioId)
+                  }
+                  else -> {
                   // FALLBACK: il target e' gia' stato CONSUMATO. La Home era ancora
                   // composta sotto la destinazione Dettaglio/Provider e ha rilasciato il
                   // target (l'Hero era ancora focalizzato al momento del click), quindi al
@@ -577,6 +592,7 @@ fun StreamNovaApp(
                   // La richiesta pendente viene consumata SOLO dopo che il ripristino e'
                   // stato affidato al contenuto (niente richieste consumate a vuoto).
                   pendingContentFocusRestore = false
+                  }
                 }
               }
             }
@@ -695,15 +711,21 @@ fun StreamNovaApp(
               LocalLastFocusedTarget provides lastFocusedTarget,
               LocalLastFocusedMediaId provides lastFocusedMediaId,
               LocalLastFocusedProviderId provides lastFocusedProviderId,
+              LocalLastFocusedStudioId provides lastFocusedStudioId,
               LocalFocusRestoreToken provides focusRestoreToken,
               LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() },
-              LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() }
+              LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() },
+              LocalClearLastFocusedStudio provides { viewModel.clearLastFocusedStudio() }
             ) {
               HomeScreen(
                 viewModel = viewModel,
                 onProviderClick = { provider ->
                   viewModel.openProvider(provider)
                   navController.navigate(Screen.Provider.createRoute(provider.id))
+                },
+                onStudioClick = { studio ->
+                  viewModel.saveLastFocusedStudio(studio.id)
+                  navController.navigate(Screen.Studio.createRoute(studio.id))
                 },
                 sidebarFocusLink = homeSidebarFocusLink,
                 onMediaClick = { media ->
@@ -1042,6 +1064,31 @@ targetCompanyId = lastFocusedCompanyId,
           logoUrl = logoUrl.takeIf { it.isNotBlank() },
           viewModel = viewModel,
           onBackClick = {
+            navController.popBackStack()
+          },
+          onMediaClick = { media ->
+            viewModel.saveLastFocusedMedia(media.id)
+            viewModel.openDetail(media)
+            val tmdbId = media.tmdbId ?: 0
+            navController.navigate(Screen.Detail.createRoute(media.type, tmdbId))
+          }
+        )
+      }
+
+      composable(
+        route = Screen.Studio.route,
+        arguments = Screen.Studio.arguments
+      ) { backStackEntry ->
+        val studioId = backStackEntry.arguments?.getString(Screen.Studio.ARG_STUDIO_ID)
+        val studio = StudioConstants.byId(studioId) ?: StudioConstants.MARVEL
+
+        StudioScreen(
+          studio = studio,
+          viewModel = viewModel,
+          onBackClick = {
+            // Rientro alla Home: il CONTENUTO deve riprendere il focus sulla card studio di
+            // origine (canale dedicato [saveLastFocusedStudio]), non sulla sidebar.
+            pendingContentFocusRestore = true
             navController.popBackStack()
           },
           onMediaClick = { media ->

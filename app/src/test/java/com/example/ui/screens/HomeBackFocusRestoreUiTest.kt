@@ -452,7 +452,8 @@ class HomeBackFocusRestoreUiTest {
     )
     focusCard("HERO 1")
     waitForFocusedCard("HERO 1", 2099)
-    pressKey(Key.DirectionDown, times = 2)
+    // Hero -> provider -> Studios -> riga addon: la riga «Studios» è statica sotto i provider.
+    pressKey(Key.DirectionDown, times = 3)
     rule.waitUntil(timeoutMillis = 5_000) { focusedTexts().any { it.startsWith("AX ") } }
     pressKey(Key.DirectionRight, times = 5)
     waitForFocusedCard("AX 6", 2100)

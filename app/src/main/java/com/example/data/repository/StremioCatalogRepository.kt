@@ -2454,6 +2454,231 @@ object StremioCatalogRepository {
     deduplicateItems(results)
   }
 
+  // ================================================================
+  // Cataloghi STUDIO (hub «Studios» della Home)
+  //
+  // L'addon utente (es. Xperience) espone cataloghi dedicati alle case di
+  // produzione (`studio_<brand>_movies` / `_series`, più le varianti `latest`
+  // e `toprated` per i FILM). La scheda Studio li usa come SORGENTE PRIMARIA;
+  // quando l'addon non è installato/disabilitato o non dichiara i cataloghi
+  // richiesti, la scheda ricade sul discover TMDB (`with_companies`) gestito
+  // dal ViewModel. Nessun catalogo viene inventato: si cerca solo tra i
+  // manifest degli addon ATTIVI (addon disabilitato → nessun target).
+  // ================================================================
+
+  /** Cataloghi addon che alimentano la scheda di UN studio. */
+  data class StudioAddonCatalogSet(
+    val movies: String? = null,
+    val series: String? = null,
+    val latestMovies: String? = null,
+    val topratedMovies: String? = null
+  )
+
+  /** Tipo di interrogazione della scheda Studio verso l'addon. */
+  enum class StudioAddonQuery { NONE, FULL, LATEST_MOVIES, TOP_RATED }
+
+  /**
+   * Mappa studio → cataloghi dichiarati dall'addon. Le chiavi sono gli id di
+   * [StudioDefinition] (hub «Studios», lista statica): nessun tipo UI, solo il
+   * contratto sugli id di catalogo esposti dal manifest dell'addon.
+   */
+  private val studioAddonCatalogs = mapOf(
+    "marvel" to StudioAddonCatalogSet(
+      movies = "studio_marvel_movies",
+      series = "studio_marvel_series",
+      topratedMovies = "studio_marvel_toprated_movies"
+    ),
+    "dc" to StudioAddonCatalogSet(
+      movies = "studio_dc_movies",
+      series = "studio_dc_series",
+      topratedMovies = "studio_dc_toprated_movies"
+    ),
+    "a24" to StudioAddonCatalogSet(
+      movies = "studio_a24_movies",
+      series = "studio_a24_series"
+    ),
+    "pixar" to StudioAddonCatalogSet(
+      movies = "studio_pixar_movies",
+      series = "studio_pixar_series"
+    ),
+    "disney" to StudioAddonCatalogSet(
+      movies = "studio_disney_animated_movies",
+      series = "studio_disney_animated_series",
+      latestMovies = "studio_disney_animated_latest_movies",
+      topratedMovies = "studio_disney_animated_toprated_movies"
+    ),
+    "dreamworks" to StudioAddonCatalogSet(
+      movies = "studio_dreamworks_movies",
+      series = "studio_dreamworks_series"
+    ),
+    "illumination" to StudioAddonCatalogSet(
+      movies = "studio_illumination_movies"
+    ),
+    "legendary" to StudioAddonCatalogSet(
+      movies = "studio_legendary_movies",
+      series = "studio_legendary_series",
+      latestMovies = "studio_legendary_latest_movies",
+      topratedMovies = "studio_legendary_toprated_movies"
+    ),
+    "hbomax" to StudioAddonCatalogSet(),
+    "sony" to StudioAddonCatalogSet(
+      movies = "studio_sony_movies",
+      series = "studio_sony_series",
+      latestMovies = "studio_sony_latest_movies",
+      topratedMovies = "studio_sony_toprated_movies"
+    ),
+    "paramount" to StudioAddonCatalogSet(
+      movies = "studio_paramount_movies",
+      series = "studio_paramount_series",
+      latestMovies = "studio_paramount_latest_movies",
+      topratedMovies = "studio_paramount_toprated_movies"
+    ),
+    "twentieth_century_fox" to StudioAddonCatalogSet(
+      movies = "studio_20th_century_movies",
+      series = "studio_20th_century_series",
+      latestMovies = "studio_20th_century_latest_movies",
+      topratedMovies = "studio_20th_century_toprated_movies"
+    ),
+    "lionsgate" to StudioAddonCatalogSet(
+      movies = "studio_lionsgate_movies",
+      series = "studio_lionsgate_series"
+    ),
+    "newline" to StudioAddonCatalogSet(
+      movies = "studio_new_line_movies"
+    ),
+    "ghibli" to StudioAddonCatalogSet(
+      movies = "studio_ghibli_movies"
+    ),
+    "lucasfilm" to StudioAddonCatalogSet(
+      movies = "studio_lucasfilm_movies",
+      series = "studio_lucasfilm_series",
+      latestMovies = "studio_lucasfilm_latest_movies",
+      topratedMovies = "studio_lucasfilm_toprated_movies"
+    ),
+    "warner" to StudioAddonCatalogSet(
+      movies = "studio_warner_movies",
+      series = "studio_warner_series",
+      latestMovies = "studio_warner_latest_movies",
+      topratedMovies = "studio_warner_toprated_movies"
+    ),
+    "blumhouse" to StudioAddonCatalogSet(
+      movies = "studio_blumhouse_movies",
+      series = "studio_blumhouse_series"
+    ),
+    "universal" to StudioAddonCatalogSet(
+      movies = "studio_universal_movies",
+      series = "studio_universal_series",
+      latestMovies = "studio_universal_latest_movies",
+      topratedMovies = "studio_universal_toprated_movies"
+    )
+  )
+
+  /**
+   * Target addon REALMENTE attivi per (studio, query, tipo).
+   *
+   * Precedenza:
+   *  1. cataloghi DICHIARATI dal manifest degli addon attivi (extra/opzioni reali);
+   *  2. se il manifest installato è una SELEZIONE ridotta (l'installazione Xperience
+   *     "/home" espone solo i cataloghi scelti dall'utente) ma un addon Xperience è
+   *     attivo, si costruiscono target SINTETICI sul suo `baseUrl`: l'addon serve
+   *     comunque l'endpoint `/catalog/{type}/{id}.json` per TUTTI i cataloghi studio
+   *     (verificato: i brand assenti rispondono 200 con lista vuota).
+   *
+   * Lista vuota = l'addon non può alimentare questa combinazione (nessun addon attivo,
+   * brand non coperto dall'addon) → il chiamante ricade su TMDB.
+   */
+  fun studioAddonTargets(
+    studioId: String,
+    query: StudioAddonQuery,
+    mediaType: MediaType
+  ): List<StremioCatalogTarget> {
+    if (query == StudioAddonQuery.NONE) return emptyList()
+    val set = studioAddonCatalogs[studioId] ?: return emptyList()
+    val wanted: List<String?> = when (query) {
+      StudioAddonQuery.FULL -> listOf(
+        if (mediaType == MediaType.FILM) set.movies else set.series
+      )
+      StudioAddonQuery.LATEST_MOVIES ->
+        if (mediaType == MediaType.FILM) listOf(set.latestMovies) else emptyList()
+      StudioAddonQuery.TOP_RATED ->
+        if (mediaType == MediaType.FILM) listOf(set.topratedMovies) else emptyList()
+      StudioAddonQuery.NONE -> emptyList()
+    }
+    val wantedIds = wanted.filterNotNull().toSet()
+    if (wantedIds.isEmpty()) return emptyList()
+    val type = toStremioType(mediaType) ?: return emptyList()
+
+    // 1. Cataloghi dichiarati nel manifest dell'addon attivo (massima fedeltà).
+    val declared = StremioCatalogEngine.getAvailableCatalogs(type)
+      .filter { it.catalogId in wantedIds }
+    if (declared.isNotEmpty()) return declared
+
+    // 2. Manifest "home" ridotto: target sintetici sull'addon Xperience attivo.
+    val xperience = StremioAddonRepository.getActiveAddons()
+      .firstOrNull { StremioAddonRepository.isXperienceAddon(it) }
+      ?: return emptyList()
+    return wantedIds.map { catalogId ->
+      StremioCatalogTarget(
+        addonId = xperience.id,
+        addonName = xperience.manifest.displayTitle,
+        baseUrl = xperience.baseUrl,
+        catalog = StremioCatalogDefinition(
+          type = type,
+          id = catalogId,
+          name = catalogId,
+          // L'addon gestisce `skip` e IGNORA `genre` (filtro client-side nel ViewModel);
+          // dichiararli qui tiene l'engine e il sanitize coerenti col protocollo.
+          extraSupported = listOf("skip", "genre")
+        )
+      )
+    }
+  }
+
+  /**
+   * Pagina successiva dei cataloghi studio richiesti (UN offset `skip` per target,
+   * come i provider). L'ESAURIMENTO è dichiarato dal chiamante: la pagina deve
+   * aggiungere ALMENO UN id nuovo alla cache (copre pagina vuota, fallimento e
+   * addon che ignora `skip` restituendo duplicati).
+   */
+  suspend fun loadStudioCatalogPage(
+    studioName: String,
+    targets: List<StremioCatalogTarget>,
+    baseExtra: Map<String, String> = emptyMap()
+  ): List<MediaItem> = coroutineScope {
+    if (targets.isEmpty()) return@coroutineScope emptyList()
+    val results = targets.map { target ->
+      async {
+        try {
+          val skip = providerPaging.nextOffset(target.id)
+          val result = if (skip > 0 && target.supportsSkip) {
+            StremioCatalogEngine.paginateCatalog(
+              target = target,
+              skip = skip,
+              baseExtra = baseExtra
+            )
+          } else {
+            StremioCatalogEngine.fetchCatalog(target = target, extra = baseExtra)
+          }
+          if (!result.isSuccess) {
+            Log.w(TAG, "Catalogo studio fallito per ${target.catalogId}: ${result.errorMessage}")
+            return@async null
+          }
+          providerPaging.advance(target.id, result.items.size)
+          val fallbackType = if (target.isSeries) MediaType.SERIE_TV else MediaType.FILM
+          StremioCatalogMapper.toMediaItemList(
+            items = result.items,
+            addonName = studioName,
+            fallbackType = fallbackType
+          )
+        } catch (e: Exception) {
+          Log.w(TAG, "Errore catalogo studio ${target.catalogId}: ${e.message}")
+          null
+        }
+      }
+    }.awaitAll().filterNotNull().flatten()
+    ProviderCatalogAssembler.deduplicate(results)
+  }
+
   /** Svuota la cache in memoria. */
   fun clearCache() {
     StremioCatalogEngine.clearCache()

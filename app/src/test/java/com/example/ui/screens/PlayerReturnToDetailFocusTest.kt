@@ -37,7 +37,9 @@ import androidx.compose.ui.test.isFocusable
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.unit.dp
@@ -398,6 +400,10 @@ class PlayerReturnToDetailFocusTest {
       .fetchSemanticsNodes().isNotEmpty()
 
   private fun focusHomeCard(title: String) {
+    // La riga «Studios» ha spinto il catalogo film più in basso: la riga TF può essere fuori
+    // dal viewport al primo frame. Lo scroll della colonna Home porta la card in composizione.
+    rule.onNodeWithTag("home_content_list").performScrollToNode(hasText(title))
+    rule.waitForIdle()
     rule.onNode(
       hasAnyDescendant(hasText(title)) and hasRequestFocusAction(),
       useUnmergedTree = true

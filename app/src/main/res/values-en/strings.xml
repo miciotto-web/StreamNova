@@ -23,6 +23,8 @@
     <string name="category_all_tv_series">All TV Shows</string>
     <string name="home_section_streaming_platforms">Streaming Platforms</string>
     <string name="home_badge_select_provider">Select Provider</string>
+    <string name="home_section_studios">Studios</string>
+    <string name="home_badge_studios_production">Production Companies</string>
     <string name="home_section_continue_watching">Continue Watching</string>
     <string name="home_badge_in_progress">%d titles in progress</string>
     <string name="home_section_top_10_movies">Featured: Movies</string>
@@ -52,6 +54,14 @@
     <string name="filter_drama">Drama</string>
     <string name="filter_comedy">Comedy</string>
     <string name="filter_animation">Animation</string>
+    <string name="filter_latest_movies">Latest Movies</string>
+    <string name="filter_latest_tv">Latest TV Shows</string>
+    <string name="filter_horror">Horror</string>
+    <string name="filter_fantasy">Fantasy</string>
+    <!-- Studio sheet (Studios hub on Home) -->
+    <string name="studio_loading_catalog">Loading %s catalog…</string>
+    <string name="studio_loading_more">Loading more titles from %s…</string>
+    <string name="studio_empty_catalog">No titles available for %s</string>
     <!-- Sorting badges for Movies / TV Shows cards -->
     <string name="category_sort_recent">Recent</string>
     <string name="category_sort_rating">By Rating</string>

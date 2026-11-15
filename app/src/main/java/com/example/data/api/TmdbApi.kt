@@ -735,7 +735,13 @@ interface TmdbApiService {
     @Query("sort_by") sortBy: String = "popularity.desc",
     @Query("language") language: String = "it-IT",
     @Query("page") page: Int = 1,
-    @Query("vote_count.gte") voteCountGte: Int? = null
+    @Query("vote_count.gte") voteCountGte: Int? = null,
+    /** Filtri scheda Studio: generi TMDB (pipe OR) per film. */
+    @Query("with_genres") withGenres: String? = null,
+    /** Keyword TMDB canonica (es. 315058 "horror") quando il genere non esiste su film. */
+    @Query("with_keywords") withKeywords: String? = null,
+    /** Cap "Ultimi Film": esclude le uscite future dal sort per data. */
+    @Query("primary_release_date.lte") primaryReleaseDateLte: String? = null
   ): TmdbPaginatedResponse<TmdbMovieDto>
 
   @GET("discover/tv")
@@ -745,7 +751,13 @@ interface TmdbApiService {
     @Query("sort_by") sortBy: String = "popularity.desc",
     @Query("language") language: String = "it-IT",
     @Query("page") page: Int = 1,
-    @Query("vote_count.gte") voteCountGte: Int? = null
+    @Query("vote_count.gte") voteCountGte: Int? = null,
+    /** Filtri scheda Studio: generi TMDB (pipe OR) per serie TV. */
+    @Query("with_genres") withGenres: String? = null,
+    /** Keyword TMDB canonica 315058 "horror": TMDB TV non definisce il genere Horror. */
+    @Query("with_keywords") withKeywords: String? = null,
+    /** Cap "Ultime Serie TV": esclude le uscite future dal sort per data. */
+    @Query("first_air_date.lte") firstAirDateLte: String? = null
   ): TmdbPaginatedResponse<TmdbTvDto>
 
   @GET("person/{person_id}")

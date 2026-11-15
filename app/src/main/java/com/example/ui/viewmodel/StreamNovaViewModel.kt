@@ -81,8 +81,12 @@ import com.example.domain.model.Subtitle
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.FOCUS_ROW_ANY
+import com.example.ui.components.StudioDefinition
 import java.io.File
 import java.net.SocketTimeoutException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import com.example.ui.screens.player.NextEpisodePromptUtils
 import com.example.ui.screens.player.PlayerOnlineSubtitleFile
@@ -696,6 +700,42 @@ sealed interface CompanyDetailUiState {
 }
 
 /**
+ * Filtri della scheda STUDIO (hub «Studios» della Home), nell'ordine di presentazione
+ * dei badge: [Tutti, Ultimi Film, Film, Ultime Serie TV, Serie TV, Top 10, Azione,
+ * Fantascienza, Dramma, Commedia, Animazione, Horror, Fantasy].
+ *
+ * «Ultimi Film»/«Ultime Serie TV» mostrano le NOVITÀ dello studio (sort per data di
+ * uscita); «Film»/«Serie TV» mostrano il catalogo COMPLETO dello studio per tipo
+ * (popolarità), l'uno indipendente dall'altro.
+ */
+enum class StudioCatalogFilter(val labelRes: Int) {
+  ALL(R.string.filter_all),
+  LATEST_MOVIES(R.string.filter_latest_movies),
+  FILM(R.string.filter_movies),
+  LATEST_TV(R.string.filter_latest_tv),
+  TV_SERIES(R.string.filter_tv_series),
+  TOP_10(R.string.filter_top_10),
+  ACTION(R.string.filter_action),
+  SCI_FI(R.string.filter_sci_fi),
+  DRAMA(R.string.filter_drama),
+  COMEDY(R.string.filter_comedy),
+  ANIMATION(R.string.filter_animation),
+  HORROR(R.string.filter_horror),
+  FANTASY(R.string.filter_fantasy)
+}
+
+/** Stato osservabile della griglia della scheda Studio (filtro corrente + paginazione). */
+data class StudioCatalogUiState(
+  val studioId: String = "",
+  val studioName: String = "",
+  val filter: StudioCatalogFilter = StudioCatalogFilter.ALL,
+  val items: List<MediaItem> = emptyList(),
+  val isLoading: Boolean = false,
+  /** true se esiste ancora almeno una pagina TMDB da chiedere per il filtro corrente. */
+  val hasMore: Boolean = false
+)
+
+/**
  * Pacchetto atomico e immutabile della sessione di riproduzione aperta.
  *
  * Contiene **esclusivamente** i dati del media e dell'episodio effettivamente cliccati
@@ -935,6 +975,29 @@ class StreamNovaViewModel(
     _lastFocusedProviderId.value = null
   }
 
+  /**
+   * Target di ripristino per le CARD STUDIO dell'hub «Studios» della Home (canale dedicato,
+   * stesso motivo di [saveLastFocusedProvider]): le card studio non sono [MediaItem] e la
+   * scheda Studio consuma il target media al primo ingresso. Salvato al click della card,
+   * consumato quando la card riceve DAVVERO il focus.
+   */
+  private val _lastFocusedStudioId = MutableStateFlow<String?>(null)
+  val lastFocusedStudioId: StateFlow<String?> = _lastFocusedStudioId.asStateFlow()
+
+  fun saveLastFocusedStudio(studioId: String) {
+    _lastFocusedStudioId.value = studioId
+    // Mutua esclusione col target media e col canale provider: la provenienza è UNA.
+    _lastFocusedTarget.value = null
+    _lastFocusedMediaId.value = null
+    _lastFocusedCardKey.value = null
+    _lastFocusedProviderId.value = null
+    _focusRestoreRequested.value = false
+  }
+
+  fun clearLastFocusedStudio() {
+    _lastFocusedStudioId.value = null
+  }
+
   fun signalFocusRestore(mediaId: String) {
     // La richiesta di ripristino è ESPLICITA (rientro dal Dettaglio/Player): da qui il target
     // salvato torna ad essere un protocollo attivo per la Home.
@@ -1021,13 +1084,13 @@ class StreamNovaViewModel(
         // Catalogo dello studio: popolari e più votati (film e serie) più i dati
         // anagrafici dello studio, recuperati in parallelo per non allungare l'attesa.
         val companyDtoDeferred = async { MediaRepository.fetchCompanyDetails(companyId) }
-        val moviesDeferred = async { MediaRepository.fetchMoviesByCompany(companyId) }
+        val moviesDeferred = async { MediaRepository.fetchMoviesByCompany(companyId.toString()) }
         val topRatedMoviesDeferred = async {
-          MediaRepository.fetchMoviesByCompany(companyId, sortBy = "vote_average.desc", minVoteCount = 50)
+          MediaRepository.fetchMoviesByCompany(companyId.toString(), sortBy = "vote_average.desc", minVoteCount = 50)
         }
-        val tvSeriesDeferred = async { MediaRepository.fetchTvByCompany(companyId) }
+        val tvSeriesDeferred = async { MediaRepository.fetchTvByCompany(companyId.toString()) }
         val topRatedSeriesDeferred = async {
-          MediaRepository.fetchTvByCompany(companyId, sortBy = "vote_average.desc", minVoteCount = 50)
+          MediaRepository.fetchTvByCompany(companyId.toString(), sortBy = "vote_average.desc", minVoteCount = 50)
         }
 
         val companyDto = companyDtoDeferred.await()
@@ -1054,6 +1117,411 @@ class StreamNovaViewModel(
         _companyDetailUiState.value = CompanyDetailUiState.Error(companyId, e.message ?: "Errore caricamento studio")
       }
     }
+  }
+
+  // ================================================================
+  // Scheda Studio (hub «Studios» della Home): catalogo per filtro.
+  //
+  // SORGENTE PRIMARIA: i cataloghi `studio_*` dell'addon utente attivo (es.
+  // Xperience), paginati con UN offset `skip` per target (come i provider).
+  // FALLBACK: il discover TMDB `with_companies` (+ generi/keyword/cap-data)
+  // viene usato per un TIPO solo quando l'addon non è installato/disabilitato
+  // o non dichiara i cataloghi richiesti (target vuoti). Il flusso è lo stesso
+  // delle schede Provider: prima pagina alla selezione del filtro, pagine
+  // successive al pre-raggiungimento del fondo griglia, dedup per id e ordine
+  // stabile Film -> Serie; l'esaurimento di uno stream addon è dichiarato
+  // quando una pagina NON aggiunge nessun id nuovo alla cache.
+  // ================================================================
+
+  /** Contatore pagine + flag di esaurimento per UNA coppia (studio, filtro). */
+  private data class StudioPageBook(
+    val moviePage: Int = 0,
+    val tvPage: Int = 0,
+    val movieExhausted: Boolean = false,
+    val tvExhausted: Boolean = false
+  )
+
+  private val studioCatalogCache =
+    ConcurrentHashMap<String, MutableMap<StudioCatalogFilter, List<MediaItem>>>()
+  private val studioPageBooks =
+    ConcurrentHashMap<Pair<String, StudioCatalogFilter>, StudioPageBook>()
+
+  /** UN fetch alla volta per studio: il filtro corrente vive nello stato UI, non qui. */
+  private val studioFetchJobs = ConcurrentHashMap<String, Job>()
+  private val _studioCatalogUiState = MutableStateFlow(StudioCatalogUiState())
+  val studioCatalogUiState: StateFlow<StudioCatalogUiState> = _studioCatalogUiState.asStateFlow()
+
+  /** Mostra la scheda Studio con il filtro richiesto: cache immediata, fetch solo se vuota. */
+  fun selectStudio(studio: StudioDefinition, filter: StudioCatalogFilter = StudioCatalogFilter.ALL) {
+    val current = _studioCatalogUiState.value
+    if (current.studioId == studio.id && current.filter == filter && current.items.isNotEmpty()) return
+    val cached = studioCatalogCache[studio.id]?.get(filter).orEmpty()
+    val exhausted = studioFilterExhausted(studio.id, filter)
+    _studioCatalogUiState.value = StudioCatalogUiState(
+      studioId = studio.id,
+      studioName = studio.name,
+      filter = filter,
+      items = cached,
+      isLoading = false,
+      hasMore = !exhausted
+    )
+    if (cached.isEmpty() && !exhausted) {
+      loadNextStudioPage(studio)
+    }
+  }
+
+  /** true quando NON esiste più nessuna pagina TMDB da chiedere per (studio, filtro). */
+  private fun studioFilterExhausted(studioId: String, filter: StudioCatalogFilter): Boolean {
+    val book = studioPageBooks[studioId to filter] ?: return false
+    return when (filter) {
+      StudioCatalogFilter.LATEST_MOVIES, StudioCatalogFilter.FILM -> book.movieExhausted
+      StudioCatalogFilter.LATEST_TV, StudioCatalogFilter.TV_SERIES -> book.tvExhausted
+      StudioCatalogFilter.TOP_10 -> true // selezione FINITA: 10 titoli, nessuna paginazione
+      else -> book.movieExhausted && book.tvExhausted
+    }
+  }
+
+  /** Pagina successiva del catalogo per il filtro corrente; le chiamate duplicate sono no-op. */
+  fun loadNextStudioPage(studio: StudioDefinition) {
+    val state = _studioCatalogUiState.value
+    if (state.studioId != studio.id) return
+    val filter = state.filter
+    if (studioFetchJobs[studio.id]?.isActive == true) return
+
+    studioFetchJobs[studio.id] = viewModelScope.launch(ioDispatcher) {
+      _studioCatalogUiState.update { it.copy(isLoading = true) }
+      try {
+        val bookKey = studio.id to filter
+        val book = studioPageBooks[bookKey] ?: StudioPageBook()
+        val previous = studioCatalogCache[studio.id]?.get(filter).orEmpty()
+        val previousIds = previous.mapTo(HashSet()) { it.id }
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+
+        // Il Top 10 chiede UNA pagina "più votati" per tipo; «Ultimi Film»/«Film» e
+        // «Ultime Serie TV»/«Serie TV» una sola sorgente per tipo; Tutti + generi
+        // paginano film e serie.
+        val wantMovies = when (filter) {
+          StudioCatalogFilter.LATEST_TV, StudioCatalogFilter.TV_SERIES -> false
+          StudioCatalogFilter.TOP_10 -> book.moviePage == 0
+          else -> true
+        }
+        val wantTv = when (filter) {
+          StudioCatalogFilter.LATEST_MOVIES, StudioCatalogFilter.FILM -> false
+          StudioCatalogFilter.TOP_10 -> book.tvPage == 0
+          else -> true
+        }
+
+        // SORGENTE PRIMARIA: i cataloghi `studio_*` dell'addon attivo (es. Xperience).
+        // Il TMDB Discover è il FALLBACK: si usa per un tipo solo quando l'addon non è
+        // installato/disabilitato o non dichiara i cataloghi richiesti (target vuoti).
+        // Senza addon di catalogo (prima installazione, solo Cinemeta) la sorgente è
+        // SEMPRE il TMDB Discover, che alimenta anche Cinemeta.
+        val addonQuery = when (filter) {
+          StudioCatalogFilter.LATEST_MOVIES -> StremioCatalogRepository.StudioAddonQuery.LATEST_MOVIES
+          StudioCatalogFilter.TOP_10 -> StremioCatalogRepository.StudioAddonQuery.TOP_RATED
+          StudioCatalogFilter.LATEST_TV -> StremioCatalogRepository.StudioAddonQuery.NONE // nessun "latest serie" addon
+          else -> StremioCatalogRepository.StudioAddonQuery.FULL
+        }
+        val addonMovieTargets =
+          if (wantMovies && !book.movieExhausted) {
+            StremioCatalogRepository.studioAddonTargets(studio.id, addonQuery, MediaType.FILM)
+          } else {
+            emptyList()
+          }
+        val addonTvTargets =
+          if (wantTv && !book.tvExhausted) {
+            StremioCatalogRepository.studioAddonTargets(studio.id, addonQuery, MediaType.SERIE_TV)
+          } else {
+            emptyList()
+          }
+
+        var newMovies: List<MediaItem> = emptyList()
+        var newTv: List<MediaItem> = emptyList()
+        var updatedBook = book
+        var addonMoviesFetched = false
+        var addonTvFetched = false
+
+        if (addonMovieTargets.isNotEmpty()) {
+          // Pagina ADDON film (skip per target); i generi, quando il filtro li richiede,
+          // vengono applicati dall'addon (extra `genre`) e riverificati lato client.
+          newMovies = StremioCatalogRepository.loadStudioCatalogPage(
+            studioName = studio.name,
+            targets = addonMovieTargets,
+            baseExtra = studioAddonGenreExtra(filter, isMovie = true)
+          )
+          addonMoviesFetched = true
+          if (newMovies.isEmpty()) {
+            if (previous.isEmpty()) {
+              // PRIMA pagina addon VUOTA = catalogo ASSENTE per l'addon (brand non
+              // coperto: l'endpoint risponde 200 con lista vuota). Fallback TMDB per
+              // questo tipo: l'addon è sorgente solo se HA davvero il catalogo.
+              val page = book.moviePage + 1
+              val result = fetchStudioMoviePage(studio, filter, page, today)
+              newMovies = result.items
+              updatedBook = updatedBook.copy(
+                moviePage = page,
+                movieExhausted = page >= result.totalPages || newMovies.isEmpty()
+              )
+              addonMoviesFetched = false
+            } else {
+              // Catalogo addon esaurito (le pagine precedenti avevano titoli): lo
+              // stream resta sull'addon, niente TMDB (sorgente tassativa quando attiva).
+              updatedBook = updatedBook.copy(movieExhausted = true)
+            }
+          }
+        } else if (wantMovies && !book.movieExhausted) {
+          val page = book.moviePage + 1
+          val result = fetchStudioMoviePage(studio, filter, page, today)
+          newMovies = result.items
+          updatedBook = updatedBook.copy(
+            moviePage = page,
+            movieExhausted = page >= result.totalPages || newMovies.isEmpty()
+          )
+        }
+        if (addonTvTargets.isNotEmpty()) {
+          newTv = StremioCatalogRepository.loadStudioCatalogPage(
+            studioName = studio.name,
+            targets = addonTvTargets,
+            baseExtra = studioAddonGenreExtra(filter, isMovie = false)
+          )
+          addonTvFetched = true
+          if (newTv.isEmpty()) {
+            if (previous.isEmpty()) {
+              // Come per i film: catalogo serie assente per l'addon → TMDB per il tipo.
+              val page = book.tvPage + 1
+              val result = fetchStudioTvPage(studio, filter, page, today)
+              newTv = result.items
+              updatedBook = updatedBook.copy(
+                tvPage = page,
+                tvExhausted = page >= result.totalPages || newTv.isEmpty()
+              )
+              addonTvFetched = false
+            } else {
+              updatedBook = updatedBook.copy(tvExhausted = true)
+            }
+          }
+        } else if (wantTv && !book.tvExhausted) {
+          val page = book.tvPage + 1
+          val result = fetchStudioTvPage(studio, filter, page, today)
+          newTv = result.items
+          updatedBook = updatedBook.copy(
+            tvPage = page,
+            tvExhausted = page >= result.totalPages || newTv.isEmpty()
+          )
+        }
+        if (filter == StudioCatalogFilter.TOP_10) {
+          updatedBook = updatedBook.copy(movieExhausted = true, tvExhausted = true)
+        }
+        studioPageBooks[bookKey] = updatedBook
+
+        // Ordine stabile Film -> Serie (stessa politica delle schede Provider): le pagine
+        // concorrenti dei due tipi non rimescolano le posizioni già a schermo. Il Top 10
+        // è l'eccezione: selezione per rating dei primi 10 titoli del catalogo dello studio.
+        val merged: List<MediaItem> = if (filter == StudioCatalogFilter.TOP_10) {
+          (filterAddonGenre(newMovies, filter) + filterAddonGenre(newTv, filter))
+            .sortedByDescending { it.rating }.take(10)
+        } else {
+          filterAddonGenre(newMovies, filter) + filterAddonGenre(newTv, filter)
+        }
+
+        val combined = deduplicateStudioItems(previous + merged)
+        studioCatalogCache.getOrPut(studio.id) { ConcurrentHashMap() }[filter] = combined
+
+        // Esaurimento stream ADDON: la pagina non ha aggiunto NESSUN id nuovo alla cache
+        // (pagina vuota, fallimento o addon che ignora `skip` restituendo duplicati).
+        if (addonMoviesFetched && newMovies.none { it.id !in previousIds }) {
+          studioPageBooks[bookKey] = updatedBook.copy(movieExhausted = true)
+        }
+        if (addonTvFetched && newTv.none { it.id !in previousIds }) {
+          studioPageBooks[bookKey] = updatedBook.copy(tvExhausted = true)
+        }
+
+        // Lo stato viene aggiornato SOLO se il filtro corrente è ancora quello del job:
+        // se l'utente ha cambiato filtro (o studio) mentre il fetch era in volo, i dati
+        // finiscono nella cache e il filtro NUOVO viene servito dal finally qui sotto.
+        _studioCatalogUiState.update { st ->
+          if (st.studioId != studio.id || st.filter != filter) {
+            st
+          } else {
+            st.copy(
+              items = combined,
+              isLoading = false,
+              hasMore = !studioFilterExhausted(studio.id, filter)
+            )
+          }
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "Errore caricamento catalogo studio ${studio.id}/${filter}: ${e.message}")
+        _studioCatalogUiState.update { it.copy(isLoading = false) }
+      } finally {
+        studioFetchJobs.remove(studio.id)
+        // Consegna del filtro rimasto indietro: una selectStudio arrivata MENTRE questo
+        // job era attivo non poteva avviare il proprio fetch (guard job attivo). Se il
+        // filtro corrente è diverso da quello servito e non ha ancora dati, il fetch
+        // parte SUBITO qui — nessuna selezione resta senza catalogo.
+        val pending = _studioCatalogUiState.value
+        if (pending.studioId == studio.id &&
+          pending.filter != filter &&
+          pending.items.isEmpty() &&
+          !studioFilterExhausted(studio.id, pending.filter)
+        ) {
+          loadNextStudioPage(studio)
+        }
+      }
+    }
+  }
+
+  /** true per i filtri di GENERE (Azione, Fantascienza, …): filtro applicato ai titoli addon. */
+  private fun isStudioGenreFilter(filter: StudioCatalogFilter): Boolean = when (filter) {
+    StudioCatalogFilter.ACTION,
+    StudioCatalogFilter.SCI_FI,
+    StudioCatalogFilter.DRAMA,
+    StudioCatalogFilter.COMEDY,
+    StudioCatalogFilter.ANIMATION,
+    StudioCatalogFilter.HORROR,
+    StudioCatalogFilter.FANTASY -> true
+    else -> false
+  }
+
+  /**
+   * Filtro GENERE sui titoli provenienti dall'ADDON (provider valorizzato col nome dello
+   * studio): l'addon applica l'extra `genre` solo quando lo dichiara, quindi la verifica
+   * lato client sui generi del meta è il garante uniforme. I titoli TMDB non vengono
+   * toccati: il discover `with_genres`/`with_keywords` li ha già pre-filtrati.
+   */
+  private fun filterAddonGenre(items: List<MediaItem>, filter: StudioCatalogFilter): List<MediaItem> {
+    if (!isStudioGenreFilter(filter)) return items
+    return items.filter { item ->
+      item.provider.isNullOrBlank() || matchesStudioGenre(item, filter)
+    }
+  }
+
+  private fun matchesStudioGenre(item: MediaItem, filter: StudioCatalogFilter): Boolean = when (filter) {
+    StudioCatalogFilter.ACTION -> item.genres.any { g ->
+      g.contains("Azione", true) || g.contains("Action", true) ||
+        g.contains("Avventura", true) || g.contains("Adventure", true)
+    }
+    StudioCatalogFilter.SCI_FI -> item.genres.any { g ->
+      g.contains("Fantascienza", true) || g.contains("Sci-Fi", true) ||
+        g.contains("Sci Fi", true) || g.contains("Science Fiction", true)
+    }
+    StudioCatalogFilter.DRAMA -> item.genres.any { g ->
+      g.contains("Dramma", true) || g.contains("Drama", true)
+    }
+    StudioCatalogFilter.COMEDY -> item.genres.any { g ->
+      g.contains("Commedia", true) || g.contains("Comedy", true)
+    }
+    StudioCatalogFilter.ANIMATION -> item.genres.any { g ->
+      g.contains("Animazione", true) || g.contains("Animation", true)
+    }
+    StudioCatalogFilter.HORROR -> item.genres.any { g -> g.contains("Horror", true) }
+    StudioCatalogFilter.FANTASY -> item.genres.any { g ->
+      g.contains("Fantasy", true) || g.contains("Fantastico", true)
+    }
+    else -> true
+  }
+
+  /**
+   * Extra `genre` per i cataloghi addon quando il filtro è di genere: i valori seguono
+   * le opzioni EN dichiarate dal manifest (l'engine le valida e scarta quelle non
+   * supportate dal singolo catalogo).
+   */
+  private fun studioAddonGenreExtra(filter: StudioCatalogFilter, isMovie: Boolean): Map<String, String> =
+    when (filter) {
+      StudioCatalogFilter.ACTION ->
+        mapOf("genre" to if (isMovie) "Action" else "Action & Adventure")
+      StudioCatalogFilter.SCI_FI ->
+        mapOf("genre" to if (isMovie) "Science Fiction" else "Sci-Fi & Fantasy")
+      StudioCatalogFilter.DRAMA -> mapOf("genre" to "Drama")
+      StudioCatalogFilter.COMEDY -> mapOf("genre" to "Comedy")
+      StudioCatalogFilter.ANIMATION -> mapOf("genre" to "Animation")
+      StudioCatalogFilter.HORROR -> mapOf("genre" to "Horror")
+      StudioCatalogFilter.FANTASY ->
+        mapOf("genre" to if (isMovie) "Fantasy" else "Sci-Fi & Fantasy")
+      else -> emptyMap()
+    }
+
+  /** Dedup per identità (id) preservando l'ordine: protege da ritorni TMDB sovrapposti. */
+  private fun deduplicateStudioItems(items: List<MediaItem>): List<MediaItem> {
+    val seen = HashSet<String>()
+    return items.filter { seen.add(it.id) }
+  }
+
+  /** Query FILM per il filtro richiesto: sort, soglia voti, genere e cap data di uscita. */
+  private suspend fun fetchStudioMoviePage(
+    studio: StudioDefinition,
+    filter: StudioCatalogFilter,
+    page: Int,
+    today: String
+  ): MediaRepository.CompanyCatalogPage {
+    val sortBy = when (filter) {
+      StudioCatalogFilter.LATEST_MOVIES -> "primary_release_date.desc"
+      StudioCatalogFilter.TOP_10 -> "vote_average.desc"
+      else -> "popularity.desc"
+    }
+    val minVoteCount = when (filter) {
+      StudioCatalogFilter.LATEST_MOVIES -> 5
+      StudioCatalogFilter.TOP_10 -> 50
+      else -> null
+    }
+    val withGenres = when (filter) {
+      StudioCatalogFilter.ACTION -> "28"
+      StudioCatalogFilter.SCI_FI -> "878"
+      StudioCatalogFilter.DRAMA -> "18"
+      StudioCatalogFilter.COMEDY -> "35"
+      StudioCatalogFilter.ANIMATION -> "16"
+      StudioCatalogFilter.HORROR -> "27"
+      StudioCatalogFilter.FANTASY -> "14"
+      else -> null
+    }
+    return MediaRepository.fetchCompanyMoviesPage(
+      companyIds = studio.tmdbCompanyIds,
+      page = page,
+      sortBy = sortBy,
+      minVoteCount = minVoteCount,
+      withGenres = withGenres,
+      releaseDateLte = if (filter == StudioCatalogFilter.LATEST_MOVIES) today else null
+    )
+  }
+
+  /** Query SERIE TV per il filtro richiesto (Horror via keyword canonica TMDB 315058). */
+  private suspend fun fetchStudioTvPage(
+    studio: StudioDefinition,
+    filter: StudioCatalogFilter,
+    page: Int,
+    today: String
+  ): MediaRepository.CompanyCatalogPage {
+    val sortBy = when (filter) {
+      StudioCatalogFilter.LATEST_TV -> "first_air_date.desc"
+      StudioCatalogFilter.TOP_10 -> "vote_average.desc"
+      else -> "popularity.desc"
+    }
+    val minVoteCount = when (filter) {
+      StudioCatalogFilter.LATEST_TV -> 5
+      StudioCatalogFilter.TOP_10 -> 50
+      else -> null
+    }
+    val withGenres = when (filter) {
+      StudioCatalogFilter.ACTION -> "10759" // Action & Adventure
+      StudioCatalogFilter.SCI_FI -> "10765" // Sci-Fi & Fantasy
+      StudioCatalogFilter.DRAMA -> "18"
+      StudioCatalogFilter.COMEDY -> "35"
+      StudioCatalogFilter.ANIMATION -> "16"
+      StudioCatalogFilter.FANTASY -> "10765"
+      else -> null
+    }
+    val withKeywords = if (filter == StudioCatalogFilter.HORROR) "315058" else null
+    return MediaRepository.fetchCompanyTvPage(
+      companyIds = studio.tmdbCompanyIds,
+      page = page,
+      sortBy = sortBy,
+      minVoteCount = minVoteCount,
+      withGenres = withGenres,
+      withKeywords = withKeywords,
+      firstAirDateLte = if (filter == StudioCatalogFilter.LATEST_TV) today else null
+    )
   }
 
   val detailUiState: StateFlow<MediaDetailUiState> = MediaRepository.detailUiState

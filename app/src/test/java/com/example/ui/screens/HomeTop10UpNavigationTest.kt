@@ -73,6 +73,8 @@ class HomeTop10UpNavigationTest {
     const val TOP10_PREFIX = "T10"
     const val TRENDING_PREFIX = "TF"
     const val PROVIDERS_FIRST = "Netflix"
+    // Hub «Studios»: riga STATICa inserita sotto i provider (prima card = Marvel).
+    const val STUDIOS_FIRST = "Marvel"
     const val SIDEBAR_ITEMS = 5
     const val SIDEBAR_ITEM_TAG_PREFIX = "sidebar_item_"
     val SIDEBAR_WIDTH = 60.dp
@@ -241,8 +243,9 @@ class HomeTop10UpNavigationTest {
   // ---------------------------------------------------------------- regressione
 
   /**
-   * Percorso reale del bug: Hero -> GIU' -> riga provider -> GIU' -> Top 10 Film; da qui il SU
-   * deve tornare alla riga SOPRA (provider) e il SU successivo all'Hero, mai alla sidebar.
+   * Percorso reale del bug: Hero -> GIU' -> riga provider -> GIU' -> riga Studios -> GIU' ->
+   * Top 10 Film; da qui il SU deve risalire riga per riga (Studios, provider) fino all'Hero,
+   * mai alla sidebar.
    */
   @Test
   fun heroGiuTop10FilmSuRisaleLeRigheFinoAllHero() {
@@ -255,13 +258,21 @@ class HomeTop10UpNavigationTest {
     assertFocusedLabelsContain(PROVIDERS_FIRST, "Hero --GIU'--> riga provider")
 
     pressKey(Key.DirectionDown)
-    assertFocusInsideContentColumn("riga provider --GIU'--> Top 10 Film")
-    assertFocusedLabelsContain("$TOP10_PREFIX 1", "riga provider --GIU'--> Top 10 Film")
+    assertFocusInsideContentColumn("riga provider --GIU'--> riga Studios")
+    assertFocusedLabelsContain(STUDIOS_FIRST, "riga provider --GIU'--> riga Studios")
+
+    pressKey(Key.DirectionDown)
+    assertFocusInsideContentColumn("riga Studios --GIU'--> Top 10 Film")
+    assertFocusedLabelsContain("$TOP10_PREFIX 1", "riga Studios --GIU'--> Top 10 Film")
 
     // Il bug: qui il SU saltava sulla sidebar / perdeva il focus.
     pressKey(Key.DirectionUp)
-    assertFocusInsideContentColumn("Top 10 Film --SU--> riga sopra")
-    assertFocusedLabelsContain(PROVIDERS_FIRST, "Top 10 Film --SU--> riga sopra")
+    assertFocusInsideContentColumn("Top 10 Film --SU--> riga Studios")
+    assertFocusedLabelsContain(STUDIOS_FIRST, "Top 10 Film --SU--> riga Studios")
+
+    pressKey(Key.DirectionUp)
+    assertFocusInsideContentColumn("riga Studios --SU--> riga provider")
+    assertFocusedLabelsContain(PROVIDERS_FIRST, "riga Studios --SU--> riga provider")
 
     pressKey(Key.DirectionUp)
     assertFocusInsideContentColumn("riga provider --SU--> Hero")
@@ -269,8 +280,8 @@ class HomeTop10UpNavigationTest {
   }
 
   /**
-   * Caso patologico del fascio geometrico: senza Hero la riga sopra la Top 10 è la riga provider,
-   * quindi il SU non deve comunque fuggire sulla sidebar.
+   * Caso patologico del fascio geometrico: senza Hero le righe sopra la Top 10 sono Studios e
+   * provider, quindi il SU non deve comunque fuggire sulla sidebar.
    */
   @Test
   fun top10FilmSuSenzaHeroRestaNelContenuto() {
@@ -279,11 +290,18 @@ class HomeTop10UpNavigationTest {
     assertFocusedLabelsContain(PROVIDERS_FIRST, "focus iniziale provider")
 
     pressKey(Key.DirectionDown)
-    assertFocusedLabelsContain("$TOP10_PREFIX 1", "riga provider --GIU'--> Top 10 Film")
+    assertFocusedLabelsContain(STUDIOS_FIRST, "riga provider --GIU'--> riga Studios")
+
+    pressKey(Key.DirectionDown)
+    assertFocusedLabelsContain("$TOP10_PREFIX 1", "riga Studios --GIU'--> Top 10 Film")
 
     pressKey(Key.DirectionUp)
-    assertFocusInsideContentColumn("Top 10 Film --SU--> riga sopra (senza Hero)")
-    assertFocusedLabelsContain(PROVIDERS_FIRST, "Top 10 Film --SU--> riga sopra (senza Hero)")
+    assertFocusInsideContentColumn("Top 10 Film --SU--> riga Studios (senza Hero)")
+    assertFocusedLabelsContain(STUDIOS_FIRST, "Top 10 Film --SU--> riga Studios (senza Hero)")
+
+    pressKey(Key.DirectionUp)
+    assertFocusInsideContentColumn("riga Studios --SU--> riga provider (senza Hero)")
+    assertFocusedLabelsContain(PROVIDERS_FIRST, "riga Studios --SU--> riga provider (senza Hero)")
   }
 
   /**
@@ -296,17 +314,24 @@ class HomeTop10UpNavigationTest {
     focusContent(HERO_TITLE)
     pressKey(Key.DirectionDown)
     pressKey(Key.DirectionDown)
+    pressKey(Key.DirectionDown)
     assertFocusedLabelsContain("$TOP10_PREFIX 1", "Top 10 Film card 1")
 
     pressKey(Key.DirectionRight)
     assertFocusedLabelsContain("$TOP10_PREFIX 2", "Top 10 Film card 2")
 
     pressKey(Key.DirectionUp)
-    assertFocusInsideContentColumn("Top 10 Film card 2 --SU--> riga sopra card 2")
+    assertFocusInsideContentColumn("Top 10 Film card 2 --SU--> riga Studios card 2")
+    // L'hub Studios ha una card per studio, nello stesso ordine di StudioConstants.ALL
+    // (Marvel=0, DC=1, ...): la colonna 1 (seconda card) è DC.
+    assertFocusedLabelsContain("DC", "Top 10 Film card 2 --SU--> riga Studios card 2")
+
+    pressKey(Key.DirectionUp)
+    assertFocusInsideContentColumn("riga Studios card 2 --SU--> riga provider card 2")
     // La riga provider ha una card per provider, nello stesso ordine di ProviderConstants.ALL
     // (Netflix=0, HBO Max=1, Disney+=2, ...): la colonna 1 (seconda card) è HBO Max, non Disney+
     // (che è la terza card, colonna 2).
-    assertFocusedLabelsContain("HBO Max", "Top 10 Film card 2 --SU--> riga sopra card 2")
+    assertFocusedLabelsContain("HBO Max", "riga Studios card 2 --SU--> riga provider card 2")
   }
 }
 

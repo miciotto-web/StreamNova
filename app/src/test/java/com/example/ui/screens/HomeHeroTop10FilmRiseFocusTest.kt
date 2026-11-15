@@ -76,6 +76,8 @@ class HomeHeroTop10FilmRiseFocusTest {
   private companion object {
     const val HERO_TITLE = "HERO 1"
     const val PROVIDERS_FIRST = "Netflix"
+    // Hub «Studios»: riga STATICa inserita sotto i provider (prima card = Marvel).
+    const val STUDIOS_FIRST = "Marvel"
     const val TOP10_FILM_PREFIX = "T10F"
     const val TOP10_SERIE_PREFIX = "T10S"
     const val SIDEBAR_ITEMS = 5
@@ -264,13 +266,21 @@ class HomeHeroTop10FilmRiseFocusTest {
     assertFocusInsideContentColumn("Hero --GIU'--> riga provider")
 
     pressKey(Key.DirectionDown)
-    assertFocusedLabelsContain("$TOP10_FILM_PREFIX 1", "riga provider --GIU'--> riga Top 10 Film")
-    assertFocusInsideContentColumn("riga provider --GIU'--> riga Top 10 Film")
+    assertFocusedLabelsContain(STUDIOS_FIRST, "riga provider --GIU'--> riga Studios")
+    assertFocusInsideContentColumn("riga provider --GIU'--> riga Studios")
+
+    pressKey(Key.DirectionDown)
+    assertFocusedLabelsContain("$TOP10_FILM_PREFIX 1", "riga Studios --GIU'--> riga Top 10 Film")
+    assertFocusInsideContentColumn("riga Studios --GIU'--> riga Top 10 Film")
 
     // Difetto segnalato: qui il SU abbandonava la riga Top 10 Film (sidebar o focus perso).
     pressKey(Key.DirectionUp)
-    assertFocusedLabelsContain(PROVIDERS_FIRST, "riga Top 10 Film --SU--> riga provider")
-    assertFocusInsideContentColumn("riga Top 10 Film --SU--> riga provider")
+    assertFocusedLabelsContain(STUDIOS_FIRST, "riga Top 10 Film --SU--> riga Studios")
+    assertFocusInsideContentColumn("riga Top 10 Film --SU--> riga Studios")
+
+    pressKey(Key.DirectionUp)
+    assertFocusedLabelsContain(PROVIDERS_FIRST, "riga Studios --SU--> riga provider")
+    assertFocusInsideContentColumn("riga Studios --SU--> riga provider")
 
     pressKey(Key.DirectionUp)
     assertFocusInsideContentColumn("riga provider --SU--> Hero")
@@ -278,14 +288,15 @@ class HomeHeroTop10FilmRiseFocusTest {
   }
 
   /**
-   * Variante "tornando verso l'alto" da una riga SOTTOSTANTE: la risalita attraversa la riga
-   * Top 10 Film e non deve fermarsi lì né deviare sulla sidebar.
+   * Variante "tornando verso l'alto" da una riga SOTTOSTANTE: la risalita attraversa le righe
+   * Top 10 Film e Studios e non deve fermarsi lì né deviare sulla sidebar.
    */
   @Test
   fun risalitaDallaTop10SerieAttraversaLaTop10FilmFinoAllaHero() {
     renderHome()
 
     focusContent(HERO_TITLE)
+    pressKey(Key.DirectionDown)
     pressKey(Key.DirectionDown)
     pressKey(Key.DirectionDown)
     assertFocusedLabelsContain("$TOP10_FILM_PREFIX 1", "riga Top 10 Film")
@@ -299,8 +310,12 @@ class HomeHeroTop10FilmRiseFocusTest {
     assertFocusInsideContentColumn("Top 10 Serie --SU--> Top 10 Film")
 
     pressKey(Key.DirectionUp)
-    assertFocusedLabelsContain(PROVIDERS_FIRST, "Top 10 Film --SU--> provider")
-    assertFocusInsideContentColumn("Top 10 Film --SU--> provider")
+    assertFocusedLabelsContain(STUDIOS_FIRST, "Top 10 Film --SU--> riga Studios")
+    assertFocusInsideContentColumn("Top 10 Film --SU--> riga Studios")
+
+    pressKey(Key.DirectionUp)
+    assertFocusedLabelsContain(PROVIDERS_FIRST, "riga Studios --SU--> provider")
+    assertFocusInsideContentColumn("riga Studios --SU--> provider")
 
     pressKey(Key.DirectionUp)
     assertFocusInsideContentColumn("provider --SU--> Hero")
@@ -308,20 +323,26 @@ class HomeHeroTop10FilmRiseFocusTest {
   }
 
   /**
-   * Caso patologico alla radice del difetto: la riga Top 10 Film e' focalizzata senza che la
-   * riga SOPRA (provider) sia mai stata visitata ne' composta dalla navigazione. Con la ricerca
-   * geometrica il SU non trovava alcun candidato nel contenuto e atterrava sulla sidebar.
+   * Caso patologico alla radice del difetto: la riga Top 10 Film e' focalizzata senza che le
+   * righe SOPRA (Studios, provider) siano mai state visitate ne' composte dalla navigazione.
+   * Con la ricerca geometrica il SU non trovava alcun candidato nel contenuto e atterrava sulla
+   * sidebar.
    */
   @Test
   fun suDallaTop10FilmMaiVisitataSopraRestaNelContenuto() {
     renderHome(catalogs().copy(heroItems = emptyList()))
 
-    // La riga sopra (provider) non e' mai stata raggiunta: si entra direttamente nella Top 10.
+    // Le righe sopra (Studios, provider) non sono mai state raggiunte: si entra direttamente
+    // nella Top 10.
     focusContent("$TOP10_FILM_PREFIX 1")
     assertFocusedLabelsContain("$TOP10_FILM_PREFIX 1", "ingresso diretto nella Top 10 Film")
 
     pressKey(Key.DirectionUp)
-    assertFocusedLabelsContain(PROVIDERS_FIRST, "Top 10 Film --SU--> riga provider")
-    assertFocusInsideContentColumn("Top 10 Film --SU--> riga provider")
+    assertFocusedLabelsContain(STUDIOS_FIRST, "Top 10 Film --SU--> riga Studios")
+    assertFocusInsideContentColumn("Top 10 Film --SU--> riga Studios")
+
+    pressKey(Key.DirectionUp)
+    assertFocusedLabelsContain(PROVIDERS_FIRST, "riga Studios --SU--> riga provider")
+    assertFocusInsideContentColumn("riga Studios --SU--> riga provider")
   }
 }

@@ -35,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.mapSaver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -68,6 +69,9 @@ import com.example.ui.components.HeroBanner
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.ProviderCard
+import com.example.ui.components.StudioConstants
+import com.example.ui.components.StudioCard
+import com.example.ui.components.StudioDefinition
 import com.example.ui.components.StandardMediaCard
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.Top10RankedMediaCard
@@ -95,6 +99,8 @@ import com.example.ui.components.LocalFocusRestoreToken
 import com.example.ui.components.LocalClearLastFocusedMedia
 import com.example.ui.components.LocalLastFocusedProviderId
 import com.example.ui.components.LocalClearLastFocusedProvider
+import com.example.ui.components.LocalLastFocusedStudioId
+import com.example.ui.components.LocalClearLastFocusedStudio
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.FocusRequester
@@ -124,6 +130,8 @@ import androidx.compose.runtime.withFrameNanos
 fun HomeScreen(
   viewModel: StreamNovaViewModel,
   onProviderClick: (StreamingProvider) -> Unit = {},
+  /** Click su una card dell'hub «Studios»: navigazione verso la scheda Studio dedicata. */
+  onStudioClick: (StudioDefinition) -> Unit = {},
   onMediaClick: ((MediaItem) -> Unit)? = null,
   /**
    * Ponte con la sidebar per il focus (vedi [HomeSidebarFocusLink]). MainActivity ne possiede
@@ -149,7 +157,15 @@ fun HomeScreen(
   // Dettaglio/ritorno dal Player): vedi [StreamNovaViewModel.focusRestoreRequested].
   val focusRestoreRequested by viewModel.focusRestoreRequested.collectAsState()
   val lastFocusedProviderId by viewModel.lastFocusedProviderId.collectAsState()
+  val lastFocusedStudioId by viewModel.lastFocusedStudioId.collectAsState()
   val focusRestoreToken by viewModel.focusRestoreToken.collectAsState()
+
+  // Memoria dello stato Saveable per le sezioni Film / Serie TV. Senza questo contenitore,
+  // passando da una sezione all'altra la `CategoryBrowsingScreen` esce dalla composizione e
+  // `rememberSaveable` (filtro, badge di ordinamento, posizione della griglia) riparte dai
+  // valori di default. Il contenitore conserva lo stato di OGNI sezione separatamente: al
+  // rientro l'utente ritrova le scelte fatte (e le card nella stessa posizione).
+  val categorySectionsStateHolder = rememberSaveableStateHolder()
 
   CompositionLocalProvider(
     LocalLastFocusedMediaId provides lastFocusedMediaId,
@@ -158,7 +174,9 @@ fun HomeScreen(
     LocalFocusRestoreToken provides focusRestoreToken,
     LocalClearLastFocusedMedia provides { viewModel.clearLastFocusedMedia() },
     LocalLastFocusedProviderId provides lastFocusedProviderId,
-    LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() }
+    LocalClearLastFocusedProvider provides { viewModel.clearLastFocusedProvider() },
+    LocalLastFocusedStudioId provides lastFocusedStudioId,
+    LocalClearLastFocusedStudio provides { viewModel.clearLastFocusedStudio() }
   ) {
     when (currentSection) {
     SidebarSection.HOME -> {
@@ -185,6 +203,7 @@ fun HomeScreen(
           onContinueWatchingPlayClick = { viewModel.playFromContinueWatching(it) },
           onRemoveFromContinueWatching = { viewModel.removeFromContinueWatching(it) },
           onProviderClick = onProviderClick,
+          onStudioClick = onStudioClick,
           viewModel = viewModel,
           continueWatchingPreferences = continueWatchingPreferences,
           sidebarFocusLink = sidebarFocusLink,
@@ -193,40 +212,44 @@ fun HomeScreen(
       }
     }
     SidebarSection.FILM -> {
-      val moviesItems = remember(homeCatalogs, allMedia) {
-        if (homeCatalogs.allMovies.isNotEmpty()) {
-          homeCatalogs.allMovies
-        } else {
-          allMedia.filter { it.type == MediaType.FILM }
+      categorySectionsStateHolder.SaveableStateProvider("category_film") {
+        val moviesItems = remember(homeCatalogs, allMedia) {
+          if (homeCatalogs.allMovies.isNotEmpty()) {
+            homeCatalogs.allMovies
+          } else {
+            allMedia.filter { it.type == MediaType.FILM }
+          }
         }
+        CategoryBrowsingScreen(
+          title = stringResource(R.string.category_all_movies),
+          items = moviesItems,
+          isTv = false,
+          viewModel = viewModel,
+          onMediaClick = handleMediaClick,
+          onLoadMore = { viewModel.loadNextMoviesPage() },
+          modifier = modifier
+        )
       }
-      CategoryBrowsingScreen(
-        title = stringResource(R.string.category_all_movies),
-        items = moviesItems,
-        isTv = false,
-        viewModel = viewModel,
-        onMediaClick = handleMediaClick,
-        onLoadMore = { viewModel.loadNextMoviesPage() },
-        modifier = modifier
-      )
     }
     SidebarSection.SERIE_TV -> {
-      val seriesItems = remember(homeCatalogs, allMedia) {
-        if (homeCatalogs.allSeries.isNotEmpty()) {
-          homeCatalogs.allSeries
-        } else {
-          allMedia.filter { it.type == MediaType.SERIE_TV }
+      categorySectionsStateHolder.SaveableStateProvider("category_tv") {
+        val seriesItems = remember(homeCatalogs, allMedia) {
+          if (homeCatalogs.allSeries.isNotEmpty()) {
+            homeCatalogs.allSeries
+          } else {
+            allMedia.filter { it.type == MediaType.SERIE_TV }
+          }
         }
+        CategoryBrowsingScreen(
+          title = stringResource(R.string.category_all_tv_series),
+          items = seriesItems,
+          isTv = true,
+          viewModel = viewModel,
+          onMediaClick = handleMediaClick,
+          onLoadMore = { viewModel.loadNextTvPage() },
+          modifier = modifier
+        )
       }
-      CategoryBrowsingScreen(
-        title = stringResource(R.string.category_all_tv_series),
-        items = seriesItems,
-        isTv = true,
-        viewModel = viewModel,
-        onMediaClick = handleMediaClick,
-        onLoadMore = { viewModel.loadNextTvPage() },
-        modifier = modifier
-      )
     }
     SidebarSection.I_MIEI_CONTENUTI -> {
       FavoritesScreen(
@@ -1476,6 +1499,8 @@ fun HomeMainBrowsingContent(
   onContinueWatchingPlayClick: ((MediaItem) -> Unit)? = null,
   onRemoveFromContinueWatching: (String) -> Unit,
   onProviderClick: (StreamingProvider) -> Unit = {},
+  /** Click su una card dell'hub «Studios»: navigazione verso la scheda Studio dedicata. */
+  onStudioClick: (StudioDefinition) -> Unit = {},
   viewModel: StreamNovaViewModel? = null,
   /**
    * Preferenze della sezione Impostazioni «Continua a guardare». Il default coincide con
@@ -1620,6 +1645,7 @@ fun HomeMainBrowsingContent(
       if (dynamicHeroItems.isNotEmpty()) add("hero_banner")
       if (continueWatching.isNotEmpty()) add("section_continue_watching")
       add("section_providers_hub")
+      add("section_studios_hub")
       if (!hasCustomCatalogMovies && top10Movies.isNotEmpty()) add("section_top_10_film")
       if (!hasCustomCatalogSeries && top10Series.isNotEmpty()) add("section_top_10_serie")
       if (!hasCustomCatalogMovies && trendingMovies.isNotEmpty()) add("section_trending_film")
@@ -1653,6 +1679,7 @@ fun HomeMainBrowsingContent(
       // L'Hero e' una superficie unica di focus (nessun pulsante interno).
       put("hero_banner", 1)
       put("section_providers_hub", ProviderConstants.ALL.size)
+      put("section_studios_hub", StudioConstants.ALL.size)
       put("section_continue_watching", continueWatching.size)
       put("section_top_10_film", top10Movies.size)
       put("section_top_10_serie", top10Series.size)
@@ -1691,6 +1718,8 @@ fun HomeMainBrowsingContent(
       // Hub provider: identità = id del provider (lista statica). Rende la richiesta di
       // ripristino riallineabile per contenuto, non solo per posizione.
       put("section_providers_hub", ProviderConstants.ALL.map { it.id })
+      // Hub studio: identità = id dello studio (lista statica), stesso schema del provider hub.
+      put("section_studios_hub", StudioConstants.ALL.map { it.id })
       put("section_continue_watching", continueWatching.map { it.id })
       put("section_top_10_film", top10Movies.map { it.id })
       put("section_top_10_serie", top10Series.map { it.id })
@@ -1894,6 +1923,10 @@ fun HomeMainBrowsingContent(
   // il focus deve tornare sulla card provider di origine, non sull'Hero.
   val restoreProviderId = LocalLastFocusedProviderId.current
   val clearLastFocusedProvider = LocalClearLastFocusedProvider.current
+  // Target di ripristino per le CARD STUDIO (canale dedicato): al BACK dalla scheda Studio
+  // il focus deve tornare sulla card studio di origine, non sull'Hero.
+  val restoreStudioId = LocalLastFocusedStudioId.current
+  val clearLastFocusedStudio = LocalClearLastFocusedStudio.current
 
   // Richiesta di focus sull'Hero ancora in attesa: al primo avvio della Home (e al click su
   // "Home" dalla Sidebar) i cataloghi TMDB possono non essere ancora arrivati, quindi la hero
@@ -2173,6 +2206,29 @@ fun HomeMainBrowsingContent(
     coordinator.requestPendingFocus("section_providers_hub", index)
   }
 
+  // Ripristino del focus sulla CARD STUDIO al ritorno dalla scheda Studio (canale dedicato,
+  // vedi [StreamNovaViewModel.saveLastFocusedStudio]): stesso protocollo dei provider, la
+  // colonna è risolta per IDENTITÀ dello studio (lista statica [StudioConstants.ALL]).
+  LaunchedEffect(restoreStudioId, focusRestoreToken) {
+    val studioId = restoreStudioId ?: return@LaunchedEffect
+    val index = StudioConstants.ALL.indexOfFirst { it.id == studioId }
+    if (index < 0) {
+      // Studio non più presente nell'hub: nessuna card potrebbe confermare il focus.
+      clearLastFocusedStudio?.invoke()
+      return@LaunchedEffect
+    }
+    val rowState = getRowState("section_studios_hub")
+    val isColVisible = rowState.layoutInfo.visibleItemsInfo.any { it.index == index }
+    if (!isColVisible && !rowState.isScrollInProgress) {
+      try {
+        rowState.scrollToItem(index)
+      } catch (_: Exception) {
+        // LazyRow non ancora agganciata: la posizione resta a carico della sincronizzazione.
+      }
+    }
+    coordinator.requestPendingFocus("section_studios_hub", index)
+  }
+
   // Il target provider si rilascia SOLO quando la card provider riceve DAVVERO il focus: come
   // per le card media, il rilascio avviene nell'`onFocusChanged` della card (evento reale, non
   // stato), così un click che lascia la card già focalizzata NON azzera il target prima della
@@ -2344,6 +2400,9 @@ fun HomeMainBrowsingContent(
     modifier = modifier
       .fillMaxSize()
       .background(NovaBackground)
+      // Ancora per gli harness UI (Robolectric): performScrollToNode porta in composizione
+      // una riga fuori dal viewport (es. il catalogo film dopo l'hub «Studios»).
+      .testTag("home_content_list")
       // MODALE APERTO: la Home non reagisce ad alcun tasto. Il menu contestuale vive in una
       // finestra Dialog separata, quindi normalmente i suoi tasti non arrivano qui; nei primi
       // frame di apertura, però, la finestra del dialog può non avere ancora il focus.
@@ -2602,6 +2661,47 @@ fun HomeMainBrowsingContent(
               focusRequester = coordinator.getRequester("section_providers_hub", index),
               isRestoreTarget = restoreProviderId == provider.id,
               onRestoreFocusConfirmed = { clearLastFocusedProvider?.invoke() }
+            )
+          }
+        }
+      }
+      Spacer(modifier = Modifier.height(16.dp))
+    }
+
+    // 3bis. Hub Studios (Marvel, DC, A24, Pixar, …): schede con logo ORIGINALE del brand,
+    // subito sotto l'hub dei provider come da specifica.
+    item(key = "section_studios_hub") {
+      CarouselHeader(
+        title = stringResource(R.string.home_section_studios),
+        badge = stringResource(R.string.home_badge_studios_production)
+      )
+      TvFocusRow {
+        LazyRow(
+          state = getRowState("section_studios_hub"),
+          modifier = Modifier
+            .fillMaxWidth()
+            .homeRowFocusGroup(
+              coordinator = coordinator,
+              rowKey = "section_studios_hub",
+              rowState = getRowState("section_studios_hub")
+            )
+            .height(125.dp),
+          contentPadding = PaddingValues(horizontal = 48.dp, vertical = 8.dp),
+          horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+          itemsIndexed(StudioConstants.ALL, key = { _, it -> it.id }, contentType = { _, _ -> "studio" }) { index, studio ->
+            StudioCard(
+              studio = studio,
+              onClick = {
+                // Provenienza del focus: la card STUDIO di origine. Al BACK dalla scheda il
+                // focus deve tornare QUI (canale dedicato, stesso schema dei provider).
+                viewModel?.saveLastFocusedStudio(studio.id)
+                onStudioClick(studio)
+              },
+              modifier = Modifier.rowFocusProperties(coordinator, "section_studios_hub", index),
+              focusRequester = coordinator.getRequester("section_studios_hub", index),
+              isRestoreTarget = restoreStudioId == studio.id,
+              onRestoreFocusConfirmed = { clearLastFocusedStudio?.invoke() }
             )
           }
         }
