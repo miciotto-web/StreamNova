@@ -1,3 +1,86 @@
+# StreamNova V1.2.0 — Build 1200
+
+StreamNova 1.2.0 segna il passaggio dalla fase beta alla **fase stabile**: è pubblicata come release stabile (non prerelease), con la stessa chiave di distribuzione ufficiale delle versioni precedenti. Il `versionName` passa a `1.2.0` e il `versionCode` a `1200`, così l'aggiornamento in-app viene offerto a tutte le installazioni 1.0.x e 1.1.0.
+
+## Novità principali
+
+### Hub Studios in Home
+
+- **Nuova riga «Studios»** sotto le schede dei provider: le card ufficiali di 19 case di produzione, con logo originale e gradiente del brand.
+- **Scheda Studio dedicata** con badge filtro: Tutti, Ultimi Film, Film, Ultime Serie TV, Serie TV, Top 10, Azione, Fantascienza, Dramma, Commedia, Animazione, Horror, Fantasy.
+- **Cataloghi Xperience quando l'addon è attivo**: le schede usano i cataloghi `studio_*` dell'addon, inclusi i brand non elencati nel manifest `/home` tramite target sintetici sul `baseUrl`. Senza addon, o per i brand non coperti, si usa il discover TMDB `with_companies`.
+- **Refresh dei manifest addon all'avvio** con retry: i nuovi cataloghi sono visibili senza reinstallare l'app.
+- **Filtri genere** con extra `genre` dell'addon e verifica client-side sui meta; paginazione con skip per target ed esaurimento su «nessun id nuovo».
+- **Focus TV**: BACK dalla scheda Studio torna sulla card di origine, BACK su una card della fila riporta alla prima card e il focus viene ripristinato al rientro dal player.
+
+### Priorità automatica Altadefinizione e qualità reale
+
+- **Gerarchia automatica**: Altadefinizione → VixSrc → Streaming Community → altri provider abilitati, con la risoluzione più alta **realmente riproducibile** prima (4K/UHD 2160p → 1440p/QHD → 1080p/FHD → 720p/HD; risoluzione sconosciuta mai promossa).
+- **Master HLS espansa in varianti**: Altadefinizione restituisce una sorgente per variante, ordinate per risoluzione decrescente.
+- **Verifica di riproducibilità** di manifest, playlist di variante, segmento di inizializzazione e primo segmento, in sequenza: una variante dichiarata 4K ma inaccessibile non viene scelta al posto di una 1080p funzionante.
+- **Finestra Full HD dell'auto-pick portata a 8 secondi** e correzione del blocco strutturale che teneva fermo il collector per tutta la finestra: la sorgente 1080p arrivata dopo il Fast-Start 720p viene ora processata e avviata subito.
+- **Fallback deterministico** con alternative reali su errore definitivo; la selezione manuale (dialog e provider preferito) e il motore Debrid restano invariati.
+
+### Restyling cinematografico «In evidenza»
+
+- **`FeaturedCinemaCard`**: la locandina selezionata si espande a 16:9 con immagine TMDB, gradiente inferiore, logo originale del titolo dentro la scheda, bordo e alone ciano; le altre restano verticali con riflow animato e senza perdita di focus.
+- **Slot informativo a altezza fissa** sotto la card: `GENERE · ANNO · STAGIONI · CLASSIFICAZIONE` + sinossi in italiano (max 3 righe), senza sobbalzi verticali.
+- **Numeri di classifica outline** per dilatazione con soli fill: nessuna linea interna sui glifi Roboto a contorni sovrapposti (3, 4, 6, 8, 9), ciano quando selezionati.
+- **Arricchimento al primo focus** con cache Room 12h e memo di sessione (logo, certificazione, stagioni, overview e generi localizzati); risoluzione IMDb→TMDB per le righe stock Cinemeta e fallback sul logo già presente nell'item.
+- Applicato **solo** alle due righe «In evidenza: Film» e «In evidenza: Serie TV».
+
+### Scheda Dettaglio: Franchise - Collezione
+
+- **Nuova sezione dopo «Creatore e Cast»** con il nome della collezione TMDB e i poster in formato 16:9, solo per i film (TMDB non espone collezioni per le serie).
+- **Card con logo originale del titolo**, titolo e anno, focus D-pad e click che apre il dettaglio del film.
+- **Ordinamento cronologico** per data di uscita, deduplica e filtro delle parti fantasma TMDB; cache Room della collezione con TTL 12h.
+- **Loghi corretti**: scartati gli SVG non renderizzabili da Coil, preferiti i logo-titolo wide (aspect ratio 1.8–8) in italiano e poi inglese; cache loghi bumpata a `*_logo_v2_` per non riusare URL vecchi.
+
+### Profili utente
+
+- **Avatar-immagine dei personaggi** nel selettore profilo: 39 asset a 384px in 5 categorie (Cinema Fantasy, The Simpsons, Disney, Cartoon Classic, Black Mirror).
+- **Scelta esclusiva** emoji/immagine: selezionare l'una deseleziona l'altra; il badge profilo mostra l'immagine quando presente, poi emoji o iniziale.
+- **Pannello ristrutturato** con sezioni in area scorrevole e pulsanti «Chiudi»/«Applica» sempre visibili anche su TV con poco spazio verticale.
+- **D-pad**: righe annidate avvolte in `TvFocusRow` per non bloccare lo scroll orizzontale e focus iniziale sull'avatar già scelto.
+
+### Impostazioni e note legali
+
+- **Nuova sezione «Informazioni legali»** con la riga «Disclaimer e responsabilità» che apre un pannello informativo di sola lettura.
+- Testo ufficiale con frasi in evidenza, scrolling con SU/GIU e chiusura con BACK o «Chiudi» con ripristino del focus sulla riga di apertura.
+- Stringhe localizzate in italiano, inglese, tedesco, spagnolo e francese.
+
+### Player e navigazione TV
+
+- **Ritorno automatico al Dettaglio a fine riproduzione**: film, ultima puntata di una serie ed episodi con autoplay OFF o overlay chiuso non restano più fermi sull'ultimo fotogramma. Il rientro usa la stessa via del BACK, con guardie su countdown «Prossimo Episodio», cambio episodio, ricerca sorgente autoplay, card «Nessuna fonte disponibile», sessione fallita e scrub/seek in corso.
+- **Scroll animato in discesa** nelle griglie di Cerca e categorie: il pre-scroll rivela solo la riga destinazione con la stessa curva del bring-into-view e il focus viene richiesto in parallelo, senza salti istantanei e senza perdere righe nelle raffiche di pressioni.
+
+## Versione e compatibilità
+
+- App version: `1.2.0`
+- Version code: `1200`
+- Application ID: `com.aistudio.streamnova.tvapp`
+- Artifacts: APK separati per `armeabi-v7a`, `arm64-v8a`, `x86`, `x86_64`, più l'APK universale
+- Firma: stessa chiave di distribuzione ufficiale delle release precedenti (certificato SHA-256 `3175a7df…`), aggiornamento in place senza disinstallare
+- Canale: stabile, non prerelease
+
+## Verifica
+
+- Suite unitaria completa eseguita sullo stato di questa release: **2.737 test, 0 fallimenti, 3 saltati** (i tre test di rete, saltati per progetto).
+- Compilazione Release con R8/minificazione e risorse ottimizzate: 5 APK (quattro split ABI + Universal).
+- Ogni APK è stato verificato con `apksigner` e `aapt2`: firma valida con il certificato SHA-256 `3175a7df6ea50a1be756c4a0b74c2623757128b620d28f40e678eed715fd2cd7` (la stessa chiave di distribuzione delle release precedenti), `versionName=1.2.0`, `versionCode=1200` e ABI dichiarate corrette su ogni split.
+
+### SHA-256
+
+```
+198f4b20c14ece637498e0ab8b785ae14979de62bcda1175299e80027e82dedd  StreamNova-arm64-v8a-release.apk
+6a93c06e896a8644ba9377d4532cbbac484664c82c7852f8d0db2ada98bab238  StreamNova-armeabi-v7a-release.apk
+de3c36108ceabef9cf8e4fd992f27c319bf7817b398a123cb18394ea693f7d48  StreamNova-universal-release.apk
+89b718b66314dfe5e0a3a76f4cd13fd517700d6c9836d6b3486a2c9a3e71487f  StreamNova-x86_64-release.apk
+defc31cb695235bb2b2624842a8fd68122c8657b7a96e77edd837a2ea262614f  StreamNova-x86-release.apk
+```
+
+---
+
 # StreamNova V1.1.0 — Build 1100
 
 StreamNova 1.1.0 porta il motore HTTP alla versione successiva: nuovi provider verificati, la scelta del provider principale, il rinnovo automatico dei token HLS e le correzioni TV/D-pad rimaste in coda dopo la 1.0.10. Il `versionName` cresce (`1.1.0`) e il `versionCode` passa a `1100`, così l'aggiornamento in-app viene offerto a tutte le installazioni.

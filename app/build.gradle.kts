@@ -38,14 +38,16 @@ android {
     applicationId = "com.aistudio.streamnova.tvapp"
     minSdk = 24
     targetSdk = 36
-    // Release stabile ufficiale StreamNova V1.1.0 (nuovo motore HTTP con
-    // Altadefinizione/Vidxgo, scelta del provider principale e fix TV; il
-    // versionName cresce perche' l'updater confronta SOLO major.minor.patch del
-    // tag - una 1.0.10 ricompilata non sarebbe mai offerta a chi ha gia' la
-    // 1.0.10, vedi UpdateRepository.evaluateUpdate).
+    // Release stabile ufficiale StreamNova V1.2.0 (hub Studios, priorita'
+    // automatica Altadefinizione con verifica di riproducibilita', sezione
+    // Franchise-Collezione, avatar personaggio, disclaimer legale, ritorno
+    // automatico al Dettaglio e restyling In evidenza).
+    // Il versionName cresce perche' l'updater confronta SOLO major.minor.patch
+    // del tag - una 1.1.0 ricompilata non sarebbe mai offerta a chi ha gia' la
+    // 1.1.0, vedi UpdateRepository.evaluateUpdate.
     // Ogni release successiva deve incrementare versionCode.
-    versionCode = 1100
-    versionName = "1.1.0"
+    versionCode = 1200
+    versionName = "1.2.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     // TMDB API key is never hardcoded here: it would be committed and published.
