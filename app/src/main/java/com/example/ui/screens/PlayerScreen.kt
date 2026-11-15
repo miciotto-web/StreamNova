@@ -220,6 +220,16 @@ private const val TIMELINE_SEEK_STEP_MS = 10_000L
 private const val DEFAULT_HTTP_USER_AGENT = "StreamNovaTV/1.0 (Linux; Android TV; Media3 ExoPlayer)"
 
 /**
+ * Finestra di tolleranza prima del ritorno automatico alla scheda di provenienza quando
+ * la riproduzione termina senza passaggio al prossimo episodio (fine film o fine serie).
+ *
+ * Brevissima per non lasciare il player fermo sull'ultimo fotogramma, ma sufficiente a
+ * far emergere le transizioni appena avviate (countdown del prossimo episodio, cambio
+ * episodio, ricerca sorgente) che annullano il ritorno alla ri-verifica a stato vivo.
+ */
+private const val PLAYER_END_AUTO_RETURN_GRACE_MS = 1_500L
+
+/**
  * Percentuale di visione per lo scrobble SIMKL, **`null` quando la durata non è nota**.
  *
  * `C.TIME_UNSET`/0 (`exoPlayer.duration`) è la durata *sconosciuta*, non una durata di zero:
@@ -2057,6 +2067,53 @@ fun PlayerScreen(
       // del countdown non può quindi avviare un altro episodio.
       viewModel.autoPlayNextEpisode(target)
     }
+  }
+
+  // FINE RIPRODUZIONE SENZA AVANZAMENTO → RITORNO ALLA SCHEDA DI PROVENIENZA.
+  // A STATE_ENDED il player resta altrimenti fermo sull'ultimo fotogramma finché
+  // l'utente non preme BACK. Il comportamento richiesto è il ritorno AUTOMATICO:
+  // - Film: rientro nella scheda Dettaglio del film appena riprodotto;
+  // - Serie TV: se NON si passa al prossimo episodio (nessun episodio successivo,
+  //   autoplay OFF, overlay chiuso dall'utente) rientro nella scheda Dettaglio della
+  //   serie in riproduzione.
+  // Il rientro percorre la STESSA strada del BACK (resetStreamState + closePlayer):
+  // anche la riproduzione avviata da «Continua a guardare» finisce sul Dettaglio,
+  // perché closePlayer ne differisce la chiusura aprendo proprio la scheda del
+  // contenuto appena visto.
+  //
+  // Guardie (all'ingresso e alla ri-verifica dopo la tolleranza):
+  // - countdown «Prossimo Episodio» attivo → l'avanzamento automatico è in corso e
+  //  porterà al prossimo episodio senza uscire dal player;
+  // - transizione di episodio o ricerca sorgente autoplay → non interrompere;
+  // - card «Nessuna fonte disponibile» a video → l'utente ha un'azione manuale davanti;
+  // - scrub/anteprima di seek aperta → la chiusura non deve abbatterla;
+  // - sessione fallita → la gestione errore esistente resta in carico.
+  LaunchedEffect(
+    playbackEnded,
+    isNextEpisodePromptVisible,
+    isNextEpisodeUnavailableVisible,
+    isAutoplayBlocked
+  ) {
+    if (!playbackEnded || isNextEpisodeUnavailableVisible || isAutoplayBlocked) {
+      return@LaunchedEffect
+    }
+    delay(PLAYER_END_AUTO_RETURN_GRACE_MS)
+    // Ri-verifica a stato VIVO: durante la tolleranza il countdown del prossimo
+    // episodio può essere partito oppure è arrivato un nuovo caricamento (cambio
+    // episodio/sorgente, che azzera playbackEnded): in tutti questi casi il rientro
+    // non deve scattare.
+    if (!playbackEnded) return@LaunchedEffect
+    if (nextEpisodeCountdownSeconds > 0 || isSwitchingEpisode || isAutoplayBlocked) {
+      return@LaunchedEffect
+    }
+    if (isNextEpisodeUnavailableVisible || playbackFailed) return@LaunchedEffect
+    if (isScrubbing || isSeekSettling) return@LaunchedEffect
+    Log.i(
+      "PlaybackEnd",
+      "Fine riproduzione senza passaggio al prossimo episodio: rientro automatico nella scheda di provenienza"
+    )
+    viewModel.resetStreamState()
+    viewModel.closePlayer()
   }
 
   // Fallimento terminale dell'autoplay: il focus va sull'azione "Seleziona fonte".
