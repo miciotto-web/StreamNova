@@ -441,7 +441,8 @@ private fun SidebarProfileRow(
       initial = profile.initial,
       avatar = profile.avatar,
       size = 32.dp,
-      fontSize = 14.sp
+      fontSize = 14.sp,
+      image = profile.avatarImage
     )
     AnimatedVisibility(
       visible = expanded,

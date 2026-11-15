@@ -34,6 +34,9 @@ enum class ProfileAvatar {
  *   mostra in quel caso il nome localizzato nella lingua corrente dell'app, invece del
  *   nome tecnico salvato alla creazione.
  * @param avatarEmoji emoji scelta come avatar (a tema cinema). null = iniziale del nome.
+ * @param avatarImage avatar-immagine dei personaggi (es. supereroi, Simpson). Se presente
+ *   ha la precedenza sull'emoji; i due campi sono mutuamente esclusivi per costruzione
+ *   della UI (scegliere l'uno deseleziona l'altro).
  */
 data class UserProfile(
   val id: String,
@@ -42,7 +45,8 @@ data class UserProfile(
   val isPrimary: Boolean = false,
   val createdAtEpochMs: Long = 0L,
   val hasCustomName: Boolean = true,
-  val avatarEmoji: String? = null
+  val avatarEmoji: String? = null,
+  val avatarImage: ProfileImageAvatar? = null
 ) {
   /** Iniziale mostrata nel cerchio-avatar quando non è stata scelta un'emoji. */
   val initial: String
@@ -62,6 +66,71 @@ enum class ProfileEmojiCategory {
   THRILLER,
   COMEDY,
   SCIFI
+}
+
+/** Categorie di avatar-immagine nel selettore (personaggi raggruppati per collezione). */
+enum class ProfileImageCategory {
+  CINEMA_FANTASY,
+  SIMPSONS,
+  DISNEY,
+  CARTOON_CLASSIC,
+  BLACK_MIRROR
+}
+
+/**
+ * Avatar-immagine predefiniti forniti con l'app (personaggi disegnati in stile cerchio).
+ *
+ * Il valore persistito è [storage], validato in lettura contro le voci note: un catalogo
+ * manomesso degrada senza errori all'avatar precedente (emoji o iniziale). La mappatura
+ * verso le risorse drawable vive nella UI (`ProfileAvatarBadge`), così il livello dati
+ * resta indipendente da Android.
+ */
+enum class ProfileImageAvatar(val storage: String, val category: ProfileImageCategory) {
+  SPIDERMAN("spiderman", ProfileImageCategory.CINEMA_FANTASY),
+  NAVI("navi", ProfileImageCategory.CINEMA_FANTASY),
+  TIANA("tiana", ProfileImageCategory.CINEMA_FANTASY),
+  HULK("hulk", ProfileImageCategory.CINEMA_FANTASY),
+  BLACK_PANTHER("black_panther", ProfileImageCategory.CINEMA_FANTASY),
+  SULLEY("sulley", ProfileImageCategory.CINEMA_FANTASY),
+  BB8("bb8", ProfileImageCategory.CINEMA_FANTASY),
+  MANDALORIAN("mandalorian", ProfileImageCategory.CINEMA_FANTASY),
+  HOMER("homer", ProfileImageCategory.SIMPSONS),
+  MARGE("marge", ProfileImageCategory.SIMPSONS),
+  BART("bart", ProfileImageCategory.SIMPSONS),
+  LISA("lisa", ProfileImageCategory.SIMPSONS),
+  MAGGIE("maggie", ProfileImageCategory.SIMPSONS),
+  KRUSTY("krusty", ProfileImageCategory.SIMPSONS),
+  RALPH("ralph", ProfileImageCategory.SIMPSONS),
+  HIBBERT("hibbert", ProfileImageCategory.SIMPSONS),
+  ELSA("elsa", ProfileImageCategory.DISNEY),
+  ANNA("anna", ProfileImageCategory.DISNEY),
+  OLAF("olaf", ProfileImageCategory.DISNEY),
+  YZMA("yzma", ProfileImageCategory.DISNEY),
+  RALPH_SPACCATUTTO("ralph_spaccatutto", ProfileImageCategory.DISNEY),
+  MICKEY("mickey", ProfileImageCategory.DISNEY),
+  DAISY("daisy", ProfileImageCategory.DISNEY),
+  BEAST("beast", ProfileImageCategory.DISNEY),
+  BUGS_BUNNY("bugs_bunny", ProfileImageCategory.CARTOON_CLASSIC),
+  SCOOBY_DOO("scooby_doo", ProfileImageCategory.CARTOON_CLASSIC),
+  TAZ("taz", ProfileImageCategory.CARTOON_CLASSIC),
+  MARVIN("marvin", ProfileImageCategory.CARTOON_CLASSIC),
+  DAFFY("daffy", ProfileImageCategory.CARTOON_CLASSIC),
+  FRED_FLINTSTONE("fred_flintstone", ProfileImageCategory.CARTOON_CLASSIC),
+  ROSARIO("rosario", ProfileImageCategory.CARTOON_CLASSIC),
+  TADDEO("taddeo", ProfileImageCategory.CARTOON_CLASSIC),
+  PUPPY("puppy", ProfileImageCategory.BLACK_MIRROR),
+  PIXEL_WOLF("pixel_wolf", ProfileImageCategory.BLACK_MIRROR),
+  COOKIE("cookie", ProfileImageCategory.BLACK_MIRROR),
+  CROSS("cross", ProfileImageCategory.BLACK_MIRROR),
+  DOLL("doll", ProfileImageCategory.BLACK_MIRROR),
+  MONKEY("monkey", ProfileImageCategory.BLACK_MIRROR),
+  BEAR("bear", ProfileImageCategory.BLACK_MIRROR);
+
+  companion object {
+    /** Valore persistito → voce nota; null o ignoto = nessun avatar-immagine. */
+    fun fromStorage(value: String?): ProfileImageAvatar? =
+      entries.firstOrNull { it.storage == value }
+  }
 }
 
 /**

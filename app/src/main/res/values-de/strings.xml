@@ -601,7 +601,15 @@
     <string name="profiles_create">Profil erstellen</string>
     <string name="profiles_edit_avatar">Avatar ändern</string>
     <string name="profiles_avatar_title">Profil-Avatar</string>
+    <string name="profiles_avatar_close">Schließen</string>
+    <string name="profiles_avatar_apply">Übernehmen</string>
     <string name="profiles_avatar_emoji">Emoji</string>
+    <string name="profiles_avatar_images">Charaktere</string>
+    <string name="profiles_image_category_cinema_fantasy">Cinema Fantasy</string>
+    <string name="profiles_image_category_simpsons">The Simpsons</string>
+    <string name="profiles_image_category_disney">Disney</string>
+    <string name="profiles_image_category_cartoon_classic">Cartoon Classic</string>
+    <string name="profiles_image_category_black_mirror">Black Mirror</string>
     <string name="profiles_emoji_category_cinema">Kino &amp; Serien</string>
     <string name="profiles_emoji_category_thriller">Thriller</string>
     <string name="profiles_emoji_category_comedy">Komödie</string>

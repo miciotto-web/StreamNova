@@ -32,7 +32,8 @@ class ProfileCodecTest {
           isPrimary = false,
           createdAtEpochMs = 1_700_000_000_000L,
           hasCustomName = true,
-          avatarEmoji = "🍿"
+          avatarEmoji = "🍿",
+          avatarImage = ProfileImageAvatar.SULLEY.storage
         )
       ),
       activeProfileId = "p123abc"
@@ -50,5 +51,42 @@ class ProfileCodecTest {
     assertNull(ProfileCodec.decode(null))
     assertNull(ProfileCodec.decode(""))
     assertNull(ProfileCodec.decode("{non-json"))
+  }
+
+  @Test
+  fun `toStored include l'avatar-immagine come valore di storage`() {
+    val profile = UserProfile(
+      id = "p1",
+      name = "Anna",
+      avatar = ProfileAvatar.ROSE,
+      avatarEmoji = null,
+      avatarImage = ProfileImageAvatar.TIANA
+    )
+
+    val stored = profile.toStored()
+
+    assertNull(stored.avatarEmoji)
+    assertEquals("tiana", stored.avatarImage)
+  }
+
+  @Test
+  fun `un avatar-immagine ignoto o assente degrada a null senza errori`() {
+    assertNull(ProfileImageAvatar.fromStorage(null))
+    assertNull(ProfileImageAvatar.fromStorage(""))
+    // Valore manomesso sul disco: non deve risolversi in una voce arbitraria.
+    assertNull(ProfileImageAvatar.fromStorage("non-esiste"))
+    assertEquals(ProfileImageAvatar.SPIDERMAN, ProfileImageAvatar.fromStorage("spiderman"))
+    assertEquals(ProfileImageAvatar.BEAR, ProfileImageAvatar.fromStorage("bear"))
+  }
+
+  @Test
+  fun `ogni avatar-immagine appartiene a una categoria del selettore`() {
+    ProfileImageAvatar.entries.forEach { image ->
+      assertEquals(image.category, ProfileImageCategory.entries.firstOrNull { it == image.category })
+    }
+    // Ogni categoria ha almeno un avatar: nessuna scheda vuota nel selettore.
+    ProfileImageCategory.entries.forEach { category ->
+      assertNotNull(ProfileImageAvatar.entries.firstOrNull { it.category == category })
+    }
   }
 }

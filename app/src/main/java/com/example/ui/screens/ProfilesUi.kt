@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,8 +23,10 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
@@ -57,8 +60,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -71,6 +76,8 @@ import com.example.AppRestarter
 import com.example.R
 import com.example.data.profiles.ProfileAvatar
 import com.example.data.profiles.ProfileEmojiCategory
+import com.example.data.profiles.ProfileImageAvatar
+import com.example.data.profiles.ProfileImageCategory
 import com.example.data.profiles.ProfileMutationResult
 import com.example.data.profiles.ProfileNameError
 import com.example.data.profiles.ProfileRules
@@ -81,7 +88,9 @@ import com.example.ui.components.ProfileAvatarBadge
 import com.example.ui.components.TextInputDialog
 import com.example.ui.components.TvActionButton
 import com.example.ui.components.TvFocusBringIntoView
+import com.example.ui.components.TvFocusRow
 import com.example.ui.components.TvFocusableBox
+import com.example.ui.components.drawableRes
 import com.example.ui.components.gradientColors
 import com.example.ui.theme.NovaBackground
 import com.example.ui.theme.NovaCardBg
@@ -259,9 +268,14 @@ fun ProfilesOverlayHost(
     }
   }
 
-  fun saveAvatar(profile: UserProfile, avatar: ProfileAvatar, emoji: String?) {
+  fun saveAvatar(
+    profile: UserProfile,
+    avatar: ProfileAvatar,
+    emoji: String?,
+    image: ProfileImageAvatar?
+  ) {
     scope.launch {
-      ProfilesRepository.updateAvatar(profile.id, avatar, emoji)
+      ProfilesRepository.updateAvatar(profile.id, avatar, emoji, image)
       goToManager()
     }
   }
@@ -381,7 +395,7 @@ fun ProfilesOverlayHost(
           if (profile != null) {
             ProfileAvatarScreen(
               profile = profile,
-              onSave = { avatar, emoji -> saveAvatar(profile, avatar, emoji) },
+              onSave = { avatar, emoji, image -> saveAvatar(profile, avatar, emoji, image) },
               onBack = { goToManager() }
             )
           }
@@ -928,15 +942,20 @@ private fun ProfileActionRow(
 @Composable
 internal fun ProfileAvatarScreen(
   profile: UserProfile,
-  onSave: (ProfileAvatar, String?) -> Unit,
+  onSave: (ProfileAvatar, String?, ProfileImageAvatar?) -> Unit,
   onBack: () -> Unit
 ) {
   var selectedEmoji by remember(profile.id) { mutableStateOf(profile.avatarEmoji) }
+  var selectedImage by remember(profile.id) { mutableStateOf(profile.avatarImage) }
   var selectedColor by remember(profile.id) { mutableStateOf(profile.avatar) }
   // Si apre direttamente la categoria dell'emoji attuale (o Cinema per un profilo
   // senza emoji/da versioni precedenti).
   var selectedCategory by remember(profile.id) {
     mutableStateOf(ProfileRules.categoryFor(profile.avatarEmoji) ?: ProfileEmojiCategory.CINEMA)
+  }
+  // Categoria immagini aperta: quella dell'avatar-immagine attuale, altrimenti la prima.
+  var selectedImageCategory by remember(profile.id) {
+    mutableStateOf(profile.avatarImage?.category ?: ProfileImageCategory.CINEMA_FANTASY)
   }
 
   val categoryFocusRequesters = remember {
@@ -950,6 +969,17 @@ internal fun ProfileAvatarScreen(
         .associateWith { FocusRequester() }
     }
   }
+  val imageCategoryFocusRequesters = remember {
+    ProfileImageCategory.entries.associateWith { FocusRequester() }
+  }
+  // Stesso schema delle emoji: un requester per ogni (categoria, immagine).
+  val imageFocusRequesters = remember {
+    ProfileImageCategory.entries.associateWith { category ->
+      ProfileImageAvatar.entries
+        .filter { it.category == category }
+        .associateWith { FocusRequester() }
+    }
+  }
   val colorFocusRequesters = remember {
     ProfileAvatar.entries.associateWith { FocusRequester() }
   }
@@ -959,8 +989,13 @@ internal fun ProfileAvatarScreen(
   // composizione e il focus search termina con `IllegalStateException: FocusRequester is
   // not initialized` (stesso crash documentato in HeroBanner per le card riciclate).
   val emojiRowFocusRequester = remember { FocusRequester() }
+  // Stessa strategia per la riga immagini (vedi commento sopra).
+  val imageRowFocusRequester = remember { FocusRequester() }
   val activeEmojis: List<String?> = remember(selectedCategory) {
     listOf<String?>(null) + ProfileRules.emojisFor(selectedCategory)
+  }
+  val activeImages: List<ProfileImageAvatar> = remember(selectedImageCategory) {
+    ProfileImageAvatar.entries.filter { it.category == selectedImageCategory }
   }
 
   BackHandler { onBack() }
@@ -968,17 +1003,24 @@ internal fun ProfileAvatarScreen(
   Box(
     modifier = Modifier
       .fillMaxSize()
-      .background(Color.Black.copy(alpha = 0.9f)),
+      .background(Color.Black.copy(alpha = 0.9f))
+      // Margine minimo attorno al pannello: anche a pannello pieno il bordo arrotondato
+      // non tocca i bordi del televisore.
+      .padding(horizontal = 32.dp, vertical = 16.dp),
     contentAlignment = Alignment.Center
   ) {
-    ProfilePanel(modifier = Modifier.fillMaxWidth(0.78f).widthIn(max = 780.dp)) {
+    // widthIn PRIMA di fillMaxWidth: il cap limita i vincoli che il fill poi espande.
+    // L'ordine inverso (fillMaxWidth prima) rende widthIn inefficace e il pannello
+    // occupa tutto lo spazio disponibile, rompendo anche il riciclo delle LazyRow.
+    ProfilePanel(modifier = Modifier.widthIn(max = 780.dp).fillMaxWidth()) {
       Row(verticalAlignment = Alignment.CenterVertically) {
         ProfileAvatarBadge(
           emoji = selectedEmoji,
           initial = profile.initial,
           avatar = selectedColor,
           size = 86.dp,
-          fontSize = 34.sp
+          fontSize = 34.sp,
+          image = selectedImage
         )
         Spacer(modifier = Modifier.width(18.dp))
         Column {
@@ -997,85 +1039,162 @@ internal fun ProfileAvatarScreen(
         }
       }
 
-      Spacer(modifier = Modifier.height(20.dp))
-      Text(
-        text = stringResource(R.string.profiles_avatar_emoji).uppercase(),
-        color = NovaTextMuted,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 1.sp
-      )
-      Spacer(modifier = Modifier.height(10.dp))
-      Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        ProfileEmojiCategory.entries.forEach { category ->
-          ProfileEmojiCategoryChip(
-            label = stringResource(category.labelRes()),
-            selected = category == selectedCategory,
-            focusRequester = categoryFocusRequesters.getValue(category),
-            downFocusRequester = emojiRowFocusRequester,
-            onClick = { selectedCategory = category }
-          )
-        }
-      }
-      Spacer(modifier = Modifier.height(10.dp))
-      LazyRow(
-        modifier = Modifier.fillMaxWidth().focusRequester(emojiRowFocusRequester),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        contentPadding = PaddingValues(horizontal = 2.dp)
+      // Le sezioni di scelta stanno in un'area scorrevole: su televisori con poco spazio
+      // verticale (1080p a 320dpi ≈ 540dp) il pannello completo esce dai bordi e i
+      // pulsanti finivano fuori schermo. Header e pulsanti restano SEMPRE visibili;
+      // TvFocusBringIntoView porta a vista la sezione con il focus, stesso pattern delle
+      // altre schermate profili.
+      Box(
+        modifier = Modifier.weight(1f, fill = false)
       ) {
-        items(activeEmojis, key = { it ?: "initial" }) { emoji ->
-          ProfileEmojiChoice(
-            emoji = emoji,
-            selected = emoji == selectedEmoji,
-            focusRequester = emojiFocusRequesters
-              .getValue(selectedCategory)
-              .getValue(emoji),
-            onClick = { selectedEmoji = emoji }
-          )
+        TvFocusBringIntoView(topOffsetDp = 24.dp, bottomMarginDp = 24.dp) {
+          Column(
+            modifier = Modifier.verticalScroll(rememberScrollState())
+          ) {
+            Spacer(modifier = Modifier.height(20.dp))
+            Text(
+              text = stringResource(R.string.profiles_avatar_emoji).uppercase(),
+              color = NovaTextMuted,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = 1.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+              ProfileEmojiCategory.entries.forEach { category ->
+                ProfileEmojiCategoryChip(
+                  label = stringResource(category.labelRes()),
+                  selected = category == selectedCategory,
+                  focusRequester = categoryFocusRequesters.getValue(category),
+                  downFocusRequester = emojiRowFocusRequester,
+                  onClick = { selectedCategory = category }
+                )
+              }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            // TvFocusRow: dentro un contenitore verticale con guard lo spec TV azzera lo
+            // scroll orizzontale; lo spec neutro della riga lascia scorrere le emoji.
+            TvFocusRow {
+              LazyRow(
+                modifier = Modifier.fillMaxWidth().focusRequester(emojiRowFocusRequester),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(horizontal = 2.dp)
+              ) {
+                items(activeEmojis, key = { it ?: "initial" }) { emoji ->
+                  ProfileEmojiChoice(
+                    emoji = emoji,
+                    selected = emoji == selectedEmoji,
+                    focusRequester = emojiFocusRequesters
+                      .getValue(selectedCategory)
+                      .getValue(emoji),
+                    onClick = {
+                      // Scelta esclusiva: un'emoji (o l'iniziale) deseleziona l'avatar-immagine.
+                      selectedEmoji = emoji
+                      selectedImage = null
+                    }
+                  )
+                }
+              }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+            Text(
+              text = stringResource(R.string.profiles_avatar_images).uppercase(),
+              color = NovaTextMuted,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = 1.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+              ProfileImageCategory.entries.forEach { category ->
+                ProfileEmojiCategoryChip(
+                  label = stringResource(category.labelRes()),
+                  selected = category == selectedImageCategory,
+                  focusRequester = imageCategoryFocusRequesters.getValue(category),
+                  downFocusRequester = imageRowFocusRequester,
+                  onClick = { selectedImageCategory = category }
+                )
+              }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            // Stesso motivo della riga emoji: scroll orizzontale nativo dentro il guard verticale.
+            TvFocusRow {
+              LazyRow(
+                modifier = Modifier.fillMaxWidth().focusRequester(imageRowFocusRequester),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(horizontal = 2.dp)
+              ) {
+                items(activeImages, key = { it.storage }) { image ->
+                  ProfileImageChoice(
+                    image = image,
+                    selected = image == selectedImage,
+                    focusRequester = imageFocusRequesters
+                      .getValue(selectedImageCategory)
+                      .getValue(image),
+                    onClick = {
+                      // Scelta esclusiva: l'immagine deseleziona l'emoji, così il badge mostra
+                      // sempre esattamente ciò che verrà salvato.
+                      selectedImage = image
+                      selectedEmoji = null
+                    }
+                  )
+                }
+              }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+            Text(
+              text = stringResource(R.string.profiles_avatar_color).uppercase(),
+              color = NovaTextMuted,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = 1.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+              ProfileAvatar.entries.forEach { avatar ->
+                ProfileColorChoice(
+                  avatar = avatar,
+                  selected = avatar == selectedColor,
+                  focusRequester = colorFocusRequesters.getValue(avatar),
+                  onClick = { selectedColor = avatar }
+                )
+              }
+            }
+          }
         }
       }
 
       Spacer(modifier = Modifier.height(20.dp))
-      Text(
-        text = stringResource(R.string.profiles_avatar_color).uppercase(),
-        color = NovaTextMuted,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 1.sp
-      )
-      Spacer(modifier = Modifier.height(10.dp))
-      Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        ProfileAvatar.entries.forEach { avatar ->
-          ProfileColorChoice(
-            avatar = avatar,
-            selected = avatar == selectedColor,
-            focusRequester = colorFocusRequesters.getValue(avatar),
-            onClick = { selectedColor = avatar }
-          )
-        }
-      }
-
-      Spacer(modifier = Modifier.height(26.dp))
+      // Pulsanti SEMPRE visibili fuori dall'area scorrevole: azioni di chiusura e
+      // applicazione della scelta, l'una senza persistere l'altra dopo il salvataggio.
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
       ) {
         TvActionButton(
-          text = stringResource(R.string.action_cancel),
+          text = stringResource(R.string.profiles_avatar_close),
           isPrimary = false,
           onClick = onBack
         )
         TvActionButton(
-          text = stringResource(R.string.action_save),
+          text = stringResource(R.string.profiles_avatar_apply),
           isPrimary = true,
-          onClick = { onSave(selectedColor, selectedEmoji) }
+          onClick = { onSave(selectedColor, selectedEmoji, selectedImage) }
         )
       }
     }
   }
 
+  // Focus iniziale: se il profilo ha già un avatar-immagine si atterra sulla sua
+  // immagine (la riga aperta è quella della sua categoria, quindi il requester esiste),
+  // altrimenti sulla emoji del profilo o sull'iniziale come prima dell'introduzione
+  // delle immagini.
   val activeCategoryEmojiRequesters = emojiFocusRequesters.getValue(selectedCategory)
-  val initialFocus = selectedEmoji?.let { activeCategoryEmojiRequesters[it] }
+  val activeImageRequesters = imageFocusRequesters.getValue(selectedImageCategory)
+  val initialFocus = selectedImage?.let { activeImageRequesters[it] }
+    ?: selectedEmoji?.let { activeCategoryEmojiRequesters[it] }
     ?: activeCategoryEmojiRequesters.getValue(null)
   RequestInitialFocus(initialFocus)
 }
@@ -1132,6 +1251,76 @@ private fun ProfileEmojiCategory.labelRes(): Int = when (this) {
   ProfileEmojiCategory.THRILLER -> R.string.profiles_emoji_category_thriller
   ProfileEmojiCategory.COMEDY -> R.string.profiles_emoji_category_comedy
   ProfileEmojiCategory.SCIFI -> R.string.profiles_emoji_category_scifi
+}
+
+private fun ProfileImageCategory.labelRes(): Int = when (this) {
+  ProfileImageCategory.CINEMA_FANTASY -> R.string.profiles_image_category_cinema_fantasy
+  ProfileImageCategory.SIMPSONS -> R.string.profiles_image_category_simpsons
+  ProfileImageCategory.DISNEY -> R.string.profiles_image_category_disney
+  ProfileImageCategory.CARTOON_CLASSIC -> R.string.profiles_image_category_cartoon_classic
+  ProfileImageCategory.BLACK_MIRROR -> R.string.profiles_image_category_black_mirror
+}
+
+@Composable
+private fun ProfileImageChoice(
+  image: ProfileImageAvatar,
+  selected: Boolean,
+  focusRequester: FocusRequester,
+  onClick: () -> Unit
+) {
+  TvFocusableBox(
+    onClick = onClick,
+    shape = CircleShape,
+    focusedScale = 1.08f,
+    modifier = Modifier
+      .size(58.dp)
+      .focusRequester(focusRequester)
+  ) { isFocused ->
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .clip(CircleShape)
+        .background(
+          when {
+            selected -> NovaCyan.copy(alpha = 0.22f)
+            isFocused -> NovaCardBgFocused
+            else -> NovaSurfaceVariant
+          },
+          CircleShape
+        )
+        .border(
+          width = if (selected) 2.dp else 1.dp,
+          color = if (selected) NovaCyanBright else NovaDivider,
+          shape = CircleShape
+        ),
+      contentAlignment = Alignment.Center
+    ) {
+      // Il source è già un ritratto circolare con angoli trasparenti: il clip allineato
+      // al cerchio garantisce il contenimento senza ritagliare mai il soggetto.
+      Image(
+        painter = painterResource(image.drawableRes()),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize()
+      )
+      if (selected) {
+        Box(
+          modifier = Modifier
+            .align(Alignment.TopEnd)
+            .size(17.dp)
+            .background(NovaCyanBright, CircleShape),
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            imageVector = Icons.Default.Check,
+            contentDescription = null,
+            tint = Color.Black,
+            modifier = Modifier.size(12.dp)
+          )
+        }
+      }
+    }
+  }
 }
 
 @Composable
@@ -1387,7 +1576,8 @@ private fun ProfileAvatarCircle(
     initial = profile.initial,
     avatar = profile.avatar,
     size = size,
-    fontSize = fontSize
+    fontSize = fontSize,
+    image = profile.avatarImage
   )
 }
 

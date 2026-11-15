@@ -57,7 +57,7 @@ class ProfileAvatarFocusTest {
     rule.setContent {
       ProfileAvatarScreen(
         profile = profile,
-        onSave = { _, _ -> },
+        onSave = { _, _, _ -> },
         onBack = {}
       )
     }

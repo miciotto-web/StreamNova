@@ -164,18 +164,20 @@ object ProfilesRepository {
       ProfileMutationResult.Success(updated)
     }
 
-  /** Aggiorna insieme colore e emoji dell'avatar. */
+  /** Aggiorna insieme colore, emoji e avatar-immagine dell'avatar. */
   suspend fun updateAvatar(
     id: String,
     avatar: ProfileAvatar,
-    avatarEmoji: String?
+    avatarEmoji: String?,
+    avatarImage: ProfileImageAvatar? = null
   ): ProfileMutationResult = writeMutex.withLock {
     val currentProfiles = _profiles.value
     val target = currentProfiles.firstOrNull { it.id == id }
       ?: return@withLock ProfileMutationResult.NotFound
     val updated = target.copy(
       avatar = avatar,
-      avatarEmoji = sanitizeEmoji(avatarEmoji)
+      avatarEmoji = sanitizeEmoji(avatarEmoji),
+      avatarImage = avatarImage
     )
     if (!persist(currentProfiles.map { if (it.id == id) updated else it }, _activeProfileId.value)) {
       return@withLock ProfileMutationResult.Failure
@@ -271,7 +273,10 @@ object ProfilesRepository {
         // principale auto-creato non ha un nome personalizzato, gli altri sì.
         hasCustomName = stored.hasCustomName
           ?: !(stored.isPrimary || stored.id == ProfileStorage.PRIMARY_PROFILE_ID),
-        avatarEmoji = sanitizeEmoji(stored.avatarEmoji)
+        avatarEmoji = sanitizeEmoji(stored.avatarEmoji),
+        // fromStorage valida contro le voci note: un valore ignoto o manomesso degrada
+        // a null (emoji o iniziale) senza rompere il catalogo.
+        avatarImage = ProfileImageAvatar.fromStorage(stored.avatarImage)
       )
     }.toMutableList()
 
@@ -384,7 +389,9 @@ internal data class StoredProfile(
    */
   val hasCustomName: Boolean? = null,
   /** Emoji avatar; null = iniziale del nome. */
-  val avatarEmoji: String? = null
+  val avatarEmoji: String? = null,
+  /** Avatar-immagine (nome storage validato); null = nessuna immagine. */
+  val avatarImage: String? = null
 )
 
 internal fun UserProfile.toStored(): StoredProfile =
@@ -395,7 +402,8 @@ internal fun UserProfile.toStored(): StoredProfile =
     isPrimary = isPrimary,
     createdAtEpochMs = createdAtEpochMs,
     hasCustomName = hasCustomName,
-    avatarEmoji = avatarEmoji
+    avatarEmoji = avatarEmoji,
+    avatarImage = avatarImage?.storage
   )
 
 /** Codifica compatta e versionabile del catalogo (un solo oggetto JSON). */
