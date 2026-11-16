@@ -9,8 +9,6 @@ import com.example.data.model.MediaType
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.StremioCatalogRepository
-import com.example.data.stremio.CinemetaAddon
-import com.example.data.stremio.EXTRA_GENRE
 import com.example.data.stremio.StremioAddonRepository
 import com.example.ui.screens.GLOBAL_SEARCH_CATEGORIES
 import com.sun.net.httpserver.HttpExchange
@@ -36,13 +34,20 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * Fallback TMDB "Usa TMDB come fallback per i generi" (sezione Ricerca).
+ * Routing delle Categorie della sezione Ricerca tra cataloghi addon e TMDB.
  *
- * Scenario di riferimento: Serie TV → Horror. L'addon (struttura di Xperience, il cui
- * manifest non è nel repository) dichiara cataloghi serie che NON applicano il filtro
- * per genere: nessun catalogo configurato copre la combinazione, quindi — con lo switch
- * attivo — i titoli arrivano da TMDB. Lo stesso vale quando un catalogo compatibile è
- * interrogato con successo ma risponde HTTP 200 senza risultati (catalogo vuoto).
+ * TMDB è il gestore di cataloghi nativo di StreamNova; un addon utente che dichiara
+ * cataloghi FILTRABILI PER GENERE di un tipo sostituisce completamente TMDB nella
+ * gestione delle categorie di quel tipo: i suoi risultati (anche vuoti) sono la
+ * risposta definitiva e nessun titolo TMDB viene aggiunto.
+ *
+ * Scenario di riferimento: Serie TV → Horror.
+ *  - Con Xperience-like (cataloghi serie SENZA filtro per genere) il tipo serie non
+ *    è gestito dall'addon → i titoli arrivano dal TMDB nativo.
+ *  - Con un addon che dichiara il genere Horror per le serie la fonte resta l'addon
+ *    e TMDB non viene interrogato.
+ *  - Un catalogo compatibile interrogato con successo ma vuoto (HTTP 200 senza metas)
+ *    NON passa a TMDB: la risposta dell'addon è dichiarata come vuota.
  *
  * Determinismo: addon su un server HTTP locale, TMDB su un secondo server locale
  * ([TmdbApiClient.overrideServiceBaseUrl]). Nessuna credenziale reale, nessuna rete.
@@ -61,7 +66,6 @@ class SearchCategoryTmdbFallbackTest {
     Dispatchers.setMain(testDispatcher)
     val context = ApplicationProvider.getApplicationContext<Context>()
     AppSettingsRepository.init(context)
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
     MediaRepository.init(context)
   }
 
@@ -70,11 +74,9 @@ class SearchCategoryTmdbFallbackTest {
     createdViewModels.forEach { it.viewModelScope.cancel() }
     createdViewModels.clear()
     TmdbApiClient.overrideServiceBaseUrl(null)
-    StremioCatalogRepository.resetCinemetaBaseUrl()
     StremioCatalogRepository.clearCache()
     StremioAddonRepository.getInstalledAddons().forEach { StremioAddonRepository.removeAddon(it.id) }
     StremioAddonRepository.clearCaches()
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
     Dispatchers.resetMain()
   }
 
@@ -270,60 +272,7 @@ class SearchCategoryTmdbFallbackTest {
     }
   }
 
-  /**
-   * Server locale che riproduce le risposte catalogo di Cinemeta (`top`, `year`,
-   * `imdbRating`) per Film e Serie TV. La base URL dell'addon di sistema viene
-   * puntata qui per verificare la categoria senza dipendere dalla rete.
-   */
-  private inner class CinemetaFixture {
-    val requested: MutableList<String> = Collections.synchronizedList(mutableListOf())
-    private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-    private val baseUrl = "http://127.0.0.1:${server.address.port}"
-
-    val catalogRequests: List<String>
-      get() = synchronized(requested) { requested.filter { it.startsWith("/catalog/") } }
-
-    fun start() {
-      server.createContext("/") { exchange -> handle(exchange) }
-      server.start()
-      StremioCatalogRepository.cinemetaBaseUrlProvider = { baseUrl }
-    }
-
-    fun stop() {
-      StremioCatalogRepository.resetCinemetaBaseUrl()
-      server.stop(0)
-    }
-
-    private fun handle(exchange: HttpExchange) {
-      val path = exchange.requestURI.rawPath
-      requested += path
-      try {
-        val isMovie = path.startsWith("/catalog/movie/")
-        val isSeries = path.startsWith("/catalog/series/")
-        if (!isMovie && !isSeries) {
-          exchange.sendResponseHeaders(404, -1)
-          return
-        }
-        val type = if (isMovie) "movie" else "series"
-        val skip = Regex("""skip=(\d+)""").find(path)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-        val metas = if (skip > 0) {
-          """{"id":"tt9${if (isMovie) "0" else "1"}$skip","type":"$type","name":"Pagina Cinemeta $skip","poster":"https://img.example/p$skip.jpg","releaseInfo":"2024","description":"Pagina successiva"}"""
-        } else {
-          """{"id":"tt9${if (isMovie) "0" else "1"}001","type":"$type","name":"Cinemeta ${if (isMovie) "Film" else "Serie"} 1","poster":"https://img.example/1.jpg","releaseInfo":"2024","description":"Sinossi 1"},""" +
-            """{"id":"tt9${if (isMovie) "0" else "1"}002","type":"$type","name":"Cinemeta ${if (isMovie) "Film" else "Serie"} 2","poster":"https://img.example/2.jpg","releaseInfo":"2023","description":"Sinossi 2"}"""
-        }
-        val body = """{"metas":[$metas]}"""
-        val bytes = body.toByteArray()
-        exchange.responseHeaders.add("Content-Type", "application/json")
-        exchange.sendResponseHeaders(200, bytes.size.toLong())
-        exchange.responseBody.use { it.write(bytes) }
-      } finally {
-        exchange.close()
-      }
-    }
-  }
-
-  // ── 1. Serie TV → Horror: nessun catalogo copre il genere, switch attivo ─────
+  // ── 1. Serie TV → Horror: il tipo serie non è gestito dall'addon → TMDB ─────
 
   @Test
   fun serieHorrorSenzaCatalogoCompatibileUsaTmdb() = runTest(testDispatcher) {
@@ -380,39 +329,46 @@ class SearchCategoryTmdbFallbackTest {
     }
   }
 
-  // ── 2. Stessa ricerca con lo switch disattivato: nessuna chiamata TMDB ──────
+  // ── 2. L'addon gestisce il tipo ma nessun catalogo copre il genere ──────────
 
   @Test
-  fun switchDisattivatoNonChiamaTmdbEMostraStatoVuoto() = runTest(testDispatcher) {
+  fun addonGestisceIlTipoMaNessunCatalogoCopreIlGenereStatoDichiarato() = runTest(testDispatcher) {
+    // XPERIENCE_LIKE dichiara cataloghi film FILTRABILI per genere (Horror,
+    // Fantascienza): gestisce le categorie film e sostituisce TMDB. Per la categoria
+    // "Guerra" nessun suo catalogo copre il genere: la risposta è dichiarata vuota e
+    // TMDB non viene interrogato (l'addon sostituisce completamente TMDB).
+    // Le SERIE invece non hanno cataloghi filtrabili: restano servite dal TMDB nativo.
     val addon = AddonFixture(Mode.XPERIENCE_LIKE)
     val tmdb = TmdbFixture()
     val baseUrl = addon.start()
     tmdb.start()
     try {
-      AppSettingsRepository.setTmdbGenreFallbackEnabled(false)
       StremioAddonRepository.installAddon(baseUrl)
       val viewModel = createViewModel()
 
-      viewModel.openCategory("horror")
+      viewModel.openCategory("guerra")
       assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
 
       assertTrue(
-        "Nessuna richiesta TMDB con lo switch disattivato: ${tmdb.discoverRequests}",
-        tmdb.discoverRequests.isEmpty()
+        "Nessuna richiesta TMDB per i film (gestiti dall'addon): ${tmdb.discoverRequests}",
+        tmdb.discoverRequests.none { it.contains("/discover/movie") }
       )
       assertEquals(
-        GenreLoadReason.TMDB_DISABLED,
-        loadRecord(viewModel, MediaType.SERIE_TV)?.reason
+        GenreLoadReason.ADDON_NO_COVERAGE,
+        loadRecord(viewModel, MediaType.FILM)?.reason
       )
       assertTrue(
-        "Nessun titolo TMDB a schermo",
-        viewModel.categoryItems.value.none { it.title == "La Casa del Lago" }
+        "Nessun titolo film a schermo",
+        viewModel.categoryItems.value.none { it.type == MediaType.FILM }
       )
       val state = viewModel.categoryState.value
-      assertTrue("Lo stato dichiara lo switch disattivato", state.genresTmdbSkipped)
-      assertFalse(state.statusMessage.isNullOrBlank())
+      assertTrue("Lo stato dichiara la mancanza di copertura", state.statusMessage.orEmpty().isNotBlank())
+      // Le serie del tipo non gestito passano al TMDB nativo.
+      assertEquals(
+        GenreLoadReason.TMDB_FALLBACK,
+        loadRecord(viewModel, MediaType.SERIE_TV)?.reason
+      )
     } finally {
-      AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
       addon.stop()
       tmdb.stop()
     }
@@ -537,13 +493,13 @@ class SearchCategoryTmdbFallbackTest {
       tmdb.stop()
     }
   }
-  // ── 5. Catalogo compatibile vuoto (HTTP 200 senza risultati): fallback TMDB ─
+  // ── 5. Catalogo compatibile vuoto (HTTP 200 senza risultati): risposta addon ─
 
   @Test
-  fun catalogoCompatibileVuotoAttivaIlFallbackTmdb() = runTest(testDispatcher) {
-    // Film coperti con risultati, serie coperte ma con risposta VUOTA (HTTP 200 senza
-    // metas): un catalogo vuoto non è né un errore né un'incompatibilità, ma non ci sono
-    // risultati utili: il fallback TMDB con l'endpoint del tipo fornisce i titoli.
+  fun catalogoCompatibileVuotoRestaLaRispostaDellAddon() = runTest(testDispatcher) {
+    // Serie coperte dal catalogo compatibile ma con risposta VUOTA (HTTP 200 senza
+    // metas): l'addon gestisce le categorie serie e sostituisce completamente TMDB,
+    // quindi il catalogo vuoto è la risposta definitiva — TMDB non viene interrogato.
     val addon = AddonFixture(Mode.BOTH_GENRE_CAPABLE, seriesMode = CatalogMode.EMPTY)
     val tmdb = TmdbFixture()
     val baseUrl = addon.start()
@@ -557,14 +513,9 @@ class SearchCategoryTmdbFallbackTest {
 
       val series = loadRecord(viewModel, MediaType.SERIE_TV)
       assertEquals(
-        "Catalogo serie compatibile interrogato e vuoto: il fallback TMDB capita comunque",
-        GenreLoadReason.TMDB_FALLBACK,
+        "Catalogo serie compatibile interrogato e vuoto: risposta dell'addon",
+        GenreLoadReason.SUPPORTED_BUT_EMPTY,
         series?.reason
-      )
-      assertEquals(
-        "Il motivo registra che il catalogo era vuoto prima del fallback",
-        true,
-        series?.catalogWasEmpty
       )
       assertEquals(
         "Il fallback riguarda SOLO le serie: i film restano dell'addon",
@@ -576,20 +527,20 @@ class SearchCategoryTmdbFallbackTest {
         addon.catalogRequests.any { it.contains("discover_series") && it.contains("genre=Horror") }
       )
       assertTrue(
-        "Il fallback usa l'endpoint serie con il keyword Horror: ${tmdb.discoverRequests}",
-        tmdb.discoverRequests.any { it.contains("/discover/tv") && it.contains("with_keywords=315058") }
-      )
-      assertFalse(
-        "Nessuna chiamata discover/movie: i film non sono serviti da TMDB: ${tmdb.discoverRequests}",
-        tmdb.discoverRequests.any { it.contains("/discover/movie") }
+        "Nessuna chiamata TMDB: l'addon ha risposto (vuoto): ${tmdb.discoverRequests}",
+        tmdb.discoverRequests.isEmpty()
       )
       assertTrue(
-        "Le serie TMDB sono mostrate",
-        viewModel.categoryItems.value.any { it.title == "La Casa del Lago" }
+        "Nessuna serie TMDB inventata",
+        viewModel.categoryItems.value.none { it.type == MediaType.SERIE_TV }
       )
       assertTrue(
-        "Il fallback è dichiarato nella UI",
+        "Lo stato dichiara il catalogo vuoto: ${viewModel.categoryState.value.statusMessage}",
         viewModel.categoryState.value.statusMessage.orEmpty().isNotBlank()
+      )
+      assertTrue(
+        "I film dell'addon restano a schermo",
+        viewModel.categoryItems.value.any { it.title == "La Casa dello Spavento" }
       )
     } finally {
       addon.stop()
@@ -597,12 +548,12 @@ class SearchCategoryTmdbFallbackTest {
     }
   }
 
-  // ── 5b. Catalogo vuoto e TMDB senza risultati: caso dichiarato, mai inventato ──
+  // ── 5b. Catalogo coperto e vuoto: nessun titolo viene inventato ──────────────
 
   @Test
-  fun catalogoVuotoETmdbSenzaRisultatiDichiaraNessunTitolo() = runTest(testDispatcher) {
+  fun catalogoVuotoNonProduceTitoliDaAltreFonti() = runTest(testDispatcher) {
     val addon = AddonFixture(Mode.BOTH_GENRE_CAPABLE, seriesMode = CatalogMode.EMPTY)
-    val tmdb = TmdbFixture(TmdbMode.EMPTY)
+    val tmdb = TmdbFixture()
     val baseUrl = addon.start()
     tmdb.start()
     try {
@@ -612,24 +563,18 @@ class SearchCategoryTmdbFallbackTest {
       viewModel.openCategory("horror")
       assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
 
-      val series = loadRecord(viewModel, MediaType.SERIE_TV)
-      assertEquals(
-        "TMDB interrogato con successo ma senza risultati",
-        GenreLoadReason.TMDB_FALLBACK,
-        series?.reason
-      )
-      assertEquals(0, series?.tmdbItems)
       assertTrue(
-        "Nessuna serie TMDB inventata",
+        "Nessuna serie inventata (nemmeno da TMDB)",
         viewModel.categoryItems.value.none { it.type == MediaType.SERIE_TV }
       )
-      assertTrue(
-        "Lo stato dichiara il caso: ${viewModel.categoryState.value.statusMessage}",
-        viewModel.categoryState.value.statusMessage.orEmpty().isNotBlank()
-      )
       assertFalse(
-        "Non è presentato come caricamento addon riuscito",
+        "Non è presentato come caricamento addon riuscito per le serie",
         viewModel.categoryItems.value.any { it.title == "Residenza Maledetta" }
+      )
+      assertEquals(
+        "La sorgente dichiarata resta l'addon (film caricati)",
+        SearchCategorySource.ADDON,
+        viewModel.categoryState.value.source
       )
     } finally {
       addon.stop()
@@ -706,59 +651,6 @@ class SearchCategoryTmdbFallbackTest {
     }
   }
 
-  // ── 8. Lo switch aggiorna la categoria senza riavviare l'app ────────────────
-
-  @Test
-  fun ilCambioDelloSwitchRicalcolaLaCategoriaAttiva() = runTest(testDispatcher) {
-    val addon = AddonFixture(Mode.XPERIENCE_LIKE)
-    val tmdb = TmdbFixture()
-    val baseUrl = addon.start()
-    tmdb.start()
-    try {
-      StremioAddonRepository.installAddon(baseUrl)
-      val viewModel = createViewModel()
-
-      viewModel.openCategory("horror")
-      assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
-      assertTrue(
-        "Prima (switch attivo): serie da TMDB",
-        viewModel.categoryItems.value.any { it.title == "La Casa del Lago" }
-      )
-
-      // Switch OFF: la categoria aperta viene ricalcolata e TMDB non viene più usato.
-      viewModel.setTmdbGenreFallbackEnabled(false)
-      assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
-      assertEquals(
-        GenreLoadReason.TMDB_DISABLED,
-        loadRecord(viewModel, MediaType.SERIE_TV)?.reason
-      )
-      assertFalse(
-        "Nessuna serie TMDB dopo la disattivazione",
-        viewModel.categoryItems.value.any { it.title == "La Casa del Lago" }
-      )
-      val requestsAfterDisable = tmdb.discoverRequests.size
-
-      // Switch ON: la categoria torna a interrogare TMDB.
-      viewModel.setTmdbGenreFallbackEnabled(true)
-      assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
-      assertEquals(
-        GenreLoadReason.TMDB_FALLBACK,
-        loadRecord(viewModel, MediaType.SERIE_TV)?.reason
-      )
-      assertTrue(
-        "Nuova richiesta TMDB dopo la riattivazione",
-        tmdb.discoverRequests.size > requestsAfterDisable
-      )
-      assertTrue(
-        "Serie TMDB di nuovo visibili",
-        viewModel.categoryItems.value.any { it.title == "La Casa del Lago" }
-      )
-    } finally {
-      AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
-      addon.stop()
-      tmdb.stop()
-    }
-  }
   // ── 11. Paginazione: la pagina successiva usa lo stesso tipo e genere ───────
 
   @Test
@@ -834,9 +726,9 @@ class SearchCategoryTmdbFallbackTest {
 
   @Test
   fun ilCambioRapidoDiCategoriaNonMostraRisultatiObsoleti() = runTest(testDispatcher) {
-    // Entrambe le categorie sono coperte dai cataloghi addon (film) e, per le serie, non
-    // coperte: TMDB non viene coinvolto, quindi ciò che resta a schermo può venire SOLO
-    // dalla categoria corrente.
+    // Film coperti dai cataloghi addon per ENTRAMBE le categorie; le serie passano
+    // dal TMDB nativo (nessun catalogo serie filtrabile per genere). Ciò che resta a
+    // schermo può venire SOLO dalla categoria corrente.
     val addon = AddonFixture(Mode.XPERIENCE_LIKE)
     val tmdb = TmdbFixture()
     val baseUrl = addon.start()
@@ -867,9 +759,9 @@ class SearchCategoryTmdbFallbackTest {
         GenreLoadReason.TMDB_FALLBACK,
         loadRecord(viewModel, MediaType.SERIE_TV)?.reason
       )
-      assertFalse(
-        "Nessuna richiesta TMDB per il genere abbandonato: ${tmdb.discoverRequests}",
-        tmdb.discoverRequests.any { it.contains("with_genres=27") || it.contains("with_keywords=315058") }
+      assertTrue(
+        "Richiesta TMDB per il genere corrente (Fantascienza, 10765): ${tmdb.discoverRequests}",
+        tmdb.discoverRequests.any { it.contains("/discover/tv") && it.contains("with_genres=10765") }
       )
     } finally {
       addon.stop()
@@ -933,34 +825,26 @@ class SearchCategoryTmdbFallbackTest {
   }
 
   @Test
-  fun senzaAddonDellUtenteLaCategoriaUsaCinemeta() = runTest(testDispatcher) {
+  fun senzaAddonUtenteNessunTargetStremioECategoriaTmdbNativa() = runTest(testDispatcher) {
     StremioAddonRepository.clearCaches()
     StremioCatalogRepository.clearCache()
     val horror = category("horror").keywords
 
-    // Nessun addon utente: la copertura "utente" resta false, ma Cinemeta è la
-    // sorgente di default delle categorie e applica il filtro `genre` dichiarato.
-    assertFalse(
+    // Nessun addon utente: nessun target Stremio e nessuna richiesta di catalogo
+    // costruita per la categoria. Il tipo è servito nativamente da TMDB Discover.
+    assertTrue(
       "Nessun addon utente installato",
+      StremioAddonRepository.getInstalledAddons().isEmpty()
+    )
+    assertFalse(
+      "Nessun catalogo utente copre Horror per le serie",
       StremioCatalogRepository.hasUserCatalogCoveringGenre(horror, MediaType.SERIE_TV)
     )
-    val requests = StremioCatalogRepository.findCategoryRequests(horror)
-    assertEquals("Film e Serie TV dal catalogo `top` di Cinemeta", 2, requests.size)
-    assertTrue(requests.all { it.target.addonId == CinemetaAddon.MANIFEST_ID })
-    assertTrue(requests.all { it.target.addonName == CinemetaAddon.DISPLAY_NAME })
-    assertTrue(requests.all { it.target.catalogId == CinemetaAddon.CATALOG_POPULAR })
-    assertTrue(requests.all { it.extra[EXTRA_GENRE] == "Horror" })
-    assertEquals(
-      setOf(MediaType.FILM, MediaType.SERIE_TV),
-      requests.map { StremioCatalogRepository.toMediaType(it.target.type) }.toSet()
-    )
+    assertFalse(StremioCatalogRepository.hasUserGenreCatalogOfType(MediaType.FILM))
+    assertFalse(StremioCatalogRepository.hasUserGenreCatalogOfType(MediaType.SERIE_TV))
     assertTrue(
-      "Cinemeta copre Horror per le serie quando non ci sono addon utente",
-      StremioCatalogRepository.hasConfiguredCatalogCoveringGenre(
-        horror,
-        MediaType.SERIE_TV,
-        StremioCatalogRepository.defaultCinemetaGenreTargets()
-      )
+      "Nessuna richiesta di catalogo Stremio per la categoria",
+      StremioCatalogRepository.findCategoryRequests(horror).isEmpty()
     )
     assertFalse(
       "Senza cataloghi configurati non esiste copertura",
@@ -973,66 +857,58 @@ class SearchCategoryTmdbFallbackTest {
   }
 
   @Test
-  fun senzaAddonLaCategoriaUsaCinemetaAncheConSwitchTmdbDisattivato() =
-    runTest(testDispatcher) {
-      StremioAddonRepository.clearCaches()
-      StremioCatalogRepository.clearCache()
-      AppSettingsRepository.setTmdbGenreFallbackEnabled(false)
-      val cinemeta = CinemetaFixture()
-      val tmdb = TmdbFixture()
-      cinemeta.start()
-      tmdb.start()
-      try {
-        val viewModel = createViewModel()
+  fun senzaAddonLaCategoriaEServitaNativamenteDaTmdb() = runTest(testDispatcher) {
+    StremioAddonRepository.clearCaches()
+    StremioCatalogRepository.clearCache()
+    val tmdb = TmdbFixture()
+    tmdb.start()
+    try {
+      val viewModel = createViewModel()
 
-        viewModel.openCategory("horror")
-        assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
+      viewModel.openCategory("horror")
+      assertTrue(awaitCondition { !viewModel.isCategoryLoading.value })
 
-        // La categoria è servita dai cataloghi Cinemeta: lo switch "fallback TMDB"
-        // non è coinvolto e non deve svuotare la categoria.
-        assertEquals(
-          GenreLoadReason.SUPPORTED_BY_CATALOG,
-          loadRecord(viewModel, MediaType.SERIE_TV)?.reason
-        )
-        assertEquals(
-          GenreLoadReason.SUPPORTED_BY_CATALOG,
-          loadRecord(viewModel, MediaType.FILM)?.reason
-        )
-        assertTrue(viewModel.categoryItems.value.isNotEmpty())
-        assertFalse(viewModel.isCategoryTmdbFallback)
-        assertTrue(
-          "Nessuna richiesta TMDB per la categoria: ${tmdb.discoverRequests}",
-          tmdb.discoverRequests.isEmpty()
-        )
+      // Il gestore di cataloghi nativo TMDB serve ENTRAMBI i tipi della categoria.
+      assertEquals(
+        GenreLoadReason.TMDB_FALLBACK,
+        loadRecord(viewModel, MediaType.SERIE_TV)?.reason
+      )
+      assertEquals(
+        GenreLoadReason.TMDB_FALLBACK,
+        loadRecord(viewModel, MediaType.FILM)?.reason
+      )
+      assertTrue(viewModel.categoryItems.value.isNotEmpty())
+      assertTrue(viewModel.isCategoryTmdbFallback)
+      assertTrue(
+        "La categoria usa discover/tv per le serie: ${tmdb.discoverRequests}",
+        tmdb.discoverRequests.any { it.contains("/discover/tv") }
+      )
+      assertTrue(
+        "La categoria usa discover/movie per i film: ${tmdb.discoverRequests}",
+        tmdb.discoverRequests.any { it.contains("/discover/movie") }
+      )
 
-        val titles = viewModel.categoryItems.value.map { it.title }
-        assertTrue("Film Cinemeta mostrati: $titles", titles.contains("Cinemeta Film 1"))
-        assertTrue("Serie Cinemeta mostrate: $titles", titles.contains("Cinemeta Serie 1"))
-        assertTrue(
-          "Il filtro genre è inviato a Cinemeta: ${cinemeta.catalogRequests}",
-          cinemeta.catalogRequests.any {
-            it.contains("/catalog/movie/top/genre=Horror.json")
-          }
-        )
-        assertTrue(
-          "Il filtro genre è inviato a Cinemeta: ${cinemeta.catalogRequests}",
-          cinemeta.catalogRequests.any {
-            it.contains("/catalog/series/top/genre=Horror.json")
-          }
-        )
+      val titles = viewModel.categoryItems.value.map { it.title }
+      assertTrue("Film TMDB mostrati: $titles", titles.contains("Il Buio"))
+      assertTrue("Serie TMDB mostrate: $titles", titles.contains("La Casa del Lago"))
 
-        // Paginazione della categoria: stessa sorgente Cinemeta con offset `skip`.
-        viewModel.loadNextCategoryPage()
-        assertTrue(
-          "La pagina successiva deve arrivare da Cinemeta: ${cinemeta.catalogRequests}",
-          awaitCondition { cinemeta.catalogRequests.any { it.contains("skip=") } }
-        )
-      } finally {
-        AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
-        cinemeta.stop()
-        tmdb.stop()
-      }
+      // Paginazione della categoria: discover con pagina successiva, per ciascun tipo.
+      viewModel.loadNextCategoryPage()
+      assertTrue(
+        "Pagina 2 richiesta su discover: ${tmdb.discoverRequests}",
+        awaitCondition {
+          tmdb.discoverRequests.any { it.contains("/discover/movie") && it.contains("page=2") } &&
+            tmdb.discoverRequests.any { it.contains("/discover/tv") && it.contains("page=2") }
+        }
+      )
+      val duplicated = viewModel.categoryItems.value
+        .groupBy { "${it.type}|${it.title}" }
+        .filterValues { it.size > 1 }
+      assertTrue("Duplicati dopo la paginazione: $duplicated", duplicated.isEmpty())
+    } finally {
+      tmdb.stop()
     }
+  }
 
   private fun createViewModel(): StreamNovaViewModel =
     StreamNovaViewModel().also {

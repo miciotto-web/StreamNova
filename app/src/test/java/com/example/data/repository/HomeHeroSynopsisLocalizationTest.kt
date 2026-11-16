@@ -2,7 +2,6 @@ package com.example.data.repository
 
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
-import com.example.data.stremio.CinemetaAddon
 import com.example.data.stremio.TYPE_MOVIE
 import com.example.data.stremio.TYPE_SERIES
 import kotlinx.coroutines.runBlocking
@@ -13,9 +12,10 @@ import org.junit.Test
 /**
  * La localizzazione della sinossi tocca SOLO l'Hero Banner.
  *
- * Cinemeta restituisce `description` sempre in inglese: [StremioCatalogRepository]
- * sostituisce il testo dei titoli dell'Hero, mentre poster, titoli, ordine, id,
- * provider e tutte le altre righe della Home restano identici.
+ * I cataloghi addon restituiscono `description` nella lingua dell'addon (spesso
+ * inglese): [StremioCatalogRepository] sostituisce il testo dei titoli dell'Hero,
+ * mentre poster, titoli, ordine, id, provider e tutte le altre righe della Home
+ * restano identici.
  */
 class HomeHeroSynopsisLocalizationTest {
 
@@ -38,32 +38,37 @@ class HomeHeroSynopsisLocalizationTest {
 
   private fun section(
     catalogId: String,
+    slot: HomeCatalogSlot,
     mediaType: MediaType,
     items: List<MediaItem>
   ) = CatalogSection(
-    id = "stremio_${CinemetaAddon.MANIFEST_ID}_" +
+    id = "stremio_test.hero.addon_" +
       "${if (mediaType == MediaType.SERIE_TV) TYPE_SERIES else TYPE_MOVIE}_$catalogId",
-    title = "$catalogId • ${CinemetaAddon.DISPLAY_NAME}",
-    addonId = CinemetaAddon.MANIFEST_ID,
-    addonName = CinemetaAddon.DISPLAY_NAME,
+    title = "$catalogId • Test Addon",
+    addonId = "test.hero.addon",
+    addonName = "Test Addon",
     catalogId = catalogId,
     mediaType = mediaType,
-    items = items
+    items = items,
+    homeSlot = slot
   )
 
   private fun defaultSections(): List<CatalogSection> = listOf(
     section(
-      CinemetaAddon.CATALOG_POPULAR,
+      "addon_popular_movies",
+      HomeCatalogSlot.POPULAR,
       MediaType.FILM,
       listOf(media("tt0137523", "Fight Club", MediaType.FILM))
     ),
     section(
-      CinemetaAddon.CATALOG_POPULAR,
+      "addon_popular_series",
+      HomeCatalogSlot.POPULAR,
       MediaType.SERIE_TV,
       listOf(media("tt0903747", "Breaking Bad", MediaType.SERIE_TV))
     ),
     section(
-      CinemetaAddon.CATALOG_TOP_RATED,
+      "addon_toprated_movies",
+      HomeCatalogSlot.TOP_RATED,
       MediaType.FILM,
       listOf(media("tt0111161", "Le ali della libertà", MediaType.FILM))
     )

@@ -24,9 +24,9 @@ enum class SearchTypeFilter(val label: String) {
 /**
  * Filtro che alimenta una categoria della sezione Ricerca.
  *
- * [GENRE] è il percorso storico: i cataloghi degli addon (o Cinemeta) vengono
- * interrogati per genere; solo quando nessuno copre la combinazione tipo+genere si
- * usa il fallback TMDB Discover.
+ * [GENRE] è il percorso storico: i cataloghi degli addon dell'utente vengono
+ * interrogati per genere; quando nessun addon gestisce il tipo, la categoria è
+ * servita nativamente da TMDB Discover, il gestore di cataloghi predefinito.
  *
  * [TMDB_TV_GENRE] è una categoria servita NATIVAMENTE da TMDB tramite un genere TV
  * ufficiale (es. "Talk", id 10767). Il percorso non consulta cataloghi di addon,

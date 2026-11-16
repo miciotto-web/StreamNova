@@ -188,7 +188,6 @@ object SyncConfigApplier {
       AppSettingsRepository.setParentalControlPinHash(a.parentalControlPinHash)
     }
     AppSettingsRepository.setParentalControlLevel(a.parentalControlLevel)
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(a.tmdbGenreFallbackEnabled)
     AppSettingsRepository.setHideUnreleasedContent(a.hideUnreleasedContent)
     AppSettingsRepository.setUserProviderBindingsJson(a.userProviderBindingsJson)
     AppSettingsRepository.setContinueWatchingShowRow(a.cwShowRow)
@@ -256,8 +255,8 @@ object SyncConfigApplier {
 
   /**
    * Confronta gli addon installati con la lista della sorgente: rimuove le
-   * installazioni locali che la sorgente non ha (MAI gli addon di sistema) e
-   * installa/abilita quelle mancanti o disallineate.
+   * installazioni locali che la sorgente non ha e installa/abilita quelle
+   * mancanti o disallineate.
    *
    * @return Triple(installati, rimossi, errori)
    */
@@ -269,8 +268,7 @@ object SyncConfigApplier {
     val desiredUrls = desired.map { StremioAddonRepository.normalizeUrl(it.url).lowercase() }.toSet()
     StremioAddonRepository.getInstalledAddons()
       .filter { local ->
-        !StremioAddonRepository.isSystemAddon(local.id) &&
-          StremioAddonRepository.normalizeUrl(local.baseUrl).lowercase() !in desiredUrls
+        StremioAddonRepository.normalizeUrl(local.baseUrl).lowercase() !in desiredUrls
       }
       .forEach { local ->
         StremioAddonRepository.removeAddon(local.installId)

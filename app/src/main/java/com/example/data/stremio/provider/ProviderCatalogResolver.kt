@@ -1,7 +1,6 @@
 package com.example.data.stremio.provider
 
 import android.content.Context
-import com.example.data.stremio.CinemetaAddon
 import com.example.data.stremio.EXTRA_GENRE
 import com.example.data.stremio.StremioCatalogTarget
 import com.example.data.stremio.StremioManifest
@@ -81,14 +80,6 @@ class DefaultProviderCatalogResolver(
   /** true se esiste almeno un binding dichiarato per il provider. */
   fun hasBindingsFor(providerId: String): Boolean = bindingsFor(providerId).isNotEmpty()
 
-  /**
-   * LEGACY: true se [addonManifestId] identifica l'addon di sistema storico
-   * (Cinemeta). Dopo la migrazione a TMDB non esiste più una sorgente nativa
-   * "addon": la Home usa TMDB e questo controllo resta per compatibilità.
-   */
-  fun isSystemDefaultAddon(addonManifestId: String?): Boolean =
-    CinemetaAddon.isSystemAddon(addonManifestId)
-
   companion object {
     /** I provider dell'app, esposti come vista dati con i loro alias dichiarativi. */
     fun defaultAliasProviders(): List<ProviderAliasProvider> =
@@ -150,18 +141,15 @@ object ProviderCatalogResolvers {
  * REGOLE (in ordine)
  * 1. **Addon di catalogo personalizzati attivi** (Xperience / Easy Catalog / ...,
  *    cioè `hasCustomCatalogAddons() == true`):
- *     - eventuali cataloghi di **Cinemeta non entrano MAI** nel piano del provider:
- *       [selectTargets] li esclude a monte e [matchesProvider] rifiuta ogni
- *       target Cinemeta anche se qualcuno arrivasse a valle (difesa storica: dopo
- *       la migrazione TMDB l'addon di sistema non è più una sorgente);
  *     - i cataloghi degli addon attivi vengono associati al provider con un match
  *       DICHIARATIVO sul manifest dell'addon: `catalog.id`, `catalog.name`, il nome
  *       dell'addon e i valori dichiarati per gli extra `genre` / `provider` /
- *       `platform` ([matchesProvider]).
+ *       `platform` ([matchesProvider]);
+ *     - una volta installati, i loro cataloghi sostituiscono completamente TMDB
+ *       nella gestione dei cataloghi del provider.
  * 2. **Nessun addon di catalogo personalizzato** (`hasCustomCatalogAddons() == false`):
  *    il piano del provider resta VUOTO e la schermata usa il catalogo nativo TMDB
- *    Discover (`with_watch_providers`). Il vecchio fallback Cinemeta
- *    ([systemDefaultBinding]) non viene più costruito: resta solo per compatibilità.
+ *    Discover (`with_watch_providers`), gestore nativo dei cataloghi di StreamNova.
  * 3. Il confronto è su **confine di token** (mai sottostringa grezza: "max" non
  *    matcha "maxwell", "apple" non matcha "pineapple") e copre i token ESATTI di
  *    ogni piattaforma (`prime` / `amazon`, `paramount`, `now` / `nowtv`,
@@ -174,8 +162,8 @@ object ProviderCatalogResolvers {
  *
  * IMPORTANTE: questo oggetto NON tocca [ProviderCatalogResolver.resolve]: la
  * sorgente dichiarata (USER → REGISTRY) resta intatta. I binding prodotti qui
- * vengono iniettati nel piano dal [ProviderCatalogPlanner] e portano sorgenti
- * distinte ([BindingSource.CUSTOM_ADDON] / [BindingSource.SYSTEM_DEFAULT]).
+ * vengono iniettati nel piano dal [ProviderCatalogPlanner] e portano la sorgente
+ * [BindingSource.CUSTOM_ADDON].
  */
 object ProviderCatalogSourcePolicy {
 
@@ -188,8 +176,6 @@ object ProviderCatalogSourcePolicy {
    * gli alias corti ("prime", "apple", "hbo") dai falsi positivi su sottostringhe.
    */
   private const val MIN_COMPACT_ALIAS_LENGTH = 6
-
-  private const val CINEMETA_TOKEN = "cinemeta"
 
   private const val CRUNCHYROLL_ID = "crunchyroll"
 
@@ -215,34 +201,6 @@ object ProviderCatalogSourcePolicy {
   private val NON_ALPHANUMERIC = Regex("[^a-z0-9]+")
   private val REPEATED_SPACES = Regex("\\s+")
 
-  /** true se [addonId]/[baseUrl] identificano l'addon di sistema Cinemeta. */
-  fun isCinemeta(addonId: String?, baseUrl: String? = null): Boolean {
-    val id = addonId?.trim()?.lowercase().orEmpty()
-    val url = baseUrl?.trim()?.lowercase().orEmpty()
-    if (id.isEmpty() && url.isEmpty()) return false
-    return id.contains(CINEMETA_TOKEN) ||
-      url.contains(CINEMETA_TOKEN) ||
-      id == CinemetaAddon.MANIFEST_ID.lowercase() ||
-      url == CinemetaAddon.BASE_URL.lowercase()
-  }
-
-  /** true se il target appartiene a Cinemeta (id manifest o URL base). */
-  fun isCinemetaTarget(target: StremioCatalogTarget): Boolean =
-    isCinemeta(target.addonId, target.baseUrl)
-
-  /**
-   * Target ammessi nella schermata del provider.
-   *
-   * Con addon di catalogo personalizzati attivi i target Cinemeta vengono rimossi
-   * per sempre: i cataloghi dell'addon DEVONO sostituire al 100% quelli di Cinemeta.
-   * Senza addon personalizzati Cinemeta resta disponibile come fallback.
-   */
-  fun selectTargets(
-    targets: List<StremioCatalogTarget>,
-    hasCustomCatalogAddons: Boolean
-  ): List<StremioCatalogTarget> =
-    if (hasCustomCatalogAddons) targets.filterNot { isCinemetaTarget(it) } else targets
-
   /** Alias effettivi del provider (alias dichiarativi + slug + nome), normalizzati. */
   fun aliasesOf(provider: ProviderAliasProvider): Set<String> =
     (provider.providerAliases + provider.providerId + provider.providerName)
@@ -267,14 +225,13 @@ object ProviderCatalogSourcePolicy {
    *
    * [addonCatalogIds] è l'elenco dei cataloghi dello stesso addon e serve al
    * fallback Crunchyroll: il token `anime` vale SOLO se l'addon non espone
-   * cataloghi Crunchyroll espliciti. I target Cinemeta non corrispondono MAI.
+   * cataloghi Crunchyroll espliciti.
    */
   fun matchesProvider(
     provider: ProviderAliasProvider,
     target: StremioCatalogTarget,
     addonCatalogIds: Collection<String> = emptyList()
   ): Boolean {
-    if (isCinemetaTarget(target)) return false
     val providerId = provider.providerId.trim().lowercase()
     val aliases = aliasesOf(provider) + CATALOG_ID_TOKENS[providerId].orEmpty()
     if (aliases.isEmpty()) return false
@@ -323,24 +280,6 @@ object ProviderCatalogSourcePolicy {
     }
 
   /**
-   * LEGACY: binding di fallback sui cataloghi di sistema Cinemeta.
-   *
-   * Dopo la migrazione a TMDB non viene più usato: senza addon il piano del
-   * provider resta vuoto e la schermata usa TMDB Discover. Resta per compatibilità
-   * con i test e con eventuali chiamanti storici; un piano che lo contenesse va
-   * comunque marcato `fallbackToDefault` e non può valere copertura `FULL`.
-   */
-  fun systemDefaultBinding(
-    provider: ProviderAliasProvider,
-    target: StremioCatalogTarget
-  ): ProviderBinding? =
-    if (isCinemetaTarget(target)) {
-      bindingFor(provider, target, BindingSource.SYSTEM_DEFAULT)
-    } else {
-      null
-    }
-
-  /**
    * Extra di PIATTAFORMA dichiarati dal manifest da inviare per [target]
    * (es. `provider=Prime Video`, `platform=Paramount+`, `genre=...`).
    *
@@ -353,7 +292,6 @@ object ProviderCatalogSourcePolicy {
     provider: ProviderAliasProvider,
     target: StremioCatalogTarget
   ): Map<String, String> {
-    if (isCinemetaTarget(target)) return emptyMap()
     val aliases = aliasesOf(provider)
     if (aliases.isEmpty()) return emptyMap()
 

@@ -210,10 +210,8 @@
     <string name="search_category_type_movies">film</string>
     <string name="search_category_type_series">serie TV</string>
     <string name="search_category_tmdb_fallback_reason">Nessun catalogo configurato copre questo genere: titoli mostrati da TMDB</string>
-    <string name="search_category_tmdb_after_empty_movies">Nessun risultato dal catalogo addon. Ecco i film trovati su TMDB.</string>
-    <string name="search_category_tmdb_after_empty_series">Nessun risultato dal catalogo addon. Ecco le serie TV trovate su TMDB.</string>
     <string name="search_category_tmdb_no_results">Nessun risultato per %1$s nemmeno su TMDB</string>
-    <string name="search_category_tmdb_disabled">Nessun catalogo configurato copre il genere “%1$s”: attiva “Usa TMDB come fallback per i generi” nelle Impostazioni per trovare titoli su TMDB.</string>
+    <string name="search_category_addon_no_genre">Nessun catalogo configurato copre il genere “%1$s”.</string>
     <string name="search_category_tmdb_unavailable">Ricerca TMDB non disponibile: verifica la connessione e riprova</string>
     <string name="search_category_empty_type">Catalogo %1$s interrogato ma senza risultati</string>
     <string name="search_category_failed_type">Catalogo %1$s non raggiungibile: riprova più tardi</string>
@@ -352,9 +350,6 @@
     <string name="settings_cw_sort_default">Predefinito</string>
     <string name="settings_cw_sort_title">Titolo (A-Z)</string>
     <string name="settings_cw_sort_rating">Voto TMDB</string>
-    <string name="settings_search_section">Ricerca e cataloghi</string>
-    <string name="settings_tmdb_genre_fallback">Usa TMDB come fallback per i generi</string>
-    <string name="settings_tmdb_genre_fallback_desc">Trova film e serie TV tramite TMDB quando nessuno dei cataloghi configurati supporta il genere selezionato.</string>
     <string name="settings_value_on">ON</string>
     <string name="settings_value_off">OFF</string>
     <string name="settings_http_desc">In questa modalità StreamNova riproduce direttamente i flussi degli scraper web gratuiti (VixSrc, AnimeSaturn, CB01 e altri): non servono account Debrid né chiavi API esterne.</string>

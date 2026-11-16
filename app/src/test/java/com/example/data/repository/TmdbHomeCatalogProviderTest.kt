@@ -481,7 +481,7 @@ class TmdbHomeCatalogProviderTest {
   }
 
   @Test
-  fun unaRigaProviderSenzaRisultatiSpariceSenzaFallbackCinemeta() = runBlocking {
+  fun unaRigaProviderSenzaRisultatiSpariceSenzaFallback() = runBlocking {
     // Apple TV+ non ha film nella finestra: sparisce SOLO quella riga.
     server.emptyProviderRows += "movie:${TmdbHomeCatalogProvider.ItalyProviderIds.APPLE_TV_PLUS}"
 
@@ -492,7 +492,7 @@ class TmdbHomeCatalogProviderTest {
     assertNull(sections.firstOrNull { it.id == TmdbHomeCatalogProvider.SECTION_APPLE_MOVIES_NEW })
     assertNotNull(sections.firstOrNull { it.id == TmdbHomeCatalogProvider.SECTION_APPLE_SERIES_NEW })
     assertNotNull(sections.firstOrNull { it.id == TmdbHomeCatalogProvider.SECTION_NETFLIX_MOVIES_NEW })
-    // Nessun contenuto addon/Cinemeta è stato interrogato né costruito.
+    // Nessun contenuto addon è stato interrogato né costruito.
     assertTrue(sections.all { it.origin == CatalogSourceOrigin.TMDB_NATIVE })
     assertTrue(sections.all { it.addonId == null && it.addonName == null })
     assertTrue(server.requests.none { it.path.startsWith("/catalog/") })
@@ -532,25 +532,27 @@ class TmdbHomeCatalogProviderTest {
   // ── 5. Integrazione con resolveHomeCatalogs ────────────────────────────────
 
   /**
-   * Righe stock sintetiche con gli id reali del manifest Cinemeta. Il loader è
+   * Righe stock sintetiche con gli id reali dei cataloghi TMDB nativi. Il loader è
    * iniettato: la Home non deve dipendere dalla rete nei test, ma la forma delle
-   * sezioni (catalogId, mediaType, origin) è quella prodotta dal repository.
+   * sezioni (catalogId, mediaType, origin, homeSlot) è quella prodotta da
+   * [TmdbHomeCatalogProvider.loadStockSections].
    */
-  private fun syntheticCinemetaStock(): List<CatalogSection> {
-    fun cinemetaSection(
+  private fun syntheticTmdbStock(): List<CatalogSection> {
+    fun tmdbSection(
       catalogId: String,
+      slot: HomeCatalogSlot,
       mediaType: MediaType,
       itemId: String,
       title: String
     ): CatalogSection = CatalogSection(
-      id = "stremio_com.linvo.cinemeta_" +
-        "${if (mediaType == MediaType.SERIE_TV) "series" else "movie"}_$catalogId",
-      title = "$catalogId • Cinemeta",
-      addonId = "com.linvo.cinemeta",
-      addonName = "Cinemeta",
+      id = "tmdb_home_" +
+        "${if (mediaType == MediaType.SERIE_TV) "series" else "movies"}_${catalogId}",
+      title = title,
+      addonId = null,
+      addonName = null,
       catalogId = catalogId,
       mediaType = mediaType,
-      origin = CatalogSourceOrigin.STREMIO_ADDON,
+      origin = CatalogSourceOrigin.TMDB_NATIVE,
       items = listOf(
         MediaItem(
           id = itemId,
@@ -559,47 +561,88 @@ class TmdbHomeCatalogProviderTest {
           videoUrl = "",
           type = mediaType
         )
-      )
+      ),
+      homeSlot = slot
     )
 
     return listOf(
-      cinemetaSection("top", MediaType.FILM, "tt1001", "Popolare Film"),
-      cinemetaSection("top", MediaType.SERIE_TV, "tt2001", "Popolare Serie"),
-      cinemetaSection("imdbRating", MediaType.FILM, "tt1002", "Film in evidenza"),
-      cinemetaSection("imdbRating", MediaType.SERIE_TV, "tt2002", "Serie in evidenza"),
-      cinemetaSection("year", MediaType.FILM, "tt1003", "Nuovo Film"),
-      cinemetaSection("year", MediaType.SERIE_TV, "tt2003", "Nuova Serie")
+      tmdbSection(
+        TmdbHomeCatalogProvider.CATALOG_POPULAR_MOVIES,
+        HomeCatalogSlot.POPULAR,
+        MediaType.FILM,
+        "tmdb_m_1001",
+        "Popolare Film"
+      ),
+      tmdbSection(
+        TmdbHomeCatalogProvider.CATALOG_POPULAR_SERIES,
+        HomeCatalogSlot.POPULAR,
+        MediaType.SERIE_TV,
+        "tmdb_tv_2001",
+        "Popolare Serie"
+      ),
+      tmdbSection(
+        TmdbHomeCatalogProvider.CATALOG_TOP_RATED_MOVIES,
+        HomeCatalogSlot.TOP_RATED,
+        MediaType.FILM,
+        "tmdb_m_1002",
+        "Film in evidenza"
+      ),
+      tmdbSection(
+        TmdbHomeCatalogProvider.CATALOG_TOP_RATED_SERIES,
+        HomeCatalogSlot.TOP_RATED,
+        MediaType.SERIE_TV,
+        "tmdb_tv_2002",
+        "Serie in evidenza"
+      ),
+      tmdbSection(
+        TmdbHomeCatalogProvider.CATALOG_NEW_MOVIES,
+        HomeCatalogSlot.NEW,
+        MediaType.FILM,
+        "tmdb_m_1003",
+        "Nuovo Film"
+      ),
+      tmdbSection(
+        TmdbHomeCatalogProvider.CATALOG_NEW_SERIES,
+        HomeCatalogSlot.NEW,
+        MediaType.SERIE_TV,
+        "tmdb_tv_2003",
+        "Nuova Serie"
+      )
     )
   }
 
   @Test
-  fun laHomeSenzaAddonUsaCinemetaPerLeRigheStockELeNovitaProviderPerLeRigheExtra() = runBlocking {
-    val stock = syntheticCinemetaStock()
+  fun laHomeSenzaAddonUsaLeRigheStockTmdbELeNovitaProviderPerLeRigheExtra() = runBlocking {
+    val stock = syntheticTmdbStock()
     val catalogs = StremioCatalogRepository.resolveHomeCatalogs(emptyList()) { mediaTypes ->
       stock.filter { it.mediaType in mediaTypes } +
         TmdbHomeCatalogProvider.loadProviderNewSections(mediaTypes)
     }
 
-    // Righe stock: dati Cinemeta, Film e Serie TV separati.
-    assertEquals(listOf("tt1001"), catalogs.popularMovies.map { it.id })
-    assertEquals(listOf("tt1002"), catalogs.top10Movies.map { it.id })
-    assertEquals(listOf("tt1003"), catalogs.trendingMovies.map { it.id })
-    assertEquals(listOf("tt2001"), catalogs.popularSeries.map { it.id })
-    assertEquals(listOf("tt2002"), catalogs.top10Series.map { it.id })
-    assertEquals(listOf("tt2003"), catalogs.trendingSeries.map { it.id })
-    assertEquals(listOf("tt1001", "tt1002", "tt1003"), catalogs.allMovies.map { it.id })
-    assertEquals(listOf("tt2001", "tt2002", "tt2003"), catalogs.allSeries.map { it.id })
+    // Righe stock: dati TMDB nativi, Film e Serie TV separati.
+    assertEquals(listOf("tmdb_m_1001"), catalogs.popularMovies.map { it.id })
+    assertEquals(listOf("tmdb_m_1002"), catalogs.top10Movies.map { it.id })
+    assertEquals(listOf("tmdb_m_1003"), catalogs.trendingMovies.map { it.id })
+    assertEquals(listOf("tmdb_tv_2001"), catalogs.popularSeries.map { it.id })
+    assertEquals(listOf("tmdb_tv_2002"), catalogs.top10Series.map { it.id })
+    assertEquals(listOf("tmdb_tv_2003"), catalogs.trendingSeries.map { it.id })
+    assertEquals(
+      listOf("tmdb_m_1001", "tmdb_m_1002", "tmdb_m_1003"),
+      catalogs.allMovies.map { it.id }
+    )
+    assertEquals(
+      listOf("tmdb_tv_2001", "tmdb_tv_2002", "tmdb_tv_2003"),
+      catalogs.allSeries.map { it.id }
+    )
     assertTrue(catalogs.heroItems.isNotEmpty())
 
-    // La paginazione delle schermate categoria usa Cinemeta, non TMDB.
-    assertTrue(catalogs.moviesFromDefaultCatalog)
-    assertTrue(catalogs.seriesFromDefaultCatalog)
-    assertFalse(catalogs.moviesFromTmdbDefault)
-    assertFalse(catalogs.seriesFromTmdbDefault)
-    assertTrue(catalogs.isMoviesFromStremio)
-    assertTrue(catalogs.isSeriesFromStremio)
+    // La paginazione delle schermate categoria usa TMDB, non Stremio.
+    assertTrue(catalogs.moviesFromTmdbDefault)
+    assertTrue(catalogs.seriesFromTmdbDefault)
+    assertFalse(catalogs.isMoviesFromStremio)
+    assertFalse(catalogs.isSeriesFromStremio)
     assertFalse(catalogs.hasCustomCatalogAddons)
-    assertEquals(CatalogSourceOrigin.STREMIO_ADDON, catalogs.stockSourceOrigin)
+    assertEquals(CatalogSourceOrigin.TMDB_NATIVE, catalogs.stockSourceOrigin)
 
     // Righe extra: solo le 10 Novità provider, nell'ordine editoriale richiesto.
     assertEquals(expectedNoveltyRowIds(), catalogs.extraSections.map { it.id })

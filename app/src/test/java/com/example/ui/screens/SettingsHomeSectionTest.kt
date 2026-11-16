@@ -74,10 +74,10 @@ class SettingsHomeSectionTest {
   }
 
   @Test
-  // Viewport alto: Motore di Riproduzione, HOME e Ricerca sono composti insieme e le
+  // Viewport alto: Motore di Riproduzione, HOME e Riproduzione sono composti insieme e le
   // posizioni verticali sono confrontabili senza dipendere dai limiti dello scroll.
   @Config(sdk = [34], qualifiers = "it-w1280dp-h3000dp-tvdpi")
-  fun laSezioneHomeSiTrovaTraMotoreDiRiproduzioneERicerca() {
+  fun laSezioneHomeSiTrovaTraMotoreDiRiproduzioneERiproduzione() {
     rule.setContent { SettingsScreen(viewModel = null) }
     rule.waitForIdle()
 
@@ -85,7 +85,7 @@ class SettingsHomeSectionTest {
       .fetchSemanticsNode().positionInRoot.y
     val homeTop = rule.onNodeWithText("HOME")
       .fetchSemanticsNode().positionInRoot.y
-    val searchTop = rule.onNodeWithText("RICERCA E CATALOGHI")
+    val playbackTop = rule.onNodeWithText("RIPRODUZIONE")
       .fetchSemanticsNode().positionInRoot.y
 
     assertTrue(
@@ -93,8 +93,8 @@ class SettingsHomeSectionTest {
       engineTop < homeTop
     )
     assertTrue(
-      "Ricerca e cataloghi deve stare sotto HOME (home=$homeTop, search=$searchTop)",
-      homeTop < searchTop
+      "Riproduzione deve stare sotto HOME (home=$homeTop, playback=$playbackTop)",
+      homeTop < playbackTop
     )
   }
 

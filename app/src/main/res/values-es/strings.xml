@@ -208,10 +208,8 @@
      <string name="search_category_type_movies">películas</string>
      <string name="search_category_type_series">series</string>
      <string name="search_category_tmdb_fallback_reason">Ningún catálogo configurado cubre este género: títulos mostrados desde TMDB</string>
-     <string name="search_category_tmdb_after_empty_movies">Sin resultados del catálogo del addon. Estas son las películas encontradas en TMDB.</string>
-     <string name="search_category_tmdb_after_empty_series">Sin resultados del catálogo del addon. Estas son las series de TV encontradas en TMDB.</string>
     <string name="search_category_tmdb_no_results">Ningún resultado para %1$s tampoco en TMDB</string>
-     <string name="search_category_tmdb_disabled">Ningún catálogo configurado cubre el género «%1$s»: activa «Usar TMDB como respaldo para los géneros» en Ajustes para encontrar títulos en TMDB.</string>
+    <string name="search_category_addon_no_genre">Ningún catálogo configurado cubre el género «%1$s».</string>
      <string name="search_category_tmdb_unavailable">Búsqueda TMDB no disponible: comprueba la conexión e inténtalo de nuevo</string>
      <string name="search_category_empty_type">Catálogo de %1$s consultado pero sin resultados</string>
      <string name="search_category_failed_type">Catálogo de %1$s no accesible: inténtalo más tarde</string>
@@ -350,9 +348,6 @@
      <string name="settings_cw_sort_default">Predeterminado</string>
      <string name="settings_cw_sort_title">Título (A-Z)</string>
      <string name="settings_cw_sort_rating">Voto TMDB</string>
-     <string name="settings_search_section">Búsqueda y catálogos</string>
-     <string name="settings_tmdb_genre_fallback">Usar TMDB como respaldo para los géneros</string>
-     <string name="settings_tmdb_genre_fallback_desc">Encuentra películas y series mediante TMDB cuando ninguno de los catálogos configurados admite el género seleccionado.</string>
      <string name="settings_value_on">ON</string>
      <string name="settings_value_off">OFF</string>
      <string name="settings_http_desc">En este modo StreamNova reproduce directamente los flujos de los scrapers web gratuitos (VixSrc, AnimeSaturn, CB01 y otros): no se necesita ninguna cuenta Debrid ni clave API externa.</string>

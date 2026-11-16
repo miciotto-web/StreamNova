@@ -241,14 +241,14 @@ enum class CategoryCatalogFilter(
 /**
  * Ordinamento delle schede nelle sezioni Film e Serie TV, selezionato dai badge in alto.
  *
- * L'ordine è puramente CLIENT-SIDE e non cambia la sorgente del catalogo (Cinemeta, addon
- * dell'utente o TMDB): i badge riordinano le schede già caricate e la paginazione continua a
+ * L'ordine è puramente CLIENT-SIDE e non cambia la sorgente del catalogo (TMDB o addon
+ * dell'utente): i badge riordinano le schede già caricate e la paginazione continua a
  * lavorare sulla lista originale.
  *
  * - [RECENTI]: uscita più recente per prima (`releaseDate`, poi `year`).
  * - [PER_VALUTAZIONE]: voto più alto per primo (`rating`).
  * - [POPOLARI]: ordine nativo del catalogo. È l'ordine in cui la sorgente restituisce i
- *   contenuti (per Cinemeta/TMDB e per i cataloghi degli addon è l'ordine di popolarità
+ *   contenuti (per TMDB e per i cataloghi degli addon è l'ordine di popolarità
  *   dichiarato dal provider): nessun riordino, quindi la selezione non altera ciò che
  *   l'utente vedeva prima di scegliere un altro badge.
  */
@@ -2820,7 +2820,6 @@ fun SettingsScreen(
   val httpExperimentalProvidersEnabled =
     AppSettingsRepository.httpExperimentalProvidersEnabled.collectAsState().value
   val autoplayEnabled = viewModel?.autoplayEnabled?.collectAsState()?.value ?: false
-  val tmdbGenreFallbackEnabled = viewModel?.tmdbGenreFallbackEnabled?.collectAsState()?.value ?: true
   val hideUnreleasedContent = viewModel?.hideUnreleasedContent?.collectAsState()?.value
     ?: AppSettingsRepository.hideUnreleasedContent.collectAsState().value
   // Sezione «Continua a guardare»: stessa sorgente di verità della riga Home.
@@ -3321,20 +3320,6 @@ fun SettingsScreen(
             value = continueWatchingSortLabel(continueWatchingPreferences.sort),
             onClick = { showContinueWatchingSortDialog = true },
             showChevron = true
-          )
-        }
-      }
-
-      // ── RICERCA E CATALOGHI ─────────────────────────────────────────────
-      // Lo switch più vicino alla sua area di effetto: la sezione Ricerca e i
-      // cataloghi. La descrizione vive dentro la riga, sotto il titolo.
-      item {
-        SettingsSection(title = stringResource(R.string.settings_search_section)) {
-          SettingsSwitchRow(
-            title = stringResource(R.string.settings_tmdb_genre_fallback),
-            subtitle = stringResource(R.string.settings_tmdb_genre_fallback_desc),
-            checked = tmdbGenreFallbackEnabled,
-            onCheckedChange = { viewModel?.setTmdbGenreFallbackEnabled(it) }
           )
         }
       }

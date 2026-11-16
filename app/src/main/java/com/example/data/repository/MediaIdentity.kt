@@ -28,8 +28,8 @@ import com.example.data.model.MediaItem
  *   l'originale.
  *
  * L'id IMDb non è una colonna di `CachedMediaItemEntity` ([MediaItem.imdbId] si perde al
- * riavvio): quando è assente si usa l'id stesso se ha la forma `tt…`, che è come il catalogo
- * Stremio/Cinemeta identifica i suoi titoli.
+ * riavvio): quando è assente si usa l'id stesso se ha la forma `tt…`, che è come i
+ * cataloghi Stremio identificano i loro titoli.
  */
 object MediaIdentity {
 

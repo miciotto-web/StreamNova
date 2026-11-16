@@ -4481,7 +4481,7 @@ object MediaRepository {
    * clear logo, certificazione ufficiale (es. `PG-13`, `TV-MA`, `VM14`), numero di
    * stagioni (serie), sinossi nella lingua dell'app e generi TMDB localizzati.
    *
-   * Sinossi e generi servono perché i cataloghi stock Cinemeta consegnano descrizioni
+   * Sinossi e generi servono ai titoli dei cataloghi addon, che consegnano descrizioni
    * in inglese non localizzabili a monte; il testo italiano arriva dal dettaglio TMDB
    * già richiesto per la certificazione (nessuna chiamata aggiuntiva). Ogni campo è
    * `null` quando TMDB non lo espone: la UI omette il segmento invece di inventarlo.
@@ -4536,8 +4536,8 @@ object MediaRepository {
    * - `seasonsCount` (solo serie) dallo stesso dettaglio (`number_of_seasons`).
    * - `localizedOverview` / `localizedGenres`: overview e generi nella lingua dell'app
    *   dallo stesso dettaglio (`append` include `translations` per il fallback di lingua,
-   *   stessa strategia dell'Hero con [HeroSynopsisLocalizer]). Serve alle righe stock
-   *   Cinemeta, che consegnano descrizioni inglesi non localizzabili a monte.
+   *   stessa strategia dell'Hero con [HeroSynopsisLocalizer]). Serve ai titoli dei
+   *   cataloghi addon, che consegnano descrizioni inglesi non localizzabili a monte.
    * - `logoUrl` delegata a [resolveLogoUrl], che ha già la sua cache Room dedicata.
    *
    * Ogni valore è cachato in Room 12h con chiave dedicata (stringa vuota = TMDB non lo
@@ -4637,6 +4637,18 @@ object MediaRepository {
       featuredCardMetaMemo[memoKey] = meta
       meta
     }
+
+  /**
+   * Clear logo del titolo per la **Hero Banner** della Home.
+   *
+   * È lo stesso meccanismo delle card «In evidenza» ([resolveLogoUrl]: endpoint `images`
+   * TMDB con priorità di lingua it → en → risoluzione massima), esposto come chiamata
+   * leggera dedicata perché la Hero non ha bisogno di certificazione/stagioni/sinossi.
+   * Il risultato è cachato in Room 12h, quindi il rientro nel carosello su un titolo
+   * già visto non rifà la richiesta di rete.
+   */
+  suspend fun fetchHeroLogo(tmdbId: Int, isTv: Boolean): String? =
+    withContext(Dispatchers.IO) { resolveLogoUrl(tmdbId, isTv) }
 
   /** Separatore dei generi nella cache Room (i nomi TMDB non contengono `|`). */
   private const val GENRE_CACHE_SEPARATOR = "|"
@@ -5829,7 +5841,8 @@ object MediaRepository {
 
   /**
    * Verifica se l'addon Stremio attivo possiede effettivamente un catalogo corrispondente
-   * ai token del provider specificato (es. Xperience) o se serve il fallback TMDB Discover (es. Cinemeta).
+   * ai token del provider specificato (es. Xperience); in mancanza la schermata usa il
+   * catalogo nativo TMDB Discover.
    */
   fun hasProviderCatalogInActiveAddon(providerId: String, isTv: Boolean): Boolean =
     com.example.data.stremio.StremioAddonRepository.hasProviderCatalog(providerId, if (isTv) "series" else "movie")

@@ -496,7 +496,7 @@ class SearchCategoryXperienceCatalogTest {
     }
 
   @Test
-  fun rispostaVuotaDelCatalogoAddonAttivaIlFallbackTmdb(): Unit = runTest(testDispatcher) {
+  fun rispostaVuotaDelCatalogoAddonERispostaDellAddon(): Unit = runTest(testDispatcher) {
     val fixture = XperienceFixture(FixtureMode.EMPTY)
     val baseUrl = fixture.start()
     try {
@@ -510,27 +510,24 @@ class SearchCategoryXperienceCatalogTest {
       val state = viewModel.categoryState.value
       assertNull(state.addonLabel)
       // Catalogo FILM COMPATIBILE (il genere è stato inviato) ma senza risultati: non è
-      // un errore, MA non ci sono risultati utili dagli addon → fallback TMDB. La stub
-      // TMDB risponde con zero risultati, quindi il caso resta dichiarato in UI.
+      // un errore, MA l'addon gestisce le categorie film e sostituisce completamente
+      // TMDB: la risposta vuota dell'addon è definitiva e TMDB non viene interrogato
+      // per i film (le serie, senza cataloghi filtrabili per genere, passano al TMDB
+      // nativo, la cui stub risponde con zero risultati → caso dichiarato in UI).
       val filmRecord = viewModel.lastGenreLoads.value.firstOrNull { it.mediaType == MediaType.FILM }
       assertEquals(
-        "Catalogo compatibile e vuoto: fallback TMDB per completare la ricerca",
-        GenreLoadReason.TMDB_FALLBACK,
+        "Catalogo compatibile e vuoto: risposta dell'addon, nessun completamento TMDB",
+        GenreLoadReason.SUPPORTED_BUT_EMPTY,
         filmRecord?.reason
       )
-      assertEquals(
-        "Il motivo registra il catalogo prima vuoto",
-        true,
-        filmRecord?.catalogWasEmpty
-      )
-      assertEquals("TMDB interrogato una volta", 1, filmRecord?.tmdbPages)
+      assertEquals("Nessuna pagina TMDB per i film", 0, filmRecord?.tmdbPages)
       assertTrue(
-        "Il caso 'nemmeno su TMDB' è dichiarato: ${state.statusMessage}",
+        "Il catalogo film vuoto è dichiarato: ${state.statusMessage}",
+        state.statusMessage.orEmpty().contains("senza risultati")
+      )
+      assertTrue(
+        "Le serie sono passate dal TMDB nativo (stub senza risultati) e il caso è dichiarato: ${state.statusMessage}",
         state.statusMessage.orEmpty().contains("nemmeno su TMDB")
-      )
-      assertTrue(
-        "La fonte non è presentata come addon",
-        state.source == SearchCategorySource.TMDB_FALLBACK
       )
       assertTrue(viewModel.categoryItems.value.none { it.provider == "Xperience" })
     } finally {

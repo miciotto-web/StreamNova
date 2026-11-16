@@ -485,7 +485,7 @@ fun PlayerScreen(
 
   // Prossimo episodio: risolto dal ViewModel (stessa stagione E+1, poi stagione
   // successiva E1). Il ViewModel carica in background gli episodi da TMDB quando
-  // media.episodes è vuota (item da catalogo/Cinemeta), garantendo che il valore
+  // media.episodes è vuota (item da catalogo addon), garantendo che il valore
   // sia disponibile anche riproducendo da "Continua a guardare" o da link riusato.
   val nextEpisode by viewModel.nextEpisode.collectAsState()
 

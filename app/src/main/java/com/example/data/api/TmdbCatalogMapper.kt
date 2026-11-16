@@ -77,7 +77,7 @@ object TmdbCatalogMapper {
 
   /**
    * Etichetta di genere usata dai filtri "Top 10" della schermata categoria: è la
-   * stessa che i cataloghi Cinemeta ricevevano in `buildCatalogSection`, così il
+   * stessa etichetta applicata da `buildCatalogSection` ai cataloghi addon, così il
    * filtro continua a funzionare con i titoli nativi TMDB.
    */
   private const val TOP_10_TAG = "Top 10"

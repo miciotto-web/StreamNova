@@ -113,7 +113,6 @@ class HideUpcomingPreferenceTest {
     AppSettingsRepository.setHideUnreleasedContent(true)
     AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.HTTP_WEB)
     AppSettingsRepository.setAutoplayEnabled(true)
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(false)
 
     assertTrue(
       "Le altre preferenze non modificano il filtro della Home",
@@ -122,6 +121,5 @@ class HideUpcomingPreferenceTest {
 
     // Ripristina i valori di default per non lasciare stato ai test successivi.
     AppSettingsRepository.setAutoplayEnabled(false)
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
   }
 }

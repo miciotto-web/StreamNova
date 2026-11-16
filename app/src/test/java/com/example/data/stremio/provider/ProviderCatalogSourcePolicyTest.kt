@@ -1,6 +1,5 @@
 package com.example.data.stremio.provider
 
-import com.example.data.stremio.CinemetaAddon
 import com.example.data.stremio.StremioCatalogDefinition
 import com.example.data.stremio.StremioCatalogTarget
 import com.example.data.stremio.TYPE_MOVIE
@@ -14,11 +13,11 @@ import org.junit.Test
 /**
  * Test della politica di SORGENTE dei cataloghi provider.
  *
- * Copre i tre vincoli richiesti:
+ * Copre i due vincoli richiesti:
  *  1. i cataloghi degli addon personalizzati (Xperience / Easy Catalog / ...)
  *     vengono associati al provider tramite id, nome ed extra dichiarati;
- *  2. Cinemeta non entra MAI nel piano quando gli addon personalizzati sono attivi;
- *  3. il fallback Cinemeta è ammesso SOLO quando `hasCustomCatalogAddons()` è false.
+ *  2. senza addon personalizzati il piano resta vuoto: la schermata usa il catalogo
+ *     nativo TMDB Discover (nessun binding viene sintetizzato).
  */
 class ProviderCatalogSourcePolicyTest {
 
@@ -62,60 +61,8 @@ class ProviderCatalogSourcePolicyTest {
     catalog = StremioCatalogDefinition(type = type, id = catalogId, name = name, extra = extra)
   )
 
-  private fun cinemetaTarget(catalogId: String = "top", name: String? = "Popular"): StremioCatalogTarget =
-    target(
-      catalogId = catalogId,
-      name = name,
-      addonId = CinemetaAddon.MANIFEST_ID,
-      addonName = CinemetaAddon.DISPLAY_NAME,
-      baseUrl = CinemetaAddon.BASE_URL
-    )
-
   private fun matches(provider: ProviderAliasProvider, target: StremioCatalogTarget): Boolean =
     ProviderCatalogSourcePolicy.matchesProvider(provider, target)
-
-  // ── Riconoscimento Cinemeta ────────────────────────────────────────────────
-
-  @Test
-  fun cinemetaVieneRiconosciutoDaIdManifestEBaseUrl() {
-    assertTrue(ProviderCatalogSourcePolicy.isCinemeta("com.linvo.cinemeta"))
-    assertTrue(ProviderCatalogSourcePolicy.isCinemeta("COM.LINVO.CINEMETA"))
-    assertTrue(ProviderCatalogSourcePolicy.isCinemeta("qualcosa.cinemeta.altro"))
-    assertTrue(ProviderCatalogSourcePolicy.isCinemeta(null, "https://v3-cinemeta.strem.io"))
-    assertTrue(ProviderCatalogSourcePolicy.isCinemeta(null, CinemetaAddon.BASE_URL))
-
-    assertFalse(ProviderCatalogSourcePolicy.isCinemeta("app.xperience.60613fcd"))
-    assertFalse(ProviderCatalogSourcePolicy.isCinemeta(null, "https://addon.example.org"))
-    assertFalse(ProviderCatalogSourcePolicy.isCinemeta(null, null))
-  }
-
-  // ── Requisito 2/3: esclusione Cinemeta condizionale ───────────────────────
-
-  @Test
-  fun selectTargetsEscludeCinemetaSoloConAddonPersonalizzatiAttivi() {
-    val cinemeta = cinemetaTarget()
-    val addon = target(catalogId = "streaming_prime_movies", name = "Prime Video")
-    val targets = listOf(cinemeta, addon)
-
-    assertEquals(
-      "Con addon personalizzati Cinemeta deve sparire dai target provider",
-      listOf(addon),
-      ProviderCatalogSourcePolicy.selectTargets(targets, hasCustomCatalogAddons = true)
-    )
-    assertEquals(
-      "Senza addon personalizzati Cinemeta resta disponibile come fallback",
-      targets,
-      ProviderCatalogSourcePolicy.selectTargets(targets, hasCustomCatalogAddons = false)
-    )
-  }
-
-  @Test
-  fun nessunTargetCinemetaCorrispondeMaiAUnProvider() {
-    // Anche un catalogo Cinemeta il cui id contenesse un alias non può essere
-    // agganciato: Cinemeta non è un addon di catalogo personalizzato.
-    assertFalse(matches(prime, cinemetaTarget(catalogId = "top", name = "Prime Video Popular")))
-    assertNull(ProviderCatalogSourcePolicy.customAddonBinding(prime, cinemetaTarget()))
-  }
 
   // ── Requisito 1: mappatura dei cataloghi addon sul provider ───────────────
 
@@ -200,24 +147,6 @@ class ProviderCatalogSourcePolicyTest {
   }
 
   @Test
-  fun systemDefaultBindingValeSoloPerICataloghiCinemeta() {
-    val cinemeta = cinemetaTarget()
-    val binding = requireNotNull(ProviderCatalogSourcePolicy.systemDefaultBinding(prime, cinemeta))
-
-    assertEquals(BindingSource.SYSTEM_DEFAULT, binding.source)
-    assertEquals("prime", binding.providerId)
-    assertEquals(
-      CatalogKey.of(CinemetaAddon.MANIFEST_ID, TYPE_MOVIE, "top"),
-      binding.key
-    )
-
-    assertNull(
-      "L'addon personalizzato non riceve il fallback di sistema",
-      ProviderCatalogSourcePolicy.systemDefaultBinding(prime, target(catalogId = "streaming_prime_movies"))
-    )
-  }
-
-  @Test
   fun platformExtraForInviaSoloILValoreDichiaratoCheCoincideColProvider() {
     val withProviderExtra = target(
       catalogId = "streaming_movies",
@@ -239,11 +168,6 @@ class ProviderCatalogSourcePolicyTest {
       "Nessuna opzione coincide con Crunchyroll: niente extra",
       emptyMap<String, String>(),
       ProviderCatalogSourcePolicy.platformExtraFor(crunchyroll, withProviderExtra)
-    )
-    assertEquals(
-      "Cinemeta non riceve mai extra di piattaforma",
-      emptyMap<String, String>(),
-      ProviderCatalogSourcePolicy.platformExtraFor(prime, cinemetaTarget())
     )
   }
 

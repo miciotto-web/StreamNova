@@ -116,7 +116,15 @@ fun HeroBanner(
   modifier: Modifier = Modifier,
   heroFocusRequester: FocusRequester? = null,
   onHeroMoveDown: (() -> Boolean)? = null,
-  onHeroFocusChanged: ((Boolean) -> Unit)? = null
+  onHeroFocusChanged: ((Boolean) -> Unit)? = null,
+  /**
+   * Loghi ORIGINALI già risolti, indicizzati per [MediaItem.id]: la fonte è il
+   * ViewModel ([StreamNovaViewModel.heroLogos]) che li recupera da TMDB con cache
+   * Room. Un valore vuoto = "già risolto senza logo": resta il titolo testuale.
+   */
+  logos: Map<String, String> = emptyMap(),
+  /** Richiede il logo del titolo corrente (idempotente lato ViewModel). */
+  onRequestLogo: ((MediaItem) -> Unit)? = null
 ) {
   val safeItems = remember(items) { items.take(9) }
   if (safeItems.isEmpty()) return
@@ -156,6 +164,16 @@ fun HeroBanner(
   }
 
   val currentMedia = safeItems.getOrElse(currentIndex) { safeItems.first() }
+
+  // Logo originale del titolo corrente: prima quello già nel MediaItem (eventuale),
+  // poi quello risolto via TMDB dal ViewModel. L'effetto parte a ogni cambio titolo
+  // (anche con l'auto-scroll): la richiesta è idempotente e cachata, quindi il
+  // carosello rientrato su un titolo già visto mostra il logo senza ritardo.
+  val heroLogoUrl = currentMedia.logoUrl?.takeIf { it.isNotBlank() }
+    ?: logos[currentMedia.id]?.takeIf { it.isNotBlank() }
+  LaunchedEffect(currentMedia.id) {
+    onRequestLogo?.invoke(currentMedia)
+  }
 
   val heroScale by animateFloatAsState(
     targetValue = if (isFocused) HERO_FOCUSED_SCALE else 1f,
@@ -307,11 +325,12 @@ fun HeroBanner(
           end = 200.dp
         )
     ) {
-      // Titolo / Logo del film o serie TMDB
-      if (!currentMedia.logoUrl.isNullOrBlank()) {
+      // Titolo / Logo ORIGINALE del film o serie (TMDB `images`, lingua it → en):
+      // finché il logo non è disponibile (o TMDB non ne ha uno) resta il titolo testuale.
+      if (!heroLogoUrl.isNullOrBlank()) {
         SubcomposeAsyncImage(
           model = ImageRequest.Builder(LocalContext.current)
-            .data(currentMedia.logoUrl)
+            .data(heroLogoUrl)
             .crossfade(350)
             .build(),
           contentDescription = currentMedia.title,

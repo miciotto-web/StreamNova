@@ -84,14 +84,6 @@ object AppSettingsRepository {
   private val KEY_PARENTAL_CONTROL_LEVEL = stringPreferencesKey("parental_control_level")
 
   /**
-   * Switch "Usa TMDB come fallback per i generi" (sezione Ricerca).
-   *
-   * Chiave stabile: rinominarla farebbe perdere la scelta dell'utente dopo un
-   * aggiornamento. Nome coerente con le altre chiavi (`<area>_<feature>_enabled`).
-   */
-  private val KEY_TMDB_GENRE_FALLBACK_ENABLED = booleanPreferencesKey("tmdb_genre_fallback_enabled")
-
-  /**
    * Switch "Nascondi contenuti non rilasciati" (sezione Home).
    *
    * Default OFF: la Home continua a mostrare esattamente ciò che mostrava prima
@@ -191,18 +183,6 @@ object AppSettingsRepository {
   /** Soglia di età del controllo genitori (default "18"). */
   val parentalControlLevel: StateFlow<String> = _parentalControlLevel.asStateFlow()
 
-  private val _tmdbGenreFallbackEnabled = MutableStateFlow(true)
-  /**
-   * Switch "Usa TMDB come fallback per i generi" (default ON: la ricerca resta più
-   * completa finché l'utente non lo disattiva).
-   *
-   * Riguarda SOLO la scoperta per tipo+genere della sezione Ricerca: quando nessun
-   * catalogo configurato copre la combinazione richiesta, TMDB viene interrogato con
-   * gli endpoint `discover`. Non tocca le altre funzionalità TMDB (metadati, dettagli,
-   * provider), che continuano a funzionare anche con lo switch disattivato.
-   */
-  val tmdbGenreFallbackEnabled: StateFlow<Boolean> = _tmdbGenreFallbackEnabled.asStateFlow()
-
   private val _hideUnreleasedContent = MutableStateFlow(false)
   /**
    * Switch "Nascondi contenuti non rilasciati" (sezione Home), default OFF.
@@ -269,7 +249,6 @@ object AppSettingsRepository {
   @Volatile private var parentalEnabledLocalWrite = false
   @Volatile private var parentalPinLocalWrite = false
   @Volatile private var parentalLevelLocalWrite = false
-  @Volatile private var tmdbGenreFallbackLocalWrite = false
   @Volatile private var hideUnreleasedLocalWrite = false
   @Volatile private var cwShowRowLocalWrite = false
   @Volatile private var cwLayoutLocalWrite = false
@@ -351,9 +330,6 @@ object AppSettingsRepository {
         }
         if (!parentalLevelLocalWrite) {
           _parentalControlLevel.value = prefs[KEY_PARENTAL_CONTROL_LEVEL] ?: "18"
-        }
-        if (!tmdbGenreFallbackLocalWrite) {
-          _tmdbGenreFallbackEnabled.value = prefs[KEY_TMDB_GENRE_FALLBACK_ENABLED] ?: true
         }
         if (!hideUnreleasedLocalWrite) {
           _hideUnreleasedContent.value = prefs[KEY_HIDE_UNRELEASED_ENABLED] ?: false
@@ -441,7 +417,6 @@ object AppSettingsRepository {
     _parentalControlEnabled.value = false
     _parentalControlPin.value = ""
     _parentalControlLevel.value = "18"
-    _tmdbGenreFallbackEnabled.value = true
     _hideUnreleasedContent.value = false
     _continueWatchingPreferences.value = ContinueWatchingPreferences()
     apiKeyLocalWrite = false
@@ -459,7 +434,6 @@ object AppSettingsRepository {
     parentalEnabledLocalWrite = false
     parentalPinLocalWrite = false
     parentalLevelLocalWrite = false
-    tmdbGenreFallbackLocalWrite = false
     hideUnreleasedLocalWrite = false
     cwShowRowLocalWrite = false
     cwLayoutLocalWrite = false
@@ -633,20 +607,6 @@ object AppSettingsRepository {
     languageLocalWrite = true
     _appLanguage.value = language
     scope.launch { dataStore?.edit { it[KEY_APP_LANGUAGE] = language } }
-  }
-
-  /**
-   * Abilita o disabilita l'uso di TMDB come fallback per i generi della sezione
-   * Ricerca. La scelta è persistita: sopravvive alla chiusura e al riavvio dell'app.
-   *
-   * Disattivandola, le altre funzionalità TMDB (metadati, dettagli, provider) NON
-   * vengono toccate: cambia solo la scoperta per genere quando nessun catalogo
-   * configurato copre la combinazione tipo+genere richiesta.
-   */
-  fun setTmdbGenreFallbackEnabled(enabled: Boolean) {
-    tmdbGenreFallbackLocalWrite = true
-    _tmdbGenreFallbackEnabled.value = enabled
-    scope.launch { dataStore?.edit { it[KEY_TMDB_GENRE_FALLBACK_ENABLED] = enabled } }
   }
 
   /**

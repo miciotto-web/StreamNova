@@ -71,9 +71,4 @@ class StremioCatalogFiltersTest {
       )
     )
   }
-
-  @Test
-  fun cinemetaNonContaComeAddonConCataloghiPersonali() {
-    assertFalse(StremioAddonRepository.isCustomCatalogAddon(CinemetaAddon.addon))
-  }
 }

@@ -2,7 +2,6 @@ package com.example.data.repository
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.data.model.MediaType
-import com.example.data.stremio.CinemetaAddon
 import com.example.data.stremio.StremioAddonRepository
 import com.example.ui.components.ProviderConstants
 import org.junit.After
@@ -17,12 +16,12 @@ import org.robolectric.annotation.Config
 /**
  * La schermata **Provider** non ha un catalogo Stremio di default: senza addon
  * utente il piano è VUOTO e la UI usa TMDB Discover (`with_watch_providers`).
- * Cinemeta non è un fallback dei cataloghi provider perché non espone
- * l'associazione titolo/provider necessaria a verificarne la disponibilità.
+ * Nessun addon built-in fornisce l'associazione titolo/provider necessaria a
+ * verificarne la disponibilità.
  *
- * La Ricerca per genere, invece, usa i target di sistema Cinemeta
- * ([StremioCatalogRepository.defaultCinemetaGenreTargets]) quando non ci sono
- * addon utente.
+ * Le Categorie della Ricerca, senza addon utente, non interrogano alcun catalogo
+ * Stremio: il tipo è servito nativamente da TMDB Discover, il gestore di cataloghi
+ * predefinito di StreamNova.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36])
@@ -57,17 +56,14 @@ class ProviderSourceTmdbDefaultTest {
   }
 
   @Test
-  fun laRicercaPerGenereUsaITargetCinemetaDiSistemaQuandoNonCiSonoAddon() {
+  fun senzaAddonLeCategorieNonHannoTargetStremioELaSorgenteETmdbNativa() {
     // I target degli addon utente restano vuoti...
     assertTrue(StremioCatalogRepository.getAvailableTargets().isEmpty())
 
-    // ...ma le categorie della Ricerca hanno i due cataloghi `top` ufficiali di Cinemeta.
-    val cinemetaTargets = StremioCatalogRepository.defaultCinemetaGenreTargets()
-    assertEquals(2, cinemetaTargets.size)
-    assertTrue(cinemetaTargets.all { it.addonId == CinemetaAddon.MANIFEST_ID })
-    assertEquals(
-      setOf(MediaType.FILM, MediaType.SERIE_TV),
-      cinemetaTargets.map { StremioCatalogRepository.toMediaType(it.type) }.toSet()
-    )
+    // ...e nessuna richiesta di catalogo Stremio viene costruita per la categoria:
+    // TMDB Discover è la fonte nativa (routing deciso dal ViewModel).
+    assertTrue(StremioCatalogRepository.findCategoryRequests(listOf("azione", "Action")).isEmpty())
+    assertFalse(StremioCatalogRepository.hasUserGenreCatalogOfType(MediaType.FILM))
+    assertFalse(StremioCatalogRepository.hasUserGenreCatalogOfType(MediaType.SERIE_TV))
   }
 }

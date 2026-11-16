@@ -160,7 +160,6 @@ class SettingsSwitchUniformityTest {
 
     val BOOLEAN_TITLES = listOf(
       "Usa TorBox Instant Debrid",
-      "Usa TMDB come fallback per i generi",
       "Avvio automatico (Autoplay)",
       "Privilegia tracce italiane",
       "Riproduci automaticamente il prossimo episodio",

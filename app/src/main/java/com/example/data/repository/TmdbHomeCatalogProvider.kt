@@ -20,16 +20,19 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
 /**
- * Provider TMDB delle NOVITÀ DEI PROVIDER per la Home di StreamNova.
+ * Provider TMDB dei cataloghi NATIVI della Home di StreamNova.
  *
- * Dopo il ripristino di Cinemeta, le righe stock (Popolari / In evidenza / Novità)
- * non sono più alimentate da TMDB: [StremioCatalogRepository] interroga i cataloghi
- * ufficiali di Cinemeta. Questo oggetto resta la sorgente delle 10 sezioni
- * `Novità <provider> Film/Serie` (Netflix, HBO / Max, Disney+, Apple TV+,
- * Paramount+), che TMDB può verificare con `with_watch_providers` per l'Italia.
+ * TMDB è il gestore di cataloghi predefinito dell'app: [loadStockSections] alimenta
+ * le righe stock (Popolari / In evidenza / Novità, Film e Serie TV separati) e
+ * [loadProviderNewSections] le 10 sezioni `Novità <provider>` (Netflix, HBO / Max,
+ * Disney+, Apple TV+, Paramount+), verificate con `with_watch_providers` per
+ * l'Italia. Gli addon utente (Xperience, Easy Catalog, ...) sostituiscono TMDB solo
+ * per i tipi che riescono realmente a popolare (vedi [StremioCatalogRepository]).
  *
- * [loadHomeSections] è la vecchia pipeline TMDB completa (stock + extra): resta
- * disponibile per i test di compatibilità ma NON è più chiamata dalla Home.
+ * [loadHomeSections] è la pipeline TMDB completa (stock + righe extra editoriali +
+ * righe provider); le righe extra ("Serie TV in onda", "Novità in digitale",
+ * "Novità HBO") restano disponibili con [includeLegacyExtraRows] ma NON fanno parte
+ * della composizione Home corrente, che usa [loadStockSections] + [loadProviderNewSections].
  *
  * MAPPATURA RIGHE PROVIDER → ENDPOINT TMDB
  * - Novità provider Film (5 righe) . `discover/movie?with_watch_providers=<id>&watch_region=IT`
@@ -56,15 +59,14 @@ import kotlinx.coroutines.withContext
  * - LIMITE TMDB DOCUMENTATO: Discover non espone la data in cui un titolo è stato
  *   aggiunto al catalogo del provider. La finestra è quindi sulla data di
  *   uscita/trasmissione, non sull'effettiva disponibilità editoriale. Se un provider
- *   ha pochi titoli nella finestra la riga è più corta (o assente); NON si usa
- *   Cinemeta come fallback.
+ *   ha pochi titoli nella finestra la riga è più corta (o assente).
  *
  * CACHE E AFFIDABILITÀ
  * - Ogni risposta passa da [MediaRepository.fetchMoviesWithCache] /
  *   [MediaRepository.fetchTvWithCache]: cache Room con TTL 12h.
  * - Un endpoint che fallisce non azzera le altre righe: ogni catalogo è isolato.
- * - Senza credenziale TMDB non parte alcuna richiesta e le righe provider restano
- *   vuote (Cinemeta, la cache locale e «Continua a guardare» restano disponibili).
+ * - Senza credenziale TMDB non parte alcuna richiesta e le righe TMDB restano
+ *   vuote (la cache locale e «Continua a guardare» restano disponibili).
  */
 object TmdbHomeCatalogProvider {
 
@@ -160,7 +162,7 @@ object TmdbHomeCatalogProvider {
   const val SECTION_PARAMOUNT_SERIES_NEW = "tmdb_paramount_series_new"
 
   /**
-   * Righe HBO / Max usate dalla Home dopo il ripristino di Cinemeta.
+   * Righe HBO / Max usate dalla Home di produzione.
    * Id distinti dalla vecchia riga network "Novità HBO" ([SECTION_HBO_NEW]).
    */
   const val SECTION_HBO_MAX_MOVIES_NEW = "tmdb_hbo_max_movies_new"
@@ -220,10 +222,15 @@ object TmdbHomeCatalogProvider {
    *
    * Restituisce le sezioni STOCK (Popolari / In evidenza / Novità) con il rispettivo
    * [HomeCatalogSlot] e le sezioni EXTRA (Serie in onda, Digitale, HBO) senza slot.
+   * Con [includeLegacyExtraRows] `false` le tre righe extra editoriali non vengono
+   * caricate (restano comunque le righe "Novità <provider>", che la Home usa sempre).
    * Le sezioni senza contenuti e gli endpoint falliti vengono omessi: le altre righe
    * restano disponibili.
    */
-  suspend fun loadHomeSections(mediaTypes: List<MediaType>): List<CatalogSection> =
+  suspend fun loadHomeSections(
+    mediaTypes: List<MediaType>,
+    includeLegacyExtraRows: Boolean = true
+  ): List<CatalogSection> =
     withContext(Dispatchers.IO) {
       if (mediaTypes.isEmpty()) return@withContext emptyList()
       val apiKey = apiKeyProvider().trim()
@@ -359,48 +366,50 @@ object TmdbHomeCatalogProvider {
             }.results.let(::mapSeries)
           }
         }
-        loaders += {
-          loadSpec(
-            label = "Serie TV in onda",
-            spec = SectionSpec(
-              id = SECTION_ON_AIR_SERIES,
-              title = labels.onAirSeries,
-              catalogId = CATALOG_ON_AIR_SERIES,
-              mediaType = MediaType.SERIE_TV,
-              slot = null
-            )
-          ) {
-            MediaRepository.fetchTvWithCache("home_tmdb_on_the_air_p1") {
-              TmdbApiClient.service.getOnTheAirTv(apiKey, language, page = 1)
-            }.results.let(::mapSeries)
-          }
-        }
-        loaders += {
-          loadSpec(
-            label = "Novità HBO",
-            spec = SectionSpec(
-              id = SECTION_HBO_NEW,
-              title = labels.hboNew,
-              catalogId = CATALOG_HBO_NEW,
-              mediaType = MediaType.SERIE_TV,
-              slot = null
-            )
-          ) {
-            MediaRepository.fetchTvWithCache("home_tmdb_hbo_new_${compactToday}_p1") {
-              TmdbApiClient.service.discoverTvByNetworks(
-                apiKey = apiKey,
-                networkIds = HBO_NETWORK_IDS,
-                firstAirDateGte = hboSince,
-                firstAirDateLte = today,
-                language = language,
-                page = 1
+        if (includeLegacyExtraRows) {
+          loaders += {
+            loadSpec(
+              label = "Serie TV in onda",
+              spec = SectionSpec(
+                id = SECTION_ON_AIR_SERIES,
+                title = labels.onAirSeries,
+                catalogId = CATALOG_ON_AIR_SERIES,
+                mediaType = MediaType.SERIE_TV,
+                slot = null
               )
-            }.results.let(::mapSeries)
+            ) {
+              MediaRepository.fetchTvWithCache("home_tmdb_on_the_air_p1") {
+                TmdbApiClient.service.getOnTheAirTv(apiKey, language, page = 1)
+              }.results.let(::mapSeries)
+            }
+          }
+          loaders += {
+            loadSpec(
+              label = "Novità HBO",
+              spec = SectionSpec(
+                id = SECTION_HBO_NEW,
+                title = labels.hboNew,
+                catalogId = CATALOG_HBO_NEW,
+                mediaType = MediaType.SERIE_TV,
+                slot = null
+              )
+            ) {
+              MediaRepository.fetchTvWithCache("home_tmdb_hbo_new_${compactToday}_p1") {
+                TmdbApiClient.service.discoverTvByNetworks(
+                  apiKey = apiKey,
+                  networkIds = HBO_NETWORK_IDS,
+                  firstAirDateGte = hboSince,
+                  firstAirDateLte = today,
+                  language = language,
+                  page = 1
+                )
+              }.results.let(::mapSeries)
+            }
           }
         }
       }
 
-      if (wantsMovies) {
+      if (wantsMovies && includeLegacyExtraRows) {
         loaders += {
           loadSpec(
             label = "Novità in digitale (IT)",
@@ -529,8 +538,34 @@ object TmdbHomeCatalogProvider {
     }
 
   /**
+   * Carica le SOLE righe stock TMDB della Home (Popolari / In evidenza / Novità,
+   * Film e Serie TV separati), senza le righe extra editoriali.
+   *
+   * È la sorgente delle righe stock della Home di produzione: TMDB è il gestore di
+   * cataloghi predefinito di StreamNova. Ogni endpoint usa la cache
+   * Room 12h; un catalogo fallito o vuoto viene omesso senza azzerare gli altri.
+   */
+  suspend fun loadStockSections(mediaTypes: List<MediaType>): List<CatalogSection> =
+    loadHomeSections(mediaTypes, includeLegacyExtraRows = false)
+      .filter { it.homeSlot != null }
+
+  /**
+   * Variante isolata delle righe stock TMDB: un errore imprevisto non deve
+   * interrompere la risoluzione della Home (le altre righe restano caricate).
+   */
+  suspend fun loadStockSectionsSafely(mediaTypes: List<MediaType>): List<CatalogSection> =
+    try {
+      loadStockSections(mediaTypes)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Righe stock TMDB non disponibili: ${e.message}")
+      emptyList()
+    }
+
+  /**
    * Carica SOLO le 10 righe "Novità <provider> Film/Serie" usate dalla Home
-   * dopo il ripristino di Cinemeta come sorgente dei cataloghi stock.
+   * accanto alle righe stock TMDB.
    *
    * Provider e ordine editoriale:
    * Netflix, HBO / Max, Disney+, Apple TV+, Paramount+ (Film e Serie alternate).
@@ -641,7 +676,7 @@ object TmdbHomeCatalogProvider {
 
   /**
    * Variante isolata delle righe Novità provider: un errore imprevisto non deve
-   * interrompere la Home (le righe Cinemeta restano caricate).
+   * interrompere la Home (le righe stock TMDB restano caricate).
    */
   suspend fun loadProviderNewSectionsSafely(mediaTypes: List<MediaType>): List<CatalogSection> =
     try {
@@ -872,9 +907,9 @@ object TmdbHomeCatalogProvider {
   )
 
   /**
-   * Righe "Novità <provider>" usate dalla Home quando i cataloghi stock sono
-   * Cinemeta. Ordine editoriale richiesto:
-   * Netflix, HBO / Max, Disney+, Apple TV+, Paramount+ (Film e Serie alternate).
+   * Righe "Novità <provider>" usate dalla Home di produzione. Ordine editoriale
+   * richiesto: Netflix, HBO / Max, Disney+, Apple TV+, Paramount+ (Film e Serie
+   * alternate).
    *
    * HBO / Max usa il provider TMDB 1899 con `watch_region=IT`: la riga mostra solo
    * titoli che TMDB associa davvero al servizio in Italia, non produzioni HBO

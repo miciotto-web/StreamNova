@@ -62,17 +62,12 @@ data class ResolvedProviderTarget(
  * @param mediaType tipo richiesto, `null` per entrambi.
  * @param resolved target risolti con il loro binding.
  * @param unmappedTargets target dichiarati ma non associabili al provider.
- * @param fallbackToDefault true se l'intero piano deriva dal FALLBACK di sistema
- *        (Cinemeta): usato SOLO quando non è attivo nessun addon di catalogo
- *        personalizzato e nessun binding dichiarato copre il provider. Non può
- *        valere copertura `FULL`.
  */
 data class ProviderCatalogPlan(
   val providerId: String,
   val mediaType: MediaType? = null,
   val resolved: List<ResolvedProviderTarget> = emptyList(),
-  val unmappedTargets: Int = 0,
-  val fallbackToDefault: Boolean = false
+  val unmappedTargets: Int = 0
 ) {
   /** true se esiste almeno un binding confermato: abilita l'override sul catalogo nativo. */
   val hasConfirmedBindings: Boolean get() = resolved.isNotEmpty()
@@ -107,9 +102,8 @@ data class ProviderCatalogPlan(
  *    `genre` obbligatorio senza opzioni sono scartati: non possono alimentare un
  *    catalogo Provider.
  * 6. **Binding iniettato**: solo se il resolver non ha una dichiarazione per la
- *    chiave può intervenire [onBindMissing], che il chiamante usa SOLO per
- *    (a) il match sui cataloghi di un addon di catalogo personalizzato attivo e
- *    (b) il fallback Cinemeta quando nessun addon personalizzato è attivo
+ *    chiave può intervenire [onBindMissing], che il chiamante usa SOLO per il
+ *    match sui cataloghi di un addon di catalogo personalizzato attivo
  *    (vedi [ProviderCatalogSourcePolicy]). Un binding iniettato sbagliato per
  *    provider o per chiave viene scartato dalla stessa difesa del punto 4.
  */

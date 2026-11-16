@@ -456,7 +456,7 @@ fun FeaturedCinemaCard(
             )
           }
           // Logo del titolo: prima l'arricchimento TMDB, poi il logo già presente nel
-          // MediaItem (le righe stock Cinemeta lo portano dal meta `logo`). Un solo
+          // MediaItem (i cataloghi addon lo portano dal meta `logo`). Un solo
           // fallback testuale se nessuna sorgente ha un logo reale: mai loghi finti.
           val logoUrl = meta?.logoUrl ?: media.logoUrl?.takeIf { it.isNotBlank() }
           if (logoUrl.isNullOrBlank()) {
@@ -497,7 +497,7 @@ fun FeaturedCinemaCard(
         .height(FeaturedInfoSlotHeight)
     ) {
       val metadataLine = featuredMetadataLine(media, meta)
-      // Sinossi nella lingua dell'app: le righe stock Cinemeta consegnano descrizioni
+      // Sinossi nella lingua dell'app: i cataloghi addon consegnano descrizioni
       // inglesi, quindi vince l'overview TMDB localizzata dell'arricchimento quando
       // esiste (già validata dal localizer dell'Hero); altrimenti quella dell'item.
       val synopsis = (meta?.localizedOverview?.takeIf { it.isNotBlank() } ?: media.synopsis)
@@ -582,8 +582,8 @@ private fun featuredMetadataLine(
   meta: MediaRepository.FeaturedCardMeta?
 ): String? {
   val parts = mutableListOf<String>()
-  // Genere localizzato TMDB quando l'arricchimento l'ha portato (le righe stock
-  // Cinemeta espongono generi inglesi); altrimenti il genere già sull'item.
+  // Genere localizzato TMDB quando l'arricchimento l'ha portato (i cataloghi addon
+  // espongono generi inglesi); altrimenti il genere già sull'item.
   val genre = meta?.localizedGenres?.firstOrNull()?.takeIf { it.isNotBlank() }
     ?: media.genres.firstOrNull()?.takeIf { it.isNotBlank() }
   genre?.let { parts.add(it) }

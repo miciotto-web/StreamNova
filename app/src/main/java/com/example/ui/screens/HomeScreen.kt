@@ -1588,6 +1588,11 @@ fun HomeMainBrowsingContent(
   val featuredCardMetaState = viewModel?.featuredCardMeta?.collectAsState()
   val featuredCardMetaMap = featuredCardMetaState?.value ?: emptyMap()
 
+  // Loghi ORIGINALI dei titoli della Hero (TMDB `images`, cache Room): il carosello
+  // li richiede al ViewModel a ogni cambio titolo; finché non arrivano resta il
+  // titolo testuale.
+  val heroLogosMap = viewModel?.heroLogos?.collectAsState()?.value ?: emptyMap()
+
   val top10Movies = remember(homeCatalogs) {
     if (hasCustomCatalogMovies) emptyList()
     else homeCatalogs?.top10Movies?.take(StremioCatalogRepository.HOME_TOP_10_SIZE) ?: emptyList()
@@ -2553,6 +2558,10 @@ fun HomeMainBrowsingContent(
               coordinator.requestVerticalMove("hero_banner", null, HomeVerticalDirection.DOWN)
             },
             onHeroFocusChanged = { if (it) coordinator.onCellFocused("hero_banner", 0) },
+            // Logo originale del titolo corrente: richiesto al ViewModel a ogni cambio
+            // slide (idempotente, cachato); finché non arriva resta il titolo testuale.
+            logos = heroLogosMap,
+            onRequestLogo = { viewModel?.ensureHeroLogo(it) },
             modifier = Modifier.focusProperties { canFocus = !heroFocusLocked }
           )
           Spacer(modifier = Modifier.height(16.dp))

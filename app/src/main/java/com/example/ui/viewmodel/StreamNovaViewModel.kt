@@ -470,18 +470,14 @@ enum class SearchCategorySource {
  * @param statusMessage motivo del fallback oppure errore riscontrato sugli addon:
  *        mostrato in UI per non mascherare un catalogo non caricato.
  * @param genresCatalogsCopied true quando i cataloghi configurati possono coprire TUTTI
- *        i tipi previsti dalla categoria (film e/o serie): la fonte sono gli addon e il
- *        fallback TMDB non è stato usato.
- * @param genresTmdbSkipped true quando TMDB è stato usato come fallback per i generi MA
- *        lo switch "Usa TMDB come fallback per i generi" è disattivato: nessuna chiamata
- *        TMDB per questa categoria, solo lo stato vuoto dichiarato.
+ *        i tipi previsti dalla categoria (film e/o serie): la fonte sono gli addon e
+ *        TMDB non è stato usato.
  */
 data class SearchCategoryState(
   val source: SearchCategorySource? = null,
   val addonLabel: String? = null,
   val statusMessage: String? = null,
-  val genresCatalogsCopied: Boolean = false,
-  val genresTmdbSkipped: Boolean = false
+  val genresCatalogsCopied: Boolean = false
 )
 
 /**
@@ -515,17 +511,24 @@ enum class GenreLoadReason {
   /** Almeno un catalogo configurato applica il filtro per genere: fonte = addon. */
   SUPPORTED_BY_CATALOG,
 
-  /** Catalogo compatibile interrogato ma senza risultati, con il fallback TMDB disattivato. */
+  /** Catalogo compatibile interrogato ma senza risultati: la risposta è dell'addon. */
   SUPPORTED_BUT_EMPTY,
 
-  /** Cataloghi compatibili falliti (rete/HTTP): il fallback TMDB NON deve mascherarli. */
+  /** Cataloghi compatibili falliti (rete/HTTP): TMDB NON deve mascherarli. */
   FAILED,
 
-  /** Nessun catalogo configurato applica il filtro per genere: risultati da TMDB. */
+  /**
+   * Nessun catalogo addon copre questo tipo (o la combinazione tipo+genere):
+   * risultati dal gestore di cataloghi nativo TMDB.
+   */
   TMDB_FALLBACK,
 
-  /** Nessun catalogo compatibile e switch disattivato: nessuna chiamata TMDB. */
-  TMDB_DISABLED,
+  /**
+   * Un addon dell'utente gestisce il tipo ma nessun suo catalogo copre il genere:
+   * l'addon sostituisce completamente TMDB nella gestione dei cataloghi, quindi
+   * nessuna chiamata TMDB e stato vuoto dichiarato.
+   */
+  ADDON_NO_COVERAGE,
 
   /** Nessun catalogo compatibile e TMDB non configurato/non raggiungibile. */
   TMDB_UNAVAILABLE,
@@ -1214,8 +1217,8 @@ class StreamNovaViewModel(
         // SORGENTE PRIMARIA: i cataloghi `studio_*` dell'addon attivo (es. Xperience).
         // Il TMDB Discover è il FALLBACK: si usa per un tipo solo quando l'addon non è
         // installato/disabilitato o non dichiara i cataloghi richiesti (target vuoti).
-        // Senza addon di catalogo (prima installazione, solo Cinemeta) la sorgente è
-        // SEMPRE il TMDB Discover, che alimenta anche Cinemeta.
+        // Senza addon di catalogo (prima installazione) la sorgente è SEMPRE il
+        // TMDB Discover, il gestore di cataloghi nativo dell'app.
         val addonQuery = when (filter) {
           StudioCatalogFilter.LATEST_MOVIES -> StremioCatalogRepository.StudioAddonQuery.LATEST_MOVIES
           StudioCatalogFilter.TOP_10 -> StremioCatalogRepository.StudioAddonQuery.TOP_RATED
@@ -1744,7 +1747,7 @@ class StreamNovaViewModel(
 
   /**
    * Episodi caricati in background per (mediaId, stagione) quando `media.episodes`
-   * è vuota al momento del play (item da catalogo/Cinemeta senza episodi inline).
+   * è vuota al momento del play (item da catalogo addon senza episodi inline).
    */
   private val playerSeasonEpisodes = mutableMapOf<Pair<String, Int>, List<Episode>>()
 
@@ -2146,13 +2149,7 @@ class StreamNovaViewModel(
     val itemCount: Int = 0,
     val confirmedCatalogs: Int = 0,
     /** Copertura del catalogo provider: NONE = TMDB, PARTIAL = merge, FULL = solo Stremio. */
-    val coverage: ProviderCoverage = ProviderCoverage.NONE,
-    /**
-     * LEGACY: true se i cataloghi Stremio provenivano dal vecchio fallback Cinemeta.
-     * Il percorso nativo attuale è TMDB Discover; il flag resta per compatibilità
-     * con lo stato UI esistente.
-     */
-    val fallbackToDefault: Boolean = false
+    val coverage: ProviderCoverage = ProviderCoverage.NONE
   )
 
   private val _stremioProviderStates = MutableStateFlow<Map<String, StremioProviderCatalogState>>(emptyMap())
@@ -2262,12 +2259,8 @@ class StreamNovaViewModel(
     val movies = mediaList.filter { it.type == MediaType.FILM }
     val series = mediaList.filter { it.type == MediaType.SERIE_TV }
     val current = _homeCatalogs.value
-    val moviesUseCache = !current.hasCustomCatalogMovies &&
-      !current.moviesFromDefaultCatalog &&
-      !current.moviesFromTmdbDefault
-    val seriesUseCache = !current.hasCustomCatalogSeries &&
-      !current.seriesFromDefaultCatalog &&
-      !current.seriesFromTmdbDefault
+    val moviesUseCache = !current.hasCustomCatalogMovies && !current.moviesFromTmdbDefault
+    val seriesUseCache = !current.hasCustomCatalogSeries && !current.seriesFromTmdbDefault
     val nextMovies = if (moviesUseCache) movies else current.allMovies
     val nextSeries = if (seriesUseCache) series else current.allSeries
     if (nextMovies == current.allMovies && nextSeries == current.allSeries) return
@@ -2378,15 +2371,63 @@ class StreamNovaViewModel(
   private val featuredCardMetaInFlight = mutableSetOf<String>()
 
   /**
+   * Loghi ORIGINALI dei titoli della Hero Banner, indicizzati per [MediaItem.id].
+   *
+   * I titoli TMDB di catalogo non portano il logo (richiede l'endpoint `images`): la
+   * Hero lo richiede al momento della visualizzazione ([ensureHeroLogo]) e qui lo
+   * conserva per il processo. Un valore VUOTO registra la mancanza di un logo su TMDB
+   * (o l'irraggiungibilità): evita di rifare la richiesta a ogni passaggio del
+   * carosello su un titolo che non ce l'ha.
+   */
+  private val _heroLogos = MutableStateFlow<Map<String, String>>(emptyMap())
+  val heroLogos: StateFlow<Map<String, String>> = _heroLogos.asStateFlow()
+
+  private val heroLogoInFlight = mutableSetOf<String>()
+
+  /**
+   * Richiede il logo originale di un titolo della Hero. Idempotente: richieste
+   * concorrenti per lo stesso id collassano in una sola e l'esito già noto non refetcha.
+   * Mai bloccante per la UI: finché il logo non arriva (o se TMDB non ne ha uno) la
+   * Hero mostra il titolo testuale.
+   */
+  fun ensureHeroLogo(media: MediaItem) {
+    if (_heroLogos.value.containsKey(media.id)) return
+    if (!heroLogoInFlight.add(media.id)) return
+    viewModelScope.launch {
+      try {
+        val isTv = media.type == MediaType.SERIE_TV
+        val localLogo = media.logoUrl?.takeIf { it.isNotBlank() }
+        var tmdbId = media.tmdbId
+        if (localLogo == null && (tmdbId == null || tmdbId <= 0)) {
+          tmdbId = MediaRepository.resolveImdbToTmdbId(media.imdbId, isTv)
+        }
+        val logo = when {
+          localLogo != null -> localLogo
+          tmdbId != null && tmdbId > 0 -> MediaRepository.fetchHeroLogo(tmdbId, isTv)
+          else -> null
+        }
+        // Non-nullo anche su esito negativo (stringa vuota): il caso è "già risolto",
+        // il carosello non deve ritentare a ogni riapparire del titolo.
+        _heroLogos.update { it + (media.id to logo.orEmpty()) }
+      } catch (e: Exception) {
+        Log.w(TAG, "Logo Hero non recuperato per ${media.id}: ${e.message}")
+      } finally {
+        heroLogoInFlight.remove(media.id)
+      }
+    }
+  }
+
+  /**
    * Richiede i metadati arricchiti di un titolo «In evidenza». Idempotente: richieste
    * concorrenti per lo stesso id collassano in una sola e l'esito già noto non refetcha.
-   * Mai bloccante per la UI: la card mostra subito ciò che ha e si aggiorna all'arrivo.
+   * Mai bloccante per la UI: la card mostra subito ciò che ha e si aggiunge all'arrivo.
    *
-   * Le righe stock Cinemeta non hanno `tmdbId`: lo si risolve dall'IMDb id via TMDB
-   * `/find` ([MediaRepository.resolveImdbToTmdbId], cachato per processo, una chiamata
-   * per titolo). Se nemmeno la risoluzione va a buon fine si registra un metadato vuoto:
-   * la card mostra il logo Cinemeta già presente nel [MediaItem] e i segmenti mancanti
-   * (classificazione, stagioni) restano omessi, senza re-fetch a ogni cambio focus.
+   * Le card senza `tmdbId` (item di cataloghi addon identificati da IMDb) lo risolvono
+   * dall'IMDb id via TMDB `/find` ([MediaRepository.resolveImdbToTmdbId], cachato per
+   * processo, una chiamata per titolo). Se nemmeno la risoluzione va a buon fine si
+   * registra un metadato vuoto: la card mostra il logo già presente nel [MediaItem] e
+   * i segmenti mancanti (classificazione, stagioni) restano omessi, senza re-fetch a
+   * ogni cambio focus.
    */
   fun ensureFeaturedCardMeta(media: MediaItem) {
     if (_featuredCardMeta.value.containsKey(media.id)) return
@@ -2689,33 +2730,12 @@ class StreamNovaViewModel(
   }
 
   /**
-   * Switch "Usa TMDB come fallback per i generi" (sezione Ricerca), persistito in
-   * [AppSettingsRepository].
-   *
-   * Default ON: se nessun catalogo configurato copre la combinazione tipo+genere, la
-   * categoria mostra i titoli TMDB invece di restare vuota. Con lo switch OFF le
-   * categorie restano quelle degli addon (stato vuoto dichiarato) e TMDB non viene
-   * interrogato per il fallback: le altre funzionalità TMDB non cambiano.
-   */
-  val tmdbGenreFallbackEnabled: StateFlow<Boolean> = AppSettingsRepository.tmdbGenreFallbackEnabled
-
-  /**
-   * Aggiorna lo switch e ricalcola SUBITO la categoria aperta: l'utente vede l'effetto
-   * senza riavviare l'app e senza perdere la categoria che sta guardando.
-   */
-  fun setTmdbGenreFallbackEnabled(enabled: Boolean) {
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(enabled)
-    val categoryId = activeSearchCategoryId ?: return
-    reloadActiveCategory(categoryId)
-  }
-
-  /**
    * Switch "Nascondi contenuti non rilasciati" (sezione Home), persistito in
    * [AppSettingsRepository] con default OFF.
    *
    * Il filtro è applicato dal data layer ([UnreleasedContentFilter]) alla vista della
    * Home: aggiornando la preferenza, [homeCatalogs] riflette subito il nuovo stato,
-   * senza riavviare l'app e senza una nuova risoluzione dei cataloghi.
+   * senza riavviare l'app e senza rilanciare la risoluzione dei cataloghi.
    */
   val hideUnreleasedContent: StateFlow<Boolean> = AppSettingsRepository.hideUnreleasedContent
 
@@ -2964,16 +2984,16 @@ class StreamNovaViewModel(
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
   /**
-   * Ricerca testuale sui cataloghi Stremio/Xperience attivi tramite l'extra `search`,
-   * con fallback ai cataloghi ufficiali Cinemeta quando nessun addon produce risultati.
+   * Ricerca testuale sui cataloghi Stremio/Xperience attivi tramite l'extra `search`.
    *
-   * Usa il percorso [StremioCatalogRepository.searchAddonCatalogs]:
-   * addon attivi (solo cataloghi che dichiarano `search`, con rispetto di type e
-   * catalogId) → Cinemeta `movie/top` e `series/top` con extra `search`.
+   * Usa il percorso [StremioCatalogRepository.searchAddonCatalogs]: solo i cataloghi
+   * degli addon attivi che dichiarano `search` (con rispetto di type e catalogId).
+   * Senza risultati addon la Ricerca globale resta quella TMDB, già interrogata in
+   * parallelo dal gestore di cataloghi nativo.
    *
    * Emette subito una lista vuota così i risultati TMDB non vengono ritardati;
-   * se l'interrogazione Stremio/Cinemeta fallisce o supera il timeout, la ricerca
-   * TMDB prosegue invariata e resta il completamento della Ricerca globale.
+   * se l'interrogazione Stremio fallisce o supera il timeout, la ricerca TMDB
+   * prosegue invariata e resta il completamento della Ricerca globale.
    */
   private fun stremioSearchFlow(query: String, filter: SearchTypeFilter): Flow<List<MediaItem>> = flow {
     val cleanQuery = query.trim()
@@ -3098,23 +3118,6 @@ class StreamNovaViewModel(
   }
 
   /**
-   * Ricalcola la categoria attiva mantenendo id e filtro già noti (es. dopo il cambio
-   * dello switch di fallback TMDB). Usa lo stesso contatore di generazione delle
-   * risposte di [initCategory]: un ricalcolo non può sovrascrivere un caricamento più
-   * recente, quindi non esistono risultati obsoleti che scavalcano quello corrente.
-   */
-  internal fun reloadActiveCategory(categoryId: String) {
-    activeSearchCategoryId = categoryId
-    activeCategoryEntries = emptyList()
-    currentCategoryPage = 1
-    categoryLoadGeneration++
-    _categoryItems.value = emptyList()
-    _categoryState.value = SearchCategoryState()
-    _isCategoryLoading.value = true
-    loadInitialCategoryPage(categoryLoadGeneration)
-  }
-
-  /**
    * Prima pagina della categoria, instradata in base alla sua FONTE:
    *  - [SearchCategoryFilter.GENRE] → cataloghi addon con fallback TMDB dichiarato;
    *  - [SearchCategoryFilter.TMDB_TV_GENRE] → TMDB Discover nativo per genere TV
@@ -3136,14 +3139,18 @@ class StreamNovaViewModel(
    *  1. un catalogo dell'utente applica il filtro per genere E restituisce risultati →
    *     fonte catalogo, TMDB non viene interrogato;
    *  2. un catalogo compatibile è interrogato con successo ma risponde HTTP 200 vuoto,
-   *     oppure nessun catalogo dell'utente copre la combinazione tipo+genere → fallback
-   *     TMDB Discover, solo con lo switch "Usa TMDB come fallback per i generi" attivo;
-   *  3. switch disattivato → nessuna chiamata TMDB, stato vuoto dichiarato;
-   *  4. tutti i cataloghi compatibili del tipo sono falliti (rete/HTTP) → errore
-   *     dichiarato: il fallback TMDB non deve mascherare un malfunzionamento.
+   *     oppure nessun catalogo dell'utente copre la combinazione tipo+genere:
+   *     - se un addon gestisce il tipo, la risposta resta dell'addon (stato vuoto
+   *       dichiarato): l'addon sostituisce completamente TMDB nella gestione dei
+   *       cataloghi del tipo;
+   *     - se NESSUN addon gestisce il tipo, la categoria è servita nativamente da
+   *       TMDB Discover, il gestore di cataloghi predefinito di StreamNova;
+   *  3. tutti i cataloghi compatibili del tipo sono falliti (rete/HTTP) → errore
+   *     dichiarato: TMDB non deve mascherare un malfunzionamento.
    *
-   * Il fallback riguarda la SINGOLA combinazione: Serie TV → Horror con Film → Horror
-   * coperto mostra film dai cataloghi e serie da TMDB nella stessa categoria.
+   * Il routing riguarda la SINGOLA combinazione: Serie TV → Horror con Film → Horror
+   * coperto da un addon mostra film dai cataloghi e serie da TMDB nella stessa
+   * categoria.
    */
   private fun loadInitialGenreCategoryPage(generation: Int) {
     viewModelScope.launch {
@@ -3192,9 +3199,10 @@ class StreamNovaViewModel(
         val addonItems = outcomes.flatMap { it.addonItems }
         val tmdbItems = outcomes.flatMap { it.tmdbItems }
         val usedTmdb = outcomes.any { it.usedTmdb }
-        // Se un tipo della categoria non ha NESSUNA fonte (catalogo assente e TMDB
-        // disattivato), la categoria non deve diventare una lista TMDB: si mostrano i
-        // contenuti reali degli altri tipi e lo stato dichiara la mancanza.
+        // Se un tipo della categoria non ha NESSUNA fonte (l'addon gestisce il tipo ma
+        // non copre il genere e non ha restituito nulla), la categoria non deve diventare
+        // una lista TMDB: si mostrano i contenuti reali degli altri tipi e lo stato
+        // dichiara la mancanza.
         val coverageMissing = outcomes.any { !it.hasAnySource } && addonItems.isNotEmpty()
         val routedToTmdb = outcomes.any { it.usedTmdb }
 
@@ -3310,11 +3318,12 @@ class StreamNovaViewModel(
     val tmdbItems: List<MediaItem> = emptyList(),
     val usedTmdb: Boolean = false
   ) {
-    /** true se il tipo ha una fonte (un catalogo interrogato o TMDB). */
+    /** true se il tipo ha una fonte (un catalogo interrogato, un addon che gestisce il tipo, o TMDB). */
     val hasAnySource: Boolean
       get() = usedTmdb ||
         record.reason == GenreLoadReason.SUPPORTED_BY_CATALOG ||
         record.reason == GenreLoadReason.SUPPORTED_BUT_EMPTY ||
+        record.reason == GenreLoadReason.ADDON_NO_COVERAGE ||
         record.reason == GenreLoadReason.FAILED
   }
 
@@ -3326,15 +3335,18 @@ class StreamNovaViewModel(
    *     inutilmente TMDB");
    *  2. tutti i cataloghi compatibili del tipo sono falliti (rete/HTTP/JSON) → errore
    *     dichiarato, TMDB non maschera un malfunzionamento;
-   *  3. un catalogo compatibile è stato interrogato con successo ma ha risposto HTTP 200
-   *     vuoto (catalogo vuoto: non è incompatibilità e non è un errore) OPPURE nessun
-   *     catalogo configurato copre la combinazione → fallback TMDB con l'endpoint del
-   *     tipo (`discover/movie` o `discover/tv`) e il suo id di genere;
-   *  4. switch disattivato → nessuna chiamata TMDB, stato vuoto dichiarato.
+   *  3. un addon dell'utente gestisce le categorie per genere del tipo (dichiara
+   *     ALMENO un catalogo del tipo con filtro `genre`): l'addon sostituisce
+   *     completamente TMDB nella gestione dei cataloghi del tipo, quindi la risposta
+   *     resta quella dell'addon — catalogo vuoto (HTTP 200 senza metas) oppure nessun
+   *     catalogo che copre il genere → stato vuoto dichiarato, NESSUNA chiamata TMDB;
+   *  4. nessun addon gestisce le categorie del tipo → TMDB Discover, il gestore di
+   *     cataloghi nativo di StreamNova, con l'endpoint del tipo (`discover/movie` o
+   *     `discover/tv`) e il suo id di genere.
    *
-   * Il fallback è deciso sulla COMBINAZIONE tipo+genere e sull'insieme dei cataloghi
-   * realmente configurati (addon attivi + sistema): se un altro addon copre il genere E
-   * produce risultati, la ricerca resta dell'addon e TMDB non viene chiamato.
+   * Il routing è deciso sulla COMBINAZIONE tipo+genere e sull'insieme dei cataloghi
+   * realmente configurati: se un addon copre il genere E produce risultati, la
+   * categoria resta dell'addon e TMDB non viene chiamato.
    */
   private suspend fun resolveGenreOutcome(
     mediaType: MediaType,
@@ -3362,32 +3374,32 @@ class StreamNovaViewModel(
 
     // 2. Errore di rete/servizio su TUTTI i cataloghi compatibili: dichiarato, non mascherato.
     if (allFailed) {
-      Log.w(TAG, "Catalogo $mediaType fallito: nessun fallback TMDB ($addonErrors)")
+      Log.w(TAG, "Catalogo $mediaType fallito: nessun completamento TMDB ($addonErrors)")
       return GenreOutcome(record = GenreLoadRecord(mediaType, GenreLoadReason.FAILED), addonItems = addonItems)
     }
 
-    // 3. Nessun risultato utile dagli addon: catalogo compatibile vuoto (HTTP 200 senza
-    //    metas) oppure nessun catalogo compatibile per la combinazione → fallback TMDB.
-    val catalogWasEmpty = catalogCovers || addonMatched > 0
-
-    // 4. Switch disattivato: nessuna chiamata TMDB, il caso resta dichiarato.
-    //    L'eccezione è la configurazione NATIVA (nessun addon con cataloghi propri):
-    //    le categorie sono servite da Cinemeta e TMDB resta solo il completamento
-    //    quando Cinemeta non restituisce risultati. Lo switch riguarda il fallback
-    //    quando sono attivi addon utente.
-    val hasCustomCatalogAddons = StremioCatalogRepository.hasCustomCatalogAddons()
-    if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value && hasCustomCatalogAddons) {
-      val reason = if (catalogWasEmpty) GenreLoadReason.SUPPORTED_BUT_EMPTY else GenreLoadReason.TMDB_DISABLED
+    // 3. L'addon gestisce le categorie per genere del tipo: la sua risposta è
+    //    definitiva (vuota o senza copertura del genere), TMDB non integra i
+    //    cataloghi degli addon.
+    val addonManagesType = StremioCatalogRepository.hasUserGenreCatalogOfType(mediaType)
+    if (addonManagesType) {
+      val catalogWasEmpty = catalogCovers || addonMatched > 0
+      val reason = if (catalogWasEmpty) {
+        GenreLoadReason.SUPPORTED_BUT_EMPTY
+      } else {
+        GenreLoadReason.ADDON_NO_COVERAGE
+      }
       return GenreOutcome(record = GenreLoadRecord(mediaType, reason), addonItems = addonItems)
     }
 
+    // 4. Nessun addon gestisce il tipo: TMDB è la sorgente nativa di questo tipo.
     val tmdbItems = MediaRepository.discoverByGenre(mediaType, genreId, page = 1)
     if (tmdbItems == null) {
       return GenreOutcome(
         record = GenreLoadRecord(
           mediaType = mediaType,
           reason = GenreLoadReason.TMDB_UNAVAILABLE,
-          catalogWasEmpty = catalogWasEmpty
+          catalogWasEmpty = false
         ),
         addonItems = addonItems
       )
@@ -3398,7 +3410,7 @@ class StreamNovaViewModel(
         reason = GenreLoadReason.TMDB_FALLBACK,
         tmdbPages = 1,
         tmdbItems = tmdbItems.size,
-        catalogWasEmpty = catalogWasEmpty
+        catalogWasEmpty = false
       ),
       addonItems = addonItems,
       tmdbItems = tmdbItems,
@@ -3422,15 +3434,12 @@ class StreamNovaViewModel(
     coverageMissing: Boolean
   ): SearchCategoryState {
     val addonLabel = addonLoad?.entries?.firstOrNull { it.section.items.isNotEmpty() }?.section?.title
-    val tmdbSkipped = outcomes.any { it.record.reason == GenreLoadReason.TMDB_DISABLED }
     val notices = outcomes.mapNotNull { noticeForOutcome(it) }
-    val onlySkipped = tmdbSkipped && outcomes.all { !it.hasAnySource }
     return SearchCategoryState(
-      source = if (usedTmdb || onlySkipped) SearchCategorySource.TMDB_FALLBACK else SearchCategorySource.ADDON,
+      source = if (usedTmdb) SearchCategorySource.TMDB_FALLBACK else SearchCategorySource.ADDON,
       addonLabel = addonLabel,
       statusMessage = notices.joinToString("\n").takeIf { it.isNotBlank() },
-      genresCatalogsCopied = routedToTmdb || coverageMissing,
-      genresTmdbSkipped = tmdbSkipped
+      genresCatalogsCopied = routedToTmdb || coverageMissing
     )
   }
 
@@ -3446,20 +3455,12 @@ class StreamNovaViewModel(
       GenreLoadReason.TMDB_FALLBACK ->
         if (outcome.record.tmdbItems == 0) {
           localized(R.string.search_category_tmdb_no_results, type)
-        } else if (outcome.record.catalogWasEmpty) {
-          localized(
-            if (outcome.record.mediaType == MediaType.SERIE_TV) {
-              R.string.search_category_tmdb_after_empty_series
-            } else {
-              R.string.search_category_tmdb_after_empty_movies
-            }
-          )
         } else {
           localized(R.string.search_category_tmdb_fallback_reason)
         }
-      GenreLoadReason.TMDB_DISABLED ->
+      GenreLoadReason.ADDON_NO_COVERAGE ->
         localized(
-          R.string.search_category_tmdb_disabled,
+          R.string.search_category_addon_no_genre,
           activeCategoryLabel.takeIf { it.isNotBlank() } ?: type
         )
       // Catalogo interrogato e vuoto e TMDB non raggiungibile: entrambi i fatti dichiarati.
@@ -3512,7 +3513,6 @@ class StreamNovaViewModel(
    *  - la pagina successiva dei cataloghi addon usa `skip`, con gli stessi extra;
    *  - la pagina successiva TMDB esiste solo per i tipi davvero serviti da TMDB, con
    *    l'endpoint del tipo e il genere della categoria.
-   * Con il fallback disattivato non viene mai richiesta una pagina TMDB.
    */
   fun loadNextCategoryPage() {
     if (isCategoryLoadingMore || _isCategoryLoading.value) return
@@ -3586,14 +3586,6 @@ class StreamNovaViewModel(
 
   /** Tipi serviti da TMDB nell'ultimo caricamento della categoria (vuoto = nessuno). */
   private fun tmdbFallbackTypes(): List<MediaType> {
-    // Con addon utente attivi lo switch mantiene il suo significato: senza switch,
-    // nessuna pagina TMDB. Senza addon la categoria è servita da Cinemeta e TMDB
-    // pagina solo i tipi che Cinemeta non ha restituito.
-    if (!AppSettingsRepository.tmdbGenreFallbackEnabled.value &&
-      StremioCatalogRepository.hasCustomCatalogAddons()
-    ) {
-      return emptyList()
-    }
     return _lastGenreLoads.value
       .filter { it.reason == GenreLoadReason.TMDB_FALLBACK }
       .map { it.mediaType }
@@ -6471,12 +6463,7 @@ fun backToBrowsing() {
 
       val initialLoad = viewModelScope.launch {
         try {
-          // ESCLUSIONE RADICALE di Cinemeta: con addon di catalogo personalizzati attivi
-          // (Xperience / Easy Catalog / ...) nessuna riga Cinemeta resta nella pagina del
-          // provider, che deve derivare al 100% dai cataloghi degli addon attivi.
-          val page = StremioCatalogRepository.sanitizeProviderCatalogPage(
-            StremioCatalogRepository.loadProviderCatalogForProvider(provider)
-          )
+          val page = StremioCatalogRepository.loadProviderCatalogForProvider(provider)
           val planned = StremioCatalogRepository.providerCoverage(provider)
           // FULL vale SOLO se il fetch effettivo produce item: senza titoli la
           // copertura degrada a PARTIAL e il catalogo TMDB resta disponibile.
@@ -6497,8 +6484,7 @@ fun backToBrowsing() {
                 hasConfirmedBindings = page.hasConfirmedBindings,
                 itemCount = page.items.size,
                 confirmedCatalogs = page.targets.size,
-                coverage = coverage,
-                fallbackToDefault = page.fallbackToDefault
+                coverage = coverage
               ))
             }
             Log.d(
@@ -6568,9 +6554,9 @@ fun backToBrowsing() {
     * eccezioni: usa la stessa query di tutti gli altri provider (`1899|384` in
     * watch_region=IT, vedi [MediaRepository.providerTmdbQuery]).
     *
-    * LIMITE CINEMETA: l'addon ufficiale non espone per titolo la disponibilità su
-    * un provider. Usare i suoi cataloghi generici qui mostrerebbe contenuti non
-    * verificati come disponibili sul provider: per questo la schermata Provider
+    * LIMITE DEI CATALOGHI STREMIO: un catalogo addon non espone per titolo la
+    * disponibilità su un provider. Usare cataloghi generici qui mostrerebbe contenuti
+    * non verificati come disponibili sul provider: per questo la schermata Provider
     * resta su TMDB Discover (fonte che conferma l'associazione) e sui cataloghi
     * provider degli addon utente.
     */
@@ -6898,7 +6884,7 @@ fun backToBrowsing() {
     loadTrailerJob = viewModelScope.launch {
       val isTv = media.type == MediaType.SERIE_TV
       val directId = media.tmdbId ?: 0
-      // Titoli catalogati solo con IMDb (es. Cinemeta): si risolve in TMDB prima di chiedere i video.
+      // Titoli catalogati solo con IMDb (cataloghi addon): si risolve in TMDB prima di chiedere i video.
       val resolvedId = if (directId > 0) {
         directId
       } else {

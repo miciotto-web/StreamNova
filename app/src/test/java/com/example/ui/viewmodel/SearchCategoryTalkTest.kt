@@ -66,7 +66,6 @@ class SearchCategoryTalkTest {
     val context = ApplicationProvider.getApplicationContext<Context>()
     AppSettingsRepository.init(context)
     AppSettingsRepository.setAppLanguage("it")
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
     StremioAddonRepository.getInstalledAddons().forEach { StremioAddonRepository.removeAddon(it.id) }
     StremioAddonRepository.clearCaches()
     MediaRepository.init(context)
@@ -77,12 +76,10 @@ class SearchCategoryTalkTest {
     createdViewModels.forEach { it.viewModelScope.cancel() }
     createdViewModels.clear()
     TmdbApiClient.overrideServiceBaseUrl(null)
-    StremioCatalogRepository.resetCinemetaBaseUrl()
     StremioCatalogRepository.clearCache()
     StremioAddonRepository.getInstalledAddons().forEach { StremioAddonRepository.removeAddon(it.id) }
     StremioAddonRepository.clearCaches()
     AppSettingsRepository.setAppLanguage("it")
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
     Dispatchers.resetMain()
   }
 
@@ -114,13 +111,17 @@ class SearchCategoryTalkTest {
           request.contains("sort_by=popularity.desc")
         )
       }
+      // La CATEGORIA Talk non interroga i film né delega filtri audio/sottotitoli.
+      // (Il log completo della fixture contiene anche il traffico TMDB dello sfondo
+      // della Home — righe stock e Novità provider, gestore nativo — che non è
+      // traffico della categoria.)
       assertFalse(
-        "La categoria Talk non interroga i film: ${tmdb.requested}",
-        tmdb.requested.any { it.contains("/discover/movie") }
+        "La categoria Talk non interroga i film: ${tmdb.categoryRequests}",
+        tmdb.categoryRequests.any { it.contains("/discover/movie") }
       )
       assertFalse(
-        "Il filtro audio/sottotitoli non è delegato a TMDB: ${tmdb.requested}",
-        tmdb.requested.any {
+        "Il filtro audio/sottotitoli non è delegato a TMDB: ${tmdb.categoryRequests}",
+        tmdb.categoryRequests.any {
           it.contains("with_spoken_languages") ||
             it.contains("with_audio_language") ||
             it.contains("with_subtitle_language") ||
@@ -172,7 +173,9 @@ class SearchCategoryTalkTest {
         titles.contains("Talk Show Straniero")
       )
 
-      tmdb.requested.forEach { request ->
+      // Nessun filtro di lingua/paese sulle richieste DELLA CATEGORIA (il traffico
+      // TMDB della Home in sfondo usa i propri filtri provider e non è coinvolto).
+      tmdb.categoryRequests.forEach { request ->
         assertFalse(
           "Nessun filtro di lingua originale: $request",
           request.contains("with_original_language")
@@ -194,10 +197,7 @@ class SearchCategoryTalkTest {
   @Test
   fun talkFunzionaSenzaDebridESenzaAddon(): Unit = runTest(testDispatcher) {
     // Debrid disattivato (modalità HTTP diretta, default) e nessun addon installato.
-    // Anche lo switch "Usa TMDB come fallback per i generi" è OFF: la categoria Talk
-    // non è un fallback, quindi deve funzionare comunque.
     AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.HTTP_WEB)
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(false)
     assertTrue(
       "Nessun addon deve essere installato",
       StremioAddonRepository.getInstalledAddons().isEmpty()

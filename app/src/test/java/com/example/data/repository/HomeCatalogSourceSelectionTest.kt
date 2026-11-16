@@ -3,7 +3,6 @@ package com.example.data.repository
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
-import com.example.data.stremio.CinemetaAddon
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.StremioCatalogEngine
 import com.example.data.stremio.TYPE_MOVIE
@@ -31,7 +30,7 @@ import org.robolectric.annotation.Config
  * Verifica la SELEZIONE della sorgente dei cataloghi Home, per tipo.
  *
  * Regole coperte:
- *  - senza addon utilizzabili resta la sorgente di default (Cinemeta in produzione);
+ *  - senza addon utilizzabili restano le righe stock TMDB (sorgente di default in produzione);
  *  - un addon solo-film non sopprime le righe Serie TV (e viceversa);
  *  - cataloghi solo-search, con extra obbligatori o di tipi non supportati non
  *    contano come utilizzabili;
@@ -42,10 +41,9 @@ import org.robolectric.annotation.Config
  *
  * Il server locale ricrea il manifest di un addon Stremio: nessun id reale è
  * codificato nel codice di produzione. Il loader della sorgente di default è
- * INIETTATO: qui usa sezioni sintetiche Cinemeta, mentre in produzione
- * [StremioCatalogRepository.loadDefaultHomeSections] combina i cataloghi ufficiali
- * Cinemeta con le righe Novità provider TMDB. Nessun test
- * dipende dalla rete.
+ * INIETTATO: qui usa sezioni stock TMDB sintetiche, mentre in produzione
+ * [StremioCatalogRepository.loadDefaultHomeSections] combina le righe stock TMDB
+ * con le righe Novità provider TMDB. Nessun test dipende dalla rete.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36])
@@ -53,8 +51,8 @@ class HomeCatalogSourceSelectionTest {
 
   private val fixtures = mutableListOf<FakeAddon>()
 
-  /** Tipi richiesti al loader Cinemeta, nell'ordine delle risoluzioni. */
-  private val cinemetaRequests = mutableListOf<List<MediaType>>()
+  /** Tipi richiesti al loader di default, nell'ordine delle risoluzioni. */
+  private val defaultLoaderRequests = mutableListOf<List<MediaType>>()
 
   @Before
   fun setUp() {
@@ -71,7 +69,7 @@ class HomeCatalogSourceSelectionTest {
     StremioAddonRepository.clearCaches()
     fixtures.forEach { it.stop() }
     fixtures.clear()
-    cinemetaRequests.clear()
+    defaultLoaderRequests.clear()
   }
 
   // ── Fixture addon locale ────────────────────────────────────────────────────
@@ -164,53 +162,48 @@ class HomeCatalogSourceSelectionTest {
     type = MediaType.SERIE_TV
   )
 
-  private fun section(
-    catalogId: String,
-    mediaType: MediaType,
-    addonName: String,
-    items: List<MediaItem>
-  ) = CatalogSection(
-    id = "stremio_${addonName}_${if (mediaType == MediaType.SERIE_TV) TYPE_SERIES else TYPE_MOVIE}_$catalogId",
-    title = "$catalogId • $addonName",
-    addonId = addonName,
-    addonName = addonName,
-    catalogId = catalogId,
-    mediaType = mediaType,
-    items = items
-  )
+  private fun tmdbStockSection(catalogId: String, slot: HomeCatalogSlot, mediaType: MediaType, items: List<MediaItem>) =
+    CatalogSection(
+      id = "tmdb_home_${if (mediaType == MediaType.SERIE_TV) "series" else "movies"}_$catalogId",
+      title = catalogId,
+      addonId = null,
+      addonName = null,
+      catalogId = catalogId,
+      mediaType = mediaType,
+      origin = CatalogSourceOrigin.TMDB_NATIVE,
+      items = items,
+      homeSlot = slot
+    )
 
-  private fun cinemetaSection(catalogId: String, mediaType: MediaType, items: List<MediaItem>) =
-    section(catalogId, mediaType, CinemetaAddon.DISPLAY_NAME, items).copy(addonId = CinemetaAddon.MANIFEST_ID)
-
-  /** Sezioni Cinemeta sintetiche per i soli tipi richiesti. */
-  private fun cinemetaSections(types: List<MediaType>, idBase: String = "tt70000"): List<CatalogSection> =
+  /** Sezioni stock TMDB sintetiche per i soli tipi richiesti. */
+  private fun tmdbStockSections(types: List<MediaType>, idBase: String = "tt70000"): List<CatalogSection> =
     buildList {
       if (MediaType.FILM in types) {
-        add(cinemetaSection(CinemetaAddon.CATALOG_POPULAR, MediaType.FILM, listOf(movie("${idBase}01", "Popolare Film"))))
-        add(cinemetaSection(CinemetaAddon.CATALOG_TOP_RATED, MediaType.FILM, listOf(movie("${idBase}02", "Votato Film"))))
-        add(cinemetaSection(CinemetaAddon.CATALOG_NEW, MediaType.FILM, listOf(movie("${idBase}03", "Nuovo Film"))))
+        add(tmdbStockSection("tmdb_movies_popular", HomeCatalogSlot.POPULAR, MediaType.FILM, listOf(movie("${idBase}01", "Popolare Film"))))
+        add(tmdbStockSection("tmdb_movies_top_rated", HomeCatalogSlot.TOP_RATED, MediaType.FILM, listOf(movie("${idBase}02", "Votato Film"))))
+        add(tmdbStockSection("tmdb_movies_new", HomeCatalogSlot.NEW, MediaType.FILM, listOf(movie("${idBase}03", "Nuovo Film"))))
       }
       if (MediaType.SERIE_TV in types) {
-        add(cinemetaSection(CinemetaAddon.CATALOG_POPULAR, MediaType.SERIE_TV, listOf(series("${idBase}11", "Popolare Serie"))))
-        add(cinemetaSection(CinemetaAddon.CATALOG_TOP_RATED, MediaType.SERIE_TV, listOf(series("${idBase}12", "Votata Serie"))))
-        add(cinemetaSection(CinemetaAddon.CATALOG_NEW, MediaType.SERIE_TV, listOf(series("${idBase}13", "Nuova Serie"))))
+        add(tmdbStockSection("tmdb_series_popular", HomeCatalogSlot.POPULAR, MediaType.SERIE_TV, listOf(series("${idBase}11", "Popolare Serie"))))
+        add(tmdbStockSection("tmdb_series_top_rated", HomeCatalogSlot.TOP_RATED, MediaType.SERIE_TV, listOf(series("${idBase}12", "Votata Serie"))))
+        add(tmdbStockSection("tmdb_series_new", HomeCatalogSlot.NEW, MediaType.SERIE_TV, listOf(series("${idBase}13", "Nuova Serie"))))
       }
     }
 
   private fun resolve(media: List<MediaItem> = emptyList()): HomeCatalogs = runBlocking {
     StremioCatalogRepository.resolveHomeCatalogs(media) { types ->
-      cinemetaRequests += types
-      cinemetaSections(types)
+      defaultLoaderRequests += types
+      tmdbStockSections(types)
     }
   }
 
-  // ── 1. Nessun addon: Cinemeta resta la sorgente ─────────────────────────────
+  // ── 1. Nessun addon: le righe stock TMDB sono la sorgente ─────────────────────────────
 
   @Test
-  fun senzaAddonCinemetaFornisceICataloghiDellaHome() {
+  fun senzaAddonLeRigheStockTmdbFornisconoICataloghiDellaHome() {
     val catalog = resolve()
 
-    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), cinemetaRequests)
+    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), defaultLoaderRequests)
     assertFalse(catalog.hasCustomCatalogMovies)
     assertFalse(catalog.hasCustomCatalogSeries)
     assertTrue(catalog.extraSections.isEmpty())
@@ -221,14 +214,14 @@ class HomeCatalogSourceSelectionTest {
     assertEquals(listOf("tt7000011"), catalog.popularSeries.map { it.id })
     assertEquals(listOf("tt7000012"), catalog.top10Series.map { it.id })
     assertEquals(listOf("tt7000013"), catalog.trendingSeries.map { it.id })
-    assertTrue(catalog.moviesFromDefaultCatalog)
-    assertTrue(catalog.seriesFromDefaultCatalog)
+    assertTrue(catalog.moviesFromTmdbDefault)
+    assertTrue(catalog.seriesFromTmdbDefault)
   }
 
-  // ── 2. Addon solo film: Cinemeta resta per le serie TV ──────────────────────
+  // ── 2. Addon solo film: le righe stock TMDB restano per le serie TV ──────────────────────
 
   @Test
-  fun addonSoloFilmNonSopprimeCinemetaPerLeSerie() {
+  fun addonSoloFilmNonSopprimeLeRigheStockTmdbPerLeSerie() {
     installAddon(
       manifest(
         catalogs = """{"type":"movie","id":"home_movies","name":"Home Movies"}"""
@@ -243,9 +236,9 @@ class HomeCatalogSourceSelectionTest {
 
     val catalog = resolve()
 
-    assertEquals(listOf(listOf(MediaType.SERIE_TV)), cinemetaRequests)
+    assertEquals(listOf(listOf(MediaType.SERIE_TV)), defaultLoaderRequests)
 
-    // Film: righe addon, nessuna riga Cinemeta dello stesso tipo.
+    // Film: righe addon, nessuna riga stock TMDB dello stesso tipo.
     assertTrue(catalog.hasCustomCatalogMovies)
     assertTrue(catalog.popularMovies.isEmpty())
     assertTrue(catalog.top10Movies.isEmpty())
@@ -253,17 +246,17 @@ class HomeCatalogSourceSelectionTest {
     assertEquals(listOf("tt9100001", "tt9100002"), catalog.allMovies.map { it.id })
     assertEquals(listOf(MediaType.FILM), catalog.extraSections.map { it.mediaType })
 
-    // Serie TV: Cinemeta resta la sorgente.
+    // Serie TV: le righe stock TMDB restano la sorgente.
     assertFalse(catalog.hasCustomCatalogSeries)
     assertEquals(listOf("tt7000011"), catalog.popularSeries.map { it.id })
     assertEquals(listOf("tt7000012"), catalog.top10Series.map { it.id })
-    assertTrue(catalog.seriesFromDefaultCatalog)
+    assertTrue(catalog.seriesFromTmdbDefault)
   }
 
-  // ── 3. Addon solo serie TV: Cinemeta resta per i film ───────────────────────
+  // ── 3. Addon solo serie TV: le righe stock TMDB restano per i film ───────────────────────
 
   @Test
-  fun addonSoloSerieNonSopprimeCinemetaPerIFilm() {
+  fun addonSoloSerieNonSopprimeLeRigheStockTmdbPerIFilm() {
     installAddon(
       manifest(
         catalogs = """{"type":"series","id":"home_series","name":"Home Series"}"""
@@ -278,12 +271,12 @@ class HomeCatalogSourceSelectionTest {
 
     val catalog = resolve()
 
-    assertEquals(listOf(listOf(MediaType.FILM)), cinemetaRequests)
+    assertEquals(listOf(listOf(MediaType.FILM)), defaultLoaderRequests)
 
     assertFalse(catalog.hasCustomCatalogMovies)
     assertEquals(listOf("tt7000001"), catalog.popularMovies.map { it.id })
     assertEquals(listOf("tt7000002"), catalog.top10Movies.map { it.id })
-    assertTrue(catalog.moviesFromDefaultCatalog)
+    assertTrue(catalog.moviesFromTmdbDefault)
 
     assertTrue(catalog.hasCustomCatalogSeries)
     assertTrue(catalog.popularSeries.isEmpty())
@@ -296,7 +289,7 @@ class HomeCatalogSourceSelectionTest {
   // ── 4. Cataloghi solo-search / extra obbligatori: non utilizzabili ──────────
 
   @Test
-  fun cataloghiSoloSearchOConExtraObbligatoriNonSopprimonoCinemeta() {
+  fun cataloghiSoloSearchOConExtraObbligatoriNonSopprimonoLeRigheStock() {
     val fixture = installAddon(
       manifest(
         catalogs = """
@@ -308,7 +301,7 @@ class HomeCatalogSourceSelectionTest {
 
     val catalog = resolve()
 
-    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), cinemetaRequests)
+    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), defaultLoaderRequests)
     assertFalse(catalog.hasCustomCatalogMovies)
     assertFalse(catalog.hasCustomCatalogSeries)
     assertTrue(catalog.extraSections.isEmpty())
@@ -321,7 +314,7 @@ class HomeCatalogSourceSelectionTest {
   // ── 5. Cataloghi di tipi non supportati: non sopprimono nulla ───────────────
 
   @Test
-  fun cataloghiDiTipiNonSupportatiNonSopprimonoCinemeta() {
+  fun cataloghiDiTipiNonSupportatiNonSopprimonoLeRigheStock() {
     installAddon(
       manifest(
         catalogs = """
@@ -334,7 +327,7 @@ class HomeCatalogSourceSelectionTest {
 
     val catalog = resolve()
 
-    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), cinemetaRequests)
+    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), defaultLoaderRequests)
     assertFalse(catalog.hasCustomCatalogMovies)
     assertFalse(catalog.hasCustomCatalogSeries)
     assertTrue(catalog.extraSections.isEmpty())
@@ -405,14 +398,14 @@ class HomeCatalogSourceSelectionTest {
 
     val catalog = resolve()
 
-    // Le serie arrivano dall'addon: Cinemeta resta solo per i film.
-    assertEquals(listOf(listOf(MediaType.FILM)), cinemetaRequests)
+    // Le serie arrivano dall.addon: le righe stock TMDB restano solo per i film.
+    assertEquals(listOf(listOf(MediaType.FILM)), defaultLoaderRequests)
     assertTrue(catalog.hasCustomCatalogSeries)
     assertFalse(catalog.hasCustomCatalogMovies)
     assertEquals(listOf("vavoo_rai1", "vavoo_canale5"), catalog.allSeries.map { it.id })
     assertEquals(listOf(MediaType.SERIE_TV), catalog.extraSections.map { it.mediaType })
     assertTrue(catalog.popularSeries.isEmpty())
-    assertTrue(catalog.seriesFromDefaultCatalog.not())
+    assertTrue(!catalog.seriesFromTmdbDefault)
 
     // L'endpoint interrogato conserva il tipo originale `tv`.
     assertTrue(fixture.requested.contains("/catalog/tv/vavoo_tv_home_it.json"))
@@ -422,7 +415,7 @@ class HomeCatalogSourceSelectionTest {
   // ── 7. Addon con risultati validi: sostituzione per tipo, no coesistenza ────
 
   @Test
-  fun addonConRisultatiValidiSostituisceLeRigheCinemetaSenzaCoesistenza() {
+  fun addonConRisultatiValidiSostituisceLeRigheStockSenzaCoesistenza() {
     installAddon(
       manifest(
         catalogs = """
@@ -438,8 +431,8 @@ class HomeCatalogSourceSelectionTest {
 
     val catalog = resolve()
 
-    // Nessun tipo richiede Cinemeta.
-    assertTrue(cinemetaRequests.isEmpty())
+    // Nessun tipo richiede le righe di default.
+    assertTrue(defaultLoaderRequests.isEmpty())
     assertTrue(catalog.hasCustomCatalogMovies)
     assertTrue(catalog.hasCustomCatalogSeries)
 
@@ -450,8 +443,8 @@ class HomeCatalogSourceSelectionTest {
     assertTrue(catalog.popularSeries.isEmpty())
     assertTrue(catalog.top10Series.isEmpty())
     assertTrue(catalog.trendingSeries.isEmpty())
-    assertFalse(catalog.moviesFromDefaultCatalog)
-    assertFalse(catalog.seriesFromDefaultCatalog)
+    assertFalse(catalog.moviesFromTmdbDefault)
+    assertFalse(catalog.seriesFromTmdbDefault)
 
     assertEquals(listOf("tt9300001"), catalog.allMovies.map { it.id })
     assertEquals(listOf("tt9300002"), catalog.allSeries.map { it.id })
@@ -459,10 +452,10 @@ class HomeCatalogSourceSelectionTest {
     assertTrue(catalog.extraSections.all { it.items.isNotEmpty() })
   }
 
-  // ── 7. Addon senza risultati: fallback Cinemeta deterministico ──────────────
+  // ── 7. Addon senza risultati: righe stock di default deterministiche ──────────────
 
   @Test
-  fun addonSenzaRisultatiUsaIlFallbackCinemetaSenzaDuplicati() {
+  fun addonSenzaRisultatiUsaLeRigheStockDiDefaultSenzaDuplicati() {
     installAddon(
       manifest(
         catalogs = """
@@ -478,7 +471,7 @@ class HomeCatalogSourceSelectionTest {
 
     val catalog = resolve()
 
-    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), cinemetaRequests)
+    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), defaultLoaderRequests)
     assertFalse(catalog.hasCustomCatalogMovies)
     assertFalse(catalog.hasCustomCatalogSeries)
     assertTrue(catalog.extraSections.isEmpty())
@@ -492,7 +485,7 @@ class HomeCatalogSourceSelectionTest {
   // ── 8. Errore di caricamento: stesso fallback deterministico ────────────────
 
   @Test
-  fun erroreDiCaricamentoUsaIlFallbackCinemeta() {
+  fun erroreDiCaricamentoUsaLeRigheStockDiDefault() {
     installAddon(
       manifest(
         catalogs = """
@@ -505,7 +498,7 @@ class HomeCatalogSourceSelectionTest {
 
     val catalog = resolve()
 
-    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), cinemetaRequests)
+    assertEquals(listOf(listOf(MediaType.FILM, MediaType.SERIE_TV)), defaultLoaderRequests)
     assertFalse(catalog.hasCustomCatalogMovies)
     assertFalse(catalog.hasCustomCatalogSeries)
     assertTrue(catalog.extraSections.isEmpty())
@@ -532,13 +525,13 @@ class HomeCatalogSourceSelectionTest {
 
     val catalog = resolve()
 
-    assertEquals(listOf(listOf(MediaType.SERIE_TV)), cinemetaRequests)
+    assertEquals(listOf(listOf(MediaType.SERIE_TV)), defaultLoaderRequests)
     assertTrue(catalog.hasCustomCatalogMovies)
     assertFalse(catalog.hasCustomCatalogSeries)
     assertTrue(catalog.popularMovies.isEmpty())
     assertEquals(listOf("tt9400001"), catalog.allMovies.map { it.id })
     assertEquals(listOf("tt7000011"), catalog.popularSeries.map { it.id })
-    assertTrue(catalog.seriesFromDefaultCatalog)
+    assertTrue(catalog.seriesFromTmdbDefault)
   }
 
   // ── 10. Risultati obsoleti: non sovrascrivono una sorgente più recente ──────
@@ -564,14 +557,14 @@ class HomeCatalogSourceSelectionTest {
       StremioCatalogRepository.resolveHomeCatalogs(emptyList()) { types ->
         slowEntered.countDown()
         releaseSlow.await(30, TimeUnit.SECONDS)
-        cinemetaSections(types, idBase = "tt80000")
+        tmdbStockSections(types, idBase = "tt80000")
       }
     }
 
     assertTrue("La risoluzione lenta deve entrare nel loader", slowEntered.await(30, TimeUnit.SECONDS))
 
     val fresh = StremioCatalogRepository.resolveHomeCatalogs(emptyList()) { types ->
-      cinemetaSections(types)
+      tmdbStockSections(types)
     }
 
     releaseSlow.countDown()

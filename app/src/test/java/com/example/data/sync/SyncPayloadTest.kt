@@ -31,7 +31,6 @@ class SyncPayloadTest {
         parentalControlEnabled = true,
         parentalControlPinHash = "a".repeat(64),
         parentalControlLevel = "16",
-        tmdbGenreFallbackEnabled = true,
         hideUnreleasedContent = false,
         userProviderBindingsJson = "[]",
         cwShowRow = true,

@@ -13,12 +13,12 @@ import kotlinx.coroutines.coroutineScope
 /**
  * Sinossi localizzata del titolo mostrato nell'Hero Banner della Home.
  *
- * Perché serve: i cataloghi degli ADDON Stremio e i cataloghi ufficiali Cinemeta
- * restituiscono `description` nella lingua dell'addon (spesso inglese) e non
- * supportano un parametro di lingua. Per i titoli che arrivano da queste fonti,
- * la sinossi dell'Hero va quindi chiesta a TMDB nella lingua dell'app, senza
- * toccare grafica, poster, titoli, ordine o navigazione: l'item resta quello del
- * catalogo di provenienza e si sostituisce solo il testo.
+ * Perché serve: i cataloghi degli ADDON Stremio restituiscono `description` nella
+ * lingua dell'addon (spesso inglese) e non supportano un parametro di lingua. Per
+ * i titoli che arrivano da queste fonti, la sinossi dell'Hero va quindi chiesta a
+ * TMDB nella lingua dell'app, senza toccare grafica, poster, titoli, ordine o
+ * navigazione: l'item resta quello del catalogo di provenienza e si sostituisce
+ * solo il testo.
  *
  * I titoli nativi TMDB (Novità provider) arrivano già nella lingua dell'app: il
  * localizer li riconosce e non cambia nulla.

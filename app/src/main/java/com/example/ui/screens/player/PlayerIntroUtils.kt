@@ -7,7 +7,7 @@ import androidx.media3.common.MediaItem
  * Logica di risoluzione e visibilità del pulsante "Salta Intro".
  *
  * Supporta unicamente timestamp reali:
- * 1. Timestamp reali da extras del [MediaItem.mediaMetadata] (es. stream/Cinemeta/provider o capitoli).
+ * 1. Timestamp reali da extras del [MediaItem.mediaMetadata] (es. stream/provider o capitoli).
  * 2. Timestamp reali restituiti da IntroDB tramite IntroSkipRepository.
  *
  * È esplicitamente vietato qualsiasi fallback o stima euristica hardcoded (es. 30s..150s o 90s..150s):

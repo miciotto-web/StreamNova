@@ -114,18 +114,4 @@ class StremioCatalogTypeSelectionTest {
       )
     )
   }
-
-  @Test
-  fun cinemetaMantieneLaSelezionePerTipoInvariata() {
-    val cinemeta = CinemetaAddon.addon.manifest
-    assertEquals(
-      listOf(CinemetaAddon.CATALOG_POPULAR),
-      cinemeta.catalogsForType(TYPE_MOVIE).map { it.effectiveId }.take(1)
-    )
-    assertTrue(cinemeta.supportsCatalogForType(TYPE_MOVIE))
-    assertTrue(cinemeta.supportsCatalogForType(TYPE_SERIES))
-    assertTrue(cinemeta.catalogsForType(TYPE_SERIES).isNotEmpty())
-    // Nessun catalogo Cinemeta dichiara un alias: il confronto resta stretto.
-    assertTrue(cinemeta.catalogsForType(TYPE_SERIES).all { it.effectiveType == TYPE_SERIES })
-  }
 }

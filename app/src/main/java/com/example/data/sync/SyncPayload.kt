@@ -97,7 +97,6 @@ data class SyncAppSettingsPayload(
   /** Hash SHA-256 del PIN: il PIN in chiaro non esce mai dal dispositivo sorgente. */
   val parentalControlPinHash: String,
   val parentalControlLevel: String,
-  val tmdbGenreFallbackEnabled: Boolean,
   val hideUnreleasedContent: Boolean,
   /** Associazioni catalogo → provider dichiarate dall'utente (JSON). */
   val userProviderBindingsJson: String,

@@ -18,16 +18,9 @@ enum class BindingSource {
    * (Xperience / Easy Catalog / ...): alias del provider confrontati con
    * `catalog.id`, `catalog.name`, nome addon ed extra (`genre` / `provider` /
    * `platform`) dichiarati dal manifest. Generato SOLO quando
-   * `hasCustomCatalogAddons()` è `true` e MAI per i target Cinemeta.
+   * `hasCustomCatalogAddons()` è `true`.
    */
-  CUSTOM_ADDON,
-
-  /**
-   * Fallback di sistema sui cataloghi Cinemeta, generato SOLO quando
-   * `hasCustomCatalogAddons()` è `false` e nessun binding dichiarato copre
-   * il provider.
-   */
-  SYSTEM_DEFAULT
+  CUSTOM_ADDON
 }
 
 /** Grado di conferma del binding. */
@@ -49,14 +42,11 @@ enum class BindingConfidence {
  *   personalizzato attivo (Xperience / Easy Catalog / ...), calcolato sugli alias
  *   del provider confrontati con id, nome e extra dichiarati dal manifest.
  *   Usato SOLO quando `hasCustomCatalogAddons()` è `true`.
- * - [BindingSource.SYSTEM_DEFAULT]: fallback sui cataloghi di sistema Cinemeta,
- *   usato SOLO quando `hasCustomCatalogAddons()` è `false` e nessun binding
- *   dichiarato copre il provider.
  *
  * Il resolver non può mai sintetizzare un binding a partire da un nome o da un id:
- * [ProviderCatalogResolver.resolve] restituisce solo USER o REGISTRY; le sorgenti
- * CUSTOM_ADDON e SYSTEM_DEFAULT vengono iniettate esclusivamente dal
- * [ProviderCatalogPlanner] nel piano di caricamento del provider.
+ * [ProviderCatalogResolver.resolve] restituisce solo USER o REGISTRY; la sorgente
+ * CUSTOM_ADDON viene iniettata esclusivamente dal [ProviderCatalogPlanner] nel
+ * piano di caricamento del provider.
  */
 data class ProviderBinding(
   val key: CatalogKey,

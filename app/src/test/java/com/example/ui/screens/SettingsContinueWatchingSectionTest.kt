@@ -295,11 +295,14 @@ class SettingsContinueWatchingSectionTest {
     rule.waitForIdle()
 
     // Sezioni storiche ancora presenti e nell'ordine atteso.
+    // (La sezione "Ricerca e cataloghi" non esiste più: l'unico switch che conteneva
+    // — il fallback TMDB per i generi — è stato rimosso con la migrazione a TMDB
+    // come gestore di cataloghi nativo.)
     val homeTop = rule.onNodeWithText("HOME").fetchSemanticsNode().positionInRoot.y
     val cwTop = header().fetchSemanticsNode().positionInRoot.y
-    val searchTop = rule.onNodeWithText("RICERCA E CATALOGHI").fetchSemanticsNode().positionInRoot.y
+    val playbackTop = rule.onNodeWithText("RIPRODUZIONE").fetchSemanticsNode().positionInRoot.y
     assertTrue("La sezione segue HOME", homeTop < cwTop)
-    assertTrue("La sezione precede Ricerca e cataloghi", cwTop < searchTop)
+    assertTrue("La sezione precede Riproduzione", cwTop < playbackTop)
     assertTrue(AppSettingsRepository.continueWatchingPreferences.value.showRow)
   }
 }

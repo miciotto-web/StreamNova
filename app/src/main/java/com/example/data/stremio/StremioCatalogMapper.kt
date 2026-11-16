@@ -155,7 +155,7 @@ object StremioCatalogMapper {
 
   /**
    * IMDb id nativo del meta (`tt...`), usato per risolvere l'id TMDB quando il
-   * catalogo Stremio (es. Cinemeta) non espone `tmdb:` nell'id.
+   * catalogo Stremio non espone `tmdb:` nell'id.
    */
   private fun imdbIdOf(rawId: String): String? {
     val id = rawId.substringBefore(":").trim()

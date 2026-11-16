@@ -405,7 +405,7 @@ class SearchCategoryXperienceRealManifestTest {
     }
   }
 
-  // ── 5. Serie non supportata ≠ serie compatibile ma vuota (entrambe → TMDB) ─
+  // ── 5. Serie non supportata (→ TMDB) ≠ serie compatibile ma vuota (→ addon) ─
 
   @Test
   fun serieNonSupportataDistintaDaSeriePresenteMaVuota(): Unit = runTest(testDispatcher) {
@@ -420,10 +420,11 @@ class SearchCategoryXperienceRealManifestTest {
     try {
       StremioAddonRepository.installAddon(baseUrl)
 
-      // (a) HORROR: il manifest serie NON dichiara "Horror" (nessun catalogo serie
-      // compatibile) e il catalogo film compatibile risponde VUOTO: NESSUN risultato
-      // utile dall'addon → i titoli arrivano dal fallback TMDB per ENTRAMBI i tipi,
-      // ma il catalogo compatibile viene PRIMA interrogato davvero.
+      // (a) HORROR: il manifest serie NON dichiara "Horror" e il catalogo film
+      // compatibile risponde VUOTO. L'addon gestisce le categorie per genere di
+      // ENTRAMBI i tipi (cataloghi `discover_all_*` con filtro `genre`): sostituisce
+      // completamente TMDB, quindi la risposta vuota/ non coperta è definitiva e
+      // TMDB non viene interrogato.
       assertFalse(
         "Horror non deve essere un genere serie del manifest",
         declaredGenreOptions("series", "discover_all_series").contains("Horror")
@@ -446,27 +447,23 @@ class SearchCategoryXperienceRealManifestTest {
       val horrorSeriesRecord =
         vm.lastGenreLoads.value.firstOrNull { it.mediaType == MediaType.SERIE_TV }
       assertEquals(
-        "Film → Horror: catalogo compatibile interrogato ma vuoto → fallback TMDB",
-        GenreLoadReason.TMDB_FALLBACK,
+        "Film → Horror: catalogo compatibile interrogato ma vuoto → risposta dell'addon",
+        GenreLoadReason.SUPPORTED_BUT_EMPTY,
         horrorFilmRecord?.reason
       )
       assertEquals(
-        "Il motivo registra il catalogo prima vuoto",
-        true,
-        horrorFilmRecord?.catalogWasEmpty
-      )
-      assertEquals(
-        "Serie TV → Horror: nessun catalogo serie compatibile, si usa TMDB",
-        GenreLoadReason.TMDB_FALLBACK,
+        "Serie TV → Horror: l'addon gestisce le categorie serie ma non dichiara Horror → risposta dell'addon",
+        GenreLoadReason.ADDON_NO_COVERAGE,
         horrorSeriesRecord?.reason
       )
       assertTrue(
-        "Il catalogo film compatibile è stato interrogato PRIMA del fallback: ${fixture.requested}",
+        "Il catalogo film compatibile è stato interrogato davvero: ${fixture.requested}",
         fixture.requested.contains(catalogRoute("movie", "discover_all_movies", mapOf("genre" to "Horror")))
       )
 
       // (b) AZIONE: catalogo serie COMPATIBILE (genre dichiarato) con zero risultati:
-      // nessun risultato utile → fallback TMDB, con il catalogo separato dal motivo.
+      // l'addon gestisce le categorie serie, quindi la risposta vuota è definitiva e
+      // TMDB non viene interrogato per le serie.
       val action = category("action_adventure")
       vm.initCategory(action.id, action.keywords, action.movieGenreId, action.tvGenreId)
       assertTrue(awaitCondition { vm.categoryItems.value.isNotEmpty() })
@@ -475,21 +472,16 @@ class SearchCategoryXperienceRealManifestTest {
       val actionSeriesRecord =
         vm.lastGenreLoads.value.firstOrNull { it.mediaType == MediaType.SERIE_TV }
       assertEquals(
-        "Catalogo serie compatibile interrogato e vuoto: il fallback TMDB capita comunque",
-        GenreLoadReason.TMDB_FALLBACK,
+        "Catalogo serie compatibile interrogato e vuoto: risposta dell'addon",
+        GenreLoadReason.SUPPORTED_BUT_EMPTY,
         actionSeriesRecord?.reason
       )
-      assertEquals(
-        "Il motivo registra il catalogo prima vuoto",
-        true,
-        actionSeriesRecord?.catalogWasEmpty
-      )
       assertTrue(
-        "Lo stato dichiara i casi ('catalogo vuoto' e 'TMDB'): $message",
-        message.contains("tramite TMDB") || message.contains("TMDB")
+        "Lo stato dichiara il catalogo serie vuoto: $message",
+        message.contains("senza risultati")
       )
       assertFalse(
-        "Non è presentato come caricamento addon riuscito per le serie: $message",
+        "I film del catalogo compatibile restano a schermo: $message",
         vm.categoryItems.value.none { it.type == MediaType.FILM }
       )
       // (c) I film reali del catalogo compatibile NON vengono sostituiti da TMDB.

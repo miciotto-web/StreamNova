@@ -385,18 +385,8 @@ object StremioAddonRepository {
   fun getActiveAddons(): List<InstalledAddon> = _addons.value.filter { it.isEnabled }
 
   /**
-   * Definizione dell'addon di SISTEMA storico (Cinemeta).
-   *
-   * LEGACY: non viene più registrato come catalogo predefinito e non alimenta la
-   * Home né le categorie. Le sorgenti native sono TMDB. L'API resta per
-   * compatibilità e per riconoscere/ignorare l'addon.
+   * true se l'addon identificato corrisponde a Xperience.
    */
-  fun getSystemAddons(): List<InstalledAddon> = CinemetaAddon.systemAddons
-
-  /** true se [id] identifica un addon di sistema legacy (Cinemeta). */
-  fun isSystemAddon(id: String?): Boolean = CinemetaAddon.isSystemAddon(id)
-
-  /** true se l'addon identificato corrisponde a Xperience. */
   fun isXperienceAddon(addon: InstalledAddon): Boolean {
     val id = addon.id.lowercase()
     val name = (addon.manifest.name ?: "").lowercase()
@@ -409,15 +399,15 @@ object StremioAddonRepository {
     getActiveAddons().any { isXperienceAddon(it) }
 
   /**
-   * true se [addon] espone almeno un catalogo PERSONALIZZATO, cioè non è un addon di
-   * sistema (Cinemeta) e non è escluso da [StremioCatalogFilters].
+   * true se [addon] espone almeno un catalogo PERSONALIZZATO, cioè non è escluso da
+   * [StremioCatalogFilters].
    *
    * È il criterio generalizzato che sostituisce la vecchia rilevazione Xperience-only:
    * qualsiasi addon con cataloghi propri (Xperience, Easy Catalog, "Nova stream addon"
-   * quando non filtrato, ecc.) fa scattare la precedenza sui cataloghi Cinemeta di default.
+   * quando non filtrato, ecc.) sostituisce completamente TMDB nella gestione dei
+   * cataloghi dei tipi che copre.
    */
   fun isCustomCatalogAddon(addon: InstalledAddon): Boolean {
-    if (isSystemAddon(addon.id)) return false
     if (StremioCatalogFilters.isIgnoredAddon(addon)) return false
     return addon.manifest.validCatalogs().isNotEmpty()
   }
@@ -440,15 +430,15 @@ object StremioAddonRepository {
   )
 
   /**
-   * Verifica se tra gli addon attivi non di sistema (escluso Cinemeta) esiste almeno
-   * un catalogo corrispondente ai token del provider specificato per il tipo richiesto ("movie", "series").
+   * Verifica se tra gli addon attivi esiste almeno un catalogo corrispondente ai
+   * token del provider specificato per il tipo richiesto ("movie", "series").
    */
   fun hasProviderCatalog(providerId: String, type: String? = null): Boolean {
     val normProvider = providerId.trim().lowercase()
     val tokens = CATALOG_ID_TOKENS[normProvider] ?: setOf(normProvider)
 
     val activeCustomAddons = getActiveAddons().filterNot {
-      isSystemAddon(it.id) || StremioCatalogFilters.isIgnoredAddon(it)
+      StremioCatalogFilters.isIgnoredAddon(it)
     }
 
     return activeCustomAddons.any { addon ->

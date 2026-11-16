@@ -115,7 +115,6 @@ object SyncConfigBuilder {
       parentalControlEnabled = AppSettingsRepository.parentalControlEnabled.value,
       parentalControlPinHash = AppSettingsRepository.parentalControlPin.value,
       parentalControlLevel = AppSettingsRepository.parentalControlLevel.value,
-      tmdbGenreFallbackEnabled = AppSettingsRepository.tmdbGenreFallbackEnabled.value,
       hideUnreleasedContent = AppSettingsRepository.hideUnreleasedContent.value,
       userProviderBindingsJson = AppSettingsRepository.userProviderBindingsJson.value,
       cwShowRow = cw.showRow,

@@ -151,13 +151,11 @@ class ContinueWatchingPreferencesTest {
     val before = AppSettingsRepository.continueWatchingPreferences.value
     AppSettingsRepository.setHideUnreleasedContent(true)
     AppSettingsRepository.setAutoplayEnabled(true)
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(false)
     AppSettingsRepository.setStreamingEngineMode(StreamingEngineMode.HTTP_WEB)
     assertEquals(before, AppSettingsRepository.continueWatchingPreferences.value)
 
     AppSettingsRepository.setHideUnreleasedContent(false)
     AppSettingsRepository.setAutoplayEnabled(false)
-    AppSettingsRepository.setTmdbGenreFallbackEnabled(true)
   }
 
   @Test

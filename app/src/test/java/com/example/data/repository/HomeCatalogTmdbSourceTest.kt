@@ -2,7 +2,6 @@ package com.example.data.repository
 
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
-import com.example.data.stremio.CinemetaAddon
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -10,12 +9,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Compatibilità del mapping delle sezioni TMDB su [StremioCatalogRepository.buildHomeCatalogs],
+ * Mapping delle sezioni TMDB su [StremioCatalogRepository.buildHomeCatalogs],
  * senza rete.
  *
- * La Home di produzione usa Cinemeta per le righe stock e TMDB solo per le Novità
- * provider; questi test restano utili per la funzione PURA e per il percorso
- * legacy/test di [TmdbHomeCatalogProvider.loadHomeSections].
+ * La Home di produzione usa TMDB per le righe stock E per le Novità provider;
+ * questi test verificano la funzione PURA e il percorso
+ * [TmdbHomeCatalogProvider.loadStockSections].
  *
  * Regole coperte:
  *  - le sezioni stock (slot POPULAR / TOP_RATED / NEW) alimentano le righe esistenti;
@@ -113,8 +112,6 @@ class HomeCatalogTmdbSourceTest {
 
     assertTrue(catalog.moviesFromTmdbDefault)
     assertTrue(catalog.seriesFromTmdbDefault)
-    assertFalse(catalog.moviesFromDefaultCatalog)
-    assertFalse(catalog.seriesFromDefaultCatalog)
     assertFalse(catalog.isMoviesFromStremio)
     assertFalse(catalog.isSeriesFromStremio)
     assertFalse(catalog.hasCustomCatalogMovies)
@@ -129,23 +126,23 @@ class HomeCatalogTmdbSourceTest {
       "tmdb_native",
       MediaType.FILM,
       listOf(movie("tmdb_m_90", "Nativo"))
-    ).copy(addonId = "org.stremio.cinemeta", addonName = "Cinemeta")
+    ).copy(addonId = "test.addon.legacy", addonName = "Addon Legacy")
 
-    // Un costruttore legacy non può far comparire "Cinemeta" sopra contenuti TMDB.
+    // Un costruttore legacy non può far comparire il nome di un addon sopra contenuti TMDB.
     assertNull(nativeWithLegacyName.attributionAddonName)
 
-    val realCinemetaRow = CatalogSection(
-      id = "stremio_cinemeta_catalog_top",
-      title = "Top • Cinemeta",
-      addonId = "org.stremio.cinemeta",
-      addonName = "Cinemeta",
-      catalogId = "top",
+    val realAddonRow = CatalogSection(
+      id = "stremio_test_addon_home",
+      title = "Home • Addon Reale",
+      addonId = "test.addon.reale",
+      addonName = "Addon Reale",
+      catalogId = "home",
       mediaType = MediaType.FILM,
       origin = CatalogSourceOrigin.STREMIO_ADDON,
       items = listOf(movie("tt1", "Reale addon"))
     )
-    // Per un catalogo che proviene DAVVERO da Cinemeta l'attribuzione resta.
-    assertEquals("Cinemeta", realCinemetaRow.attributionAddonName)
+    // Per un catalogo che proviene DAVVERO da un addon l'attribuzione resta.
+    assertEquals("Addon Reale", realAddonRow.attributionAddonName)
   }
 
   @Test
@@ -284,8 +281,6 @@ class HomeCatalogTmdbSourceTest {
     assertEquals(listOf("tmdb_tv_50"), catalog.allSeries.map { it.id })
     assertFalse(catalog.moviesFromTmdbDefault)
     assertFalse(catalog.seriesFromTmdbDefault)
-    assertFalse(catalog.moviesFromDefaultCatalog)
-    assertFalse(catalog.seriesFromDefaultCatalog)
     assertTrue(catalog.extraSections.isEmpty())
   }
 
@@ -305,54 +300,6 @@ class HomeCatalogTmdbSourceTest {
     )
 
     assertEquals(listOf("tmdb_m_77"), catalog.allMovies.map { it.id })
-  }
-
-  @Test
-  fun leSezioniCinemetaLegacyRestanoMappateDalCatalogId() {
-    // Compatibilità: una sezione Cinemeta costruita senza homeSlot viene comunque
-    // riconosciuta dal catalogId del manifest (top / imdbRating / year).
-    val legacy = listOf(
-      CatalogSection(
-        id = "legacy_top",
-        title = "Popular",
-        addonId = CinemetaAddon.MANIFEST_ID,
-        catalogId = CinemetaAddon.CATALOG_POPULAR,
-        mediaType = MediaType.FILM,
-        items = listOf(movie("tt1", "Legacy popolare"))
-      ),
-      CatalogSection(
-        id = "legacy_top_rated",
-        title = "Featured",
-        addonId = CinemetaAddon.MANIFEST_ID,
-        catalogId = CinemetaAddon.CATALOG_TOP_RATED,
-        mediaType = MediaType.FILM,
-        items = listOf(movie("tt2", "Legacy votato"))
-      ),
-      CatalogSection(
-        id = "legacy_new",
-        title = "New",
-        addonId = CinemetaAddon.MANIFEST_ID,
-        catalogId = CinemetaAddon.CATALOG_NEW,
-        mediaType = MediaType.FILM,
-        items = listOf(movie("tt3", "Legacy nuovo"))
-      )
-    )
-
-    val catalog = StremioCatalogRepository.buildHomeCatalogs(
-      defaultSections = legacy,
-      userSections = emptyList(),
-      allMedia = emptyList()
-    )
-
-    assertEquals(listOf("tt1"), catalog.popularMovies.map { it.id })
-    assertEquals(listOf("tt2"), catalog.top10Movies.map { it.id })
-    assertEquals(listOf("tt3"), catalog.trendingMovies.map { it.id })
-    // Sorgente Stremio dichiarata: paginazione legacy.
-    assertTrue(catalog.moviesFromDefaultCatalog)
-    assertFalse(catalog.moviesFromTmdbDefault)
-    assertTrue(catalog.extraSections.isEmpty())
-    // La UI non mostrerà il badge TMDB per righe alimentate dal loader legacy.
-    assertEquals(CatalogSourceOrigin.STREMIO_ADDON, catalog.stockSourceOrigin)
   }
 
   @Test
