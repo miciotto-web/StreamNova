@@ -1,6 +1,7 @@
 package com.example.data.stremio
 
 import android.util.Log
+import com.example.data.network.tlsFallback
 import com.example.data.util.AsyncSingleFlight
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -98,6 +99,10 @@ object StremioCatalogEngine {
     .addInterceptor(
       HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
     )
+    // Fallback anchor GTS (Cloudflare/Google Trust Services): i cataloghi degli
+    // addon vivono spesso dietro Cloudflare e sui vecchi Android TV la validazione
+    // della catena fallisce senza le radici GTS nel negozio di sistema.
+    .tlsFallback()
     .build()
 
   private val moshi = com.squareup.moshi.Moshi.Builder()

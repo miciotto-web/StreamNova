@@ -2,6 +2,8 @@ package com.example.data.stremio
 
 import android.util.Log
 import com.example.data.api.TmdbApiClient
+import com.example.data.network.TlsDiagnostics
+import com.example.data.network.tlsFallback
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.repository.MediaRepository
 import com.example.data.streaming.extractors.awaitResponse
@@ -249,6 +251,10 @@ object StremioAddonRepository {
       .addInterceptor(
         HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
       )
+      // Fallback anchor GTS (Cloudflare/Google Trust Services): sui vecchi Android
+      // TV il negozio di sistema non contiene le radici GTS e le catene serveite
+      // per i manifest addon falliscono con "Chain validation failed".
+      .tlsFallback()
       .build()
   }
 
@@ -766,7 +772,15 @@ object StremioAddonRepository {
   suspend fun fetchManifest(baseUrl: String): StremioManifest = withContext(Dispatchers.IO) {
     val url = "${baseUrl.trimEnd('/')}/manifest.json"
     val request = Request.Builder().url(url).header("Accept", "application/json").build()
-    httpClient.newCall(request).execute().use { response ->
+    val response = try {
+      httpClient.newCall(request).execute()
+    } catch (e: Exception) {
+      // Fallimento TLS: lo traduce in un messaggio diagnostico (es. orologio del
+      // dispositivo indietro/avanti rispetto alla validità del certificato) quando
+      // è possibile determinarlo; altrimenti l'errore originale resta invariato.
+      throw TlsDiagnostics.translateTlsFailure(e, url)
+    }
+    response.use { response ->
       if (!response.isSuccessful) {
         throw IOException("Manifest non trovato (HTTP ${response.code}) per $url")
       }
