@@ -25,7 +25,7 @@ import com.example.data.streaming.diagnostics.toLogLine
 import com.example.data.streaming.diagnostics.record
 import com.example.data.streaming.providers.AltadefinizioneProvider
 import com.example.data.streaming.providers.Cb01Provider
-import com.example.data.streaming.providers.EurostreamingProvider
+import com.example.data.streaming.providers.GuardaPlayProvider
 import com.example.data.streaming.providers.ImdbAwareStreamProvider
 import com.example.data.streaming.providers.MultiEmbedProvider
 import com.example.data.streaming.providers.StreamingCommunityProvider
@@ -1249,7 +1249,9 @@ class StreamManager(
       SuperEmbedProvider(diagnostics = diagnostics),
       StreamingCommunityProvider(diagnostics = diagnostics),
       Cb01Provider(diagnostics = diagnostics),
-      EurostreamingProvider(diagnostics = diagnostics)
+      // GuardaPlay: catalogo film con player trembed; l'unico hoster nuovo è
+      // Uqload (VixSrc è già coperto dal provider dedicato). Sperimentale.
+      GuardaPlayProvider(diagnostics = diagnostics)
     )
 
     /** Timeout (ms) per l'attesa finale dei job cancellati prima di chiudere il channelFlow. */
@@ -1262,7 +1264,7 @@ class StreamManager(
      *
      * Gli altri provider restano utilizzabili senza TMDB: gli addon Stremio e TorBox
      * interrogano la risorsa `stream` con l'ID IMDb `tt...`, mentre
-     * StreamingCommunity, CB01, Eurostreaming, Altadefinizione e AnimeStreamProvider
+     * StreamingCommunity, CB01, Altadefinizione e AnimeStreamProvider
      * cercano per titolo/IMDb.
      */
     fun providerRequiresTmdbId(provider: StreamProvider): Boolean =

@@ -3,6 +3,7 @@ package com.example.data.streaming
 import com.example.data.provider.AnimeStreamProvider
 import com.example.data.streaming.providers.Cb01Provider
 import com.example.data.streaming.providers.EurostreamingProvider
+import com.example.data.streaming.providers.GuardaPlayProvider
 import com.example.data.streaming.providers.MultiEmbedProvider
 import com.example.data.streaming.providers.StreamingCommunityProvider
 import com.example.data.streaming.providers.SuperEmbedProvider
@@ -46,6 +47,7 @@ class TmdblessStreamResolutionTest {
       StreamingCommunityProvider(),
       Cb01Provider(),
       EurostreamingProvider(),
+      GuardaPlayProvider(),
       TorBoxStreamProvider(),
       AnimeStreamProvider()
     )

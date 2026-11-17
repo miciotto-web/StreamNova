@@ -15,9 +15,13 @@ import java.text.Normalizer
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -42,8 +46,26 @@ import org.json.JSONObject
  *
  * Header obbligatori: User-Agent desktop + Referer coerente con l'host del player,
  * altrimenti il CDN risponde 403 Forbidden.
+ *
+ * Dalla stessa ricerca vengono interrogati in parallelo anche i cataloghi
+ * **AnimeWorld** ([AnimeWorldClient]): le sorgenti dei due cataloghi vengono
+ * fuse e deduplicate per URL. Il primo catalogo che produce risultati non
+ * attende il secondo oltre una finestra breve di merge; se fallisce, l'altro
+ * ha ancora il proprio budget.
  */
-class AnimeStreamProvider : StreamProvider {
+class AnimeStreamProvider internal constructor(
+  private val animeWorld: AnimeWorldSource
+) : StreamProvider {
+
+  /** Costruttore pubblico storico: AnimeSaturn + AnimeWorld reale. */
+  constructor() : this(AnimeWorldClient())
+
+  /** Esito di un catalogo interrogato in parallelo. */
+  private data class SourceResult(
+    val provider: String,
+    val sources: List<StreamSource>,
+    val error: String?
+  )
 
   override suspend fun getStreams(
     tmdbId: Int,
@@ -88,6 +110,95 @@ class AnimeStreamProvider : StreamProvider {
       }
     }
 
+    // AnimeSaturn e AnimeWorld sono indipendenti: partono in parallelo e
+    // ognuno ha un budget proprio, così un catalogo lento non nasconde le
+    // sorgenti dell'altro. Il limite complessivo resta sotto i 15 s del
+    // provider gestiti da StreamManager.
+    //
+    // Il primo risultato non attende il secondo: se ha già sorgenti si concede
+    // solo una finestra breve per il merge, altrimenti si attende l'altro
+    // catalogo. Senza questa finestra una sorgente AnimeSaturn pronta in 1 s
+    // resterebbe bloccata fino al timeout di AnimeWorld.
+    val results = supervisorScope {
+      val channel = Channel<SourceResult>(2)
+
+      val saturnJob = launch {
+        val result = try {
+          val sources = withTimeoutOrNull(ANIME_SATURN_TIMEOUT_MS) {
+            resolveAnimeSaturn(queries, relativeCandidates, year)
+          }
+          SourceResult("AnimeSaturn", sources.orEmpty(), if (sources == null) "timeout" else null)
+        } catch (ex: CancellationException) {
+          throw ex
+        } catch (e: Exception) {
+          SourceResult("AnimeSaturn", emptyList(), e.message)
+        }
+        channel.send(result)
+      }
+
+      val worldJob = launch {
+        val result = try {
+          val sources = withTimeoutOrNull(ANIME_WORLD_TIMEOUT_MS) {
+            animeWorld.resolve(queries, relativeCandidates.toList(), year, isTv)
+          }
+          SourceResult("AnimeWorld", sources.orEmpty(), if (sources == null) "timeout" else null)
+        } catch (ex: CancellationException) {
+          throw ex
+        } catch (e: Exception) {
+          SourceResult("AnimeWorld", emptyList(), e.message)
+        }
+        channel.send(result)
+      }
+
+      try {
+        val first = channel.receive()
+        val second = if (first.sources.isNotEmpty()) {
+          withTimeoutOrNull(ANIME_MERGE_GRACE_MS) { channel.receive() }
+        } else {
+          // Il primo catalogo ha fallito: l'altro ha ancora il proprio budget.
+          withTimeoutOrNull(ANIME_SATURN_TIMEOUT_MS) { channel.receive() }
+        }
+        listOfNotNull(first, second)
+      } finally {
+        saturnJob.cancel()
+        worldJob.cancel()
+      }
+    }
+
+    // Deduplica per URL: lo stesso file può arrivare da entrambi i cataloghi.
+    val merged = LinkedHashMap<String, StreamSource>()
+    results.forEach { result ->
+      result.sources.forEach { source ->
+        val key = source.streamUrl?.takeIf { it.isNotBlank() }
+          ?: source.infoHash?.takeIf { it.isNotBlank() }
+          ?: return@forEach
+        merged.putIfAbsent(key, source)
+      }
+    }
+    if (merged.isEmpty()) {
+      val failures = results.mapNotNull { result ->
+        result.error?.let { "${result.provider}: $it" }
+      }
+      throw IOException("AnimeStream non risolvibile (${failures.take(4).joinToString(" | ")})")
+    }
+    Log.i(
+      TAG,
+      "Sorgenti anime: " + results.joinToString { "${it.provider}=${it.sources.size}" } +
+        " -> ${merged.size} dopo dedup"
+    )
+    merged.values.toList()
+  }
+
+  /**
+   * Catena AnimeSaturn storica: ricerca per query e risoluzione dell'episodio.
+   * Estratta dal corpo di [getStreams] per poterla eseguire in parallelo ad
+   * AnimeWorld con un budget dedicato.
+   */
+  private suspend fun resolveAnimeSaturn(
+    queries: List<String>,
+    relativeCandidates: Collection<Int>,
+    year: Int?
+  ): List<StreamSource> {
     val failures = mutableListOf<String>()
     for (base in BASE_URLS) {
       currentCoroutineContext().ensureActive()
@@ -113,8 +224,8 @@ class AnimeStreamProvider : StreamProvider {
             try {
               val sources = resolveEpisode(base, entry.slug, ep)
               if (sources.isNotEmpty()) {
-                Log.i(TAG, "Sorgente trovata: '${entry.title}' ep $ep -> ${sources.size} link")
-                return@withContext sources
+                Log.i(TAG, "Sorgente AnimeSaturn trovata: '${entry.title}' ep $ep -> ${sources.size} link")
+                return sources
               }
             } catch (ex: CancellationException) {
               throw ex
@@ -125,7 +236,7 @@ class AnimeStreamProvider : StreamProvider {
         }
       }
     }
-    throw IOException("AnimeStream non risolvibile (${failures.take(4).joinToString(" | ")})")
+    throw IOException("AnimeSaturn non risolvibile (${failures.take(4).joinToString(" | ")})")
   }
 
   // --------------------------------------------------------------------- //
@@ -366,6 +477,20 @@ class AnimeStreamProvider : StreamProvider {
     private const val TAG = "ANIME_STREAM"
     private const val SERVER_NAME = "AnimeSaturn"
     private const val MAX_RESULTS = 3
+
+    /**
+     * Budget dei due cataloghi. La somma non è rilevante perché girano in
+     * parallelo; il massimo (12 s) resta sotto il timeout globale di 15 s.
+     */
+    private const val ANIME_SATURN_TIMEOUT_MS = 12_000L
+    private const val ANIME_WORLD_TIMEOUT_MS = 8_000L
+
+    /**
+     * Finestra concessa al secondo catalogo per unirsi al risultato quando il
+     * primo ha già prodotto sorgenti. Basta per un secondo catalogo veloce,
+     * senza penalizzare l'avvio quando l'altro è lento.
+     */
+    private const val ANIME_MERGE_GRACE_MS = 1_500L
 
     /** Mirror del sito (il .com reindirizza sul .net). */
     private val BASE_URLS = listOf(

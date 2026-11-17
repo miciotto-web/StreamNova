@@ -3,6 +3,7 @@ package com.example.ui.screens.player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import com.example.data.streaming.extractors.ExtractorHttp
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 
@@ -76,6 +77,11 @@ internal class PlayerHttpDataSourceFactory(
      * [VidxgoTokenInterceptor] rinnova il token HLS dei flussi Altadefinizione
      * (`*.d2b.you`, scadenza ~180 s) prima che il CDN risponda 403. L'interceptor
      * è host-scoped: le altre sorgenti non vengono toccate.
+     *
+     * Il [CookieJar] è quello condiviso da [ExtractorHttp]: un hoster che
+     * rilascia un cookie di sessione durante l'estrazione (es. Doodstream) lo
+     * ritrova anche sulle richieste di playlist/segmenti del player. Il matching
+     * resta domain/path-scoped, quindi il cookie non viene inviato ad altri host.
      */
     fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
       .connectionPool(NuvioExoPlayerPerformanceHelper.sharedConnectionPool)
@@ -83,6 +89,7 @@ internal class PlayerHttpDataSourceFactory(
       .readTimeout(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
       .followRedirects(true)
       .followSslRedirects(true)
+      .cookieJar(ExtractorHttp.client.cookieJar)
       .addInterceptor(VidxgoTokenInterceptor())
       .build()
   }

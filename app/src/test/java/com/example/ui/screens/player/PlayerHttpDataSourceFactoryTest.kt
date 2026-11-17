@@ -4,9 +4,11 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.example.data.streaming.extractors.ExtractorHttp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -92,5 +94,15 @@ class PlayerHttpDataSourceFactoryTest {
     assertEquals(PlayerHttpDataSourceFactory.READ_TIMEOUT_MS, client.readTimeoutMillis.toLong())
     assertTrue(client.followRedirects)
     assertTrue(client.followSslRedirects)
+  }
+
+  @Test
+  fun `il client del player condivide il CookieJar degli extractor`() {
+    val client = PlayerHttpDataSourceFactory.defaultClient()
+
+    // La sessione rilasciata da un hoster durante l'estrazione (es. Doodstream)
+    // deve essere disponibile anche per playlist e segmenti, con lo stesso
+    // matching domain/path-scoped di OkHttp.
+    assertSame(ExtractorHttp.client.cookieJar, client.cookieJar)
   }
 }

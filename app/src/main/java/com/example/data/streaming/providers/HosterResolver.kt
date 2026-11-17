@@ -6,14 +6,18 @@ import com.example.data.streaming.diagnostics.StreamAttemptOutcome
 import com.example.data.streaming.diagnostics.StreamDiagnosticSink
 import com.example.data.streaming.diagnostics.StreamDiagnostics
 import com.example.data.streaming.diagnostics.record
+import com.example.data.streaming.extractors.DoodstreamExtractor
 import com.example.data.streaming.extractors.ExtractorHttp
 import com.example.data.streaming.extractors.FilemoonExtractor
 import com.example.data.streaming.extractors.HtmlEntities
 import com.example.data.streaming.extractors.MaxStreamExtractor
 import com.example.data.streaming.extractors.MixdropExtractor
 import com.example.data.streaming.extractors.StreamWishExtractor
+import com.example.data.streaming.extractors.StreamtapeExtractor
+import com.example.data.streaming.extractors.UqloadExtractor
 import com.example.data.streaming.extractors.VidHideExtractor
 import com.example.data.streaming.extractors.VideoExtractor
+import com.example.data.streaming.extractors.VoeExtractor
 import java.io.IOException
 import java.net.URI
 import java.net.URLEncoder
@@ -44,6 +48,11 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    (parametro `linkId` -> "Invalid Parameters": il nome corretto è `id`);
  *  - `uprot.net/msf|mse|msfi|msei/{code}` -> serve un **captcha a immagini**:
  *    il link non è risolvibile in automatico, viene saltato con un log esplicito.
+ *
+ * Estrattori integrati: MaxStream, Mixdrop, VidHide, Filemoon, StreamWish,
+ * **Uqload**, **Streamtape**, **Voe** e **Doodstream**. Solo i domini non
+ * ambigui sono associati a un estrattore: gli alias condivisi fra Voe e
+ * Doodstream restano fuori per non instradare il link all'hoster sbagliato.
  */
 object HosterResolver {
 
@@ -54,6 +63,10 @@ object HosterResolver {
   private val vidHideExtractor: VidHideExtractor by lazy { VidHideExtractor() }
   private val filemoonExtractor: FilemoonExtractor by lazy { FilemoonExtractor() }
   private val streamWishExtractor: StreamWishExtractor by lazy { StreamWishExtractor() }
+  private val uqloadExtractor: UqloadExtractor by lazy { UqloadExtractor() }
+  private val streamtapeExtractor: StreamtapeExtractor by lazy { StreamtapeExtractor() }
+  private val voeExtractor: VoeExtractor by lazy { VoeExtractor() }
+  private val doodstreamExtractor: DoodstreamExtractor by lazy { DoodstreamExtractor() }
 
   /**
    * Label hoster riconosciute nei link dei cataloghi italiani.
@@ -63,7 +76,7 @@ object HosterResolver {
    * altrimenti il mirror viene scartato prima ancora di risolverlo.
    */
   private val HOSTER_LABEL_REGEX = Regex(
-    """^\s*(maxstream|mixdrop|turbovid|delta\s?bit|deltabit|voe|dood|filemoon|streamtape|vidhide|streamwish|flash|stream(?:ing)?)(?:\s*[\(\[]?\s*(?:hd|fhd|uhd|sd|4k|1080p|720p|ita)\s*[\)\]]?){0,2}\s*$""",
+    """^\s*(maxstream|mixdrop|turbovid|delta\s?bit|deltabit|voe|dood(?:stream)?|uqload|filemoon|streamtape|vidhide|streamwish|flash|stream(?:ing)?)(?:\s*[\(\[]?\s*(?:hd|fhd|uhd|sd|4k|1080p|720p|ita)\s*[\)\]]?){0,2}\s*$""",
     RegexOption.IGNORE_CASE
   )
 
@@ -85,7 +98,7 @@ object HosterResolver {
   /**
    * True se l'URL è un hoster/shortener per cui esiste un percorso **reale**:
    * un estrattore integrato, lo shortener stayonline o il fail-fast uprot.
-   * Un dominio solo riconosciuto (es. streamwish) non è "supportato".
+   * Un dominio solo riconosciuto (es. turbovid) non è "supportato".
    */
   fun isSupportedHosterUrl(url: String): Boolean =
     extractorFor(url) != null || parseStayOnline(url) != null || isUprotCaptcha(url)
@@ -268,6 +281,10 @@ object HosterResolver {
       STREAMWISH_DOMAINS.any { matchesDomain(host, it) } -> streamWishExtractor
       MAXSTREAM_DOMAINS.any { matchesDomain(host, it) } -> maxStreamExtractor
       MIXDROP_DOMAINS.any { matchesDomain(host, it) } -> mixdropExtractor
+      UQLOAD_DOMAINS.any { matchesDomain(host, it) } -> uqloadExtractor
+      STREAMTAPE_DOMAINS.any { matchesDomain(host, it) } -> streamtapeExtractor
+      VOE_DOMAINS.any { matchesDomain(host, it) } -> voeExtractor
+      DOOD_DOMAINS.any { matchesDomain(host, it) } -> doodstreamExtractor
       else -> null
     }
   }
@@ -750,6 +767,36 @@ object HosterResolver {
   /** `/f/{code}` -> `/e/{code}`: stessa pagina file, path embed del player. */
   private val MIXDROP_FILE_PATH_REGEX = Regex("""^(https?://[^/]+)/f/""", RegexOption.IGNORE_CASE)
 
+  /** Domini Uqload osservati nei cataloghi (estrattore integrato). */
+  private val UQLOAD_DOMAINS = listOf(
+    "uqload.cx", "uqload.is", "uqload.vc"
+  )
+
+  /** Domini Streamtape osservati nei cataloghi (estrattore integrato). */
+  private val STREAMTAPE_DOMAINS = listOf(
+    "streamtape.com", "streamtape.net", "streamtape.to",
+    "streamtape.site", "streamtape.xyz", "streamta.site"
+  )
+
+  /**
+   * Domini canonici Voe. Gli alias "random" usati dal player
+   * (`jilliandescribecompany.com`, ...) cambiano continuamente e alcuni sono
+   * condivisi con Doodstream: qui restano solo i domini non ambigui.
+   */
+  private val VOE_DOMAINS = listOf(
+    "voe.sx", "voe.to", "voe.eu"
+  )
+
+  /**
+   * Domini Doodstream e mirror non ambigui. Gli alias condivisi con Voe non
+   * vengono inclusi: `extractorFor` deve scegliere un solo estrattore.
+   */
+  private val DOOD_DOMAINS = listOf(
+    "dood.la", "dood.li", "dood.so", "dood.wf", "dood.cx", "dood.yt",
+    "doodstream.com", "vide0.net", "dsvplay.com", "myvidplay.com",
+    "playmogo.com", "do7go.com", "d000d.com"
+  )
+
   /**
    * Hoster riconosciuti ma senza estrattore integrato: i loro link vengono
    * scartati con un log esplicito ("hoster non supportato") invece di essere
@@ -758,14 +805,12 @@ object HosterResolver {
   private val OTHER_HOSTER_DOMAINS = listOf(
     "stayonline.pro", "uprot.net",
     "turbovid.co", "turbovid.pw", "turbovid.net",
-    "deltabit.co", "deltabit.net",
-    "voe.sx", "voe.to", "voe.eu",
-    "dood.so", "dood.wf", "dood.li", "doodstream.com",
-    "streamtape.com", "streamtape.net", "streamtape.to"
+    "deltabit.co", "deltabit.net"
   )
 
   /** Tutti i domini riconosciuti (solo base domain: i sottodomini sono accettati). */
   private val HOSTER_DOMAINS =
-    (VIDHIDE_DOMAINS + FILEMOON_DOMAINS + STREAMWISH_DOMAINS + MAXSTREAM_DOMAINS + MIXDROP_DOMAINS + OTHER_HOSTER_DOMAINS)
+    (VIDHIDE_DOMAINS + FILEMOON_DOMAINS + STREAMWISH_DOMAINS + MAXSTREAM_DOMAINS + MIXDROP_DOMAINS +
+      UQLOAD_DOMAINS + STREAMTAPE_DOMAINS + VOE_DOMAINS + DOOD_DOMAINS + OTHER_HOSTER_DOMAINS)
       .distinct()
 }

@@ -46,7 +46,7 @@ object HttpProviderChoices {
     HttpProviderChoice("SuperEmbedProvider", "SuperEmbed"),
     HttpProviderChoice("StreamingCommunityProvider", "StreamingCommunity"),
     HttpProviderChoice("Cb01Provider", "CB01 / CB01 Uno"),
-    HttpProviderChoice("EurostreamingProvider", "Eurostreaming")
+    HttpProviderChoice("GuardaPlay", "GuardaPlay")
   )
 
   /** Provider attivi nella modalità automatica standard (verificati). */
