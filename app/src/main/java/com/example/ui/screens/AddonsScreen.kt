@@ -6,6 +6,8 @@ import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -379,7 +381,7 @@ fun AddonsScreen(
  * Card di un addon installato: titolo + versione + descrizione, switch
  * di abilitazione e pulsanti "Aggiorna" e "Rimuovi".
  */
-@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun AddonCard(
   addon: InstalledAddon,
@@ -485,8 +487,7 @@ private fun AddonCard(
 
     Row(
       modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.SpaceBetween
+      verticalAlignment = Alignment.Top
     ) {
       // Switch di abilitazione (focusabile col D-pad).
       AddonSwitch(
@@ -494,9 +495,20 @@ private fun AddonCard(
         onCheckedChange = onToggleEnabled
       )
 
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      // Margine minimo di 14 dp tra la pillola "Attivo" e il gruppo di pillole
+      // (il secondo spacer elastico spinge il gruppo a destra quando c'è spazio).
+      // Serve perché lo zoom della pillola focalizzata (1.05x) si espande di ~5 dp
+      // per lato: senza riserva lo zoom finiva sopra lo switch, perché la pillola
+      // focalizzata è disegnata con z-index più alto.
+      Spacer(modifier = Modifier.width(14.dp))
+      Spacer(modifier = Modifier.weight(1f))
+
+      // FlowRow: quando la card è stretta le pillole vanno a capo invece di essere
+      // compresse (prima "Rimuovi" si spezzava e "Provider" poteva sparire). Su
+      // schermo largo resta una riga sola, allineata a destra come prima.
+      FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
       ) {
         // Diagnostica cataloghi (focusabile col D-pad)
         TvFocusableBox(
@@ -647,9 +659,9 @@ private fun AddonCard(
             )
             Text(
               text = if (isProvidersExpanded) {
-                "Associazioni Provider (${proposals.size}) ▲"
+                "Provider (${proposals.size}) ▲"
               } else {
-                "Associazioni Provider (${proposals.size}) ▼"
+                "Provider (${proposals.size}) ▼"
               },
               color = if (isFocused) NovaCyanBright else NovaTextSecondary,
               fontSize = 13.sp,
