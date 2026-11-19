@@ -2918,6 +2918,10 @@ class StreamNovaViewModel(
   private val _addonInstalling = MutableStateFlow(false)
   val addonInstalling: StateFlow<Boolean> = _addonInstalling.asStateFlow()
 
+  private val _addonUpdatingIds = MutableStateFlow<Set<String>>(emptySet())
+  /** installId degli addon con un aggiornamento manuale in corso. */
+  val addonUpdatingIds: StateFlow<Set<String>> = _addonUpdatingIds.asStateFlow()
+
   private val _addonMessage = MutableStateFlow<String?>(null)
   /** Feedback operazioni install/rimozione mostrato nella schermata Addon. */
   val addonMessage: StateFlow<String?> = _addonMessage.asStateFlow()
@@ -2940,6 +2944,28 @@ class StreamNovaViewModel(
         _addonMessage.value = "Installazione fallita: ${e.message ?: "errore sconosciuto"}"
       } finally {
         _addonInstalling.value = false
+      }
+    }
+  }
+
+  /**
+   * Aggiorna manualmente il manifest di un addon installato, senza reinstallarlo.
+   * Il risultato (ok/errore) viene pubblicato su [addonMessage].
+   */
+  fun updateAddon(id: String) {
+    if (id in _addonUpdatingIds.value) return
+    viewModelScope.launch {
+      _addonUpdatingIds.value = _addonUpdatingIds.value + id
+      _addonMessage.value = null
+      try {
+        val addon = StremioAddonRepository.refreshAddon(id)
+        StremioCatalogRepository.clearCache()
+        refreshHomeCatalogs(force = true)
+        _addonMessage.value = "Addon aggiornato: ${addon.manifest.displayTitle}"
+      } catch (e: Exception) {
+        _addonMessage.value = "Aggiornamento fallito: ${e.message ?: "errore sconosciuto"}"
+      } finally {
+        _addonUpdatingIds.value = _addonUpdatingIds.value - id
       }
     }
   }

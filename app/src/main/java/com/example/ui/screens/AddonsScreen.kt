@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -95,7 +96,8 @@ import kotlinx.coroutines.launch
  *  - in alto il pulsante **"Aggiungi Addon"** che apre un dialog per
  *    incollare/inserire l'URL del manifest (istanze di Torrentio ecc.);
  *  - sotto l'elenco degli addon installati in card con **titolo, versione e
- *    descrizione**, switch di **abilitazione** e pulsante **"Rimuovi"**.
+ *    descrizione**, switch di **abilitazione** e pulsanti **"Aggiorna"** e
+ *    **"Rimuovi"**.
  *
  * Ogni elemento è focusabile con [TvFocusableBox]: la navigazione D-pad è
  * gestita in verticale (lista) e in orizzontale (toggle / rimuovi).
@@ -108,6 +110,7 @@ fun AddonsScreen(
 ) {
   val addons by viewModel.installedAddons.collectAsState()
   val isInstalling by viewModel.addonInstalling.collectAsState()
+  val updatingIds by viewModel.addonUpdatingIds.collectAsState()
   val message by viewModel.addonMessage.collectAsState()
 
   var showAddDialog by remember { mutableStateOf(false) }
@@ -280,7 +283,7 @@ fun AddonsScreen(
           if (message != null) {
             Text(
               text = message ?: "",
-              color = if (message!!.contains("fallita", ignoreCase = true)) NovaRed else NovaGreen,
+              color = if (message!!.contains("fallit", ignoreCase = true)) NovaRed else NovaGreen,
               fontSize = 13.sp,
               fontWeight = FontWeight.SemiBold,
               maxLines = 2,
@@ -337,9 +340,11 @@ fun AddonsScreen(
         AddonCard(
           addon = addon,
           isLast = index == addons.lastIndex,
+          isUpdating = addon.installId in updatingIds,
           userBindings = userBindings,
           resolver = resolver,
           providerNames = providerNames,
+          onUpdate = { viewModel.updateAddon(addon.installId) },
           onToggleEnabled = { enabled -> viewModel.setAddonEnabled(addon.installId, enabled) },
           onRemove = { viewModel.removeAddon(addon.installId) },
           onConfirmBinding = onConfirmBinding,
@@ -372,16 +377,18 @@ fun AddonsScreen(
 
 /**
  * Card di un addon installato: titolo + versione + descrizione, switch
- * di abilitazione e pulsante "Rimuovi".
+ * di abilitazione e pulsanti "Aggiorna" e "Rimuovi".
  */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun AddonCard(
   addon: InstalledAddon,
   isLast: Boolean,
+  isUpdating: Boolean,
   userBindings: List<ProviderBinding>,
   resolver: ProviderCatalogResolver,
   providerNames: Map<String, String>,
+  onUpdate: () -> Unit,
   onToggleEnabled: (Boolean) -> Unit,
   onRemove: () -> Unit,
   onConfirmBinding: (CatalogKey, String) -> Unit,
@@ -520,6 +527,54 @@ private fun AddonCard(
             )
             Text(
               text = if (isCatalogsExpanded) "Cataloghi (${catalogs.size}) ▲" else "Cataloghi disponibili (${catalogs.size}) ▼",
+              color = if (isFocused) NovaCyanBright else NovaTextSecondary,
+              fontSize = 13.sp,
+              fontWeight = FontWeight.SemiBold
+            )
+          }
+        }
+
+        // Aggiorna manifest senza reinstallare (focusabile col D-pad)
+        TvFocusableBox(
+          shape = RoundedCornerShape(50),
+          focusedScale = 1.05f,
+          onClick = { if (!isUpdating) onUpdate() }
+        ) { isFocused ->
+          Row(
+            modifier = Modifier
+              .background(
+                if (isFocused) NovaCyan.copy(alpha = 0.22f) else NovaCardBgFocused,
+                RoundedCornerShape(50)
+              )
+              .border(
+                1.dp,
+                if (isFocused) NovaCyanBright else NovaDivider,
+                RoundedCornerShape(50)
+              )
+              .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            if (isUpdating) {
+              CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                color = if (isFocused) NovaCyanBright else NovaTextSecondary,
+                strokeWidth = 2.dp
+              )
+            } else {
+              Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = null,
+                tint = if (isFocused) NovaCyanBright else NovaTextSecondary,
+                modifier = Modifier.size(16.dp)
+              )
+            }
+            Text(
+              text = if (isUpdating) {
+                stringResource(R.string.addons_updating)
+              } else {
+                stringResource(R.string.addons_update_button)
+              },
               color = if (isFocused) NovaCyanBright else NovaTextSecondary,
               fontSize = 13.sp,
               fontWeight = FontWeight.SemiBold
@@ -831,7 +886,7 @@ private fun rememberProviderProposals(
   addon: InstalledAddon,
   userBindings: List<ProviderBinding>,
   resolver: ProviderCatalogResolver
-): List<ProviderBindingProposalView> = remember(addon.installId, userBindings, resolver) {
+): List<ProviderBindingProposalView> = remember(addon.installId, addon.manifest, userBindings, resolver) {
   ProviderBindingConfirmation.proposalsFor(
     manifest = addon.manifest,
     providers = DefaultProviderCatalogResolver.defaultAliasProviders(),

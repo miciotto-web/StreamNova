@@ -472,6 +472,8 @@
      <string name="addons_subtitle">Installez des addons compatibles avec le protocole Stremio (ex. instances Torrentio) pour ajouter des sources 1080p/4K</string>
      <string name="addons_add_button">Ajouter un Addon</string>
      <string name="addons_installing">Installation en cours…</string>
+     <string name="addons_update_button">Mettre à jour</string>
+     <string name="addons_updating">Mise à jour…</string>
      <string name="addons_empty_title">Aucun addon installé</string>
      <string name="addons_empty_desc">Sélectionnez \"Ajouter un Addon\" et collez l\'URL du manifest (ex. https://torrentio.strem.fun/manifest.json)</string>
      <string name="addons_dialog_title">Ajouter un Addon Stremio</string>

@@ -547,6 +547,38 @@ object StremioAddonRepository {
     }
   }
 
+  /**
+   * Riscarica il manifest di UNA installazione e persiste l'eventuale aggiornamento.
+   *
+   * È l'aggiornamento manuale dalla card Addon: stesso percorso di rete del refresh
+   * all'avvio ([refreshInstalledManifests]) ma limitato a [id], così l'utente può
+   * aggiornare un singolo addon senza reinstallarlo. Un errore di rete viene
+   * propagato al chiamante e lascia intatto il manifest locale.
+   *
+   * @throws IllegalArgumentException se [id] non corrisponde a nessuna installazione.
+   * @throws java.io.IOException se il manifest non è raggiungibile o non è valido.
+   */
+  suspend fun refreshAddon(id: String): InstalledAddon = withContext(Dispatchers.IO) {
+    if (!localWrites) {
+      AppSettingsRepository.awaitLoaded()
+    }
+    val target = findInstalledAddon(id)
+      ?: throw IllegalArgumentException("Addon non trovato")
+
+    val fresh = fetchManifest(target.baseUrl)
+    if (fresh == target.manifest) {
+      Log.i(TAG, "Refresh manifest ${diagAddonLabel(target)}: già aggiornato")
+      return@withContext target
+    }
+
+    val updated = target.copy(manifest = fresh)
+    persist(_addons.value.map { if (it.installId == target.installId) updated else it })
+    // I cataloghi sono dati del manifest: un manifest aggiornato invalida la cache.
+    StremioCatalogEngine.clearCache()
+    Log.i(TAG, "Refresh manifest ${diagAddonLabel(updated)}: aggiornato")
+    updated
+  }
+
   private fun persist(list: List<InstalledAddon>) {
     val json = try {
       addonListAdapter.toJson(list)
