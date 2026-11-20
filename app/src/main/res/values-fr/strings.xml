@@ -207,7 +207,6 @@
      <string name="search_category_loading_tmdb">Chargement du catalogue TMDB…</string>
      <string name="search_category_type_movies">films</string>
      <string name="search_category_type_series">séries</string>
-     <string name="search_category_tmdb_fallback_reason">Aucun catalogue configuré ne couvre ce genre : titres affichés depuis TMDB</string>
      <string name="search_category_tmdb_no_results">Aucun résultat pour %1$s même sur TMDB</string>
      <string name="search_category_addon_no_genre">Aucun catalogue configuré ne couvre le genre « %1$s ».</string>
      <string name="search_category_tmdb_unavailable">Recherche TMDB indisponible : vérifiez la connexion et réessayez</string>
@@ -233,14 +232,14 @@
      <string name="search_cat_kids">Enfants</string>
      <string name="search_cat_mystery">Mystère</string>
      <string name="search_cat_music">Musique</string>
-     <string name="search_cat_news">Actualités</string>
+     <string name="search_cat_christmas">Noël</string>
      <string name="search_cat_reality">Téléréalité</string>
      <string name="search_cat_romance">Romance</string>
      <string name="search_cat_sci_fi_fantasy">Sci-Fi et Fantastique</string>
      <string name="search_cat_history">Histoire</string>
      <string name="search_cat_thriller">Thriller</string>
      <string name="search_cat_western">Western</string>
-     <string name="search_cat_talk">Talk</string>
+     <string name="search_cat_tv_show">Émissions TV</string>
  
      <!-- Settings Screen -->
      <string name="settings_title">Paramètres</string>
@@ -308,11 +307,21 @@
      <string name="settings_http_primary_provider_strict">Uniquement le fournisseur choisi</string>
      <string name="settings_http_primary_provider_strict_desc">Aucun repli automatique : si le fournisseur ne répond pas, la lecture ne démarre pas.</string>
      <string name="settings_http_experimental_providers">Fournisseurs expérimentaux</string>
-     <string name="settings_http_experimental_providers_desc">Active aussi les fournisseurs alternatifs (2Embed, CB01, StreamingCommunity, MultiEmbed, SuperEmbed, Eurostreaming). Désactivé : uniquement VixSrc et Altadefinizione.</string>
-     <string name="settings_mode_debrid">Debrid TorBox (1080p / 4K Ultra HD)</string>
+     <string name="settings_http_experimental_providers_desc">Active aussi les fournisseurs alternatifs (2Embed, CB01, StreamingCommunity, MultiEmbed, SuperEmbed). Désactivé : uniquement VixSrc et Altadefinizione.</string>
+     <string name="settings_mode_debrid">Debrid (1080p / 4K Ultra HD)</string>
      <string name="settings_mode_web_scraper">Streaming Web Gratuit (Scraper HTTP)</string>
+     <string name="settings_debrid_service">Service Debrid</string>
+     <string name="settings_debrid_service_torbox">TorBox</string>
+     <string name="settings_debrid_service_realdebrid">Real-Debrid</string>
+     <string name="settings_debrid_service_premiumize">Premiumize</string>
      <string name="settings_torbox_api_key">Clé API TorBox</string>
      <string name="settings_torbox_key_hint">Collez la clé API de torbox.app (Account -> API)</string>
+     <string name="settings_realdebrid_api_key">Clé API Real-Debrid</string>
+     <string name="settings_realdebrid_key_hint">Collez la clé API de real-debrid.com (Account -> API)</string>
+     <string name="settings_use_realdebrid_instant">Utiliser Real-Debrid Instant Debrid</string>
+     <string name="settings_premiumize_api_key">Clé API Premiumize</string>
+     <string name="settings_premiumize_key_hint">Collez la clé API de premiumize.me (Account -> API)</string>
+     <string name="settings_use_premiumize_instant">Utiliser Premiumize Instant Debrid</string>
      <string name="settings_not_configured">Non configurée</string>
      <string name="settings_key_not_configured">Clé non configurée</string>
      <string name="settings_account_status">État du compte</string>
@@ -489,6 +498,8 @@
      <string name="press_back_again_to_exit">Appuyez à nouveau sur Retour pour quitter</string>
      <string name="stream_status_searching_sources">Recherche des sources en cours…</string>
      <string name="stream_status_torbox_stremio">TorBox • Stremio Addons</string>
+     <string name="stream_status_realdebrid_stremio">Real-Debrid • Stremio Addons</string>
+     <string name="stream_status_premiumize_stremio">Premiumize • Stremio Addons</string>
      <string name="stream_status_vixsrc_http">VixSrc • Streaming HTTP direct</string>
 
      <string name="player_format_label">Format: %s</string>

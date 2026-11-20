@@ -1,6 +1,7 @@
 package com.example.data.prefs
 
 import android.content.Context
+import com.example.data.debrid.DebridService
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -69,6 +70,15 @@ object AppSettingsRepository {
   private val KEY_OPENSUBTITLES_API_KEY = stringPreferencesKey("opensubtitles_api_key")
   private val KEY_SIMKL_CLIENT_ID = stringPreferencesKey("simkl_client_id")
   private val KEY_TORBOX_INSTANT_DEBRID = booleanPreferencesKey("torbox_instant_debrid_enabled")
+  // Servizi Debrid accostati a TorBox (login tramite chiave API, sezione
+  // Impostazioni → "Motore di riproduzione").
+  private val KEY_DEBRID_SERVICE = stringPreferencesKey("debrid_service")
+  private val KEY_REALDEBRID_API_KEY = stringPreferencesKey("realdebrid_api_key")
+  private val KEY_REALDEBRID_INSTANT_DEBRID =
+    booleanPreferencesKey("realdebrid_instant_debrid_enabled")
+  private val KEY_PREMIUMIZE_API_KEY = stringPreferencesKey("premiumize_api_key")
+  private val KEY_PREMIUMIZE_INSTANT_DEBRID =
+    booleanPreferencesKey("premiumize_instant_debrid_enabled")
   private val KEY_INSTALLED_ADDONS_JSON = stringPreferencesKey("installed_addons_json")
   private val KEY_USER_PROVIDER_BINDINGS_JSON = stringPreferencesKey("user_provider_bindings_json")
   private val KEY_STREAMING_ENGINE_MODE = stringPreferencesKey("streaming_engine_mode")
@@ -119,6 +129,32 @@ object AppSettingsRepository {
   private val _torBoxInstantDebridEnabled = MutableStateFlow(true)
   /** Toggle "Usa TorBox Instant Debrid" (default ON: ha effetto solo con chiave valida). */
   val torBoxInstantDebridEnabled: StateFlow<Boolean> = _torBoxInstantDebridEnabled.asStateFlow()
+
+  private val _debridService = MutableStateFlow(DebridService.TORBOX)
+  /**
+   * Servizio Debrid selezionato (Impostazioni → "Motore di riproduzione").
+   * Default TORBOX: il comportamento storico dell'app resta invariato finché
+   * l'utente non sceglie esplicitamente un altro servizio.
+   */
+  val debridService: StateFlow<DebridService> = _debridService.asStateFlow()
+
+  private val _realDebridApiKey = MutableStateFlow<String?>(null)
+  /** Chiave API Real-Debrid corrente (null = nessuna chiave salvata). */
+  val realDebridApiKey: StateFlow<String?> = _realDebridApiKey.asStateFlow()
+
+  private val _realDebridInstantDebridEnabled = MutableStateFlow(true)
+  /** Toggle "Usa Real-Debrid Instant Debrid" (default ON: ha effetto solo con chiave valida). */
+  val realDebridInstantDebridEnabled: StateFlow<Boolean> =
+    _realDebridInstantDebridEnabled.asStateFlow()
+
+  private val _premiumizeApiKey = MutableStateFlow<String?>(null)
+  /** Chiave API Premiumize corrente (null = nessuna chiave salvata). */
+  val premiumizeApiKey: StateFlow<String?> = _premiumizeApiKey.asStateFlow()
+
+  private val _premiumizeInstantDebridEnabled = MutableStateFlow(true)
+  /** Toggle "Usa Premiumize Instant Debrid" (default ON: ha effetto solo con chiave valida). */
+  val premiumizeInstantDebridEnabled: StateFlow<Boolean> =
+    _premiumizeInstantDebridEnabled.asStateFlow()
 
   private val _installedAddonsJson = MutableStateFlow("[]")
   /** Lista addon Stremio installata serializzata in JSON (fonte di verità persistita). */
@@ -238,6 +274,11 @@ object AppSettingsRepository {
   @Volatile private var openSubtitlesApiKeyLocalWrite = false
   @Volatile private var simklClientIdLocalWrite = false
   @Volatile private var debridLocalWrite = false
+  @Volatile private var debridServiceLocalWrite = false
+  @Volatile private var realDebridApiKeyLocalWrite = false
+  @Volatile private var realDebridToggleLocalWrite = false
+  @Volatile private var premiumizeApiKeyLocalWrite = false
+  @Volatile private var premiumizeToggleLocalWrite = false
   @Volatile private var addonsLocalWrite = false
   @Volatile private var userBindingsLocalWrite = false
   @Volatile private var streamingModeLocalWrite = false
@@ -287,6 +328,21 @@ object AppSettingsRepository {
         }
         if (!debridLocalWrite) {
           _torBoxInstantDebridEnabled.value = prefs[KEY_TORBOX_INSTANT_DEBRID] ?: true
+        }
+        if (!debridServiceLocalWrite) {
+          _debridService.value = DebridService.fromStorage(prefs[KEY_DEBRID_SERVICE])
+        }
+        if (!realDebridApiKeyLocalWrite) {
+          _realDebridApiKey.value = prefs[KEY_REALDEBRID_API_KEY]?.takeIf { it.isNotBlank() }
+        }
+        if (!realDebridToggleLocalWrite) {
+          _realDebridInstantDebridEnabled.value = prefs[KEY_REALDEBRID_INSTANT_DEBRID] ?: true
+        }
+        if (!premiumizeApiKeyLocalWrite) {
+          _premiumizeApiKey.value = prefs[KEY_PREMIUMIZE_API_KEY]?.takeIf { it.isNotBlank() }
+        }
+        if (!premiumizeToggleLocalWrite) {
+          _premiumizeInstantDebridEnabled.value = prefs[KEY_PREMIUMIZE_INSTANT_DEBRID] ?: true
         }
         if (!addonsLocalWrite) {
           _installedAddonsJson.value = prefs[KEY_INSTALLED_ADDONS_JSON] ?: "[]"
@@ -406,6 +462,11 @@ object AppSettingsRepository {
     _openSubtitlesApiKey.value = null
     _simklClientId.value = null
     _torBoxInstantDebridEnabled.value = true
+    _debridService.value = DebridService.TORBOX
+    _realDebridApiKey.value = null
+    _realDebridInstantDebridEnabled.value = true
+    _premiumizeApiKey.value = null
+    _premiumizeInstantDebridEnabled.value = true
     _installedAddonsJson.value = "[]"
     _userProviderBindingsJson.value = "[]"
     _streamingEngineMode.value = StreamingEngineMode.HTTP_WEB
@@ -423,6 +484,11 @@ object AppSettingsRepository {
     openSubtitlesApiKeyLocalWrite = false
     simklClientIdLocalWrite = false
     debridLocalWrite = false
+    debridServiceLocalWrite = false
+    realDebridApiKeyLocalWrite = false
+    realDebridToggleLocalWrite = false
+    premiumizeApiKeyLocalWrite = false
+    premiumizeToggleLocalWrite = false
     addonsLocalWrite = false
     userBindingsLocalWrite = false
     streamingModeLocalWrite = false
@@ -514,6 +580,59 @@ object AppSettingsRepository {
     debridLocalWrite = true
     _torBoxInstantDebridEnabled.value = enabled
     scope.launch { dataStore?.edit { it[KEY_TORBOX_INSTANT_DEBRID] = enabled } }
+  }
+
+  /** Seleziona il servizio Debrid usato dal motore di riproduzione. */
+  fun setDebridService(service: DebridService) {
+    debridServiceLocalWrite = true
+    _debridService.value = service
+    scope.launch { dataStore?.edit { it[KEY_DEBRID_SERVICE] = service.storage } }
+  }
+
+  /**
+   * Salva (o rimuove, con null/blank) la chiave API Real-Debrid.
+   * La scrittura è asincrona: lo [StateFlow] viene aggiornato subito per la UI.
+   */
+  fun setRealDebridApiKey(value: String?) {
+    val normalized = value?.trim()?.takeIf { it.isNotBlank() }
+    realDebridApiKeyLocalWrite = true
+    _realDebridApiKey.value = normalized
+    scope.launch {
+      dataStore?.edit { prefs ->
+        if (normalized == null) prefs.remove(KEY_REALDEBRID_API_KEY)
+        else prefs[KEY_REALDEBRID_API_KEY] = normalized
+      }
+    }
+  }
+
+  /** Toggle "Usa Real-Debrid Instant Debrid". */
+  fun setRealDebridInstantDebridEnabled(enabled: Boolean) {
+    realDebridToggleLocalWrite = true
+    _realDebridInstantDebridEnabled.value = enabled
+    scope.launch { dataStore?.edit { it[KEY_REALDEBRID_INSTANT_DEBRID] = enabled } }
+  }
+
+  /**
+   * Salva (o rimuove, con null/blank) la chiave API Premiumize.
+   * La scrittura è asincrona: lo [StateFlow] viene aggiornato subito per la UI.
+   */
+  fun setPremiumizeApiKey(value: String?) {
+    val normalized = value?.trim()?.takeIf { it.isNotBlank() }
+    premiumizeApiKeyLocalWrite = true
+    _premiumizeApiKey.value = normalized
+    scope.launch {
+      dataStore?.edit { prefs ->
+        if (normalized == null) prefs.remove(KEY_PREMIUMIZE_API_KEY)
+        else prefs[KEY_PREMIUMIZE_API_KEY] = normalized
+      }
+    }
+  }
+
+  /** Toggle "Usa Premiumize Instant Debrid". */
+  fun setPremiumizeInstantDebridEnabled(enabled: Boolean) {
+    premiumizeToggleLocalWrite = true
+    _premiumizeInstantDebridEnabled.value = enabled
+    scope.launch { dataStore?.edit { it[KEY_PREMIUMIZE_INSTANT_DEBRID] = enabled } }
   }
 
   /** Salva la lista degli addon installata come JSON (già serializzato dal repository). */
@@ -686,11 +805,15 @@ object AppSettingsRepository {
   }
 
   /**
-   * Determina automaticamente la modalità del motore di streaming in base alla presenza della chiave TorBox.
-   * Se torBoxApiKey è presente, imposta la modalità DEBRID_TORBOX, altrimenti HTTP_WEB.
+   * Determina automaticamente la modalità del motore di streaming in base alla
+   * presenza di ALMENO UNA chiave Debrid (TorBox, Real-Debrid o Premiumize).
+   * Con almeno una chiave imposta la modalità DEBRID_TORBOX, altrimenti HTTP_WEB.
    */
   fun autoDetectStreamingEngineMode() {
-    val mode = if (_torBoxApiKey.value.isNullOrBlank()) {
+    val hasAnyDebridKey = _torBoxApiKey.value.isNullOrBlank() &&
+      _realDebridApiKey.value.isNullOrBlank() &&
+      _premiumizeApiKey.value.isNullOrBlank()
+    val mode = if (hasAnyDebridKey) {
       StreamingEngineMode.HTTP_WEB
     } else {
       StreamingEngineMode.DEBRID_TORBOX

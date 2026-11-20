@@ -57,6 +57,10 @@ import com.example.data.repository.StremioCatalogRepository
 import com.example.data.repository.TmdbHomeCatalogProvider
 import com.example.data.repository.UnreleasedContentFilter
 import com.example.data.stremio.InstalledAddon
+import com.example.data.debrid.DebridService
+import com.example.data.debrid.DebridServiceRouter
+import com.example.data.premiumize.PremiumizeRepository
+import com.example.data.realdebrid.RealDebridRepository
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.StremioCatalogEngine
 import com.example.data.stremio.StremioLiveChannelClassifier
@@ -203,7 +207,7 @@ internal val TMDB_TV_GENRE_NAMES: Map<Int, String> = mapOf(
  *
  * - **Caso A (Debrid attiva e account configurato)** — [StreamingEngineMode.DEBRID_TORBOX]
  *   con `isDebridConfigured = true`: tenta di sbloccare il primo flusso Debrid valido
- *   (infoHash → URL CDN via [TorBoxRepository.resolveInfoHash]); gli stream addon già
+ *   (infoHash → URL CDN via [DebridServiceRouter.resolveInfoHash]); gli stream addon già
  *   sbloccati con URL diretto vengono accettati così come sono.
  * - **Caso B (HTTP diretta o Debrid disattivato/assente)**: filtra le sorgenti alla
  *   ricerca del primo stream con link HTTP/HTTPS diretto riproducibile (mai torrent
@@ -229,7 +233,7 @@ internal suspend fun resolveAutoPickSource(
       // Stagione/episodio vengono passati ESPLICITAMENTE: lo sblocco deve riguardare
       // il file di questo episodio, non un file qualsiasi dello stesso torrent.
       val candidateInfoHash = candidate.infoHash!!
-      val directUrl = TorBoxRepository.resolveInfoHash(
+      val directUrl = DebridServiceRouter.resolveInfoHash(
         infoHash = candidateInfoHash,
         fileIdx = candidate.fileIdx,
         season = season,
@@ -353,21 +357,21 @@ internal const val PRIMARY_PROVIDER_SETTLE_WINDOW_MS = 1_500L
  * Verifica all'interno dello stesso torrent/container Debrid se esiste il file
  * corrispondente al nuovo (season, episode): se presente lo avvia DIRETTAMENTE
  * (nessuna interrogazione degli addon). La URL arriva da
- * [TorBoxRepository.resolveSeasonPackEpisode] (iniettabile nei test).
+ * [DebridServiceRouter.resolveSeasonPackEpisode] (iniettabile nei test).
  *
  * @return lo stream dell'episodio successivo (stesso addon/metadati della fonte
  *         corrente, nuovo URL CDN) oppure null se la fonte non era un torrent di
- *         stagione, TorBox non e' configurato o lo sblocco non riesce nel tempo
- *         massimo [SAME_SOURCE_TIMEOUT_MS].
+ *         stagione, il servizio Debrid non e' configurato o lo sblocco non riesce
+ *         nel tempo massimo [SAME_SOURCE_TIMEOUT_MS].
  */
 internal suspend fun tryResolveNextEpisodeFromSameTorrent(
   pinned: StreamSource,
   season: Int,
   episode: Int,
-  seasonPackUrlResolver: suspend (String, Int, Int) -> String? = TorBoxRepository::resolveSeasonPackEpisode
+  seasonPackUrlResolver: suspend (String, Int, Int) -> String? = DebridServiceRouter::resolveSeasonPackEpisode
 ): StreamSource? {
   val hash = pinned.infoHash?.trim()?.takeIf { it.isNotBlank() } ?: return null
-  if (!TorBoxRepository.isConfigured()) return null
+  if (!DebridServiceRouter.isConfigured()) return null
   val url = withTimeoutOrNull(SAME_SOURCE_TIMEOUT_MS) {
     seasonPackUrlResolver(hash, season, episode)
   } ?: return null
@@ -455,9 +459,10 @@ enum class SearchCategorySource {
   TMDB_FALLBACK,
 
   /**
-   * Sorgente NATIVA TMDB (categoria "Talk"): il genere TV ufficiale è servito
-   * direttamente da `discover/tv` e nessun catalogo Stremio è coinvolto, quindi
-   * TMDB è la fonte primaria e non un fallback.
+   * Sorgente NATIVA TMDB (categorie "TV Show" e "Christmas"): il catalogo è servito
+   * direttamente da `discover/tv` (e, per la keyword, anche da `discover/movie`) e
+   * nessun catalogo Stremio è coinvolto, quindi TMDB è la fonte primaria e non un
+   * fallback.
    */
   TMDB
 }
@@ -534,8 +539,9 @@ enum class GenreLoadReason {
   TMDB_UNAVAILABLE,
 
   /**
-   * Categoria servita NATIVAMENTE da TMDB ("Talk"): non è un fallback, perché la
-   * fonte dichiarata dalla categoria è il genere TV TMDB e non un catalogo addon.
+   * Categoria servita NATIVAMENTE da TMDB ("TV Show", "Christmas"): non è un
+   * fallback, perché la fonte dichiarata dalla categoria è un catalogo TMDB e non
+   * un catalogo addon.
    */
   TMDB_NATIVE
 }
@@ -571,6 +577,19 @@ sealed interface TorBoxAccountState {
   object NotConfigured : TorBoxAccountState
   data class Connected(val email: String?, val plan: String?) : TorBoxAccountState
   data class Error(val message: String) : TorBoxAccountState
+}
+
+/**
+ * Stato UI della verifica dell'account per i servizi Debrid accostati a TorBox
+ * (Real-Debrid: `GET /user`; Premiumize: `GET /account/info`).
+ * Stessa forma di [TorBoxAccountState] per riusare la presentazione in UI.
+ */
+sealed interface DebridAccountState {
+  object Unknown : DebridAccountState
+  object Checking : DebridAccountState
+  object NotConfigured : DebridAccountState
+  data class Connected(val label: String?) : DebridAccountState
+  data class Error(val message: String) : DebridAccountState
 }
 
 /**
@@ -2049,10 +2068,10 @@ class StreamNovaViewModel(
     }
 
   // Interrogazione parallela dei provider di streaming HTTP diretto:
-  // 1) VixSrc/VixCloud (istantaneo via TMDB ID), 2) CB01 e 3) Eurostreaming
-  // (cataloghi italiani, ricerca per titolo/anno) con timeout per ciascuno.
+  // 1) VixSrc/VixCloud (istantaneo via TMDB ID) e 2) CB01
+  // (catalogo italiano, ricerca per titolo/anno) con timeout per ciascuno.
   //
-  // Costruiti `by lazy`: StreamManager istanzia nove provider, ognuno con il proprio
+  // Costruiti `by lazy`: StreamManager istanzia i provider predefiniti, ognuno con il proprio
   // OkHttp client, e OpenSubtitlesSubtitleProvider fa lo stesso con Moshi/Retrofit.
   // Farlo nel costruttore del ViewModel spostava ~400 ms sul primo frame (misurato
   // con StartupTrace), mentre questi collaboratori servono solo dopo un'azione
@@ -2094,7 +2113,7 @@ class StreamNovaViewModel(
   internal var reusedStreamUnlocker:
     suspend (infoHash: String, fileIdx: Int?, season: Int?, episode: Int?) -> String? =
     { infoHash, fileIdx, season, episode ->
-      TorBoxRepository.resolveInfoHash(
+      DebridServiceRouter.resolveInfoHash(
         infoHash = infoHash,
         fileIdx = fileIdx,
         season = season,
@@ -2670,6 +2689,16 @@ class StreamNovaViewModel(
   private val _torBoxAccountState = MutableStateFlow<TorBoxAccountState>(TorBoxAccountState.Unknown)
   val torBoxAccountState: StateFlow<TorBoxAccountState> = _torBoxAccountState.asStateFlow()
 
+  private val _realDebridAccountState =
+    MutableStateFlow<DebridAccountState>(DebridAccountState.Unknown)
+  val realDebridAccountState: StateFlow<DebridAccountState> =
+    _realDebridAccountState.asStateFlow()
+
+  private val _premiumizeAccountState =
+    MutableStateFlow<DebridAccountState>(DebridAccountState.Unknown)
+  val premiumizeAccountState: StateFlow<DebridAccountState> =
+    _premiumizeAccountState.asStateFlow()
+
   /** Salva (o rimuove) la chiave API TorBox e invalida lo stato di verifica. */
   fun setTorBoxApiKey(key: String?) {
     AppSettingsRepository.setTorBoxApiKey(key)
@@ -2678,6 +2707,53 @@ class StreamNovaViewModel(
 
   fun setTorBoxInstantDebridEnabled(enabled: Boolean) =
     AppSettingsRepository.setTorBoxInstantDebridEnabled(enabled)
+
+  // ── SERVIZI DEBRID ACCOSTATI A TORBOX (Real-Debrid / Premiumize) ────
+
+  /** Servizio Debrid selezionato nelle Impostazioni ("Motore di riproduzione"). */
+  val debridService: StateFlow<DebridService> = AppSettingsRepository.debridService
+
+  /** Chiave API Real-Debrid salvata nelle Impostazioni (null = non configurata). */
+  val realDebridApiKey: StateFlow<String?> = AppSettingsRepository.realDebridApiKey
+
+  /** Toggle "Usa Real-Debrid Instant Debrid". */
+  val realDebridInstantDebridEnabled: StateFlow<Boolean> =
+    AppSettingsRepository.realDebridInstantDebridEnabled
+
+  /** Chiave API Premiumize salvata nelle Impostazioni (null = non configurata). */
+  val premiumizeApiKey: StateFlow<String?> = AppSettingsRepository.premiumizeApiKey
+
+  /** Toggle "Usa Premiumize Instant Debrid". */
+  val premiumizeInstantDebridEnabled: StateFlow<Boolean> =
+    AppSettingsRepository.premiumizeInstantDebridEnabled
+
+  /** Seleziona il servizio Debrid usato dal motore di riproduzione. */
+  fun setDebridService(service: DebridService) {
+    AppSettingsRepository.setDebridService(service)
+    // Il cambio di servizio invalida gli indicatori di verifica dei servizi
+    // coinvolti: la UI riparte da uno stato "da verificare" (nessun residuo).
+    _realDebridAccountState.value = DebridAccountState.Unknown
+    _premiumizeAccountState.value = DebridAccountState.Unknown
+    _torBoxAccountState.value = TorBoxAccountState.Unknown
+  }
+
+  /** Salva (o rimuove) la chiave API Real-Debrid e invalida lo stato di verifica. */
+  fun setRealDebridApiKey(key: String?) {
+    AppSettingsRepository.setRealDebridApiKey(key)
+    _realDebridAccountState.value = DebridAccountState.Unknown
+  }
+
+  fun setRealDebridInstantDebridEnabled(enabled: Boolean) =
+    AppSettingsRepository.setRealDebridInstantDebridEnabled(enabled)
+
+  /** Salva (o rimuove) la chiave API Premiumize e invalida lo stato di verifica. */
+  fun setPremiumizeApiKey(key: String?) {
+    AppSettingsRepository.setPremiumizeApiKey(key)
+    _premiumizeAccountState.value = DebridAccountState.Unknown
+  }
+
+  fun setPremiumizeInstantDebridEnabled(enabled: Boolean) =
+    AppSettingsRepository.setPremiumizeInstantDebridEnabled(enabled)
 
   fun setStreamingEngineMode(mode: StreamingEngineMode) {
     val changed = AppSettingsRepository.streamingEngineMode.value != mode
@@ -2867,6 +2943,36 @@ class StreamNovaViewModel(
         )
         is TorBoxRepository.AccountCheck.Invalid -> TorBoxAccountState.Error(result.message)
         TorBoxRepository.AccountCheck.NotConfigured -> TorBoxAccountState.NotConfigured
+      }
+    }
+  }
+
+  /** Interroga `GET https://api.real-debrid.com/rest/1.0/user` per verificare la chiave. */
+  fun verifyRealDebridAccount() {
+    if (_realDebridAccountState.value is DebridAccountState.Checking) return
+    viewModelScope.launch {
+      _realDebridAccountState.value = DebridAccountState.Checking
+      _realDebridAccountState.value = when (val result = RealDebridRepository.verifyAccount()) {
+        is RealDebridRepository.AccountCheck.Valid -> DebridAccountState.Connected(
+          label = result.user.username?.takeIf { it.isNotBlank() } ?: result.user.email
+        )
+        is RealDebridRepository.AccountCheck.Invalid -> DebridAccountState.Error(result.message)
+        RealDebridRepository.AccountCheck.NotConfigured -> DebridAccountState.NotConfigured
+      }
+    }
+  }
+
+  /** Interroga `GET https://www.premiumize.me/api/account/info` per verificare la chiave. */
+  fun verifyPremiumizeAccount() {
+    if (_premiumizeAccountState.value is DebridAccountState.Checking) return
+    viewModelScope.launch {
+      _premiumizeAccountState.value = DebridAccountState.Checking
+      _premiumizeAccountState.value = when (val result = PremiumizeRepository.verifyAccount()) {
+        is PremiumizeRepository.AccountCheck.Valid -> DebridAccountState.Connected(
+          label = result.account.customerId?.takeIf { it.isNotBlank() }
+        )
+        is PremiumizeRepository.AccountCheck.Invalid -> DebridAccountState.Error(result.message)
+        PremiumizeRepository.AccountCheck.NotConfigured -> DebridAccountState.NotConfigured
       }
     }
   }
@@ -3070,6 +3176,8 @@ class StreamNovaViewModel(
   private var activeCategoryLabel: String = ""
   private var activeCategoryMovieGenreId: Int? = null
   private var activeCategoryTvGenreId: Int? = null
+  /** Keyword TMDB della categoria attiva (null per le categorie per genere). */
+  private var activeCategoryTmdbKeywordId: Int? = null
   /** Filtro della categoria attiva: genere (addon + fallback TMDB) o nativa TMDB. */
   private var activeCategoryFilter: SearchCategoryFilter = SearchCategoryFilter.GENRE
 
@@ -3100,11 +3208,16 @@ class StreamNovaViewModel(
    * [StremioCatalogRepository.findCategoryRequests] →
    * [StremioCatalogRepository.loadCategoryCatalogs] (stesso percorso della Home).
    *
-   * Con [SearchCategoryFilter.TMDB_TV_GENRE] i cataloghi non vengono interrogati:
-   * la categoria ("Talk") è servita nativamente da TMDB con il genere TV ufficiale
-   * [tvGenreId] (`discover/tv?with_genres=10767`), ordinato per popolarità e
+   * Con [SearchCategoryFilter.TMDB_TV_SHOWS] i cataloghi non vengono interrogati:
+   * la categoria ("TV Show") è servita nativamente da TMDB con il catalogo degli
+   * show TV (`discover/tv`, italiani in testa), ordinato per popolarità e
    * paginato. Non richiede modalità Debrid né addon installati e non applica alcun
-   * filtro di lingua o paese: italiani e stranieri restano insieme.
+   * filtro di paese.
+   *
+   * Con [SearchCategoryFilter.TMDB_KEYWORD] i cataloghi non vengono interrogati: la
+   * categoria ("Christmas") è servita nativamente da TMDB con film e serie TV scoperti
+   * tramite la keyword canonica ([tmdbKeywordId], 207317 = "Christmas") sulle stesse
+   * pagine Discover di riferimento. Non richiede modalità Debrid né addon installati.
    *
    * Prima di ogni nuovo caricamento i risultati della categoria precedente vengono
    * azzerati e non esiste alcun seed da `allMedia`: la categoria mostra solo ciò
@@ -3114,6 +3227,7 @@ class StreamNovaViewModel(
    * @param keywords etichette/descrizioni della categoria dalla quale cercare i cataloghi.
    * @param movieGenreId id genere TMDB film (fallback TMDB Discover esplicito).
    * @param tvGenreId id genere TMDB serie (categoria nativa TMDB oppure fallback).
+   * @param tmdbKeywordId keyword TMDB delle categorie native per keyword (film + serie).
    * @param contentFilter fonte della categoria (genere oppure nativa TMDB).
    */
   fun initCategory(
@@ -3121,6 +3235,7 @@ class StreamNovaViewModel(
     keywords: List<String>,
     movieGenreId: Int?,
     tvGenreId: Int?,
+    tmdbKeywordId: Int? = null,
     contentFilter: SearchCategoryFilter = SearchCategoryFilter.GENRE
   ) {
     activeSearchCategoryId = categoryId
@@ -3131,6 +3246,7 @@ class StreamNovaViewModel(
       listOfNotNull(tvGenreId?.let { TMDB_TV_GENRE_NAMES[it] })
     activeCategoryMovieGenreId = movieGenreId
     activeCategoryTvGenreId = tvGenreId
+    activeCategoryTmdbKeywordId = tmdbKeywordId
     activeCategoryEntries = emptyList()
     currentCategoryPage = 1
     // Generazione nuova: le risposte della categoria precedente vengono ignorate.
@@ -3146,13 +3262,17 @@ class StreamNovaViewModel(
   /**
    * Prima pagina della categoria, instradata in base alla sua FONTE:
    *  - [SearchCategoryFilter.GENRE] → cataloghi addon con fallback TMDB dichiarato;
-   *  - [SearchCategoryFilter.TMDB_TV_GENRE] → TMDB Discover nativo per genere TV
-   *    (categoria "Talk").
+   *  - [SearchCategoryFilter.TMDB_TV_SHOWS] → TMDB Discover nativo per gli show TV
+   *    (categoria "TV Show");
+   *  - [SearchCategoryFilter.TMDB_KEYWORD] → TMDB Discover nativo per keyword
+   *    (categoria "Christmas", film + serie).
    */
   private fun loadInitialCategoryPage(generation: Int) {
     when (activeCategoryFilter) {
-      SearchCategoryFilter.TMDB_TV_GENRE ->
-        loadInitialNativeTmdbCategoryPage(generation)
+      SearchCategoryFilter.TMDB_TV_SHOWS ->
+        loadInitialTvShowsCategoryPage(generation)
+      SearchCategoryFilter.TMDB_KEYWORD ->
+        loadInitialKeywordCategoryPage(generation)
       SearchCategoryFilter.GENRE ->
         loadInitialGenreCategoryPage(generation)
     }
@@ -3255,29 +3375,22 @@ class StreamNovaViewModel(
   }
 
   /**
-   * Prima pagina della categoria nativa TMDB ("Talk").
+   * Prima pagina della categoria nativa TMDB ("TV Show").
    *
-   * La fonte è il genere TV ufficiale TMDB dichiarato dalla categoria
-   * (`discover/tv?with_genres=10767`): nessun catalogo di addon viene interrogato,
-   * nessuna verifica sulle sorgenti di riproduzione e nessuna dipendenza dalla
-   * modalità Debrid. I risultati sono ordinati per popolarità decrescente e
+   * La fonte è il catalogo degli show TV TMDB ([MediaRepository.discoverTvShows]):
+   * `discover/tv` con gli show ITALIANI in testa (`with_original_language=it`) e poi
+   * quelli delle altre lingue, recenti e meno recenti, ordinati per popolarità.
+   * Nessun catalogo di addon viene interrogato, nessuna verifica sulle sorgenti di
+   * riproduzione e nessuna dipendenza dalla modalità Debrid. I risultati sono
    * deduplicati per identità TMDB/IMDb.
    *
    * Errore e stato vuoto sono dichiarati in [SearchCategoryState]: una griglia
    * vuota non viene mai presentata come caricamento riuscito.
    */
-  private fun loadInitialNativeTmdbCategoryPage(generation: Int) {
+  private fun loadInitialTvShowsCategoryPage(generation: Int) {
     viewModelScope.launch {
       try {
-        val genreId = activeCategoryTvGenreId
-        val series = genreId?.let {
-          MediaRepository.discoverByGenre(
-            MediaType.SERIE_TV,
-            it,
-            page = 1,
-            excludeNonEditorialTv = false
-          )
-        }
+        val series = MediaRepository.discoverTvShows(page = 1)
         if (generation != categoryLoadGeneration) return@launch
 
         val record = GenreLoadRecord(
@@ -3297,6 +3410,62 @@ class StreamNovaViewModel(
         )
         currentCategoryPage = 1
         _categoryItems.value = StremioCatalogRepository.deduplicateCrossSource(series.orEmpty())
+      } finally {
+        if (generation == categoryLoadGeneration) {
+          _isCategoryLoading.value = false
+        }
+      }
+    }
+  }
+
+  /**
+   * Prima pagina della categoria nativa TMDB per KEYWORD ("Christmas").
+   *
+   * La fonte è la keyword canonica TMDB ([activeCategoryTmdbKeywordId], 207317 =
+   * "Christmas"): una `discover/movie` e una `discover/tv` con `with_keywords`,
+   * ordinate per popolarità. Film e serie convivono nella stessa griglia; le serie
+   * passano lo stesso filtro anti-podcast/recensioni ([isBlockedTv]) delle altre
+   * categorie della sezione Ricerca.
+   *
+   * Nessun catalogo di addon viene interrogato: la categoria funziona anche senza
+   * addon installati e con Debrid spento. Errore e stato vuoto sono dichiarati in
+   * [SearchCategoryState]: una griglia vuota non viene mai presentata come
+   * caricamento riuscito.
+   */
+  private fun loadInitialKeywordCategoryPage(generation: Int) {
+    viewModelScope.launch {
+      try {
+        val keywordId = activeCategoryTmdbKeywordId
+        val items = keywordId?.let { MediaRepository.discoverByKeyword(it, page = 1) }
+        if (generation != categoryLoadGeneration) return@launch
+
+        _lastGenreLoads.value = if (items == null) {
+          listOf(
+            GenreLoadRecord(mediaType = MediaType.FILM, reason = GenreLoadReason.TMDB_UNAVAILABLE),
+            GenreLoadRecord(mediaType = MediaType.SERIE_TV, reason = GenreLoadReason.TMDB_UNAVAILABLE)
+          )
+        } else {
+          listOf(
+            GenreLoadRecord(
+              mediaType = MediaType.FILM,
+              reason = GenreLoadReason.TMDB_NATIVE,
+              tmdbPages = 1,
+              tmdbItems = items.count { it.type == MediaType.FILM }
+            ),
+            GenreLoadRecord(
+              mediaType = MediaType.SERIE_TV,
+              reason = GenreLoadReason.TMDB_NATIVE,
+              tmdbPages = 1,
+              tmdbItems = items.count { it.type == MediaType.SERIE_TV }
+            )
+          )
+        }
+        _categoryState.value = buildNativeTmdbCategoryState(
+          failed = items == null,
+          itemCount = items?.size ?: 0
+        )
+        currentCategoryPage = 1
+        _categoryItems.value = StremioCatalogRepository.deduplicateCrossSource(items.orEmpty())
       } finally {
         if (generation == categoryLoadGeneration) {
           _isCategoryLoading.value = false
@@ -3479,10 +3648,13 @@ class StreamNovaViewModel(
       GenreLoadReason.FAILED ->
         localized(R.string.search_category_failed_type, type)
       GenreLoadReason.TMDB_FALLBACK ->
+        // Titoli TMDB caricati con successo: nessun avviso sotto il badge (la fonte è
+        // già dichiarata dal badge "Risultati <genere> da TMDB"). L'avviso resta solo
+        // per il caso "zero risultati anche su TMDB", che è informativo.
         if (outcome.record.tmdbItems == 0) {
           localized(R.string.search_category_tmdb_no_results, type)
         } else {
-          localized(R.string.search_category_tmdb_fallback_reason)
+          null
         }
       GenreLoadReason.ADDON_NO_COVERAGE ->
         localized(
@@ -3499,7 +3671,7 @@ class StreamNovaViewModel(
         } else {
           localized(R.string.search_category_tmdb_unavailable)
         }
-      // Il percorso della categoria nativa TMDB ("Talk") costruisce il proprio stato
+      // Il percorso della categoria nativa TMDB ("TV Show") costruisce il proprio stato
       // dedicato: qui non può comparire, ma il `when` resta esaustivo.
       GenreLoadReason.TMDB_NATIVE -> null
     }
@@ -3542,14 +3714,19 @@ class StreamNovaViewModel(
    */
   fun loadNextCategoryPage() {
     if (isCategoryLoadingMore || _isCategoryLoading.value) return
-    // Categoria nativa TMDB ("Talk"): nessun catalogo addon da paginare, la pagina
-    // successiva è una `discover/tv` con lo stesso genere.
-    if (activeCategoryFilter == SearchCategoryFilter.TMDB_TV_GENRE) {
+    // Categorie native TMDB ("TV Show" e "Christmas"): nessun catalogo addon da
+    // paginare, la pagina successiva è una scoperta Discover con la pagina successiva.
+    if (activeCategoryFilter != SearchCategoryFilter.GENRE) {
       isCategoryLoadingMore = true
       val generation = categoryLoadGeneration
+      val nativeFilter = activeCategoryFilter
       viewModelScope.launch {
         try {
-          loadNextNativeTmdbPage(generation)
+          when (nativeFilter) {
+            SearchCategoryFilter.TMDB_TV_SHOWS -> loadNextTvShowsPage(generation)
+            SearchCategoryFilter.TMDB_KEYWORD -> loadNextKeywordCategoryPage(generation)
+            SearchCategoryFilter.GENRE -> Unit
+          }
         } finally {
           isCategoryLoadingMore = false
         }
@@ -3577,26 +3754,20 @@ class StreamNovaViewModel(
   }
 
   /**
-   * Pagina successiva della categoria nativa TMDB ("Talk"): una `discover/tv` con
-   * lo stesso genere TV e la pagina successiva. I nuovi titoli vengono deduplicati
-   * per identità TMDB/IMDb contro quelli già mostrati, così una pagina Discover che
-   * ripete un titolo non produce una card doppia.
+   * Pagina successiva della categoria nativa TMDB ("TV Show"): una `discover/tv`
+   * (italiani in testa, poi le altre lingue) con la pagina successiva. I nuovi
+   * titoli vengono deduplicati per identità TMDB/IMDb contro quelli già mostrati,
+   * così una pagina Discover che ripete un titolo non produce una card doppia.
    *
    * La pagina avanza solo quando TMDB risponde con successo: un errore lascia il
    * contatore invariato e permette di ritentare. La generazione viene ricontrollata
    * dopo la risposta: un cambio di categoria non può essere sovrascritto da una
    * pagina obsoleta.
    */
-  private suspend fun loadNextNativeTmdbPage(generation: Int) {
+  private suspend fun loadNextTvShowsPage(generation: Int) {
     val nextPage = currentCategoryPage + 1
-    val genreId = activeCategoryTvGenreId ?: return
     try {
-      val newItems = MediaRepository.discoverByGenre(
-        MediaType.SERIE_TV,
-        genreId,
-        nextPage,
-        excludeNonEditorialTv = false
-      ) ?: return
+      val newItems = MediaRepository.discoverTvShows(nextPage) ?: return
       if (generation != categoryLoadGeneration) return
       currentCategoryPage = nextPage
       if (newItems.isEmpty()) return
@@ -3606,7 +3777,34 @@ class StreamNovaViewModel(
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
-      Log.w(TAG, "Errore paginazione categoria Talk pagina $nextPage: ${e.message}")
+      Log.w(TAG, "Errore paginazione categoria TV Show pagina $nextPage: ${e.message}")
+    }
+  }
+
+  /**
+   * Pagina successiva della categoria nativa TMDB per KEYWORD ("Christmas").
+   *
+   * Una `discover/movie` e una `discover/tv` con la keyword della categoria e la
+   * pagina successiva, unite senza duplicati per identità TMDB/IMDb. Come per la
+   * categoria "TV Show", la pagina avanza solo quando TMDB risponde con successo
+   * (un errore lascia il contatore invariato e permette di ritentare) e la
+   * generazione viene ricontrollata dopo la risposta.
+   */
+  private suspend fun loadNextKeywordCategoryPage(generation: Int) {
+    val keywordId = activeCategoryTmdbKeywordId ?: return
+    val nextPage = currentCategoryPage + 1
+    try {
+      val newItems = MediaRepository.discoverByKeyword(keywordId, nextPage) ?: return
+      if (generation != categoryLoadGeneration) return
+      currentCategoryPage = nextPage
+      if (newItems.isEmpty()) return
+      _categoryItems.value = StremioCatalogRepository.deduplicateCrossSource(
+        _categoryItems.value + newItems
+      )
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "Errore paginazione categoria ${activeSearchCategoryId} pagina $nextPage: ${e.message}")
     }
   }
 
@@ -4337,7 +4535,7 @@ class StreamNovaViewModel(
     // Il link memorizzato ha appena fallito: va rimosso dalla cache in-memory di TorBox,
     // altrimenti la risoluzione successiva potrebbe riproporre lo stesso URL scaduto.
     state.currentSource?.infoHash?.takeIf { it.isNotBlank() }?.let { hash ->
-      TorBoxRepository.invalidateResolvedLink(hash, episode?.seasonNumber, episode?.episodeNumber)
+      DebridServiceRouter.invalidateResolvedLink(hash, episode?.seasonNumber, episode?.episodeNumber)
     }
 
     // Con l'identità Debrid (infoHash/fileIdx) la voce NON viene cancellata: il torrent
@@ -4701,7 +4899,7 @@ class StreamNovaViewModel(
       // Per un film non esiste episodio: si azzera il metadata legacy (thread-local)
       // per non ereditare una stagione/episodio da uno sblocco precedente.
       if (seasonArg == null && episodeArg == null) {
-        TorBoxRepository.setRequestMetadata(null, null)
+        DebridServiceRouter.setRequestMetadata(null, null)
       }
       val refreshedUrl = runCatching {
         withTimeoutOrNull(REUSED_STREAM_UNLOCK_TIMEOUT_MS) {
@@ -5298,7 +5496,7 @@ class StreamNovaViewModel(
         val chosenStream = resolveAutoPickSource(
           sources = affinitySources,
           streamingEngineMode = mode,
-          isDebridConfigured = TorBoxRepository.isConfigured(),
+          isDebridConfigured = DebridServiceRouter.isConfigured(),
           season = season,
           episode = epNumber
         )
@@ -5600,18 +5798,19 @@ class StreamNovaViewModel(
         val sourceInfoHash = source.infoHash!!
         // Stagione/episodio espliciti: in un torrent di stagione il link sbloccato
         // deve essere quello del file di QUESTO episodio (non del precedente).
-        val directUrl = TorBoxRepository.resolveInfoHash(
+        // Il servizio Debrid è quello selezionato nelle Impostazioni.
+        val directUrl = DebridServiceRouter.resolveInfoHash(
           infoHash = sourceInfoHash,
           fileIdx = source.fileIdx,
           season = episode?.seasonNumber,
           episode = episode?.episodeNumber
         )
         if (directUrl != null) {
-          Log.i(TAG, "TorBox: flusso sbloccato -> $directUrl")
+          Log.i(TAG, "Debrid: flusso sbloccato -> $directUrl")
           source.copy(streamUrl = directUrl)
         } else {
-          Log.w(TAG, "TorBox: impossibile sbloccare ${source.infoHash}")
-          _errorMessage.value = "Impossibile sbloccare questo flusso su TorBox"
+          Log.w(TAG, "Debrid: impossibile sbloccare ${source.infoHash}")
+          _errorMessage.value = "Impossibile sbloccare questo flusso Debrid"
           _isLoading.value = false
           return@launch
         }

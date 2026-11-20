@@ -38,7 +38,11 @@ class HttpProviderSelectionTest {
   @Test
   fun catalogoCopreTuttiIProviderHttpDiDefault() {
     val defaultIds = StreamManager.defaultProviders(StreamDiagnosticSink.NONE)
-      .filterNot { it is TorBoxStreamProvider || it is AnimeStreamProvider }
+      // Esclusi i provider Debrid (TorBox, Real-Debrid, Premiumize) e il provider
+      // anime: il catalogo HTTP di riferimento contiene solo provider HTTP.
+      .filterNot {
+        StreamManager.isDebridProvider(it) || it is AnimeStreamProvider
+      }
       .map { it.providerId }
       .toSet()
 

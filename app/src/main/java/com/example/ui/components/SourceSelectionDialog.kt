@@ -1165,14 +1165,18 @@ private fun DebridServiceLabel(provider: DebridProvider) {
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(4.dp)
   ) {
-    Image(
-      painter = painterResource(id = provider.logoResId),
-      contentDescription = null,
-      contentScale = ContentScale.Fit,
-      modifier = Modifier
-        .height(12.dp)
-        .widthIn(max = 14.dp)
-    )
+    // Asset grafico presente solo per TorBox: per i servizi senza logo incluso
+    // (Real-Debrid, Premiumize) l'etichetta appare senza immagine.
+    if (provider.hasLogo) {
+      Image(
+        painter = painterResource(id = provider.logoResId),
+        contentDescription = null,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier
+          .height(12.dp)
+          .widthIn(max = 14.dp)
+      )
+    }
     Text(
       text = stringResource(R.string.source_card_debrid_via, provider.label),
       color = DebridMetaColor.copy(alpha = 0.75f),

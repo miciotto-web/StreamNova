@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.annotation.DrawableRes
 import com.example.R
+import com.example.data.debrid.DebridService
 import com.example.data.streaming.StreamSource
 import com.example.data.streaming.TorBoxSourceOrdering
 import java.util.Locale
@@ -9,9 +10,11 @@ import java.util.Locale
 /**
  * Provider Debrid riconosciuto dai metadati della sorgente.
  *
- * L'app usa **un solo** motore Debrid reale (TorBox Instant): gli altri provider non
- * sono supportati e non vengono inventati. Se il provider non è identificabile, la
- * card NON mostra alcun logo provider (fallback neutro: nessuna attribuzione).
+ * I servizi Debrid sono accostati e intercambiabili (TorBox, Real-Debrid,
+ * Premiumize, tutti con login tramite chiave API): per una sorgente torrent la
+ * card attribuisce il SERVIZIO selezionato nelle Impostazioni. Real-Debrid e
+ * Premiumize non hanno un asset grafico incluso: la mini-etichetta "Debrid via"
+ * appare senza logo (nessun logo inventato o sostituito).
  *
  * Il provider Debrid è il SERVIZIO usato per sbloccare/riprodurre lo stream: non è
  * l'addon che ha restituito la sorgente e non va mai usato come logo dell'addon.
@@ -20,7 +23,22 @@ internal enum class DebridProvider(
   val label: String,
   @param:DrawableRes val logoResId: Int
 ) {
-  TORBOX(label = "TorBox", logoResId = R.drawable.logo_provider_torbox)
+  TORBOX(label = "TorBox", logoResId = R.drawable.logo_provider_torbox),
+  REALDEBRID(label = "Real-Debrid", logoResId = 0),
+  PREMIUMIZE(label = "Premiumize", logoResId = 0);
+
+  /** false per i servizi senza asset grafico incluso (la UI omette l'immagine). */
+  val hasLogo: Boolean
+    get() = logoResId != 0
+
+  companion object {
+    /** Servizio Debrid selezionato nelle Impostazioni → provider mostrato in card. */
+    fun fromService(service: DebridService): DebridProvider = when (service) {
+      DebridService.TORBOX -> TORBOX
+      DebridService.REALDEBRID -> REALDEBRID
+      DebridService.PREMIUMIZE -> PREMIUMIZE
+    }
+  }
 }
 
 /**
@@ -268,26 +286,55 @@ internal object DebridSourceCardPresentation {
    * torrent, non l'addon che l'ha restituita.
    */
   fun addonIdentityOf(source: StreamSource): AddonIdentity {
-    val known = knownAddonOf(source)
+    return addonIdentityOf(
+      manifestId = source.addonId,
+      addonName = addonNameOf(source),
+      logo = source.addonLogo,
+      baseUrl = source.addonInstallId
+    )
+  }
+
+  /**
+   * Stessa risoluzione di [addonIdentityOf] a partire dai dati del manifest di un
+   * addon installato: identità grafica unica per la sezione Addon e per le card
+   * delle sorgenti (logo ufficiale → asset incluso → iniziali).
+   */
+  fun addonIdentityOf(
+    manifestId: String?,
+    addonName: String?,
+    logo: String?,
+    baseUrl: String?
+  ): AddonIdentity {
+    val known = knownAddonOf(
+      manifestId = manifestId,
+      addonName = addonName,
+      baseUrl = baseUrl
+    )
     return AddonIdentity(
-      name = addonNameOf(source),
-      logoUrl = absoluteLogoUrl(source.addonLogo, source.addonInstallId),
+      name = addonName?.trim()?.takeIf { it.isNotBlank() }
+        ?: manifestId?.takeIf { it.isNotBlank() }
+        ?: "Addon",
+      logoUrl = absoluteLogoUrl(logo, baseUrl),
       logoResId = known?.logoResId
     )
   }
 
   /**
    * Provider Debrid della sorgente, ricavato dai dati reali:
-   *  - `infoHash` presente → sorgente torrent risolta dal motore TorBox Instant
-   *    (stessa attribuzione di `LastWorkingStreamRepository.classifySourceMode`);
-   *  - tag "TB"/"TorBox" nei metadati dichiarati dall'addon.
+   *  - `infoHash` presente → sorgente torrent risolta dal SERVIZIO Debrid
+   *    selezionato nelle Impostazioni (TorBox, Real-Debrid o Premiumize);
+   *  - tag "TB"/"TorBox" nei metadati dichiarati dall'addon → TorBox esplicito.
    *
    * Qualsiasi altra sorgente resta senza provider: nessun logo errato o dedotto.
    * Questo è il SERVIZIO Debrid, non l'addon di origine: la UI non lo usa come
    * logo identificativo della sorgente.
    */
   fun providerOf(source: StreamSource): DebridProvider? {
-    if (!source.infoHash.isNullOrBlank()) return DebridProvider.TORBOX
+    if (!source.infoHash.isNullOrBlank()) {
+      // Il servizio che sblocca è quello attivo nel motore di riproduzione:
+      // i tre servizi sono accostati e viene eseguito UN solo provider alla volta.
+      return DebridProvider.fromService(com.example.data.debrid.DebridServiceRouter.selectedService())
+    }
     val text = listOfNotNull(source.instantTag, source.serverName, source.addonName, source.details)
       .joinToString(" ")
       .lowercase(Locale.ROOT)
@@ -377,20 +424,30 @@ internal object DebridSourceCardPresentation {
     }
   }
 
+  private fun knownAddonOf(source: StreamSource): KnownAddon? = knownAddonOf(
+    manifestId = source.addonId,
+    addonName = source.addonName,
+    baseUrl = source.addonInstallId
+  )
+
   /**
    * Addon noto per identità stabile (manifest id → host installazione → nome esatto).
    * Nessuna corrispondenza parziale e nessun coinvolgimento di `infoHash`.
    */
-  private fun knownAddonOf(source: StreamSource): KnownAddon? {
-    val manifestId = source.addonId?.trim()?.lowercase(Locale.ROOT)
-    if (!manifestId.isNullOrBlank()) {
-      KNOWN_ADDONS.firstOrNull { manifestId in it.manifestIds }?.let { return it }
+  private fun knownAddonOf(
+    manifestId: String?,
+    addonName: String?,
+    baseUrl: String?
+  ): KnownAddon? {
+    val id = manifestId?.trim()?.lowercase(Locale.ROOT)
+    if (!id.isNullOrBlank()) {
+      KNOWN_ADDONS.firstOrNull { id in it.manifestIds }?.let { return it }
     }
-    val host = installHostOf(source.addonInstallId)
+    val host = installHostOf(baseUrl)
     if (host != null) {
       KNOWN_ADDONS.firstOrNull { host in it.installHosts }?.let { return it }
     }
-    val name = normalizedAddonName(source.addonName)
+    val name = normalizedAddonName(addonName)
     if (name.isNotBlank()) {
       KNOWN_ADDONS.firstOrNull { name in it.nameAliases }?.let { return it }
     }

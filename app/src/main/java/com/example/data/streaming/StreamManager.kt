@@ -13,7 +13,8 @@ import com.example.data.stremio.StremioSubtitleBridge
 import com.example.data.model.Episode
 import com.example.data.model.MediaItem
 import com.example.data.model.MediaType
-import com.example.data.torbox.TorBoxRepository
+import com.example.data.debrid.DebridService
+import com.example.data.debrid.DebridServiceRouter
 import com.example.data.streaming.diagnostics.AttemptConcurrencyCounter
 import com.example.data.streaming.diagnostics.DiagnosticClock
 import com.example.data.streaming.diagnostics.StreamAttemptOutcome
@@ -332,6 +333,11 @@ class StreamManager(
         provider.getStreams(tmdbId, isTv, season, episode, title, originalTitle, year)
       provider is TorBoxStreamProvider ->
         provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
+      // Servizi Debrid accostati a TorBox: stessa firma (addon per ID IMDb).
+      provider is RealDebridStreamProvider ->
+        provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
+      provider is PremiumizeStreamProvider ->
+        provider.getStreams(tmdbId, isTv, season, episode, title, year, imdbId)
       // IMDb ID disponibile: fallback per `var Q` quando il player espone solo
       // un ID numerico o nessun identificativo.
       provider is TwoEmbedProvider ->
@@ -528,12 +534,15 @@ class StreamManager(
         if (isAnime) list.sortedByDescending { it is AnimeStreamProvider } else list
       }
     
-    // Se in modalità HTTP_WEB, escludi i provider Debrid e TorBox;
-    // in DEBRID_TORBOX esegui esclusivamente TorBoxStreamProvider.
+    // Se in modalità HTTP_WEB, escludi i provider Debrid (TorBox, Real-Debrid,
+    // Premiumize); in DEBRID_TORBOX esegui SOLO il provider del servizio
+    // Debrid selezionato nelle Impostazioni (i servizi sono accostati e
+    // intercambiabili, ma ne attivo uno alla volta).
+    val selectedDebridService = DebridServiceRouter.selectedService()
     val modeProviders = if (streamingEngineMode == StreamingEngineMode.HTTP_WEB) {
-      orderedProviders.filterNot { it is TorBoxStreamProvider }
+      orderedProviders.filterNot { isDebridProvider(it) }
     } else {
-      orderedProviders.filter { it is TorBoxStreamProvider }
+      orderedProviders.filter { provider -> isDebridProvider(provider, selectedDebridService) }
     }
 
     // L'ID TMDB arricchisce la ricerca ma non è un prerequisito per riprodurre:
@@ -611,16 +620,25 @@ class StreamManager(
      *    qui: manifest, playlist di variante e primo segmento;
      *  - i provider "altri" mantengono il comportamento storico: i loro
      *    resolver hanno già validato l'estrazione.
+     *
+     * La variante estesa restituisce anche la sintesi HLS osservata dalla
+     * verifica (A-04): metadato diagnostico per il report di riproduzione, che
+     * NESSUNA decisione di selezione consuma.
      */
-    suspend fun isPlayableForAutomaticSelection(source: StreamSource, tier: Int): Boolean =
+    suspend fun playabilityForAutomaticSelection(source: StreamSource, tier: Int): SourceVerification =
       when {
-        source.availability == SourceAvailability.Verified -> true
-        source.availability == SourceAvailability.Unavailable -> false
-        tier >= 3 -> true
-        else -> when (sourceVerifier.verify(source)) {
-          SourcePlayability.Playable -> true
-          SourcePlayability.Unavailable -> false
-          SourcePlayability.TransientFailure -> {
+        source.availability == SourceAvailability.Verified ->
+          SourceVerification(SourcePlayability.Playable, source.hlsPlaylistSummary)
+        source.availability == SourceAvailability.Unavailable ->
+          SourceVerification(SourcePlayability.Unavailable, null)
+        tier >= 3 -> SourceVerification(SourcePlayability.Playable, null)
+        else -> {
+          // Verifica con sintesi quando il verifier concreto la offre (sonda
+          // HTTP reale); i verifier di test mantengono il contratto storico e
+          // restano senza sintesi. La playability è identica in entrambi i casi.
+          val result = (sourceVerifier as? HttpSourceVerifier)?.verifyDetailed(source)
+            ?: SourceVerification(sourceVerifier.verify(source), null)
+          if (result.playability == SourcePlayability.TransientFailure) {
             // Errore temporaneo: non prova che la sorgente non esista. Si passa
             // al candidato successivo ma la sorgente resta nel catalogo manuale.
             Log.w(
@@ -628,8 +646,8 @@ class StreamManager(
               "[AutoPriority] verifica transitoria non conclusiva per " +
                 "${source.serverName} ${source.quality}: si valuta la risoluzione successiva"
             )
-            false
           }
+          result
         }
       }
 
@@ -695,7 +713,8 @@ class StreamManager(
           val ordered = AutoSourcePriority.sortForAutomaticSelection(tierSources)
           var selected: StreamSource? = null
           for (candidate in ordered) {
-            val playable = isPlayableForAutomaticSelection(candidate, tierIndex)
+            val verification = playabilityForAutomaticSelection(candidate, tierIndex)
+            val playable = verification.playability == SourcePlayability.Playable
             Log.i(
               TAG,
               "[AutoPriority] candidato provider=${candidate.sourceProviderId} " +
@@ -703,7 +722,13 @@ class StreamManager(
                 "verifica=${if (playable) "OK" else "SCARTATO"}"
             )
             if (playable) {
-              selected = candidate.copy(availability = SourceAvailability.Verified)
+              // A-04: la sintesi osservata dalla verifica accompagna la sorgente
+              // come metadato diagnostico (quando la verifica l'ha prodotta e la
+              // sorgente non ne porta già una dal resolver).
+              selected = candidate.copy(
+                availability = SourceAvailability.Verified,
+                hlsPlaylistSummary = verification.summary ?: candidate.hlsPlaylistSummary
+              )
               break
             }
           }
@@ -1194,8 +1219,8 @@ class StreamManager(
         return candidate
       }
       if (candidate.infoHash != null) {
-        TorBoxRepository.setRequestMetadata(episode?.seasonNumber, episode?.episodeNumber)
-        val directUrl = TorBoxRepository.resolveInfoHash(candidate.infoHash, candidate.fileIdx)
+        DebridServiceRouter.setRequestMetadata(episode?.seasonNumber, episode?.episodeNumber)
+        val directUrl = DebridServiceRouter.resolveInfoHash(candidate.infoHash, candidate.fileIdx)
         if (directUrl != null) {
           return candidate.copy(streamUrl = directUrl)
         }
@@ -1231,9 +1256,13 @@ class StreamManager(
      * per registrare i tentativi per mirror ed extractor con lo stesso contesto.
      */
     internal fun defaultProviders(diagnostics: StreamDiagnosticSink): List<StreamProvider> = listOf(
-      // Debrid: risolve gli infoHash degli addon Stremio/scraper con TorBox Instant Debrid.
-      // E' il primo elemento perché le sorgenti 4K/1080p debrid hanno priorità massima.
+      // Debrid: risolve gli infoHash degli addon Stremio/scraper con il servizio
+      // Debrid selezionato nelle Impostazioni (TorBox, Real-Debrid o Premiumize).
+      // Sono i primi elementi perché le sorgenti 4K/1080p debrid hanno priorità massima:
+      // il routing seleziona SOLO quello del servizio attivo (vedi [isDebridProvider]).
       TorBoxStreamProvider(),
+      RealDebridStreamProvider(),
+      PremiumizeStreamProvider(),
       // Provider dedicato agli anime: per i contenuti animati viene prioritizzato
       // (vedi [isAnimeContent] in resolveFlow) e lanciato per primo.
       AnimeStreamProvider(),
@@ -1256,6 +1285,27 @@ class StreamManager(
 
     /** Timeout (ms) per l'attesa finale dei job cancellati prima di chiudere il channelFlow. */
     const val JOIN_TIMEOUT_MS = 3_000L
+
+    /**
+     * True se il provider appartiene alla famiglia Debrid (TorBox, Real-Debrid,
+     * Premiumize): in HTTP_WEB nessuno di questi viene eseguito.
+     */
+    fun isDebridProvider(provider: StreamProvider): Boolean =
+      provider is TorBoxStreamProvider ||
+        provider is RealDebridStreamProvider ||
+        provider is PremiumizeStreamProvider
+
+    /**
+     * True se il provider è quello del servizio Debrid [service] selezionato
+     * nelle Impostazioni: in modalità Debrid esegue UN solo provider per volta
+     * (i servizi sono accostati ma attivabili individualmente).
+     */
+    fun isDebridProvider(provider: StreamProvider, service: DebridService): Boolean =
+      when (service) {
+        DebridService.TORBOX -> provider is TorBoxStreamProvider
+        DebridService.REALDEBRID -> provider is RealDebridStreamProvider
+        DebridService.PREMIUMIZE -> provider is PremiumizeStreamProvider
+      }
 
     /**
      * True se il provider **pretende** un TMDB ID valido (e quindi va escluso quando

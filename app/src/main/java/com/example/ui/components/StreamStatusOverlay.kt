@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.zIndex
 import com.example.R
+import com.example.data.debrid.DebridService
+import com.example.data.debrid.DebridServiceRouter
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.streaming.StreamResult
 import com.example.ui.theme.NovaCyan
@@ -84,7 +86,13 @@ fun StreamStatusOverlay(
       Spacer(modifier = Modifier.height(6.dp))
       Text(
         text = when (streamingEngineMode) {
-          StreamingEngineMode.DEBRID_TORBOX -> stringResource(R.string.stream_status_torbox_stremio)
+          // Il nome del servizio Debrid segue il servizio selezionato nelle
+          // Impostazioni (TorBox, Real-Debrid o Premiumize).
+          StreamingEngineMode.DEBRID_TORBOX -> when (DebridServiceRouter.selectedService()) {
+            DebridService.TORBOX -> stringResource(R.string.stream_status_torbox_stremio)
+            DebridService.REALDEBRID -> stringResource(R.string.stream_status_realdebrid_stremio)
+            DebridService.PREMIUMIZE -> stringResource(R.string.stream_status_premiumize_stremio)
+          }
           StreamingEngineMode.HTTP_WEB -> stringResource(R.string.stream_status_vixsrc_http)
         },
         color = NovaTextMuted,

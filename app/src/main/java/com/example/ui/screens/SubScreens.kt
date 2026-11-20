@@ -71,6 +71,7 @@ import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Stream
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VerticalAlignBottom
@@ -208,6 +209,8 @@ import com.example.ui.theme.NovaSurfaceVariant
 import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
+import com.example.data.debrid.DebridService
+import com.example.ui.viewmodel.DebridAccountState
 import com.example.ui.viewmodel.OpenSubtitlesConnectionState
 import com.example.ui.viewmodel.SearchCategorySource
 import com.example.ui.viewmodel.StreamNovaViewModel
@@ -1200,9 +1203,17 @@ data class GlobalSearchCategory(
   val movieGenreId: Int? = null,
   val tvGenreId: Int? = null,
   /**
+   * Keyword TMDB delle categorie native [SearchCategoryFilter.TMDB_KEYWORD]
+   * ("Christmas" = 207317): film e serie TV sono scoperti con
+   * `discover/movie|tv?with_keywords={id}`, senza cataloghi addon.
+   */
+  val tmdbKeywordId: Int? = null,
+  /**
    * Fonte della categoria. Default [SearchCategoryFilter.GENRE] per le categorie
-   * storiche; "Talk" usa [SearchCategoryFilter.TMDB_TV_GENRE] ed è servita
-   * nativamente da TMDB tramite [tvGenreId].
+   * storiche; "TV Show" usa [SearchCategoryFilter.TMDB_TV_SHOWS] ed è servita
+   * nativamente da TMDB (`discover/tv`, show TV italiani in testa); "Christmas"
+   * usa [SearchCategoryFilter.TMDB_KEYWORD] ed è servita nativamente da TMDB
+   * tramite la keyword 207317 (film + serie TV).
    */
   val contentFilter: SearchCategoryFilter = SearchCategoryFilter.GENRE
 )
@@ -1224,7 +1235,16 @@ val GLOBAL_SEARCH_CATEGORIES = listOf(
   GlobalSearchCategory("kids", R.string.search_cat_kids, Color(0xFFF43F5E), Color(0xFF9F1239), Color(0xFFFFE4E6), listOf("Kids", "Bambini", "Famiglia"), movieGenreId = 10751, tvGenreId = 10762),
   GlobalSearchCategory("mistero", R.string.search_cat_mystery, Color(0xFF6366F1), Color(0xFF3730A3), Color(0xFFE0E7FF), listOf("Mistero", "Mystery"), movieGenreId = 9648, tvGenreId = 9648),
   GlobalSearchCategory("musica", R.string.search_cat_music, Color(0xFF14B8A6), Color(0xFF0F766E), Color(0xFFCCFBF1), listOf("Musica", "Music", "Musicale"), movieGenreId = 10402, tvGenreId = null),
-  GlobalSearchCategory("news", R.string.search_cat_news, Color(0xFF3B82F6), Color(0xFF1E40AF), Color(0xFFBFDBFE), listOf("News", "Notizie", "Attualità"), movieGenreId = null, tvGenreId = 10763),
+  /**
+   * "Christmas" sostituisce la vecchia categoria "News".
+   *
+   * È servita NATIVAMENTE da TMDB tramite la keyword canonica 207317 ("Christmas"):
+   * film e serie TV sono scoperti con `discover/movie` e `discover/tv` filtrati per
+   * `with_keywords`, le stesse pagine di riferimento TMDB
+   * (https://www.themoviedb.org/keyword/207317-christmas). Non passa dai cataloghi
+   * degli addon e non richiede la modalità Debrid.
+   */
+  GlobalSearchCategory("christmas", R.string.search_cat_christmas, Color(0xFFDC2626), Color(0xFF14532D), Color(0xFFFDE68A), listOf("Natale", "Christmas", "Xmas"), tmdbKeywordId = 207317, contentFilter = SearchCategoryFilter.TMDB_KEYWORD),
   GlobalSearchCategory("reality", R.string.search_cat_reality, Color(0xFFFB923C), Color(0xFFC2410C), Color(0xFFFFEDD5), listOf("Reality", "Reality-TV"), movieGenreId = null, tvGenreId = 10764),
   GlobalSearchCategory("romance", R.string.search_cat_romance, Color(0xFFF472B6), Color(0xFFBE185D), Color(0xFFFCE7F3), listOf("Romance", "Romantico", "Sentimentale"), movieGenreId = 10749, tvGenreId = 18),
   GlobalSearchCategory("sci_fi_fantasy", R.string.search_cat_sci_fi_fantasy, Color(0xFF0284C7), Color(0xFF4338CA), Color(0xFFBAE6FD), listOf("Sci-Fi & Fantasy", "Fantascienza", "Fantasy"), movieGenreId = 878, tvGenreId = 10765),
@@ -1232,23 +1252,22 @@ val GLOBAL_SEARCH_CATEGORIES = listOf(
   GlobalSearchCategory("thriller", R.string.search_cat_thriller, Color(0xFFEA580C), Color(0xFF9A3412), Color(0xFFFFEDD5), listOf("Thriller", "Suspense"), movieGenreId = 53, tvGenreId = 9648),
   GlobalSearchCategory("western", R.string.search_cat_western, Color(0xFFB45309), Color(0xFF713F12), Color(0xFFFEF3C7), listOf("Western"), movieGenreId = 37, tvGenreId = 37),
   /**
-   * "Talk" occupa il posto che era di "Televisione film" (genere TMDB 10770).
+   * "TV Show" occupa il posto della vecchia categoria "Talk".
    *
-   * È il genere TV ufficiale TMDB "Talk" (id 10767) e viene servita NATIVAMENTE da
-   * `discover/tv?with_genres=10767`, ordinata per popolarità e paginata. Non passa
+   * È servita NATIVAMENTE da TMDB: il catalogo degli show TV (`discover/tv`) con gli
+   * show ITALIANI in testa (`with_original_language=it`) e poi quelli delle altre
+   * lingue, recenti e meno recenti, ordinati per popolarità e paginati. Non passa
    * dai cataloghi degli addon e non richiede la modalità Debrid: funziona anche
-   * senza addon installati. Nessun filtro di lingua o paese: la categoria mostra
-   * talk show italiani e stranieri.
+   * senza addon installati.
    */
   GlobalSearchCategory(
-    id = "talk",
-    labelRes = R.string.search_cat_talk,
+    id = "tv_show",
+    labelRes = R.string.search_cat_tv_show,
     gradientStart = Color(0xFF38BDF8),
     gradientEnd = Color(0xFF0369A1),
     accentColor = Color(0xFFE0F2FE),
-    keywords = listOf("Talk", "Talk Show"),
-    tvGenreId = 10767,
-    contentFilter = SearchCategoryFilter.TMDB_TV_GENRE
+    keywords = listOf("TV Show", "TV Shows", "Show TV", "Programmi TV"),
+    contentFilter = SearchCategoryFilter.TMDB_TV_SHOWS
   )
 )
 
@@ -1588,6 +1607,36 @@ internal class GridVerticalStepSlot {
 }
 
 /**
+ * Richiede il focus sulla card di destinazione di un passo verticale SOLO quando la sua cella
+ * risulta MISURATA (presente in `visibleItemsInfo`).
+ *
+ * Un nodo appena composto (agganciato al focus system ma non ancora misurato) espone un rect
+ * fittizio: il bring-into-view del focus lo legge come offset 0 = "già interamente visibile"
+ * e la richiesta si chiude senza alcuno scroll, lasciando la riga incollata al bordo del
+ * viewport (difetto reale su Android TV: il focus scende senza scroll e la pressione
+ * successiva sembra saltare una riga). Attendere la prima misura garantisce al bring-into-view
+ * un rect REALE, valutato di nuovo frame per frame durante l'animazione di centraggio.
+ *
+ * Il tetto di frame è un'uscita di sicurezza: copre ampiamente la durata dell'animazione di
+ * rivelazione (150ms ≈ 9 frame a 60fps) e degenera nel comportamento precedente se la cella
+ * non arriva a misurarsi (lista cambiata, pressione annullata).
+ */
+private suspend fun LazyGridState.awaitTargetMeasuredThenFocus(
+  targetIndex: Int,
+  requester: FocusRequester,
+  maxFrames: Int = 36
+) {
+  var frames = 0
+  while (frames < maxFrames &&
+    layoutInfo.visibleItemsInfo.none { it.index == targetIndex }
+  ) {
+    withFrameNanos { }
+    frames++
+  }
+  requestFocusWhenAttached(requester, maxAttempts = 24)
+}
+
+/**
  * Navigazione verticale ESPLICITA delle griglie di poster (Ricerca, Film, Serie TV).
  *
  * Il focus system di Compose, quando la riga successiva non è ancora composta (viewport TV
@@ -1668,7 +1717,7 @@ internal fun moveGridFocusVertically(
           // La richiesta di focus sotto attende comunque il montaggio della card.
         }
       }
-      requestFocusWhenAttached(targetRequester, maxAttempts = 8)
+      grid.awaitTargetMeasuredThenFocus(targetIndex, targetRequester)
     } else {
       // PASSO SINGOLO. La riga di destinazione è fuori dal viewport: la si fa ENTRARE con uno
       // scroll animato minimo (pochi pixel appena oltre il bordo). Così il nodo viene
@@ -1708,11 +1757,17 @@ internal fun moveGridFocusVertically(
             }
           }
         }
-        // Richiesta di focus IN PARALLELO al pre-scroll: la card riceve il focus appena
-        // entra in composizione (il retry copre l'intera durata dell'animazione), così
-        // l'evidenziazione non aspetta la fine dello scroll.
+        // Richiesta di focus IN PARALLELO al pre-scroll, ma SOLO quando la cella è stata
+        // MISURATA. Su dispositivo reale il nodo viene composto durante lo scroll di
+        // rivelazione e un focus richiesto PRIMA della prima misura fa leggere al
+        // bring-into-view un rect fittizio (offset 0 = "già interamente visibile"): la
+        // richiesta si chiude con 0f e la griglia non scorre — la riga resta incollata al
+        // bordo inferiore e la pressione successiva sembra saltare una riga intera. Il retry
+        // su `visibleItemsInfo` garantisce un rect REALE: lo spec valuta l'offset vero e
+        // completa il centraggio. Il tetto di frame copre l'intera durata dell'animazione di
+        // rivelazione senza sospendere il passo in caso di griglia assente.
         launch {
-          requestFocusWhenAttached(targetRequester, maxAttempts = 24)
+          grid.awaitTargetMeasuredThenFocus(targetIndex, targetRequester)
         }
       }
     }
@@ -2067,8 +2122,27 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
    // Gestione pulsante Indietro del telecomando
   if (selectedCategory != null) {
     BackHandler {
-      viewModel.setSelectedSearchCategoryId(null)
-      selectedCategory = null
+      if (contentAreaHasFocus) {
+        // BACK STADIO 1 (focus nella griglia della categoria): il focus risale ai BADGE
+        // dei filtri — il badge del filtro ATTIVO ("Tutti"/"Film"/"Serie TV") — così
+        // l'utente può cambiarlo senza uscire dalla categoria. La griglia conserva
+        // posizione e card: il Giù dai filtri rientra sulla prima card VISIBILE (stesso
+        // punto di lettura), non dall'inizio dell'elenco. Con il focus già sui badge
+        // (o sull'header) `contentAreaHasFocus` è false: il prossimo BACK esce dalla
+        // categoria e torna alla griglia delle categorie (stadio 2, ramo else).
+        if (BuildConfig.DEBUG) {
+          Log.d(
+            SearchFocusDiagnostics.TAG,
+            "BACK in categoria ${selectedCategory?.id}: risalita al badge filtro attivo"
+          )
+        }
+        searchFocusScope.launch {
+          requestFocusWhenAttached(activeFilterRequester, maxAttempts = 5)
+        }
+      } else {
+        viewModel.setSelectedSearchCategoryId(null)
+        selectedCategory = null
+      }
     }
   } else if (isSearchSubmitted || query.isNotBlank()) {
     BackHandler {
@@ -2401,14 +2475,16 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       R.string.search_category_desc_fallback,
                       stringResource(cat.labelRes)
                     )
-                    // Categoria nativa TMDB ("Talk"): fonte TMDB dichiarata, non un
+                    // Categoria nativa TMDB ("TV Show"): fonte TMDB dichiarata, non un
                     // fallback dovuto alla mancanza di un catalogo addon.
                     SearchCategorySource.TMDB -> stringResource(
                       R.string.search_category_desc_tmdb,
                       stringResource(cat.labelRes)
                     )
                     null -> if (isCategoryLoading) {
-                      if (cat.contentFilter == SearchCategoryFilter.TMDB_TV_GENRE) {
+                      // Categorie native TMDB ("TV Show", "Christmas"): il caricamento
+                      // non dipende dai cataloghi degli addon.
+                      if (cat.contentFilter != SearchCategoryFilter.GENRE) {
                         stringResource(R.string.search_category_loading_tmdb)
                       } else {
                         stringResource(R.string.search_category_loading)
@@ -2741,14 +2817,15 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                       activeFilterRequester.requestFocus()
                     } catch (_: Exception) {}
                     viewModel.setSelectedSearchCategoryId(cat.id)
-                    // La categoria viene caricata SOLO dai cataloghi degli addon
-                    // (Xperience/Stremio) dichiarati nei manifest; nessun seed da
-                    // allMedia/TMDB Discover. Keywords = etichette della categoria.
+                    // La categoria viene caricata dalla fonte dichiarata: cataloghi
+                    // degli addon per le categorie per genere, TMDB Discover nativo
+                    // per "TV Show" e "Christmas" (nessun seed da allMedia).
                     viewModel.initCategory(
                       categoryId = cat.id,
                       keywords = cat.keywords,
                       movieGenreId = cat.movieGenreId,
                       tvGenreId = cat.tvGenreId,
+                      tmdbKeywordId = cat.tmdbKeywordId,
                       contentFilter = cat.contentFilter
                     )
                     selectedCategory = cat
@@ -2808,6 +2885,16 @@ fun SettingsScreen(
   val torBoxApiKey = viewModel?.torBoxApiKey?.collectAsState()?.value
   val torBoxEnabled = viewModel?.torBoxInstantDebridEnabled?.collectAsState()?.value ?: true
   val torBoxState = viewModel?.torBoxAccountState?.collectAsState()?.value ?: TorBoxAccountState.Unknown
+  // ── Debrid: servizi accostati (Real-Debrid / Premiumize) ───────────
+  val selectedDebridService = AppSettingsRepository.debridService.collectAsState().value
+  val realDebridApiKey = viewModel?.realDebridApiKey?.collectAsState()?.value
+  val realDebridEnabled = viewModel?.realDebridInstantDebridEnabled?.collectAsState()?.value ?: true
+  val realDebridState = viewModel?.realDebridAccountState?.collectAsState()?.value
+    ?: DebridAccountState.Unknown
+  val premiumizeApiKey = viewModel?.premiumizeApiKey?.collectAsState()?.value
+  val premiumizeEnabled = viewModel?.premiumizeInstantDebridEnabled?.collectAsState()?.value ?: true
+  val premiumizeState = viewModel?.premiumizeAccountState?.collectAsState()?.value
+    ?: DebridAccountState.Unknown
   // Chiave/OpenSubtitles: la chiave è un dato condiviso con il client (AppSettingsRepository),
   // lo stato di verifica vive nel ViewModel (con fallback "sconosciuto" fuori dall'app reale).
   val openSubtitlesApiKey = viewModel?.openSubtitlesApiKey?.collectAsState()?.value
@@ -2835,12 +2922,19 @@ fun SettingsScreen(
   val updateDownloadState = viewModel?.updateDownloadState?.collectAsState()?.value ?: UpdateDownloadState.Idle
   var showTorBoxKeyDialog by remember { mutableStateOf(false) }
   var showOpenSubtitlesKeyDialog by remember { mutableStateOf(false) }
+  var showDebridServiceDialog by remember { mutableStateOf(false) }
+  var showRealDebridKeyDialog by remember { mutableStateOf(false) }
+  var showPremiumizeKeyDialog by remember { mutableStateOf(false) }
   // Ripristino del focus sulle righe che aprono i popup chiave API: al BACK (o
   // Salva/Annulla) il focus torna qui invece di perdersi sulla schermata.
   val torBoxKeyRowFocusRequester = remember { FocusRequester() }
   val openSubtitlesKeyRowFocusRequester = remember { FocusRequester() }
+  val realDebridKeyRowFocusRequester = remember { FocusRequester() }
+  val premiumizeKeyRowFocusRequester = remember { FocusRequester() }
   var restoreTorBoxKeyRowFocus by remember { mutableStateOf(false) }
   var restoreOpenSubtitlesKeyRowFocus by remember { mutableStateOf(false) }
+  var restoreRealDebridKeyRowFocus by remember { mutableStateOf(false) }
+  var restorePremiumizeKeyRowFocus by remember { mutableStateOf(false) }
   // Stesso schema per il pannello «Disclaimer e responsabilità»: alla chiusura
   // (BACK o «Chiudi») il focus torna sulla riga che lo ha aperto.
   val disclaimerRowFocusRequester = remember { FocusRequester() }
@@ -2922,6 +3016,18 @@ fun SettingsScreen(
       viewModel?.verifyTorBoxAccount()
     }
   }
+  // Stessa verifica automatica per i servizi Debrid accostati (Real-Debrid,
+  // Premiumize): la chiave salvata viene provata all'ingresso in Impostazioni.
+  LaunchedEffect(realDebridApiKey) {
+    if (!realDebridApiKey.isNullOrBlank() && realDebridState is DebridAccountState.Unknown) {
+      viewModel?.verifyRealDebridAccount()
+    }
+  }
+  LaunchedEffect(premiumizeApiKey) {
+    if (!premiumizeApiKey.isNullOrBlank() && premiumizeState is DebridAccountState.Unknown) {
+      viewModel?.verifyPremiumizeAccount()
+    }
+  }
 
   // Mostra il feedback del controllo aggiornamenti non appena il check termina.
   LaunchedEffect(updateCheckState) {
@@ -2965,6 +3071,26 @@ fun SettingsScreen(
     withFrameNanos { }
     try {
       torBoxKeyRowFocusRequester.requestFocus()
+    } catch (_: Exception) {
+    }
+  }
+
+  // Stesso ripristino del focus per i popup chiave dei servizi Debrid accostati.
+  LaunchedEffect(restoreRealDebridKeyRowFocus) {
+    if (!restoreRealDebridKeyRowFocus) return@LaunchedEffect
+    restoreRealDebridKeyRowFocus = false
+    withFrameNanos { }
+    try {
+      realDebridKeyRowFocusRequester.requestFocus()
+    } catch (_: Exception) {
+    }
+  }
+  LaunchedEffect(restorePremiumizeKeyRowFocus) {
+    if (!restorePremiumizeKeyRowFocus) return@LaunchedEffect
+    restorePremiumizeKeyRowFocus = false
+    withFrameNanos { }
+    try {
+      premiumizeKeyRowFocusRequester.requestFocus()
     } catch (_: Exception) {
     }
   }
@@ -3202,41 +3328,128 @@ fun SettingsScreen(
           }
 
           if (streamingEngineMode == StreamingEngineMode.DEBRID_TORBOX) {
-            // Chiave API: dialog con campo di testo (incolla da torbox.app/account)
+            // Selettore del servizio Debrid: i servizi sono accostati e
+            // intercambiabili, tutti accessibili con login tramite chiave API.
             SettingsRow(
-              icon = Icons.Default.VpnKey,
-              title = stringResource(R.string.settings_torbox_api_key),
-              value = torBoxApiKey?.let { maskApiKey(it) } ?: stringResource(R.string.settings_not_configured),
-              valueColor = if (!torBoxApiKey.isNullOrBlank()) NovaGreen else NovaTextMuted,
-              onClick = { showTorBoxKeyDialog = true },
-              modifier = Modifier.focusRequester(torBoxKeyRowFocusRequester)
+              icon = Icons.Default.Stream,
+              title = stringResource(R.string.settings_debrid_service),
+              value = debridServiceLabel(selectedDebridService),
+              onClick = { showDebridServiceDialog = true },
+              showChevron = true
             )
+            when (selectedDebridService) {
+              DebridService.TORBOX -> {
+                // Chiave API: dialog con campo di testo (incolla da torbox.app/account)
+                SettingsRow(
+                  icon = Icons.Default.VpnKey,
+                  title = stringResource(R.string.settings_torbox_api_key),
+                  value = torBoxApiKey?.let { maskApiKey(it) } ?: stringResource(R.string.settings_not_configured),
+                  valueColor = if (!torBoxApiKey.isNullOrBlank()) NovaGreen else NovaTextMuted,
+                  onClick = { showTorBoxKeyDialog = true },
+                  modifier = Modifier.focusRequester(torBoxKeyRowFocusRequester)
+                )
 
-            // Stato account: verde "Collegato" se valida, altrimenti pulsante
-            // "Verifica Account" (GET https://api.torbox.app/v1/api/user/me)
-            SettingsRow(
-              icon = Icons.Default.CloudDone,
-              title = stringResource(R.string.settings_account_status),
-              value = when (torBoxState) {
-                is TorBoxAccountState.Checking -> stringResource(R.string.settings_status_checking)
-                is TorBoxAccountState.Connected -> stringResource(R.string.settings_status_connected)
-                is TorBoxAccountState.Error -> stringResource(R.string.settings_status_verify_account)
-                else -> if (torBoxApiKey.isNullOrBlank()) stringResource(R.string.settings_key_not_configured) else stringResource(R.string.settings_status_verify_account)
-              },
-              valueColor = when (torBoxState) {
-                is TorBoxAccountState.Connected -> NovaGreen
-                is TorBoxAccountState.Error -> NovaRed
-                else -> NovaCyanBright
-              },
-              onClick = { viewModel?.verifyTorBoxAccount() }
-            )
+                // Stato account: verde "Collegato" se valida, altrimenti pulsante
+                // "Verifica Account" (GET https://api.torbox.app/v1/api/user/me)
+                SettingsRow(
+                  icon = Icons.Default.CloudDone,
+                  title = stringResource(R.string.settings_account_status),
+                  value = when (torBoxState) {
+                    is TorBoxAccountState.Checking -> stringResource(R.string.settings_status_checking)
+                    is TorBoxAccountState.Connected -> stringResource(R.string.settings_status_connected)
+                    is TorBoxAccountState.Error -> stringResource(R.string.settings_status_verify_account)
+                    else -> if (torBoxApiKey.isNullOrBlank()) stringResource(R.string.settings_key_not_configured) else stringResource(R.string.settings_status_verify_account)
+                  },
+                  valueColor = when (torBoxState) {
+                    is TorBoxAccountState.Connected -> NovaGreen
+                    is TorBoxAccountState.Error -> NovaRed
+                    else -> NovaCyanBright
+                  },
+                  onClick = { viewModel?.verifyTorBoxAccount() }
+                )
 
-            // Toggle "Usa TorBox Instant Debrid"
-            SettingsSwitchRow(
-              title = stringResource(R.string.settings_use_torbox_instant),
-              checked = torBoxEnabled,
-              onCheckedChange = { viewModel?.setTorBoxInstantDebridEnabled(it) }
-            )
+                // Toggle "Usa TorBox Instant Debrid"
+                SettingsSwitchRow(
+                  title = stringResource(R.string.settings_use_torbox_instant),
+                  checked = torBoxEnabled,
+                  onCheckedChange = { viewModel?.setTorBoxInstantDebridEnabled(it) }
+                )
+              }
+              DebridService.REALDEBRID -> {
+                // Chiave API: dialog con campo di testo (incolla da real-debrid.com/apitoken)
+                SettingsRow(
+                  icon = Icons.Default.VpnKey,
+                  title = stringResource(R.string.settings_realdebrid_api_key),
+                  value = realDebridApiKey?.let { maskApiKey(it) } ?: stringResource(R.string.settings_not_configured),
+                  valueColor = if (!realDebridApiKey.isNullOrBlank()) NovaGreen else NovaTextMuted,
+                  onClick = { showRealDebridKeyDialog = true },
+                  modifier = Modifier.focusRequester(realDebridKeyRowFocusRequester)
+                )
+
+                // Stato account: verde "Collegato" se valida, altrimenti pulsante
+                // "Verifica Account" (GET https://api.real-debrid.com/rest/1.0/user)
+                SettingsRow(
+                  icon = Icons.Default.CloudDone,
+                  title = stringResource(R.string.settings_account_status),
+                  value = when (realDebridState) {
+                    is DebridAccountState.Checking -> stringResource(R.string.settings_status_checking)
+                    is DebridAccountState.Connected -> stringResource(R.string.settings_status_connected)
+                    is DebridAccountState.Error -> stringResource(R.string.settings_status_verify_account)
+                    else -> if (realDebridApiKey.isNullOrBlank()) stringResource(R.string.settings_key_not_configured) else stringResource(R.string.settings_status_verify_account)
+                  },
+                  valueColor = when (realDebridState) {
+                    is DebridAccountState.Connected -> NovaGreen
+                    is DebridAccountState.Error -> NovaRed
+                    else -> NovaCyanBright
+                  },
+                  onClick = { viewModel?.verifyRealDebridAccount() }
+                )
+
+                // Toggle "Usa Real-Debrid Instant Debrid"
+                SettingsSwitchRow(
+                  title = stringResource(R.string.settings_use_realdebrid_instant),
+                  checked = realDebridEnabled,
+                  onCheckedChange = { viewModel?.setRealDebridInstantDebridEnabled(it) }
+                )
+              }
+              DebridService.PREMIUMIZE -> {
+                // Chiave API: dialog con campo di testo (incolla da premiumize.me)
+                SettingsRow(
+                  icon = Icons.Default.VpnKey,
+                  title = stringResource(R.string.settings_premiumize_api_key),
+                  value = premiumizeApiKey?.let { maskApiKey(it) } ?: stringResource(R.string.settings_not_configured),
+                  valueColor = if (!premiumizeApiKey.isNullOrBlank()) NovaGreen else NovaTextMuted,
+                  onClick = { showPremiumizeKeyDialog = true },
+                  modifier = Modifier.focusRequester(premiumizeKeyRowFocusRequester)
+                )
+
+                // Stato account: verde "Collegato" se valida, altrimenti pulsante
+                // "Verifica Account" (GET https://www.premiumize.me/api/account/info)
+                SettingsRow(
+                  icon = Icons.Default.CloudDone,
+                  title = stringResource(R.string.settings_account_status),
+                  value = when (premiumizeState) {
+                    is DebridAccountState.Checking -> stringResource(R.string.settings_status_checking)
+                    is DebridAccountState.Connected -> stringResource(R.string.settings_status_connected)
+                    is DebridAccountState.Error -> stringResource(R.string.settings_status_verify_account)
+                    else -> if (premiumizeApiKey.isNullOrBlank()) stringResource(R.string.settings_key_not_configured) else stringResource(R.string.settings_status_verify_account)
+                  },
+                  valueColor = when (premiumizeState) {
+                    is DebridAccountState.Connected -> NovaGreen
+                    is DebridAccountState.Error -> NovaRed
+                    else -> NovaCyanBright
+                  },
+                  onClick = { viewModel?.verifyPremiumizeAccount() }
+                )
+
+                // Toggle "Usa Premiumize Instant Debrid"
+                SettingsSwitchRow(
+                  title = stringResource(R.string.settings_use_premiumize_instant),
+                  checked = premiumizeEnabled,
+                  onCheckedChange = { viewModel?.setPremiumizeInstantDebridEnabled(it) }
+                )
+              }
+            }
           } else {
             // Spiegazione per modalità HTTP
             Text(
@@ -3764,6 +3977,64 @@ fun SettingsScreen(
     )
   }
 
+  // Selettore del servizio Debrid accostato al motore di riproduzione:
+  // TorBox (storico), Real-Debrid e Premiumize (login tramite chiave API).
+  if (showDebridServiceDialog) {
+    val debridServices = DebridService.entries
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_debrid_service),
+      options = debridServices.map { debridServiceLabel(it) },
+      selectedIndex = debridServices.indexOf(selectedDebridService).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setDebridService(debridServices[idx])
+        showDebridServiceDialog = false
+      },
+      onDismiss = { showDebridServiceDialog = false }
+    )
+  }
+
+  // Login Real-Debrid: chiave API da real-debrid.com/apitoken (Account → API).
+  // Dopo il salvataggio parte la verifica dell'account, come per TorBox.
+  if (showRealDebridKeyDialog) {
+    TextInputDialog(
+      title = stringResource(R.string.settings_realdebrid_api_key),
+      hint = stringResource(R.string.settings_realdebrid_key_hint),
+      initialText = realDebridApiKey ?: "",
+      confirmLabel = stringResource(R.string.action_save),
+      onConfirm = { key ->
+        showRealDebridKeyDialog = false
+        restoreRealDebridKeyRowFocus = true
+        viewModel?.setRealDebridApiKey(key)
+        viewModel?.verifyRealDebridAccount()
+      },
+      onDismiss = {
+        showRealDebridKeyDialog = false
+        restoreRealDebridKeyRowFocus = true
+      }
+    )
+  }
+
+  // Login Premiumize: chiave API da premiumize.me (Account → API key).
+  // Dopo il salvataggio parte la verifica dell'account, come per TorBox.
+  if (showPremiumizeKeyDialog) {
+    TextInputDialog(
+      title = stringResource(R.string.settings_premiumize_api_key),
+      hint = stringResource(R.string.settings_premiumize_key_hint),
+      initialText = premiumizeApiKey ?: "",
+      confirmLabel = stringResource(R.string.action_save),
+      onConfirm = { key ->
+        showPremiumizeKeyDialog = false
+        restorePremiumizeKeyRowFocus = true
+        viewModel?.setPremiumizeApiKey(key)
+        viewModel?.verifyPremiumizeAccount()
+      },
+      onDismiss = {
+        showPremiumizeKeyDialog = false
+        restorePremiumizeKeyRowFocus = true
+      }
+    )
+  }
+
   if (showOpenSubtitlesKeyDialog) {
     TextInputDialog(
       title = stringResource(R.string.settings_opensubtitles_api_key),
@@ -4200,6 +4471,14 @@ private val SUBTITLE_LANGUAGE_CODES = listOf("it", "en", "es", "fr", "de", "pt",
 private fun maskApiKey(key: String): String {
   val clean = key.trim()
   return if (clean.length <= 8) "••••••••" else clean.take(4) + "••••••••" + clean.takeLast(4)
+}
+
+/** Etichetta del servizio Debrid selezionato (selettore "Motore di riproduzione"). */
+@Composable
+private fun debridServiceLabel(service: DebridService): String = when (service) {
+  DebridService.TORBOX -> stringResource(R.string.settings_debrid_service_torbox)
+  DebridService.REALDEBRID -> stringResource(R.string.settings_debrid_service_realdebrid)
+  DebridService.PREMIUMIZE -> stringResource(R.string.settings_debrid_service_premiumize)
 }
 
 @Composable
