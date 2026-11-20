@@ -3962,14 +3962,15 @@ object MediaRepository {
     baseMedia: MediaItem? = null
   ): ExtendedMediaDetails = withContext(Dispatchers.IO) {
     val apiKey = getEffectiveApiKey()
+    // v3: la risposta include `translations` (fallback sinossi italiano → inglese).
+    // Le voci v2, senza traduzioni, restavano senza trama per i titoli che TMDB non
+    // ha localizzato in italiano (frequenti nelle categorie per keyword, es.
+    // "Christmas"): la chiave versionata ne forza il rinnovo. Scadono comunque con
+    // la pulizia periodica.
+    //
     // v2 (serie): la risposta contiene ora `next_episode_to_air` (badge "Prossima
-    // puntata"). La chiave versionata costringe un solo recupero per serie dopo
-    // l'aggiornamento: le voci `tv_details_*` precedenti non contengono il campo e
-    // resterebbero senza badge fino alla scadenza del TTL. Scadono comunque con la
-    // pulizia periodica.
-    // v2 (film): stesso rationale per `belongs_to_collection` (sezione «Franchise -
-    // Collezione»): le voci `movie_details_*` pre-aggiornamento non hanno il campo.
-    val cacheKey = if (isTv) "tv_details_v2_$tmdbId" else "movie_details_v2_$tmdbId"
+    // puntata"). v2 (film): `belongs_to_collection` (sezione «Franchise - Collezione»).
+    val cacheKey = if (isTv) "tv_details_v3_$tmdbId" else "movie_details_v3_$tmdbId"
 
     detailsSingleFlight.run(cacheKey) {
       val db = database
@@ -4022,8 +4023,8 @@ object MediaRepository {
         val dto = TmdbApiClient.service.getTvDetails(
           seriesId = tmdbId,
           apiKey = apiKey,
-          language = "it-IT",
-          append = "credits,similar,content_ratings"
+          language = DETAIL_CONTENT_LANGUAGE,
+          append = "credits,similar,content_ratings,translations"
         )
         val json = MediaCacheMapper.serializeTvDetail(dto)
         tvDtoToExtended(dto, baseMedia) to json
@@ -4031,8 +4032,8 @@ object MediaRepository {
         val dto = TmdbApiClient.service.getMovieDetails(
           movieId = tmdbId,
           apiKey = apiKey,
-          language = "it-IT",
-          append = "credits,similar,release_dates"
+          language = DETAIL_CONTENT_LANGUAGE,
+          append = "credits,similar,release_dates,translations"
         )
         val json = MediaCacheMapper.serializeMovieDetail(dto)
         movieDtoToExtended(dto, baseMedia) to json
@@ -4497,9 +4498,13 @@ object MediaRepository {
   /** Memo di sessione dell'arricchimento «In evidenza»: zero richieste ripetute a cambio focus. */
   private val featuredCardMetaMemo = java.util.concurrent.ConcurrentHashMap<String, FeaturedCardMeta>()
 
-  /** Chiave stabile della memo per un titolo TMDB (film e serie hanno id che possono collidere). */
-  private fun featuredCardMemoKey(tmdbId: Int, isTv: Boolean): String =
-    "${if (isTv) "tv" else "mv"}_$tmdbId"
+  /**
+   * Chiave stabile della memo per un titolo TMDB (film e serie hanno id che possono
+   * collidere). Include la lingua: sinossi e generi cambiano con la lingua dell'app,
+   * quindi un cambio lingua non deve riusare i valori precedenti.
+   */
+  private fun featuredCardMemoKey(tmdbId: Int, isTv: Boolean, languageCode: String): String =
+    "${if (isTv) "tv" else "mv"}_${tmdbId}_$languageCode"
 
   private suspend fun readCachedTmdbString(cacheKey: String): String? {
     val db = database ?: return null
@@ -4542,8 +4547,10 @@ object MediaRepository {
    *
    * Ogni valore è cachato in Room 12h con chiave dedicata (stringa vuota = TMDB non lo
    * espone: niente re-fetch a ogni cambio di focus) e memoizzato in memoria per la
-   * sessione. In assenza di rete si restituisce comunque quanto in cache/memo: la card
-   * mostra solo i segmenti disponibili, mai segnaposto inventati.
+   * sessione. Le chiavi di sinossi e generi includono la lingua dell'app: un testo
+   * localizzato con una lingua precedente non viene riusato. In assenza di rete si
+   * restituisce comunque quanto in cache/memo: la card mostra solo i segmenti
+   * disponibili, mai segnaposto inventati.
    *
    * @param originalSynopsis sinossi già presente sull'item (serve a
    *   [HeroSynopsisLocalizer.pickSynopsis] per scartare una "traduzione" identica
@@ -4556,14 +4563,20 @@ object MediaRepository {
   ): FeaturedCardMeta =
     withContext(Dispatchers.IO) {
       if (tmdbId <= 0) return@withContext FeaturedCardMeta()
-      val memoKey = featuredCardMemoKey(tmdbId, isTv)
+      val language = HeroSynopsisLocalizer.language()
+      val languageCode = HeroSynopsisLocalizer.languageCode(language)
+      val memoKey = featuredCardMemoKey(tmdbId, isTv, languageCode)
       featuredCardMetaMemo[memoKey]?.let { return@withContext it }
 
       val logoKey = if (isTv) "tv_logo_$tmdbId" else "movie_logo_$tmdbId"
       val certKey = if (isTv) "tv_cert_$tmdbId" else "movie_cert_$tmdbId"
       val seasonsKey = "tv_seasons_$tmdbId"
-      val overviewKey = if (isTv) "tv_ovl_$tmdbId" else "movie_ovl_$tmdbId"
-      val genresKey = if (isTv) "tv_gen_$tmdbId" else "movie_gen_$tmdbId"
+      // Sinossi e generi sono localizzati: le chiavi includono la lingua, così un
+      // valore inglese scritto con una lingua precedente non viene riusato.
+      val overviewKey =
+        if (isTv) "tv_ovl_${tmdbId}_$languageCode" else "movie_ovl_${tmdbId}_$languageCode"
+      val genresKey =
+        if (isTv) "tv_gen_${tmdbId}_$languageCode" else "movie_gen_${tmdbId}_$languageCode"
 
       var certification = readCachedTmdbString(certKey)
       var seasonsCount = readCachedTmdbString(seasonsKey)?.toIntOrNull()
@@ -4577,7 +4590,6 @@ object MediaRepository {
       if (needsDetailCall) {
         try {
           val apiKey = getEffectiveApiKey()
-          val language = HeroSynopsisLocalizer.language()
           if (isTv) {
             val dto = TmdbApiClient.service.getTvDetails(
               seriesId = tmdbId,
@@ -4665,13 +4677,40 @@ object MediaRepository {
     language: String
   ): String =
     HeroSynopsisLocalizer.pickSynopsis(
-      // A pickSynopsis serve solo la sinossi originale dell'item (item.synopsis): un
-      // id fittizio è sufficiente, il resto dei campi non viene letto.
-      item = MediaItem(id = "featured_synopsis", title = "", synopsis = originalSynopsis, videoUrl = ""),
+      original = originalSynopsis,
       localized = localized,
       translations = translations,
       code = HeroSynopsisLocalizer.languageCode(language)
     )
+
+  /**
+   * Sinossi della scheda DETTAGLIO, con la stessa politica dell'Hero: italiano →
+   * traduzione inglese → testo restituito da TMDB.
+   *
+   * La sinossi dell'item ([baseMedia]) non partecipa alla scelta come "originale":
+   * per i titoli delle categorie TMDB è spesso un segnaposto generico, che
+   * bloccherebbe il fallback inglese imponendosi come se fosse già italiana. Resta
+   * solo l'ultima risorsa quando TMDB non espone alcuna overview utilizzabile.
+   *
+   * I dettagli arrivano con `append_to_response=translations` e lingua `it-IT`
+   * ([fetchExtendedDetails]): quando TMDB non ha la scheda italiana, la traduzione
+   * inglese evita che la trama sparisca dalla pagina.
+   */
+  private fun pickDetailSynopsis(
+    localized: String?,
+    translations: List<Pair<String, String?>>,
+    baseMedia: MediaItem?
+  ): String {
+    val picked = HeroSynopsisLocalizer.pickSynopsis(
+      original = "",
+      localized = localized,
+      translations = translations,
+      code = HeroSynopsisLocalizer.languageCode(DETAIL_CONTENT_LANGUAGE)
+    ).trim()
+    return picked.ifEmpty {
+      baseMedia?.synopsis?.trim()?.takeIf { it.isNotEmpty() } ?: "Nessuna trama disponibile."
+    }
+  }
 
   private fun translationsOfMovie(dto: TmdbMovieDetailDto): List<Pair<String, String?>> =
     dto.translations?.translations.orEmpty().map { translation ->
@@ -4798,7 +4837,7 @@ object MediaRepository {
       tmdbId = dto.id,
       title = dto.title?.takeIf { it.isNotBlank() } ?: dto.originalTitle ?: baseMedia?.title ?: "Film",
       originalTitle = dto.originalTitle ?: baseMedia?.originalTitle ?: "",
-      overview = dto.overview?.takeIf { it.isNotBlank() } ?: baseMedia?.synopsis ?: "Nessuna trama disponibile.",
+      overview = pickDetailSynopsis(dto.overview, translationsOfMovie(dto), baseMedia),
       backdropUrl = backdrop,
       posterUrl = poster,
       releaseYear = dto.releaseDate?.take(4)?.toIntOrNull() ?: baseMedia?.year ?: 2024,
@@ -4881,7 +4920,7 @@ object MediaRepository {
       tmdbId = dto.id,
       title = dto.name?.takeIf { it.isNotBlank() } ?: dto.originalName ?: baseMedia?.title ?: "Serie TV",
       originalTitle = dto.originalName ?: baseMedia?.originalTitle ?: "",
-      overview = dto.overview?.takeIf { it.isNotBlank() } ?: baseMedia?.synopsis ?: "Nessuna trama disponibile.",
+      overview = pickDetailSynopsis(dto.overview, translationsOfTv(dto), baseMedia),
       backdropUrl = backdrop,
       posterUrl = poster,
       releaseYear = dto.firstAirDate?.take(4)?.toIntOrNull() ?: baseMedia?.year ?: 2024,
@@ -5243,6 +5282,15 @@ object MediaRepository {
 
   const val DEFAULT_FALLBACK_TMDB_API_KEY = ""
 
+  /**
+   * Lingua dei metadati della scheda dettaglio (titoli, sinossi, generi).
+   *
+   * La sinossi usa `append_to_response=translations`: quando TMDB non ha la scheda
+   * italiana, [pickDetailSynopsis] ripiega sulla traduzione inglese invece di
+   * lasciare la trama vuota.
+   */
+  private const val DETAIL_CONTENT_LANGUAGE = "it-IT"
+
   /** Id del genere "Horror" TMDB: definito SOLO per i film (`/3/genre/movie/list`). */
   private const val TMDB_GENRE_ID_HORROR = 27
 
@@ -5273,9 +5321,7 @@ object MediaRepository {
    *        restituirebbe sempre zero risultati.
    * @param page pagina Discover (1-based).
    * @param excludeNonEditorialTv true (default) per i cataloghi generici, che devono
-   *        scartare podcast/talk show/recensioni. La categoria dedicata "Talk" passa
-   *        false: il genere TMDB è già la selezione editoriale e un talk show con
-   *        "Talk Show" nel titolo non deve essere scartato.
+   *        scartare podcast/talk show/recensioni (titoli non editoriali nel catalogo TV).
    * @return titoli convertiti in [MediaItem], oppure `null` se la chiamata è fallita.
    */
   suspend fun discoverByGenre(
@@ -5330,6 +5376,114 @@ object MediaRepository {
           .map { movieToMediaItem(it, currentList) }
       }
     }
+  }
+
+  /**
+   * Catalogo nativo TMDB degli SHOW TV: la categoria "TV Show" della sezione Ricerca.
+   *
+   * Composizione della lista, per ogni pagina:
+   *  1. show TV ITALIANI (`discover/tv?with_original_language=it`), ordinati per
+   *     popolarità: gli show italiani compaiono PER PRIMI;
+   *  2. poi la query GENERALE (`discover/tv` senza filtro di lingua), che per
+   *     popolarità mescola titoli RECENTI e meno recenti di tutte le lingue,
+   *     deduplicata contro la lista italiana: un show italiano non compare due volte.
+   *
+   * Il filtro anti-podcast/recensioni ([isBlockedTv]) resta attivo: vale per i
+   * cataloghi TV generici, come per le altre categorie della sezione Ricerca.
+   * Un errore TMDB (rete/HTTP/credenziale) restituisce `null`: il chiamante deve
+   * dichiararlo come errore, mai presentarlo come "nessun risultato".
+   *
+   * @param page pagina Discover (1-based).
+   * @return titoli convertiti in [MediaItem], oppure `null` se la chiamata è fallita.
+   */
+  suspend fun discoverTvShows(page: Int = 1): List<MediaItem>? = discoverTmdb(
+    contentLanguage = "it-IT",
+    failureLog = "Discover TMDB show TV fallito (pag=$page)",
+    cacheLog = "Errore salvataggio Room discoverTvShows"
+  ) { cleanKey, contentLanguage, currentList ->
+    val italianShows = TmdbApiClient.service.discoverTvShows(
+      apiKey = cleanKey,
+      originalLanguage = "it",
+      sortBy = "popularity.desc",
+      language = contentLanguage,
+      page = page
+    ).results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList) }
+
+    val allShows = TmdbApiClient.service.discoverTvShows(
+      apiKey = cleanKey,
+      originalLanguage = null,
+      sortBy = "popularity.desc",
+      language = contentLanguage,
+      page = page
+    ).results.filterNot { isBlockedTv(it.id, it.name) }.map { tvToMediaItem(it, currentList) }
+
+    // Italiani in testa; la lista generale (deduplicata per id) completa con le
+    // altre lingue: un show italiano della query generale è già stato mostrato sopra.
+    (italianShows + allShows).distinctBy { it.id }
+  }
+
+  /**
+   * Scoperta TMDB per KEYWORD: categoria "Christmas" della sezione Ricerca.
+   *
+   * Interroga `discover/movie?with_keywords={id}` e `discover/tv?with_keywords={id}`
+   * con la stessa keyword canonica TMDB delle pagine di riferimento
+   * (https://www.themoviedb.org/keyword/207317-christmas) e restituisce film e serie
+   * nella stessa pagina, i film prima delle serie. Stessa lingua, ordinamento per
+   * popolarità, cache Room e merge di [discoverTmdb].
+   *
+   * Un errore su UN solo endpoint non azzera la categoria: i risultati dell'altro tipo
+   * restano disponibili. Solo quando ENTRAMBE le chiamate falliscono la funzione
+   * restituisce `null`, che il chiamante deve dichiarare come errore.
+   *
+   * @param keywordId id della keyword TMDB (207317 = "Christmas").
+   * @param page pagina Discover (1-based), applicata a entrambi gli endpoint.
+   */
+  suspend fun discoverByKeyword(
+    keywordId: Int,
+    page: Int = 1
+  ): List<MediaItem>? = discoverTmdb(
+    contentLanguage = "it-IT",
+    failureLog = "Discover TMDB per keyword fallito (keyword=$keywordId, pag=$page)",
+    cacheLog = "Errore salvataggio Room discoverByKeyword"
+  ) { cleanKey, contentLanguage, currentList ->
+    val movies = try {
+      TmdbApiClient.service.discoverMoviesByKeyword(
+        apiKey = cleanKey,
+        keywordId = keywordId.toString(),
+        sortBy = "popularity.desc",
+        language = contentLanguage,
+        page = page
+      ).results.map { movieToMediaItem(it, currentList) }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Discover TMDB keyword $keywordId (film, pag=$page) fallito: ${e.message}")
+      null
+    }
+
+    val series = try {
+      TmdbApiClient.service.discoverTvByKeyword(
+        apiKey = cleanKey,
+        keywordId = keywordId.toString(),
+        sortBy = "popularity.desc",
+        language = contentLanguage,
+        page = page
+      ).results
+        .filterNot { isBlockedTv(it.id, it.name) }
+        .map { tvToMediaItem(it, currentList) }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Discover TMDB keyword $keywordId (serie, pag=$page) fallito: ${e.message}")
+      null
+    }
+
+    if (movies == null && series == null) {
+      // Entrambe le fonti sono fallite: discoverTmdb deve restituire null, non una
+      // categoria vuota presentata come "nessun risultato".
+      throw IllegalStateException("Discover TMDB keyword $keywordId non raggiungibile (pag=$page)")
+    }
+    movies.orEmpty() + series.orEmpty()
   }
 
   /**

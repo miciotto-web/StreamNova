@@ -656,6 +656,40 @@ interface TmdbApiService {
     @Query("page") page: Int = 1
   ): TmdbPaginatedResponse<TmdbTvDto>
 
+  /**
+   * Scoperta FILM tramite KEYWORD (`discover/movie?with_keywords=...`).
+   *
+   * È la controparte film di [discoverTvByKeyword]: la categoria "Christmas" della
+   * sezione Ricerca scopre con la keyword canonica TMDB 207317 sia i film sia le
+   * serie TV, così le due liste seguono esattamente le pagine TMDB di riferimento.
+   */
+  @GET("discover/movie")
+  suspend fun discoverMoviesByKeyword(
+    @Query("api_key") apiKey: String,
+    @Query("with_keywords") keywordId: String,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbMovieDto>
+
+  /**
+   * Scoperta GENERICA delle serie TV (`discover/tv` senza filtro di genere): è la
+   * fonte della categoria "TV Show" della sezione Ricerca.
+   *
+   * Con [originalLanguage] non nullo l'elenco è limitato a una lingua originale
+   * (es. `it` per gli show TV italiani); con `null` la query non filtra per lingua
+   * e l'ordinamento per popolarità mescola titoli RECENTI e meno recenti.
+   * `null` viene omesso dalla query (Retrofit non invia parametri nulli).
+   */
+  @GET("discover/tv")
+  suspend fun discoverTvShows(
+    @Query("api_key") apiKey: String,
+    @Query("with_original_language") originalLanguage: String?,
+    @Query("sort_by") sortBy: String = "popularity.desc",
+    @Query("language") language: String = "it-IT",
+    @Query("page") page: Int = 1
+  ): TmdbPaginatedResponse<TmdbTvDto>
+
   @GET("movie/{movie_id}/images")
   suspend fun getMovieImages(
     @Path("movie_id") movieId: Int,

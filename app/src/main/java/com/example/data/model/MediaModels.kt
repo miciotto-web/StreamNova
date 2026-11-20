@@ -28,14 +28,21 @@ enum class SearchTypeFilter(val label: String) {
  * interrogati per genere; quando nessun addon gestisce il tipo, la categoria è
  * servita nativamente da TMDB Discover, il gestore di cataloghi predefinito.
  *
- * [TMDB_TV_GENRE] è una categoria servita NATIVAMENTE da TMDB tramite un genere TV
- * ufficiale (es. "Talk", id 10767). Il percorso non consulta cataloghi di addon,
- * non richiede la modalità Debrid e non dipende dalle sorgenti di riproduzione:
- * `discover/tv` con `with_genres` è la fonte primaria, non un fallback.
+ * [TMDB_TV_SHOWS] è una categoria servita NATIVAMENTE da TMDB (categoria "TV Show"):
+ * il catalogo degli show TV — italiani in testa, poi le altre lingue, recenti e
+ * meno recenti — è costruito da `discover/tv`, non consulta i cataloghi degli
+ * addon, non richiede la modalità Debrid e non dipende dalle sorgenti di
+ * riproduzione: TMDB è la fonte primaria, non un fallback.
+ *
+ * [TMDB_KEYWORD] è una categoria servita NATIVAMENTE da TMDB tramite una KEYWORD
+ * (categoria "Christmas", keyword 207317): film e serie TV sono scoperti con
+ * `discover/movie` e `discover/tv` filtrati per `with_keywords`, senza consultare
+ * i cataloghi degli addon. TMDB è la fonte primaria, non un fallback.
  */
 enum class SearchCategoryFilter {
   GENRE,
-  TMDB_TV_GENRE
+  TMDB_TV_SHOWS,
+  TMDB_KEYWORD
 }
 
 data class AudioTrack(

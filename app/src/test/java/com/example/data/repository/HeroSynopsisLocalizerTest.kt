@@ -91,6 +91,39 @@ class HeroSynopsisLocalizerTest {
   }
 
   @Test
+  fun unaSinossiGiaItalianaNonVieneSostituitaDallaTraduzioneInglese() {
+    // Titolo TMDB nativo: overview di catalogo e di dettaglio sono la stessa
+    // sinossi italiana (e la traduzione `it` la ricopia). Prima del fix il testo
+    // identico veniva scartato e si finiva sulla traduzione inglese.
+    val item = movie(synopsis = ITALIAN_SYNOPSIS)
+
+    val result = HeroSynopsisLocalizer.pickSynopsis(
+      item = item,
+      localized = ITALIAN_SYNOPSIS,
+      translations = listOf("it" to ITALIAN_SYNOPSIS, "en" to ENGLISH_SYNOPSIS),
+      code = "it"
+    )
+
+    assertEquals(ITALIAN_SYNOPSIS, result)
+  }
+
+  @Test
+  fun unaSinossiItalianaRestaItalianaAncheSeTmdbRestituisceSoloLInglese() {
+    // TMDB non ha la traduzione italiana: la sinossi dell'item è già italiana e
+    // non deve essere rimpiazzata dal fallback inglese.
+    val item = movie(synopsis = ITALIAN_SYNOPSIS)
+
+    val result = HeroSynopsisLocalizer.pickSynopsis(
+      item = item,
+      localized = ENGLISH_SYNOPSIS,
+      translations = listOf("en" to ENGLISH_SYNOPSIS),
+      code = "it"
+    )
+
+    assertEquals(ITALIAN_SYNOPSIS, result)
+  }
+
+  @Test
   fun unTestoItalianoSenzaTraduzioneSostituisceQuelloInglese() {
     val item = movie()
 
@@ -171,6 +204,33 @@ class HeroSynopsisLocalizerTest {
     assertEquals(true, HeroSynopsisLocalizer.isItalianLookingText(real, ENGLISH_SYNOPSIS))
     assertEquals(false, HeroSynopsisLocalizer.isItalianLookingText(ENGLISH_SYNOPSIS, ""))
     assertEquals(false, HeroSynopsisLocalizer.isItalianLookingText("Бойцовский клуб", ""))
+  }
+
+  @Test
+  fun senzaOverviewItalianaLaSchedaDettaglioUsaLaTraduzioneInglese() {
+    // Caso reale delle categorie per keyword (es. "Christmas"): TMDB non ha la
+    // scheda italiana. L'originale vuoto NON deve bloccare il fallback inglese,
+    // altrimenti la trama sparisce dalla scheda dettaglio.
+    val result = HeroSynopsisLocalizer.pickSynopsis(
+      original = "",
+      localized = "",
+      translations = listOf("en" to ENGLISH_SYNOPSIS),
+      code = "it"
+    )
+
+    assertEquals(ENGLISH_SYNOPSIS, result)
+  }
+
+  @Test
+  fun conOverviewItalianaLaSchedaDettaglioNonUsaLEnglese() {
+    val result = HeroSynopsisLocalizer.pickSynopsis(
+      original = "",
+      localized = ITALIAN_SYNOPSIS,
+      translations = listOf("en" to ENGLISH_SYNOPSIS),
+      code = "it"
+    )
+
+    assertEquals(ITALIAN_SYNOPSIS, result)
   }
 
   private companion object {

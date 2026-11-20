@@ -65,29 +65,65 @@ object HeroSynopsisLocalizer {
   }
 
   /**
-   * Sceglie la sinossi da mostrare: `localized` (lingua app) → originale già
-   * presente sull'item → traduzioni esplicite (lingua app, poi inglese).
-   * Il risultato non è mai vuoto quando l'item aveva già una sinossi.
+   * Sceglie la sinossi da mostrare: `localized` (lingua app) → traduzioni
+   * esplicite (lingua app, poi inglese) → originale già presente sull'item.
+   * Un originale già nella lingua dell'app non viene MAI sostituito da una
+   * traduzione inglese: il risultato non è mai vuoto quando l'item aveva una
+   * sinossi.
    */
   internal fun pickSynopsis(
     item: MediaItem,
     localized: String?,
     translations: List<Pair<String, String?>> = emptyList(),
     code: String = languageCode()
-  ): String {
-    val original = item.synopsis.trim()
+  ): String = pickSynopsis(
+    original = item.synopsis,
+    localized = localized,
+    translations = translations,
+    code = code
+  )
 
-    pickLocalized(original, localized, code)?.let { return it }
+  /**
+   * Variante per i chiamanti che non hanno un [MediaItem] (scheda dettaglio TMDB):
+   * stessa politica della variante con item — `localized` → traduzione della lingua
+   * di [code] → inglese → [original].
+   *
+   * Con [original] vuoto il fallback inglese non può essere bloccato da una sinossi
+   * già nota (es. i segnaposto generici delle card di categoria): è il caso della
+   * scheda dettaglio, dove la risposta TMDB appena scaricata è la fonte autorevole
+   * e l'eventuale testo dell'item resta solo come ultima risorsa.
+   */
+  internal fun pickSynopsis(
+    original: String,
+    localized: String?,
+    translations: List<Pair<String, String?>> = emptyList(),
+    code: String = languageCode()
+  ): String {
+    val originalText = original.trim()
+
+    pickLocalized(originalText, localized, code)?.let { return it }
 
     translations.firstOrNull { (lang, text) ->
-      lang.equals(code, ignoreCase = true) && pickLocalized(original, text, code) != null
+      lang.equals(code, ignoreCase = true) && pickLocalized(originalText, text, code) != null
     }?.let { (_, text) -> return text!!.trim() }
+
+    // L'item è già nella lingua dell'app: è il caso dei titoli TMDB nativi, la cui
+    // overview di catalogo è già localizzata. TMDB restituisce la stessa overview
+    // (o la ricopia in `translations`), quindi `pickLocalized` la scarta come
+    // "identica all'originale" e il fallback inglese finirebbe per sostituire una
+    // sinossi italiana con una inglese. L'originale va conservato.
+    val localizedIsOriginal = localized?.trim().equals(originalText, ignoreCase = true)
+    if (originalText.isNotEmpty() &&
+      (localizedIsOriginal || (code == "it" && isItalianLookingText(originalText)))
+    ) {
+      return originalText
+    }
 
     translations.firstOrNull { (lang, text) ->
       lang.equals(FALLBACK_TRANSLATION_CODE, ignoreCase = true) && !text.isNullOrBlank()
     }?.let { (_, text) -> return text!!.trim() }
 
-    return original.ifEmpty { localized?.trim().orEmpty() }
+    return originalText.ifEmpty { localized?.trim().orEmpty() }
   }
 
   /**
