@@ -259,6 +259,11 @@ private const val SAME_SOURCE_TAG = "NextEpisodeSameSource"
  * del nuovo episodio non si sblocca in tempo la STESSA fonte è considerata non
  * disponibile. L'autoplay si ferma (stato terminale) e lascia la scelta manuale
  * all'utente: non esiste alcun fallback automatico a una sorgente diversa.
+ *
+ * Unica eccezione: il CONFINE DI STAGIONE ([StreamNovaViewModel.openStreamForMedia],
+ * `previousSeason != season`). Un pacchetto di stagione non contiene la puntata
+ * della stagione successiva, quindi lì il fallimento del fast-path non è terminale:
+ * subentra la ricerca normale ordinata per affinità di fonte (stesso addon in cima).
  */
 internal const val SAME_SOURCE_TIMEOUT_MS = 4_000L
 
@@ -1663,6 +1668,20 @@ class StreamNovaViewModel(
     if (_nextEpisodeAutoplayState.value == state) return
     Log.i(TAG, "Autoplay prossimo episodio: ${_nextEpisodeAutoplayState.value} -> $state ($reason)")
     _nextEpisodeAutoplayState.value = state
+  }
+
+  /**
+   * Promuove lo stato di autoplay quando il fallback «confine di stagione» conclude
+   * con l'apertura del selettore di sorgenti: da [NextEpisodeAutoplayState.SEARCHING_SAME_SOURCE]
+   * (ricerca in corso) a [NextEpisodeAutoplayState.MANUAL_SELECTION_REQUIRED] (l'utente
+   * deve scegliere). No-op in ogni altro caso: tocca solo il percorso in cui la ricerca
+   * della stessa fonte è proseguita come ricerca normale. Senza questa promozione lo
+   * stato rimarrebbe bloccato su SEARCHING_SAME_SOURCE anche a selettore chiuso.
+   */
+  private fun promoteSearchingSameSourceToManualSelection(reason: String) {
+    if (_nextEpisodeAutoplayState.value == NextEpisodeAutoplayState.SEARCHING_SAME_SOURCE) {
+      setNextEpisodeAutoplayState(NextEpisodeAutoplayState.MANUAL_SELECTION_REQUIRED, reason)
+    }
   }
 
   private var streamJob: Job? = null
@@ -4759,7 +4778,18 @@ class StreamNovaViewModel(
       "avvio transizione S${enrichedNext.seasonNumber}E${enrichedNext.episodeNumber}"
     )
 
-    openStreamForMedia(enrichedMedia, enrichedNext, allowReuse = false, isNextEpisode = true)
+    openStreamForMedia(
+      enrichedMedia,
+      enrichedNext,
+      allowReuse = false,
+      isNextEpisode = true,
+      // Stagione dell'episodio APPENA concluso (catturata prima del cambio di stato):
+      // [openStreamForMedia] la usa per riconoscere il confine di stagione e NON
+      // considerare terminale il fallimento del fast-path "stesso torrent" — il
+      // pacchetto della stagione precedente non può contenere la prima puntata
+      // della stagione successiva.
+      previousSeason = currentEpisode?.seasonNumber
+    )
   }
 
   /**
@@ -4977,6 +5007,14 @@ class StreamNovaViewModel(
    * - Esegue la ricerca con timeout rigido di 7 secondi.
    * - Al successo imposta lo stato su Success e avvia il player.
    * - Al fallimento o timeout imposta lo stato su Error.
+   *
+   * @param previousSeason nella transizione al prossimo episodio, la stagione
+   *   dell'episodio APPENA concluso. Serve a riconoscere il confine di stagione
+   *   (`season != previousSeason`): un torrent di stagione non può contenere la
+   *   prima puntata della stagione successiva, quindi lì il fallimento del
+   *   fast-path "stesso torrent" NON è terminale e subentra la ricerca normale
+   *   con affinità di fonte. `null` (o stagione coincidente) mantiene il
+   *   comportamento terminale storico.
    */
   fun openStreamForMedia(
     mediaItem: MediaItem,
@@ -4984,7 +5022,8 @@ class StreamNovaViewModel(
     allowReuse: Boolean = true,
     isNextEpisode: Boolean = false,
     manualSelection: Boolean = false,
-    correlationId: String? = null
+    correlationId: String? = null,
+    previousSeason: Int? = null
   ) {
     val traceId = correlationId ?: newPlaybackTraceId()
     playbackTraceId = traceId
@@ -5186,6 +5225,11 @@ class StreamNovaViewModel(
             _showSourceDialog.value = true
             _streamResolutionState.value = StreamResolutionState.Idle
             _streamResult.value = StreamResult.Idle
+            // Transizione al prossimo episodio conclusa col selettore: il ciclo di
+            // autoplay non resta "in ricerca" (coerente con gli altri aperture).
+            promoteSearchingSameSourceToManualSelection(
+              "prossimo episodio senza identificatori: apertura selettore"
+            )
           } else {
             // Selezione manuale richiesta dopo un fallimento dell'autoplay: senza
             // identificatori non ci sono sorgenti da proporre, quindi resta attivo
@@ -5320,42 +5364,71 @@ class StreamNovaViewModel(
           return@launch
         }
 
-        // CASO B — la STESSA fonte Debrid non è disponibile (null, vuoto, errore o
-        // timeout). Questo è uno stato TERMINALE del tentativo di autoplay:
-        //  - NON si interrogano i provider (una sorgente diversa non va avviata da sola);
-        //  - NON si avanza ad altri episodi e non si ripete la ricerca;
-        //  - il player mostra il messaggio e consente la scelta manuale della fonte.
-        // Il vecchio fallthrough alla ricerca normale era la causa del loop: a ogni
-        // fallimento l'episodio corrente era già avanzato, il popup si ri-armava sul
-        // clock dell'episodio precedente e il countdown faceva ripartire la transizione.
+        // FIX confine di stagione: un torrent di stagione contiene SOLO gli episodi
+        // della propria stagione, quindi alla prima puntata della stagione successiva
+        // il fast-path non può trovare il file. Solo in questo caso il fallimento NON
+        // è terminale: si prosegue con la ricerca normale, che ordina le sorgenti per
+        // affinità con la fonte corrente ([rankBySameSourceAffinity]: stesso addon in
+        // cima) e auto-seleziona quella riproducibile.
+        val crossesSeasonBoundary =
+          previousSeason != null && season != null && season != previousSeason
+        if (!crossesSeasonBoundary) {
+          // CASO B — la STESSA fonte Debrid non è disponibile (null, vuoto, errore o
+          // timeout). Questo è uno stato TERMINALE del tentativo di autoplay:
+          //  - NON si interrogano i provider (una sorgente diversa non va avviata da sola);
+          //  - NON si avanza ad altri episodi e non si ripete la ricerca;
+          //  - il player mostra il messaggio e consente la scelta manuale della fonte.
+          // Il vecchio fallthrough alla ricerca normale era la causa del loop: a ogni
+          // fallimento l'episodio corrente era già avanzato, il popup si ri-armava sul
+          // clock dell'episodio precedente e il countdown faceva ripartire la transizione.
+          tracePlayback(
+            traceId,
+            "STREAM_UNAVAILABLE_SAME_SOURCE",
+            "series" to resolvedMediaItem.title,
+            "season" to season,
+            "episode" to epNumber,
+            "torrent" to "${pinnedHash.take(8)}...",
+            "outcome" to "autoplay-terminato"
+          )
+          withContext(Dispatchers.Main) {
+            // Risultato obsoleto (nuova ricerca/cancellazione nel frattempo): non si
+            // tocca lo stato di un tentativo che non è più quello corrente.
+            if (currentJobGeneration != loadStreamGeneration) return@withContext
+            setNextEpisodeAutoplayState(
+              NextEpisodeAutoplayState.SOURCE_UNAVAILABLE,
+              "nessuna sorgente dallo stesso torrent per S${season}E${epNumber}"
+            )
+            _availableSources.value = emptyList()
+            _sourceCandidates.value = emptyList()
+            _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
+            // Nessuna lista di sorgenti da mostrare: il dialog non va forzato (sarebbe
+            // invisibile). L'episodio resta in attesa della scelta manuale dell'utente.
+            _showSourceDialog.value = false
+            _streamResolutionState.value = StreamResolutionState.Idle
+            _streamResult.value = StreamResult.Idle
+            _isSwitchingEpisode.value = false
+          }
+          return@launch
+        }
+        // Confine di stagione (es. S3 → S4E1): la STESSA fonte non può avere il file
+        // nel pacchetto della stagione precedente, ma la ricerca normale può trovare
+        // il pacchetto della stagione successiva dallo stesso addon. Lo stato resta
+        // SEARCHING_SAME_SOURCE: se una sorgente affine parte, [openAutoPickedSource]
+        // lo promuove a STARTED; se serve la scelta manuale, i punti di apertura del
+        // dialog lo promuovono a MANUAL_SELECTION_REQUIRED.
+        Log.i(
+          "NextEpisodeDebrid",
+          "Stesso torrent ${pinnedHash.take(8)}... senza S${season}E${epNumber}: confine di stagione (S$previousSeason -> S$season), fallback alla ricerca con affinita' di fonte"
+        )
         tracePlayback(
           traceId,
-          "STREAM_UNAVAILABLE_SAME_SOURCE",
+          "SAME_SOURCE_SEASON_BOUNDARY_FALLBACK",
           "series" to resolvedMediaItem.title,
+          "previousSeason" to previousSeason,
           "season" to season,
           "episode" to epNumber,
-          "torrent" to "${pinnedHash.take(8)}...",
-          "outcome" to "autoplay-terminato"
+          "torrent" to "${pinnedHash.take(8)}..."
         )
-        withContext(Dispatchers.Main) {
-          // Risultato obsoleto (nuova ricerca/cancellazione nel frattempo): non si
-          // tocca lo stato di un tentativo che non è più quello corrente.
-          if (currentJobGeneration != loadStreamGeneration) return@withContext
-          setNextEpisodeAutoplayState(
-            NextEpisodeAutoplayState.SOURCE_UNAVAILABLE,
-            "nessuna sorgente dallo stesso torrent per S${season}E${epNumber}"
-          )
-          _availableSources.value = emptyList()
-          _sourceCandidates.value = emptyList()
-          _sourceDialogMedia.value = SourceDialogTarget(resolvedMediaItem, effectiveEpisode)
-          // Nessuna lista di sorgenti da mostrare: il dialog non va forzato (sarebbe
-          // invisibile). L'episodio resta in attesa della scelta manuale dell'utente.
-          _showSourceDialog.value = false
-          _streamResolutionState.value = StreamResolutionState.Idle
-          _streamResult.value = StreamResult.Idle
-          _isSwitchingEpisode.value = false
-        }
-        return@launch
       }
 
       val openSubtitlesDeferred = async(ioDispatcher) {
@@ -5384,6 +5457,17 @@ class StreamNovaViewModel(
           if (hasOpenedPlayer) return@withContext
           if (currentJobGeneration != loadStreamGeneration) return@withContext
           hasOpenedPlayer = true
+          // Autoplay prossimo episodio (fallback confine di stagione): la ricerca era
+          // partita con SEARCHING_SAME_SOURCE attivo e il player ora parte con una
+          // sorgente valida, quindi il tentativo e' riuscito. Senza questa promozione
+          // lo stato resterebbe bloccato su "ricerca in corso" e il countdown per
+          // l'episodio DOPO non si riarmerebbe mai.
+          if (_nextEpisodeAutoplayState.value == NextEpisodeAutoplayState.SEARCHING_SAME_SOURCE) {
+            setNextEpisodeAutoplayState(
+              NextEpisodeAutoplayState.STARTED,
+              "sorgente valida trovata dalla ricerca di fallback (confine di stagione)"
+            )
+          }
           _streamResolutionState.value = StreamResolutionState.Success(
             streamUrl = source.streamUrl ?: "",
             mediaItem = resolvedMediaItem,
@@ -5483,6 +5567,12 @@ class StreamNovaViewModel(
             _streamResolutionState.value = StreamResolutionState.Idle
             _streamResult.value = StreamResult.Idle
             _isSwitchingEpisode.value = false
+            // Fallback confine di stagione: il selettore sostituisce la ricerca
+            // automatica; il ciclo di autoplay passa allo stato di scelta manuale
+            // (coerente con la chiusura/selezione del selettore).
+            promoteSearchingSameSourceToManualSelection(
+              "selettore aperto durante la transizione al prossimo episodio"
+            )
             if (isNextEpisode) {
               Log.d("NextEpisodeStream", "Flussi trovati: ${affinitySources.size}, Flusso scelto: null (Selezione manuale attiva)")
             }
@@ -5593,6 +5683,12 @@ class StreamNovaViewModel(
             _streamResolutionState.value = StreamResolutionState.Idle
             _streamResult.value = StreamResult.Idle
             _isSwitchingEpisode.value = false
+            // Fallback confine di stagione concluso senza sorgente avviabile:
+            // il selettore prende il controllo e il ciclo di autoplay va in
+            // stato di scelta manuale (mai countdown riarmato).
+            promoteSearchingSameSourceToManualSelection(
+              "nessuna sorgente avviabile nel fallback: apertura selettore"
+            )
           }
         }
       }
@@ -5652,6 +5748,11 @@ class StreamNovaViewModel(
             _streamResolutionState.value = StreamResolutionState.Idle
             _streamResult.value = StreamResult.Idle
             _isSwitchingEpisode.value = false
+            // Fallback confine di stagione senza player aperto: il selettore prende
+            // il controllo e il ciclo di autoplay va in stato di scelta manuale.
+            promoteSearchingSameSourceToManualSelection(
+              "fallback concluso senza riproduzione: apertura selettore"
+            )
           } else {
             _streamResolutionState.value = StreamResolutionState.Error("Nessuna sorgente disponibile per questo titolo.")
             _streamResult.value = StreamResult.Error("Nessuna sorgente disponibile per questo titolo.")
