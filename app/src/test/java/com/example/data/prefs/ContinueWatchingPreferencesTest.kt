@@ -35,6 +35,10 @@ class ContinueWatchingPreferencesTest {
     context = ApplicationProvider.getApplicationContext()
     AppSettingsRepository.resetForTesting()
     AppSettingsRepository.init(context)
+    // Attende la PRIMA emissione del DataStore prima di scrivere i default: se il
+    // collector legge il disco dopo il reset, i valori persistiti da una classe di
+    // test precedente possono sovrascrivere i default appena impostati.
+    runBlocking { AppSettingsRepository.awaitLoaded() }
     // Il DataStore è condiviso fra le classi di test dello stesso processo: si
     // riportano SUBITO i valori di default in memoria (e su disco) prima di ogni
     // asserzione, così il test non dipende dall'ordine di esecuzione.

@@ -397,7 +397,8 @@ class SearchCategoryTvShowTest {
       // Tutte le richieste della categoria sono andate a TMDB, nessuna a un addon.
       assertTrue(
         "Solo richieste TMDB attese: ${tmdb.requested}",
-        tmdb.requested.all { it.startsWith("/3/") }
+        // Snapshot: il server locale può registrare richieste mentre il test legge.
+        tmdb.requested.toList().all { it.startsWith("/3/") }
       )
     } finally {
       tmdb.stop()

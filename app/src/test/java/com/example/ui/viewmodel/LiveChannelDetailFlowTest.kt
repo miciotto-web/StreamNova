@@ -236,12 +236,14 @@ class LiveChannelDetailFlowTest {
 
     // L'addon è interrogato con `tv` (tipo del suo catalogo), mai con `series`,
     // e senza stagione/episodio.
+    // Snapshot: il server locale può registrare richieste mentre il test legge.
+    val recorded = fixture.requested.toList()
     assertTrue(
-      "Richiesta stream mancante: ${fixture.requested}",
-      fixture.requested.contains("/stream/tv/vavoo_rai1.json")
+      "Richiesta stream mancante: $recorded",
+      recorded.contains("/stream/tv/vavoo_rai1.json")
     )
-    assertTrue(fixture.requested.none { it.startsWith("/stream/series/") })
-    assertTrue(fixture.requested.none { it.contains(":1:1") })
+    assertTrue(recorded.none { it.startsWith("/stream/series/") })
+    assertTrue(recorded.none { it.contains(":1:1") })
   }
 
   @Test

@@ -464,7 +464,7 @@ class SimklLogoutPurgeTest {
     val scope = CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
     val syncJob: Job = scope.launch { syncResult = SimklSyncManager.sync(force = true) }
 
-    assertTrue("il pull deve essere partito", attendi { recorded.any { it == "/sync/playback" } })
+    assertTrue("il pull deve essere partito", attendi { recorded.toList().any { it == "/sync/playback" } })
     delay(200) // la richiesta è in volo
     SimklRepository.signOut()
     assertFalse(SimklRepository.accountState.value.isLoggedIn)
