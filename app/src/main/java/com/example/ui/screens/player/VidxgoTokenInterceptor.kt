@@ -26,14 +26,47 @@ import okhttp3.Response
  *    sorgente viene toccata;
  *  - adotta il token della richiesta se è più recente di quello noto;
  *  - se mancano meno di [REFRESH_MARGIN_MS] alla scadenza, chiama l'endpoint
- *    di refresh e riscrive la richiesta (host + `t`/`e`/`b`, preservando gli
- *    altri parametri come `p=`);
+ *    di refresh e riscrive **solo `t` ed `e`** della richiesta, come il player
+ *    web;
  *  - su 403 forza un refresh e ritenta **una sola volta**.
+ *
+ * ## Scadenze locali, non orologio di parete
+ *
+ * `expire` è un epoch **del server**, mentre [nowMs] è l'orologio del
+ * dispositivo. Confrontarli direttamente è fragile: su un box con l'orologio
+ * avanti di più di [REFRESH_MARGIN_MS] ogni richiesta CDN risulterebbe "in
+ * scadenza" e farebbe un refresh sincrono prima di ogni segmento, con il
+ * caricamento che si ferma ogni volta (buffering continuo) e l'endpoint token
+ * martellato fino al rate-limit. Il refresh viene quindi pianificato con una
+ * **deadline locale**: subito dopo un refresh il token è appena stato emesso e
+ * vale [REFRESH_INTERVAL_MS]; un token adottato da una richiesta usa la
+ * scadenza dichiarata solo se è plausibile, altrimenti ricade sull'intervallo
+ * locale. Un `expire` nel passato o non allineato non può più trasformare ogni
+ * segmento in un refresh.
+ *
+ * ## Riscrittura come il player web: solo `t` ed `e`
+ *
+ * Il player web originale (`signUrl` nel suo script) intercetta ogni
+ * URL che contiene `/hls/` e sostituisce **soltanto** i parametri `t` ed `e`
+ * con il token e la scadenza appena ottenuti. Host, porta, path (compreso
+ * l'eventuale prefisso `/proxy/media-XXX/`), `b`, `p` e ogni altro parametro
+ * restano quelli della richiesta. Il player web non usa né l'host né il path
+ * né il `b` restituiti da `/t/...`: li usa solo per leggere il nuovo `t/e`.
+ *
+ * Questo interceptor fa lo stesso. Sostituire l'host/path con quelli della
+ * risposta token (comportamento precedente) spostava le richieste su un edge
+ * o un path diverso dopo il primo rinnovo — es. perdendo `/proxy/media-402/`
+ * o cambiando `b` per la rendition in riproduzione — e il CDN rispondeva
+ * 403/404: la riproduzione si fermava e andava in buffering continuo proprio
+ * dopo ~2,5 minuti. `p` è validato dal CDN (nei flussi che lo usano, es.
+ * `cdn.*.media-619`) e va conservato insieme alla richiesta firmata.
  *
  * Il refresh avviene sul thread di caricamento di Media3: è un GET JSON molto
  * piccolo e viene eseguito solo ogni ~2,5 minuti, quindi non introduce jank.
  * Un errore di refresh non interrompe la riproduzione: la richiesta originale
  * prosegue e, se il CDN la rifiuta, resta il fallback di sorgente già esistente.
+ * Un refresh fallito non viene ripetuto a ogni segmento per
+ * [REFRESH_FAILURE_BACKOFF_MS].
  */
 internal class VidxgoTokenInterceptor(
   private val refreshOrigin: String = Vidxgo.ORIGIN,
@@ -52,8 +85,12 @@ internal class VidxgoTokenInterceptor(
   )
 
   private data class TokenState(
-    val url: String,
-    val expireMs: Long
+    /** Valore del parametro `t` da applicare alle richieste `/hls/`. */
+    val token: String,
+    /** Valore del parametro `e` (epoch server), usato anche per scegliere il più recente. */
+    val expireMs: Long,
+    /** Istante locale (stesso clock di [nowMs]) in cui richiedere il rinnovo. */
+    val refreshAtMs: Long
   )
 
   private val refreshClient: OkHttpClient = refreshClient ?: sharedRefreshClient
@@ -64,6 +101,13 @@ internal class VidxgoTokenInterceptor(
   /** Lock per video: due richieste concorrenti non duplicano il refresh. */
   private val locks = ConcurrentHashMap<VideoKey, Any>()
 
+  /**
+   * Dopo un refresh fallito non si ritenta prima di questo istante locale.
+   * Evita che un endpoint token lento/irraggiungibile blocchi OGNI segmento
+   * con un nuovo tentativo sincrono.
+   */
+  private val refreshNotBeforeMs = ConcurrentHashMap<VideoKey, Long>()
+
   override fun intercept(chain: Interceptor.Chain): Response {
     val original = chain.request()
     val requestUrl = original.url
@@ -73,7 +117,7 @@ internal class VidxgoTokenInterceptor(
     adoptRequestToken(key, requestUrl)
 
     val current = tokens[key]
-    if (current == null || nowMs() >= current.expireMs - REFRESH_MARGIN_MS) {
+    if (current == null || nowMs() >= current.refreshAtMs) {
       refresh(key)
     }
 
@@ -93,24 +137,54 @@ internal class VidxgoTokenInterceptor(
 
   /** Se la richiesta porta un token più recente di quello noto, lo adotta. */
   private fun adoptRequestToken(key: VideoKey, url: HttpUrl) {
+    val token = url.queryParameter(PARAM_TOKEN)?.takeIf { it.isNotBlank() } ?: return
     val expire = url.queryParameter(PARAM_EXPIRE)?.toLongOrNull() ?: return
     val current = tokens[key]
     if (current == null || expire > current.expireMs) {
-      tokens[key] = TokenState(url.toString(), expire)
+      val now = nowMs()
+      tokens[key] = TokenState(
+        token = token,
+        expireMs = expire,
+        refreshAtMs = refreshDeadlineForAdoptedToken(expire, now)
+      )
     }
   }
 
   /**
-   * Rinnova il token del video. `force=true` ignora la scadenza nota (usato
-   * dopo un 403). Un fallimento viene solo loggato: il chiamante prosegue con
-   * la richiesta originale.
+   * Pianifica il rinnovo di un token ricevuto dentro una richiesta.
+   *
+   * La scadenza è confrontata con l'orologio locale solo quando la differenza è
+   * plausibile; un valore nel passato (token già scaduto o clock avanti), o
+   * troppo lontano (clock indietro), ricade sull'intervallo locale del player.
+   * In nessun caso un token appena emesso produce un refresh a ogni richiesta.
+   */
+  private fun refreshDeadlineForAdoptedToken(expireMs: Long, now: Long): Long {
+    val remaining = expireMs - now
+    if (remaining <= 0L) return now
+    // Oltre la durata dichiarata il valore non è attendibile (orologio indietro):
+    // non si aspetta più di un ciclo locale. Sotto, si rinnova 30 s prima.
+    val boundedRemaining = remaining.coerceAtMost(DEFAULT_TOKEN_TTL_MS)
+    return now + (boundedRemaining - REFRESH_MARGIN_MS).coerceAtLeast(0L)
+  }
+
+  /**
+   * Rinnova il token del video. `force=true` ignora la deadline nota (usato
+   * dopo un 403). Un fallimento viene solo loggato e impone un breve backoff:
+   * il chiamante prosegue con la richiesta originale, senza bloccare ogni
+   * segmento su un nuovo tentativo.
    */
   private fun refresh(key: VideoKey, force: Boolean = false) {
     val lock = locks.computeIfAbsent(key) { Any() }
     synchronized(lock) {
-      val current = tokens[key]
-      if (!force && current != null && nowMs() < current.expireMs - REFRESH_MARGIN_MS) {
-        return
+      val now = nowMs()
+      if (!force) {
+        val current = tokens[key]
+        if (current != null && now < current.refreshAtMs) {
+          return
+        }
+        if (now < (refreshNotBeforeMs[key] ?: 0L)) {
+          return
+        }
       }
 
       val path = Vidxgo.tokenPath(key.id, key.season, key.episode)
@@ -129,58 +203,64 @@ internal class VidxgoTokenInterceptor(
         refreshClient.newCall(request).execute().use { response ->
           if (!response.isSuccessful) {
             Log.w(TAG, "refresh token HTTP ${response.code} per ${key.id}")
+            markRefreshFailure(key)
             return
           }
           val body = response.body?.string().orEmpty()
           val freshUrl = JSON_URL_REGEX.find(body)?.groupValues?.get(1)
             ?.replace("\\/", "/")
             ?.trim()
-          if (freshUrl.isNullOrBlank()) {
-            Log.w(TAG, "refresh token senza URL per ${key.id}")
+          val fresh = freshUrl?.toHttpUrlOrNull()
+          val freshToken = fresh?.queryParameter(PARAM_TOKEN)?.takeIf { it.isNotBlank() }
+          val freshExpire = JSON_EXPIRE_REGEX.find(body)?.groupValues?.get(1)?.toLongOrNull()
+            ?: fresh?.queryParameter(PARAM_EXPIRE)?.toLongOrNull()
+          if (freshToken == null || freshExpire == null) {
+            Log.w(TAG, "refresh token senza t/e validi per ${key.id}")
+            markRefreshFailure(key)
             return
           }
-          val expire = JSON_EXPIRE_REGEX.find(body)?.groupValues?.get(1)?.toLongOrNull()
-            ?: (nowMs() + FALLBACK_TTL_MS)
-          tokens[key] = TokenState(freshUrl, expire)
-          Log.i(TAG, "token rinnovato per ${key.id} (expire=$expire)")
+          // Il token è appena stato emesso dal server: il rinnovo va pianificato
+          // sull'orologio LOCALE. Il resto della URL restituita (host, path, b, p)
+          // NON viene usato: come il player web, si ruotano solo t ed e.
+          tokens[key] = TokenState(
+            token = freshToken,
+            expireMs = freshExpire,
+            refreshAtMs = nowMs() + REFRESH_INTERVAL_MS
+          )
+          refreshNotBeforeMs.remove(key)
+          Log.i(TAG, "token rinnovato per ${key.id} (expire=$freshExpire)")
         }
       } catch (e: IOException) {
         Log.w(TAG, "refresh token fallito per ${key.id}: ${e.message}")
+        markRefreshFailure(key)
       }
     }
   }
 
+  /** Blocca per [REFRESH_FAILURE_BACKOFF_MS] i tentativi non forzati. */
+  private fun markRefreshFailure(key: VideoKey) {
+    refreshNotBeforeMs[key] = nowMs() + REFRESH_FAILURE_BACKOFF_MS
+  }
+
   /**
-   * Riscrive host e token della richiesta usando l'ultimo token noto.
+   * Applica l'ultimo token alla richiesta, come il `signUrl` del player web:
+   * sostituisce **solo** `t` ed `e`.
    *
-   * Il path viene normalizzato a partire da `/hls/`: le URL del player possono
-   * arrivare sia in forma diretta (`/hls/{id}/...`) sia proxata
-   * (`/proxy/media-XXX/hls/{id}/...`). Il nuovo token può risiedere su un host
-   * diverso (es. `cdn.v1.*` invece di `cdn.v3.*`), quindi l'origin viene
-   * sostituito per intero.
+   * Host, porta, path (compreso un eventuale prefisso `/proxy/media-XXX/`),
+   * `b`, `p` e ogni altro parametro restano quelli della richiesta originale.
+   * La URL restituita da `/t/...` serve unicamente a leggere il nuovo `t/e`:
+   * seguirne host/path/`b` significherebbe cambiare edge o rendition proprio
+   * durante la riproduzione, con 403/404 e buffering al primo rinnovo.
    */
   private fun rewrite(request: Request, key: VideoKey): Request? {
     val state = tokens[key] ?: return null
-    val fresh = state.url.toHttpUrlOrNull() ?: return null
     val original = request.url
-    val hlsIndex = original.encodedPath.indexOf(HLS_PATH_MARKER)
-    if (hlsIndex < 0) return null
+    if (!original.encodedPath.contains(HLS_PATH_MARKER)) return null
 
-    val suffixPath = original.encodedPath.substring(hlsIndex)
-    val builder = fresh.newBuilder().encodedPath(suffixPath)
-    builder.query(null)
-    original.queryParameterNames.forEach { name ->
-      if (name != PARAM_TOKEN && name != PARAM_EXPIRE && name != PARAM_BITRATE) {
-        original.queryParameterValues(name).orEmpty().forEach { value ->
-          builder.addQueryParameter(name, value)
-        }
-      }
-    }
-    fresh.queryParameter(PARAM_TOKEN)?.let { builder.setQueryParameter(PARAM_TOKEN, it) }
-    fresh.queryParameter(PARAM_EXPIRE)?.let { builder.setQueryParameter(PARAM_EXPIRE, it) }
-    fresh.queryParameter(PARAM_BITRATE)?.let { builder.setQueryParameter(PARAM_BITRATE, it) }
-
-    val rewritten = builder.build()
+    val rewritten = original.newBuilder()
+      .setQueryParameter(PARAM_TOKEN, state.token)
+      .setQueryParameter(PARAM_EXPIRE, state.expireMs.toString())
+      .build()
     if (rewritten == original) return null
     return request.newBuilder().url(rewritten).build()
   }
@@ -204,17 +284,22 @@ internal class VidxgoTokenInterceptor(
   companion object {
     private const val TAG = "VidxgoToken"
 
-    /** Rinnova quando mancano meno di 30 s: copre clock skew e richieste in volo. */
+    /** Durata dichiarata del token vidxgo (il player reale dura ~180 s). */
+    private const val DEFAULT_TOKEN_TTL_MS = 180_000L
+
+    /** Rinnova quando mancano meno di 30 s: copre richieste in volo e latenza. */
     private const val REFRESH_MARGIN_MS = 30_000L
 
-    /** TTL usato se la risposta non dichiara `expire` (il player reale dura ~180 s). */
-    private const val FALLBACK_TTL_MS = 150_000L
+    /** Deadline LOCALE dopo un refresh riuscito: 180 s meno il margine. */
+    private const val REFRESH_INTERVAL_MS = DEFAULT_TOKEN_TTL_MS - REFRESH_MARGIN_MS
+
+    /** Dopo un refresh fallito non si ritenta prima di questo intervallo. */
+    private const val REFRESH_FAILURE_BACKOFF_MS = 10_000L
 
     private const val HTTP_FORBIDDEN = 403
     private const val HLS_PATH_MARKER = "/hls/"
     private const val PARAM_TOKEN = "t"
     private const val PARAM_EXPIRE = "e"
-    private const val PARAM_BITRATE = "b"
 
     private val TV_PATH_REGEX = Regex("""(?:^|/)hls/tv/(\d+)/(\d+)/(\d+)(?:/|$)""")
     private val MOVIE_PATH_REGEX = Regex("""(?:^|/)hls/(\d+)(?:/|$)""")
