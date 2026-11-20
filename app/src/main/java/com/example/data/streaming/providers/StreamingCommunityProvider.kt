@@ -525,14 +525,16 @@ class StreamingCommunityProvider(
      * dominio non raggiungibile viene saltato e loggato, senza bloccare gli
      * altri provider dello StreamManager.
      *
-     * Verificati il 2026-10-21 con richieste reali: i precedenti
-     * `streamingcommunity.{click,buzz,org}` rispondono 200 con pagine di
-     * parcheggio dominio ("Buy this domain") e gli altri non risolvono più il
-     * DNS, mentre questi servono il catalogo reale (`200`, titolo
-     * "Streaming-Community", API archive funzionante). `coffee`, `site` e `win`
-     * sono alias che rispondono `302` verso il dominio canonico `farm`.
+     * Verificati il 2026-11-18 con richieste reali: `army` è il dominio
+     * canonico (`200`, titolo "Streaming-Community", API archive funzionante) ed
+     * è elencato per primo per evitare il redirect. `farm`, `coffee`, `site` e
+     * `win` sono alias che rispondono `301` verso `army` e restano come
+     * fallback. I precedenti `streamingcommunity.{click,buzz,org}` (verifica del
+     * 2026-10-21) rispondono `200` con pagine di parcheggio dominio ("Buy this
+     * domain") oppure non risolvono più il DNS.
      */
     private val MIRRORS = listOf(
+      "https://streaming-community.army",
       "https://streaming-community.farm",
       "https://streaming-community.coffee",
       "https://streaming-community.site",

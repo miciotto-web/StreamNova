@@ -41,24 +41,26 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Categoria "Talk" della schermata Ricerca: griglia, D-pad e ripristino del focus.
+ * Categoria "TV Show" della schermata Ricerca: griglia, D-pad e ripristino del focus.
  *
- * La nuova categoria riusa la griglia e le card esistenti: questo test la apre per
- * nome (`talk`) e verifica che il badge sia quello nuovo e che i comportamenti della
+ * La categoria riusa la griglia e le card esistenti: questo test la apre per nome
+ * (`tv_show`) e verifica che il badge sia quello nuovo e che i comportamenti della
  * TV restino quelli delle altre categorie (D-pad con colonna mantenuta e focus
  * ripristinato sulla card al rientro dal Dettaglio).
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], qualifiers = "w960dp-h540dp-mdpi")
-class SearchCategoryTalkUiTest {
+// Lingua italiana esplicita: il badge verifica l'etichetta della risorsa it
+// ("TV Show" → "TV SHOW"), indipendente dal locale di default di Robolectric.
+@Config(sdk = [34], qualifiers = "it-w960dp-h540dp-mdpi")
+class SearchCategoryTvShowUiTest {
 
   @get:Rule
   val rule = createComposeRule()
 
   private companion object {
-    const val TITLE_PREFIX = "Talk "
-    const val CATEGORY_ID = "talk"
-    const val BADGE_LABEL = "TALK"
+    const val TITLE_PREFIX = "Show "
+    const val CATEGORY_ID = "tv_show"
+    const val BADGE_LABEL = "TV SHOW"
     const val COLUMN_TOLERANCE_PX = 1.0f
   }
 
@@ -167,12 +169,12 @@ class SearchCategoryTalkUiTest {
   }
 
   @Test
-  fun badgeTalkEGrigliaConDpadInvariato() {
+  fun badgeTvShowEGrigliaConDpadInvariato() {
     render(List(30) { item(it) })
 
     val badgeNodes = rule.onAllNodes(hasText(BADGE_LABEL, substring = false))
       .fetchSemanticsNodes()
-    assertTrue("Badge 'Talk' assente nella categoria", badgeNodes.isNotEmpty())
+    assertTrue("Badge 'TV Show' assente nella categoria", badgeNodes.isNotEmpty())
 
     val columns = columnsCount()
     assertTrue("Colonne non rilevate dal layout (columns=$columns)", columns >= 3)
@@ -186,14 +188,14 @@ class SearchCategoryTalkUiTest {
     assertFocusedCard(1 + columns)
     val after = bounds(title(1 + columns))
     assertTrue(
-      "Giù ha cambiato colonna nella categoria Talk: prima '${title(1)}' " +
+      "Giù ha cambiato colonna nella categoria TV Show: prima '${title(1)}' " +
         "centerX=${before.center.x}, dopo '${title(1 + columns)}' centerX=${after.center.x}",
       abs(after.center.x - before.center.x) <= COLUMN_TOLERANCE_PX
     )
   }
 
   @Test
-  fun backDalDettaglioRipristinaIlFocusSullaCardTalk() {
+  fun backDalDettaglioRipristinaIlFocusSullaCardTvShow() {
     render(List(30) { item(it) })
 
     focusCard(2)
@@ -201,7 +203,7 @@ class SearchCategoryTalkUiTest {
     rule.waitForIdle()
     assertTrue("Il Dettaglio non è stato aperto", showDetail)
     assertEquals(
-      "Il click sulla card Talk non ha salvato il target di ripristino",
+      "Il click sulla card TV Show non ha salvato il target di ripristino",
       "03",
       viewModel.lastFocusedMediaId.value
     )

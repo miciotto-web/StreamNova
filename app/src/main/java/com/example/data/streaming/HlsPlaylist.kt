@@ -11,11 +11,14 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  * @param height altezza convenzionale ricavata da `RESOLUTION=WxH`; `null` se
  *        la variante non dichiara alcuna risoluzione.
  * @param bandwidth banda dichiarata (`BANDWIDTH=`), solo informativa.
+ * @param codecs codec dichiarati nell'attributo `CODECS=`, in ordine di
+ *        dichiarazione (es. `["avc1.64001f", "mp4a.40.2"]`); vuoto se assente.
  */
 data class HlsVariant(
   val url: String,
   val height: Int?,
-  val bandwidth: Long? = null
+  val bandwidth: Long? = null,
+  val codecs: List<String> = emptyList()
 )
 
 /**
@@ -54,6 +57,11 @@ object HlsPlaylist {
       val width = resolution?.groupValues?.getOrNull(1)?.toIntOrNull()
       val height = resolution?.groupValues?.getOrNull(2)?.toIntOrNull()
       val bandwidth = BANDWIDTH_REGEX.find(attributes)?.groupValues?.getOrNull(1)?.toLongOrNull()
+      val codecs = CODECS_REGEX.find(attributes)?.groupValues?.getOrNull(1)
+        ?.split(',')
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        .orEmpty()
 
       var uri: String? = null
       var next = index + 1
@@ -69,7 +77,7 @@ object HlsPlaylist {
         val resolved = resolveUri(masterUrl, uri)
         val conventionalHeight = StreamResolution.heightOfResolution(width, height)
           .takeIf { it != StreamResolution.UNKNOWN }
-        out += HlsVariant(resolved, conventionalHeight, bandwidth)
+        out += HlsVariant(resolved, conventionalHeight, bandwidth, codecs)
         index = next
       }
       index++
@@ -131,5 +139,6 @@ object HlsPlaylist {
 
   private val RESOLUTION_REGEX = Regex("""RESOLUTION=(\d+)x(\d+)""", RegexOption.IGNORE_CASE)
   private val BANDWIDTH_REGEX = Regex("""BANDWIDTH=(\d+)""", RegexOption.IGNORE_CASE)
+  private val CODECS_REGEX = Regex("""CODECS="([^"]+)"""", RegexOption.IGNORE_CASE)
   private val MAP_URI_REGEX = Regex("""URI="([^"]+)"""", RegexOption.IGNORE_CASE)
 }

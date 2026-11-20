@@ -1,0 +1,26 @@
+🎬 STREAMNOVA 1.2.0 È DISPONIBILE — SI PASSA ALLA FASE STABILE!
+
+La nuova release esce dalla beta e porta in TV un aggiornamento ricco di novità.
+
+✨ NOVITÀ PRINCIPALI
+
+🏢 Hub Studios in Home: 19 case di produzione, schede dedicate e filtri per film, serie, Top 10 e genere.
+🎯 Priorità automatica Altadefinizione: vince la qualità più alta davvero riproducibile (fino a 4K), con verifica HLS e finestra Full HD.
+🖼️ “In evidenza” cinematografico: card 16:9 al focus con logo, metadati e sinossi localizzata.
+🎞️ Scheda Dettaglio: nuova sezione Franchise - Collezione per i film, con poster 16:9 e ordine cronologico.
+👤 Profili: 39 avatar personaggio in 5 categorie, oltre a emoji e colori.
+⚖️ Impostazioni: nuovo pannello “Disclaimer e responsabilità” in 5 lingue.
+▶️ Player: ritorno automatico al Dettaglio a fine riproduzione.
+📺 Cerca e categorie: scroll animato in discesa e navigazione D-pad più fluida.
+
+📥 COME AGGIORNARE
+• Dall'app: Impostazioni → Controlla aggiornamenti
+• Da GitHub: https://github.com/miciotto-web/StreamNova/releases/tag/v1.2.0-build.1200
+
+APK: arm64-v8a, armeabi-v7a, x86, x86_64 e Universal. Firma ufficiale StreamNova, aggiornamento in place senza disinstallare.
+
+Versione 1.2.0 · build 1200 · canale stabile
+
+Buona visione! 🍿
+
+#StreamNova #Aggiornamento #AndroidTV #FireTV

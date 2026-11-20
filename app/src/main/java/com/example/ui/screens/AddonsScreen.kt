@@ -1,10 +1,12 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -44,16 +46,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
+import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
 import com.example.R
 import com.example.data.prefs.AppSettingsRepository
 import com.example.data.stremio.AddonSyncServer
@@ -69,6 +78,8 @@ import com.example.data.stremio.provider.ProviderBindingProposalView
 import com.example.data.stremio.provider.ProviderCatalogResolver
 import com.example.data.stremio.provider.UserProviderBindingStore
 import com.example.data.repository.StremioCatalogRepository
+import com.example.ui.components.AddonIdentity
+import com.example.ui.components.DebridSourceCardPresentation
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.QrCodeInfoCard
 import com.example.ui.components.FocusRestoreConfirmation
@@ -424,10 +435,8 @@ private fun AddonCard(
       )
   ) {
     Row(verticalAlignment = Alignment.Top) {
-      Icon(
-        imageVector = Icons.Default.Extension,
-        contentDescription = null,
-        tint = if (addon.isEnabled) NovaCyanBright else NovaTextMuted,
+      AddonLogo(
+        addon = addon,
         modifier = Modifier.size(28.dp)
       )
       Spacer(modifier = Modifier.width(14.dp))
@@ -692,6 +701,87 @@ private fun AddonCard(
       )
     }
   }
+}
+
+/**
+ * Logo dell'addon installato nella card: al posto dell'icona generica compare
+ * l'identità grafica dell'addon.
+ *
+ * Ordine di risoluzione (stesso schema delle card sorgente in SourceSelectionDialog):
+ *  1. logo ufficiale dichiarato dal manifest (`manifest.logo`);
+ *  2. asset ufficiale incluso nell'app per gli addon riconosciuti;
+ *  3. iniziali del nome come fallback neutro.
+ *
+ * Quando l'addon è disabilitato il logo resta visibile ma attenuato, come prima
+ * faceva l'icona generica con il tint attenuato.
+ */
+@Composable
+private fun AddonLogo(
+  addon: InstalledAddon,
+  modifier: Modifier = Modifier
+) {
+  val identity = remember(addon.manifest, addon.baseUrl) {
+    DebridSourceCardPresentation.addonIdentityOf(
+      manifestId = addon.manifest.id,
+      addonName = addon.manifest.displayTitle,
+      logo = addon.manifest.logo,
+      baseUrl = addon.baseUrl
+    )
+  }
+
+  Box(
+    modifier = modifier
+      .alpha(if (addon.isEnabled) 1f else 0.4f)
+      .clip(RoundedCornerShape(50))
+      .background(NovaBackground.copy(alpha = 0.55f))
+      .border(1.dp, NovaDivider, RoundedCornerShape(50)),
+    contentAlignment = Alignment.Center
+  ) {
+    val logoUrl = identity.logoUrl
+    if (logoUrl != null) {
+      SubcomposeAsyncImage(
+        model = ImageRequest.Builder(LocalContext.current)
+          .data(logoUrl)
+          .crossfade(true)
+          .build(),
+        contentDescription = identity.name,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier.matchParentSize(),
+        loading = { AddonLogoInitials(name = identity.name) },
+        error = { AddonLogoBundled(identity) }
+      )
+    } else {
+      AddonLogoBundled(identity)
+    }
+  }
+}
+
+/** Asset locale dell'addon riconosciuto, oppure iniziali come fallback neutro. */
+@Composable
+private fun BoxScope.AddonLogoBundled(identity: AddonIdentity) {
+  val logoResId = identity.logoResId
+  if (logoResId != null) {
+    Image(
+      painter = painterResource(id = logoResId),
+      contentDescription = identity.name,
+      contentScale = ContentScale.Fit,
+      modifier = Modifier.matchParentSize()
+    )
+  } else {
+    AddonLogoInitials(name = identity.name)
+  }
+}
+
+/** Iniziali (max 2) del nome dell'addon, usate quando nessun logo è disponibile. */
+@Composable
+private fun AddonLogoInitials(name: String) {
+  Text(
+    text = DebridSourceCardPresentation.initials(name),
+    color = NovaTextSecondary,
+    fontSize = 11.sp,
+    fontWeight = FontWeight.Black,
+    maxLines = 1
+  )
 }
 
 /**

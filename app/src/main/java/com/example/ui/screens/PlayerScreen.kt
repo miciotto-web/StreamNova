@@ -24,6 +24,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -89,6 +90,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -164,7 +166,11 @@ import com.example.data.prefs.PersistentSubtitleSelectionPolicy
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklEpisodePayload
 import com.example.data.repository.SimklMediaPayload
+import com.example.data.streaming.StreamResolution
+import com.example.data.streaming.toReportPlaylistKind
 import com.example.data.streaming.diagnostics.StreamDiagnostics
+import com.example.data.streaming.diagnostics.playback.HlsPlaybackSession
+import com.example.data.streaming.diagnostics.playback.PlaybackDiagnosticsRegistry
 import com.example.ui.screens.player.SimklScrobbler
 import com.example.ui.screens.player.subtitleBackgroundLabel
 import com.example.ui.screens.player.subtitleOpacityLabel
@@ -399,6 +405,14 @@ fun PlayerScreen(
     derivedStateOf { playbackStateWithoutPosition(livePlaybackState) }
   }
   val playbackSettings by viewModel.playbackSettings.collectAsState()
+
+  // Preferenze audio/sottotitoli specifiche della sorgente attiva (es. varianti
+  // VixCloud ITA / SUB ITA). `null` = usa l'impostazione persistente dell'utente.
+  val sourcePreferredAudioLanguage =
+    playbackState.currentSource?.preferredAudioLanguage?.takeIf { it.isNotBlank() }
+  val sourcePreferredSubtitleLanguage =
+    playbackState.currentSource?.preferredSubtitleLanguage?.takeIf { it.isNotBlank() }
+  val sourceSubtitlesEnabled = playbackState.currentSource?.subtitlesEnabled
 
   /**
    * Lingua di riferimento per preselezionare i sottotitoli esterni con
@@ -661,6 +675,10 @@ fun PlayerScreen(
   var showSubtitleModal by remember { mutableStateOf(false) }
   var showQualityModal by remember { mutableStateOf(false) }
   var showSpeedModal by remember { mutableStateOf(false) }
+  // Pannello tecnico diagnostico (discreto): si apre con tocco lungo
+  // sull'etichetta della risoluzione nell'overlay info. Nessun pulsante in più
+  // nella barra di controllo: l'interfaccia resta identica.
+  var showDiagnosticsPanel by remember { mutableStateOf(false) }
 
   // Traccia manuale selezionata dall'utente: quando non null, indica che l'utente ha
   // fatto una scelta esplicita dal menu Player. Questo previene la ri-applicazione
@@ -677,7 +695,7 @@ fun PlayerScreen(
   var onlineSubtitleActivationLang by remember { mutableStateOf<String?>(null) }
 
   val anyModalOpen = showTrackQuickPanel || showSubtitleModal || showQualityModal || showSpeedModal ||
-    showSourceSelector
+    showSourceSelector || showDiagnosticsPanel
 
   LaunchedEffect(showSubtitleModal) {
     if (showSubtitleModal) {
@@ -896,6 +914,44 @@ fun PlayerScreen(
     }
   }
 
+  // --- Diagnostica riproduzione strutturata (collector) ------------------------
+  // A-01: la sessione diagnostica segue la RIPRODUZIONE, non il player. Il
+  // player è volutamente riusato tra episodi e sorgenti (invariante sopra):
+  // loadStreamOnPlayer — punto UNICO di avvio di ogni riproduzione — apre una
+  // NUOVA sessione (nuovo sessionId, provider/contenuto/sorgente correnti) e la
+  // registra nel registry. Il listener legge la sessione corrente tramite
+  // l'holder, quindi non va ri-agganciato al cambio riproduzione. Quando il
+  // player viene RICREATO, loadStreamOnPlayer apre subito la sessione della
+  // nuova riproduzione PRIMA di prepare(): tra ricreazione e nuovo load il
+  // player è fermo e senza MediaItem (nessun evento che possa finire nella
+  // sessione precedente). NON decide nulla (nessun cambio provider, nessun
+  // retry aggiuntivo): osserva.
+  val diagSessionHolder = remember { mutableStateOf<HlsPlaybackSession?>(null) }
+
+  fun newPlaybackDiagnosticsSession(url: String?): HlsPlaybackSession {
+    val session = HlsPlaybackSession(
+      sessionId = HlsPlaybackSession.nextSessionId(),
+      providerId = playbackState.currentSource?.sourceProviderId ?: playbackState.streamServer,
+      contentLabel = media.title
+    )
+    url?.let { session.setSource(it, sourceKindOf(computeIsHlsStream(it))) }
+    session.setDeclaredResolution(playbackState.streamQuality)
+    // A-04: sintesi HLS osservata da chi ha risolto o verificato la sorgente,
+    // quando il testo della playlist era già in mano (nessuna richiesta extra).
+    // La qualità dichiarata dalla playlist (se nota) affina l'etichetta del
+    // provider; i codec dichiarati vengono poi sostituiti da quelli della
+    // traccia attiva osservata in riproduzione, quando arrivano.
+    playbackState.currentSource?.hlsPlaylistSummary?.let { summary ->
+      session.setPlaylistKind(summary.kind.toReportPlaylistKind())
+      summary.declaredResolutionHeight?.let { session.setDeclaredHeight(it) }
+      if (summary.declaredCodecs.isNotEmpty()) {
+        session.setCodec(summary.declaredCodecs.joinToString(", "))
+      }
+    }
+    PlaybackDiagnosticsRegistry.register(session)
+    return session
+  }
+
   /**
    * Caricamento stream UNIFORME su ExoPlayer: usato sia al primo avvio (S1E1, dentro il
    * `remember` che crea il player) sia al cambio episodio (S1E2..., nel
@@ -913,6 +969,12 @@ fun PlayerScreen(
     Log.d("[NEXT_EP_DEBUG]", "loadStreamOnPlayer($source): stop()+clearMediaItems() su $player")
     player.stop()
     player.clearMediaItems()
+    // A-01: nuova sessione diagnostica per la nuova riproduzione, dopo lo
+    // stop/clear della precedente (i suoi eventi di chiusura restano alla
+    // sessione vecchia). Fatto qui perché è il punto UNICO di avvio: primo
+    // avvio, cambio episodio e cambio sorgente sono coperti senza duplicare
+    // la logica e senza ri-agganciare il listener.
+    diagSessionHolder.value = newPlaybackDiagnosticsSession(url)
     val item = PlayerSubtitleMediaItemBuilder.buildMediaItem(url, stremioSubtitles)
     Log.d("[NEXT_EP_DEBUG]", "Esecuzione exoPlayer.setMediaItem con: $url")
     player.setMediaItem(item)
@@ -923,6 +985,17 @@ fun PlayerScreen(
       "[NEXT_EP_DEBUG]",
       "Riproduzione avviata: prepare()+playWhenReady=true eseguiti su $player (pos=$positionMs, source=$source)"
     )
+  }
+
+  // A-03: valutazione periodica del buffering prolungato/ripetuto. Il tick è
+  // pura osservazione (1 al secondo, lettura O(1)): la sessione registra la
+  // diagnosi BUFFERING_TIMEOUT UNA sola volta per episodio di buffering e
+  // soltanto mentre la condizione è in corso. Nessun effetto sul playback.
+  LaunchedEffect(diagSessionHolder.value) {
+    while (true) {
+      delay(1_000L)
+      diagSessionHolder.value?.bufferingTimeoutDiagnosis()
+    }
   }
 
   // Nuvio TrackSelector e ExoPlayer configurati con NuvioRenderersFactory, BitrateAwareLoadControl e Decoder Fallback
@@ -1332,12 +1405,9 @@ fun PlayerScreen(
   fun updateResolutionFromHeight(h: Int, w: Int = -1) {
     if (h > 0 || w > 0) {
       val prev = detectedResolution
-      detectedResolution = when {
-        h >= 1400 || w >= 2500 -> "4K"
-        h >= 750 || w >= 1400  -> "1080p"
-        h >= 500 || w >= 900   -> "720p"
-        else                   -> "SD"
-      }
+      // Etichetta dal punto UNICO (StreamResolution.labelForMeasured): il 1440p
+      // non è più etichettato 4K (bug dell'audit), niente soglie duplicate.
+      detectedResolution = StreamResolution.labelForMeasured(w, h)
       Log.i("[StreamNova-Video-Debug]", "updateResolutionFromHeight: h=$h, w=$w -> detectedResolution='$detectedResolution' (era='$prev')")
     }
   }
@@ -1360,12 +1430,15 @@ fun PlayerScreen(
 
     if (heights.isNotEmpty()) {
       heights.sortedDescending().forEach { h ->
-        val label = when {
-          h >= 1400 -> "4K (UHD)"
-          h >= 750  -> "1080p (FHD)"
-          h >= 500  -> "720p (HD)"
-          h >= 400  -> "480p (SD)"
-          else      -> "${h}p"
+        // Etichette dal punto UNICO (StreamResolution.labelForHeight): il 1440p
+        // compare come "1440p (QHD)", non come 4K.
+        val label = when (StreamResolution.labelForHeight(h)) {
+          "4K"    -> "4K (UHD)"
+          "1440p" -> "1440p (QHD)"
+          "1080p" -> "1080p (FHD)"
+          "720p"  -> "720p (HD)"
+          "480p"  -> "480p (SD)"
+          else    -> "${h}p"
         }
         options.add(label to h)
       }
@@ -1442,11 +1515,14 @@ fun PlayerScreen(
         .setExceedRendererCapabilitiesIfNecessary(true)
     )
     updateResolutionFromHeight(target, targetWidth)
-    selectedQualityLabel = when {
-      target >= 1400 -> "4K (UHD)"
-      target >= 750  -> "1080p (FHD)"
-      target >= 500  -> "720p (HD)"
-      target >= 400  -> "480p (SD)"
+    // Etichetta dal punto UNICO (StreamResolution.labelForHeight): il 1440p
+    // non viene più mostrato come "4K (UHD)".
+    selectedQualityLabel = when (StreamResolution.labelForHeight(target)) {
+      "4K"    -> "4K (UHD)"
+      "1440p" -> "1440p (QHD)"
+      "1080p" -> "1080p (FHD)"
+      "720p"  -> "720p (HD)"
+      "480p"  -> "480p (SD)"
       else -> "${target}p"
     }
   }
@@ -1795,6 +1871,14 @@ fun PlayerScreen(
     }
 
     if (isEpisodeChange || isUrlChange || isManualSourceChange) {
+      if (isManualSourceChange) {
+        // Nuova sorgente scelta dall'utente: le preferenze della variante
+        // (es. VixCloud ITA / SUB ITA) devono prevalere su una vecchia
+        // selezione manuale di audio o sottotitoli.
+        manualAudioSelection = null
+        manualSubtitleSelection = null
+        onlineSubtitleActivationLang = null
+      }
       // Stato REALE del ViewModel: la proiezione di composizione azzera la posizione.
       val livePositionMs = viewModel.playbackState.value.currentPositionMs
       val targetPos = if (isEpisodeChange) {
@@ -1877,6 +1961,8 @@ fun PlayerScreen(
     playbackSettings.forcedSubtitlesEnabled,
     playbackSettings.subtitlesEnabled,
     playbackSettings.preferredSubtitleLanguage,
+    sourceSubtitlesEnabled,
+    sourcePreferredSubtitleLanguage,
     currentEpKey,
     currentTracksState,
     manualSubtitleSelection,
@@ -1884,8 +1970,8 @@ fun PlayerScreen(
   ) {
     applySubtitlesConfiguration(
       forcedEnabled = playbackSettings.forcedSubtitlesEnabled,
-      fullSubtitlesEnabled = playbackSettings.subtitlesEnabled,
-      preferredLanguage = playbackSettings.preferredSubtitleLanguage,
+      fullSubtitlesEnabled = sourceSubtitlesEnabled ?: playbackSettings.subtitlesEnabled,
+      preferredLanguage = sourcePreferredSubtitleLanguage ?: playbackSettings.preferredSubtitleLanguage,
       tracks = currentTracksState,
       manualSelection = manualSubtitleSelection,
       onlineActivationLanguage = onlineSubtitleActivationLang
@@ -1901,12 +1987,15 @@ fun PlayerScreen(
   LaunchedEffect(
     exoPlayer,
     playbackSettings.preferredAudioLanguage,
+    sourcePreferredAudioLanguage,
     currentEpKey,
     currentTracksState,
     manualAudioSelection
   ) {
     if (manualAudioSelection == null) {
-      applyAudioAutoSelection(playbackSettings.preferredAudioLanguage)
+      applyAudioAutoSelection(
+        sourcePreferredAudioLanguage ?: playbackSettings.preferredAudioLanguage
+      )
     }
   }
 
@@ -2185,6 +2274,7 @@ fun PlayerScreen(
   // scaricato viene iniettato DOPO) e l'errore non potrebbe essere attribuito alla
   // traccia che lo ha prodotto.
   val currentSubtitles by rememberUpdatedState(stremioSubtitles)
+
   DisposableEffect(exoPlayer) {
     Log.d("[NEXT_EP_DEBUG]", "DisposableEffect player: listener agganciati a $exoPlayer")
     var subtitleErrorRecoveries = 0
@@ -2568,6 +2658,12 @@ fun PlayerScreen(
     val diagAnalyticsListener = StreamNova4KDiag.createAnalyticsListener(isHls = isHlsStream)
     exoPlayer.addAnalyticsListener(diagAnalyticsListener)
 
+    // --- Diagnostica riproduzione strutturata (collector): il listener osserva
+    // la sessione CORRENTE tramite l'holder (A-01): al cambio riproduzione la
+    // sessione cambia senza ri-agganciare il listener.
+    val playbackDiagnosticsListener = PlaybackDiagnosticsListener { diagSessionHolder.value }
+    exoPlayer.addAnalyticsListener(playbackDiagnosticsListener)
+
     onDispose {
       if (playbackSettings.autoFrameRateMatching) {
         val act = context as? Activity
@@ -2587,6 +2683,7 @@ fun PlayerScreen(
       // closePlayer()/backToBrowsing()/backFromDetail() quando si esce davvero.
       exoPlayer.removeListener(listener)
       exoPlayer.removeAnalyticsListener(diagAnalyticsListener)
+      exoPlayer.removeAnalyticsListener(playbackDiagnosticsListener)
       exoPlayer.stop()
       exoPlayer.clearMediaItems()
       // [NEXT_EP_DEBUG] diagnostica rilascio: deve comparire SOLO alla chiusura del
@@ -3913,7 +4010,16 @@ fun PlayerScreen(
                 text = detectedResolution,
                 color = Color(0xFF9CA3AF),
                 fontSize = 13.sp,
-                fontWeight = FontWeight.Medium
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                  // Tocco lungo = pannello diagnostico (discreto, nessun
+                  // pulsante aggiuntivo nella barra di controllo). Gestione
+                  // gesture con pointerInput: API stabili, niente pulsante in più.
+                  .pointerInput(Unit) {
+                    detectTapGestures(
+                      onLongPress = { showDiagnosticsPanel = true }
+                    )
+                  }
               )
 
               // Badge sorgente: evidenzia i flussi Debrid istantanei
@@ -4575,6 +4681,15 @@ if (showTrackQuickPanel) {
       )
     }
 
+    // Pannello tecnico diagnostico della sessione di riproduzione (FASE 8):
+    // consultazione passiva, non tocca il player né la selezione delle sorgenti.
+    if (showDiagnosticsPanel) {
+      PlaybackDiagnosticsPanel(
+        session = diagSessionHolder.value,
+        onDismiss = { showDiagnosticsPanel = false }
+      )
+    }
+
     // Modal Qualità Video (Risoluzione)
     if (showQualityModal) {
       val qualityOptions = getAvailableQualityOptions()
@@ -4613,12 +4728,9 @@ if (showTrackQuickPanel) {
                 .setExceedVideoConstraintsIfNecessary(true)
                 .setExceedRendererCapabilitiesIfNecessary(true)
             )
-            detectedResolution = when {
-              targetHeight >= 1400 -> "4K"
-              targetHeight >= 750  -> "1080p"
-              targetHeight >= 500  -> "720p"
-              else                 -> "SD"
-            }
+            // Etichetta dal punto UNICO (StreamResolution.labelForMeasured):
+            // larghezza non nota (0), altezza = traccia selezionata.
+            detectedResolution = StreamResolution.labelForMeasured(0, targetHeight)
           }
           showQualityModal = false
         },
@@ -5909,6 +6021,13 @@ private fun mapPreferredAudioLanguages(code: String): List<String> {
     "es", "spa" -> listOf("es", "spa")
     "fr", "fra", "fre" -> listOf("fr", "fra", "fre")
     "de", "deu", "ger" -> listOf("de", "deu", "ger")
+    "ja", "jpn" -> listOf("ja", "jpn")
+    "ko", "kor" -> listOf("ko", "kor")
+    "zh", "zho", "chi" -> listOf("zh", "zho", "chi")
+    "ru", "rus" -> listOf("ru", "rus")
+    "uk", "ukr" -> listOf("uk", "ukr")
+    "nl", "nld", "dut" -> listOf("nl", "nld", "dut")
+    "pl", "pol" -> listOf("pl", "pol")
     "", "und" -> emptyList()
     else -> listOf(normalized, normalized.substringBefore('-')).distinct()
   }

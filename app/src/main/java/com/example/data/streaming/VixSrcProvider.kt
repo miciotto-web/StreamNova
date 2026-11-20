@@ -35,6 +35,11 @@ import com.example.data.streaming.extractors.awaitResponse
  * Mirror di fallback (in ordine): vixsrc.to (primario), vixcloud.to, vixcloud.cc,
  * vixcloud.co. Se il primario non risponde si passa al mirror successivo.
  *
+ * Se la master playlist dichiara più tracce audio, il provider espone due
+ * sorgenti distinte per film ed episodi: **VixCloud ITA** (doppiaggio italiano)
+ * e **VixCloud SUB ITA** (audio originale + sottotitoli italiani). La scelta
+ * viene trasmessa al player tramite i metadati della [StreamSource].
+ *
  * Gli header `Referer` + `User-Agent` sono OBBLIGATORI: senza Referer il CDN degli
  * HLS segmenti (vix-content.net / edge) risponde 403 Forbidden.
  */
@@ -206,7 +211,8 @@ class VixSrcProvider(
       if (!entry.optBoolean("active", true)) continue
       val rawUrl = entry.optString("url", "").trim()
       if (rawUrl.isEmpty()) continue
-      val serverName = if (i == 0) SERVER_NAME else "$SERVER_NAME ${entry.optString("name", "Mirror")}"
+      val entryName = entry.optString("name", "Mirror")
+      val serverName = if (i == 0) SERVER_NAME else "$SERVER_NAME $entryName"
 
       val playlistUrlFhd = buildString {
         append(rawUrl)
@@ -256,20 +262,25 @@ class VixSrcProvider(
         continue
       }
       val renditions = parseRenditions(playlistBody)
-      val verifiedHeight = when {
-        renditions.any { it.contains("1080", ignoreCase = true) } -> 1080
-        renditions.any { it.contains("720", ignoreCase = true) } -> 720
-        renditions.any { it.contains("480", ignoreCase = true) } -> 480
-        else -> null
-      }
-      val detectedQuality = when (verifiedHeight) {
-        1080 -> "1080p"
-        720 -> "720p"
-        480 -> "480p"
-        else -> "Auto"
-      }
+      val (detectedQuality, verifiedHeight) = qualityOf(playlistBody)
       val declared = if (chosenUrl.contains("h=1")) "1080p" else "Auto"
       Log.i(TAG, "OK $serverName (declared=$declared, verifiedHeight=$verifiedHeight, renditions=$renditions) url=${sanitizeForLog(chosenUrl)}")
+
+      // Manifest con più tracce audio: VixCloud ITA (audio italiano) e
+      // VixCloud SUB ITA (audio originale + sottotitoli italiani). Se il
+      // manifest non le dichiara si mantiene la sorgente singola storica.
+      val multiAudioAdded = addMultiAudioSources(
+        target = sources,
+        playlistBody = playlistBody,
+        playlistUrl = chosenUrl,
+        serverLabel = if (i == 0) MULTI_AUDIO_SERVER_NAME else "$MULTI_AUDIO_SERVER_NAME $entryName",
+        quality = detectedQuality,
+        declaredQuality = declared,
+        fallbackHeight = verifiedHeight,
+        headers = headers,
+        referer = effectiveReferer
+      )
+      if (multiAudioAdded) continue
 
       sources += StreamSource(
         streamUrl = chosenUrl,
@@ -278,6 +289,11 @@ class VixSrcProvider(
         headers = headers,
         declaredQuality = declared,
         verifiedHeight = verifiedHeight,
+        // A-04: il testo della playlist è già in mano al resolver — la sintesi
+        // osservata accompagna la sorgente come METADATO diagnostico per il
+        // report di riproduzione (nessuna richiesta aggiuntiva, nessun effetto
+        // sulla selezione).
+        hlsPlaylistSummary = HlsPlaylistSummaryParser.analyze(playlistBody, chosenUrl),
         // La playlist è stata scaricata e validata (`#EXTM3U`) con gli stessi
         // header usati dal player: la sorgente è già verificata dal resolver,
         // non serve una seconda richiesta nella selezione automatica.
@@ -287,6 +303,205 @@ class VixSrcProvider(
     if (sources.isEmpty()) throw IOException("Nessun server attivo nell'embed per $base")
     return sources
   }
+
+  // --- supporto multi-audio (VixCloud ITA / SUB ITA) ----------------------- //
+
+  private data class AudioRendition(
+    val name: String,
+    val language: String,
+    val isItalian: Boolean
+  )
+
+  private data class MultiAudioVariant(
+    val label: String,
+    val langParam: String,
+    val preferredAudioLanguage: String,
+    val preferredSubtitleLanguage: String?,
+    val subtitlesEnabled: Boolean?,
+    val isItalian: Boolean
+  )
+
+  /**
+   * Aggiunge le varianti **VixCloud ITA** e **VixCloud SUB ITA** dichiarate
+   * dalla master playlist.
+   *
+   * VixCloud espone le tracce nel master HLS:
+   *  - `#EXT-X-MEDIA:TYPE=AUDIO,NAME="Italian",LANGUAGE="ita"` per il doppiaggio;
+   *  - una traccia audio non italiana (originale);
+   *  - `#EXT-X-MEDIA:TYPE=SUBTITLES,...,LANGUAGE="ita"` per i sottotitoli.
+   *
+   * La variante ITA forza `lang=it`; la SUB ITA forza `lang=<originale>` e
+   * chiede al player i sottotitoli italiani tramite i metadati della sorgente.
+   * Ogni variante viene scaricata e validata con gli stessi header del player,
+   * così [SourceAvailability.Verified] resta un dato reale.
+   *
+   * @return `true` se almeno una variante è stata aggiunta; `false` quando il
+   *         manifest non dichiara tracce multi-audio (si usa la sorgente
+   *         singola storica).
+   */
+  private suspend fun addMultiAudioSources(
+    target: MutableList<StreamSource>,
+    playlistBody: String,
+    playlistUrl: String,
+    serverLabel: String,
+    quality: String,
+    declaredQuality: String,
+    fallbackHeight: Int?,
+    headers: Map<String, String>,
+    referer: String
+  ): Boolean {
+    val audioTracks = parseAudioRenditions(playlistBody)
+    if (audioTracks.isEmpty()) return false
+
+    val italianAudio = audioTracks.firstOrNull { it.isItalian }
+    val originalAudio = audioTracks.firstOrNull { !it.isItalian }
+    val hasItalianSubtitles = hasItalianSubtitleTrack(playlistBody)
+
+    val variants = mutableListOf<MultiAudioVariant>()
+    if (italianAudio != null) {
+      variants += MultiAudioVariant(
+        label = "ITA",
+        langParam = "it",
+        preferredAudioLanguage = "it",
+        preferredSubtitleLanguage = null,
+        subtitlesEnabled = null,
+        isItalian = true
+      )
+    }
+    if (originalAudio != null && hasItalianSubtitles) {
+      variants += MultiAudioVariant(
+        label = "SUB ITA",
+        langParam = originalAudio.language,
+        preferredAudioLanguage = originalAudio.language,
+        preferredSubtitleLanguage = "it",
+        subtitlesEnabled = true,
+        isItalian = false
+      )
+    }
+    if (variants.isEmpty()) return false
+
+    var added = 0
+    for (variant in variants) {
+      val variantUrl = withQueryParam(playlistUrl, "lang", variant.langParam)
+      val variantBody = try {
+        get(variantUrl, referer = referer)
+      } catch (ex: CancellationException) {
+        throw ex
+      } catch (e: Exception) {
+        Log.w(TAG, "Variante ${variant.label} non disponibile su $serverLabel: ${e.message}")
+        continue
+      }
+      if (!variantBody.startsWith("#EXTM3U")) {
+        Log.w(TAG, "Variante ${variant.label} non HLS su $serverLabel")
+        continue
+      }
+      val (variantQuality, variantHeight) = qualityOf(variantBody)
+      target += StreamSource(
+        streamUrl = variantUrl,
+        quality = if (variantQuality == "Auto") quality else variantQuality,
+        serverName = "$serverLabel ${variant.label}",
+        headers = headers,
+        declaredQuality = declaredQuality,
+        verifiedHeight = variantHeight ?: fallbackHeight,
+        isItalian = variant.isItalian,
+        preferredAudioLanguage = variant.preferredAudioLanguage,
+        preferredSubtitleLanguage = variant.preferredSubtitleLanguage,
+        subtitlesEnabled = variant.subtitlesEnabled,
+        // A-04: sintesi osservativa della playlist di variante (già in mano al
+        // resolver), solo per il report di riproduzione.
+        hlsPlaylistSummary = HlsPlaylistSummaryParser.analyze(variantBody, variantUrl),
+        availability = SourceAvailability.Verified
+      )
+      added++
+    }
+    return added > 0
+  }
+
+  /** Tracce audio dichiarate da `#EXT-X-MEDIA:TYPE=AUDIO`. */
+  private fun parseAudioRenditions(playlist: String): List<AudioRendition> =
+    mediaRenditions(playlist, "AUDIO")
+      .mapNotNull { attributes ->
+        val name = attributes["NAME"].orEmpty()
+        val language = attributes["LANGUAGE"].orEmpty()
+        val code = languageCode(language, name) ?: return@mapNotNull null
+        AudioRendition(name, code, isItalianLanguage(language, name))
+      }
+      .distinctBy { it.language }
+
+  /** True se il manifest dichiara almeno un sottotitolo italiano. */
+  private fun hasItalianSubtitleTrack(playlist: String): Boolean =
+    mediaRenditions(playlist, "SUBTITLES").any { attributes ->
+      isItalianLanguage(attributes["LANGUAGE"], attributes["NAME"])
+    }
+
+  /** Attributi delle righe `#EXT-X-MEDIA` del tipo richiesto. */
+  private fun mediaRenditions(playlist: String, type: String): List<Map<String, String>> =
+    playlist.lineSequence()
+      .map { it.trim() }
+      .filter { it.startsWith("#EXT-X-MEDIA:", ignoreCase = true) }
+      .map { line ->
+        MEDIA_ATTRIBUTE_REGEX.findAll(line.substringAfter(':'))
+          .associate { match ->
+            match.groupValues[1].uppercase() to match.groupValues[2].removeSurrounding("\"")
+          }
+      }
+      .filter { it["TYPE"].equals(type, ignoreCase = true) }
+      .toList()
+
+  private fun isItalianLanguage(language: String?, name: String?): Boolean {
+    val lang = language?.trim()?.lowercase().orEmpty()
+    val label = name?.trim()?.lowercase().orEmpty()
+    return lang == "it" || lang == "ita" ||
+      lang.startsWith("it-") || lang.startsWith("it_") ||
+      label.contains("italian") || label.contains("italiano")
+  }
+
+  /**
+   * Codice ISO 639-1 della traccia (es. `ita` -> `it`, `eng` -> `en`), oppure
+   * dedotto dal nome quando il manifest usa `LANGUAGE=und`.
+   */
+  private fun languageCode(language: String?, name: String?): String? {
+    val raw = language?.trim()?.lowercase()
+      ?.substringBefore('-')
+      ?.substringBefore('_')
+    if (!raw.isNullOrBlank() && raw != "und") {
+      return LANGUAGE_CODES[raw] ?: raw.takeIf { it.length == 2 }
+    }
+    val label = name?.trim()?.lowercase().orEmpty()
+    return when {
+      label.contains("italian") || label.contains("italiano") -> "it"
+      label.contains("english") || label.contains("inglese") -> "en"
+      label.contains("japanese") || label.contains("giapponese") -> "ja"
+      label.contains("spanish") || label.contains("spagnolo") -> "es"
+      label.contains("french") || label.contains("francese") -> "fr"
+      label.contains("german") || label.contains("tedesco") -> "de"
+      label.contains("portuguese") || label.contains("portoghese") -> "pt"
+      label.contains("korean") || label.contains("coreano") -> "ko"
+      label.contains("chinese") || label.contains("cinese") -> "zh"
+      else -> null
+    }
+  }
+
+  /** Qualità dichiarata dalla playlist (stessa logica storica del provider). */
+  private fun qualityOf(playlist: String): Pair<String, Int?> {
+    val renditions = parseRenditions(playlist)
+    val height = when {
+      renditions.any { it.contains("1080", ignoreCase = true) } -> 1080
+      renditions.any { it.contains("720", ignoreCase = true) } -> 720
+      renditions.any { it.contains("480", ignoreCase = true) } -> 480
+      else -> null
+    }
+    val quality = when (height) {
+      1080 -> "1080p"
+      720 -> "720p"
+      480 -> "480p"
+      else -> "Auto"
+    }
+    return quality to height
+  }
+
+  private fun withQueryParam(url: String, name: String, value: String): String =
+    url + (if ('?' in url) "&" else "?") + name + "=" + value
 
   /** GET con header da browser; lancia [IOException] su status non 2xx. */
   private suspend fun get(url: String, referer: String?): String {
@@ -398,6 +613,33 @@ class VixSrcProvider(
     const val REFERER = "https://vixsrc.to/"
 
     const val SERVER_NAME = "VixSrc"
+
+    /** Etichetta base delle varianti multi-audio (VixCloud ITA / VixCloud SUB ITA). */
+    private const val MULTI_AUDIO_SERVER_NAME = "VixCloud"
+
+    /** Attributi delle direttive `#EXT-X-MEDIA` (TYPE, NAME, LANGUAGE, ...). */
+    private val MEDIA_ATTRIBUTE_REGEX = Regex("""([A-Za-z0-9-]+)=("[^"]*"|[^,]*)""")
+
+    /** ISO 639-2/3 -> ISO 639-1 per `lang` e per le preferenze ExoPlayer. */
+    private val LANGUAGE_CODES = mapOf(
+      "ita" to "it",
+      "eng" to "en",
+      "jpn" to "ja",
+      "spa" to "es",
+      "fra" to "fr",
+      "fre" to "fr",
+      "deu" to "de",
+      "ger" to "de",
+      "por" to "pt",
+      "kor" to "ko",
+      "zho" to "zh",
+      "chi" to "zh",
+      "rus" to "ru",
+      "ukr" to "uk",
+      "nld" to "nl",
+      "dut" to "nl",
+      "pol" to "pl"
+    )
 
     /** Endpoint primario + mirror di fallback (in ordine di tentativo). */
     private val BASE_URLS = listOf(

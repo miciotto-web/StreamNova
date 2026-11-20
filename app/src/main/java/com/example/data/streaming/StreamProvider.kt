@@ -7,7 +7,7 @@ package com.example.data.streaming
  * (estrazione da pagine/API/embed) e del ritorno degli header necessari per
  * non essere bloccati dal CDN (403 Forbidden).
  *
- * I provider "catalogo" (CB01, Eurostreaming) lavorano per **titolo/anno**
+ * I provider "catalogo" (es. CB01) lavorano per **titolo/anno**
  * anziché per TMDB ID: per questo [title] e [year] sono opzionali ma previsti
  * dall'interfaccia. VixSrc li ignora e usa solo [tmdbId].
  */

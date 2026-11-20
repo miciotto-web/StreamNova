@@ -61,6 +61,25 @@ data class StreamSource(
   val verifiedHeight: Int? = null,
   val isProgressive: Boolean? = null,
   val isItalian: Boolean = false,
+  /**
+   * Lingua audio da preferire all'avvio di questa sorgente (codice ISO 639-1,
+   * es. "it", "en"). `null` = usa la preferenza utente.
+   *
+   * Usato dai server multi-audio (es. VixCloud ITA / SUB ITA) per avviare la
+   * variante scelta senza che la preferenza globale la sovrascriva.
+   */
+  val preferredAudioLanguage: String? = null,
+  /**
+   * Lingua dei sottotitoli da preferire all'avvio (codice ISO 639-1).
+   * `null` = usa la preferenza utente.
+   */
+  val preferredSubtitleLanguage: String? = null,
+  /**
+   * `true` abilita i sottotitoli all'avvio della sorgente, `false` li disabilita,
+   * `null` lascia l'impostazione utente. Serve alle varianti SUB ITA, che devono
+   * partire con i sottotitoli italiani attivi anche se l'utente li ha spenti.
+   */
+  val subtitlesEnabled: Boolean? = null,
   val addonName: String? = null,
   val addonId: String? = null,
   val addonLogo: String? = null,
@@ -101,6 +120,16 @@ data class StreamSource(
    * [SourceAvailability.Unknown]: la sola presenza di un URL non è una prova.
    */
   val availability: SourceAvailability = SourceAvailability.Unknown,
+  /**
+   * Sintesi HLS osservata quando chi ha risolto o verificato la sorgente aveva
+   * il testo della playlist in mano (resolver con playlist validata, verifica
+   * di riproducibilità). METADATO OSSERVATIVO per il report di riproduzione
+   * (tipo playlist, qualità e codec dichiarati): NON influenza la selezione,
+   * il ranking né la riproduzione. `null` quando il testo non è stato
+   * analizzato (file progressivi, provider senza verifica, fasce successive
+   * della cascata automatica).
+   */
+  val hlsPlaylistSummary: HlsPlaylistSummary? = null,
 ) {
   val title: String
     get() = releaseTitle?.takeIf { it.isNotBlank() } ?: serverName

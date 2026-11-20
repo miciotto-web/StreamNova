@@ -805,9 +805,8 @@ class SearchCategoryXperienceCatalogTest {
       try {
         StremioAddonRepository.installAddon(baseUrl)
 
-        // Solo le categorie servite da catalogo: "Talk" è servita nativamente da
-        // TMDB (`discover/tv?with_genres=10767`) e i cataloghi degli addon non sono
-        // la sua fonte.
+        // Solo le categorie servite da catalogo: "TV Show" è servita nativamente da
+        // TMDB (`discover/tv`) e i cataloghi degli addon non sono la sua fonte.
         val genreCategories = GLOBAL_SEARCH_CATEGORIES.filter {
           it.contentFilter == SearchCategoryFilter.GENRE
         }

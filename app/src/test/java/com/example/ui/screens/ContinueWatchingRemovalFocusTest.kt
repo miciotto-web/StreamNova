@@ -253,7 +253,11 @@ class ContinueWatchingRemovalFocusTest {
     rule.onAllNodes(isFocused(), useUnmergedTree = true).fetchSemanticsNodes()
 
   private fun allTextsOf(node: SemanticsNode): List<String> {
-    val own = node.config.getOrNull(SemanticsProperties.Text)?.map { it.text } ?: emptyList()
+    // Il titolo della card può essere renderizzato come TESTO (fallback) oppure come
+    // CONTENT DESCRIPTION dell'immagine-logo (Hero con logo originale TMDB): entrambe
+    // le forme sono parte del contratto di accessibilità della card.
+    val own = (node.config.getOrNull(SemanticsProperties.Text)?.map { it.text }.orEmpty()) +
+      node.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
     return own + node.children.flatMap { allTextsOf(it) }
   }
 

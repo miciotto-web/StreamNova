@@ -27,6 +27,17 @@ enum class SourcePlayability {
 }
 
 /**
+ * Esito esteso della verifica: playability (l'unica informazione che la
+ * selezione legge) + sintesi HLS osservata dalle risposte sondate. La sintesi
+ * è METADATO OSSERVATIVO per il report di riproduzione: nessuna decisione la
+ * consuma. `summary` è `null` per i file progressivi e per i corpi non-HLS.
+ */
+data class SourceVerification(
+  val playability: SourcePlayability,
+  val summary: HlsPlaylistSummary?
+)
+
+/**
  * Contratto di verifica della riproducibilità **effettiva**, iniettabile nei
  * test. Le implementazioni non devono avviare player: solo richieste HTTP
  * sequenziali e leggere.
@@ -81,53 +92,74 @@ internal class HttpSourceVerifier(
   private val probe: StreamProbe = OkHttpStreamProbe()
 ) : SourceVerifier {
 
-  override suspend fun verify(source: StreamSource): SourcePlayability {
+  override suspend fun verify(source: StreamSource): SourcePlayability =
+    verifyDetailed(source).playability
+
+  /**
+   * Stessa verifica di [verify], restituendo anche la sintesi HLS osservata
+   * (A-04): il testo già scaricato dalla sonda viene analizzato da
+   * [HlsPlaylistSummaryParser] — nessuna richiesta aggiuntiva. Quando la sonda
+   * segue una master fino alla playlist di variante, la sintesi della playlist
+   * giocata (tipo, segmenti, live/VOD) viene arricchita con la qualità e i
+   * codec dichiarati dalla master: dati reali osservati, mai inventati.
+   */
+  suspend fun verifyDetailed(source: StreamSource): SourceVerification {
     val url = source.streamUrl?.trim().orEmpty()
-    if (!StreamManager.isPlayableDirectUrl(url)) return SourcePlayability.Unavailable
+    if (!StreamManager.isPlayableDirectUrl(url)) return SourceVerification(SourcePlayability.Unavailable, null)
 
     return try {
       var currentUrl = url
       var response = probe.get(currentUrl, source.headers, rangeBytes = null)
-      if (!response.isSuccessful) return classify(response.code)
-      if (isHtml(response)) return SourcePlayability.Unavailable
+      if (!response.isSuccessful) return SourceVerification(classify(response.code), null)
+      if (isHtml(response)) return SourceVerification(SourcePlayability.Unavailable, null)
 
       var body = response.body.trimStart('\uFEFF', '\r', '\n', ' ', '\t')
       var hops = 0
+      var masterSummary: HlsPlaylistSummary? = null
       while (HlsPlaylist.isHls(body) && HlsPlaylist.isMaster(body) && hops < MAX_MASTER_HOPS) {
+        masterSummary = HlsPlaylistSummaryParser.analyze(body, currentUrl)
         val variant = pickVariant(body, currentUrl, source.verifiedHeight)
-          ?: return SourcePlayability.Unavailable
+          ?: return SourceVerification(SourcePlayability.Unavailable, null)
         currentUrl = variant.url
         response = probe.get(currentUrl, source.headers, rangeBytes = null)
-        if (!response.isSuccessful) return classify(response.code)
-        if (isHtml(response)) return SourcePlayability.Unavailable
+        if (!response.isSuccessful) return SourceVerification(classify(response.code), null)
+        if (isHtml(response)) return SourceVerification(SourcePlayability.Unavailable, null)
         body = response.body.trimStart('\uFEFF', '\r', '\n', ' ', '\t')
         hops++
       }
 
       if (!HlsPlaylist.isHls(body)) {
         // File progressivo (MP4/WebM) o flusso diretto: il 2xx è sufficiente.
-        return SourcePlayability.Playable
+        return SourceVerification(SourcePlayability.Playable, null)
       }
 
       HlsPlaylist.initSegmentUri(body, currentUrl)?.let { initUrl ->
         val init = probe.get(initUrl, source.headers, rangeBytes = PROBE_BYTES)
-        if (!init.isSuccessful) return classify(init.code)
+        if (!init.isSuccessful) return SourceVerification(classify(init.code), null)
       }
 
       val segmentUrl = HlsPlaylist.firstSegmentUri(body, currentUrl)
-        ?: return SourcePlayability.Unavailable
+        ?: return SourceVerification(SourcePlayability.Unavailable, null)
       val segment = probe.get(segmentUrl, source.headers, rangeBytes = PROBE_BYTES)
-      if (!segment.isSuccessful) return classify(segment.code)
-      if (isHtml(segment)) return SourcePlayability.Unavailable
-      SourcePlayability.Playable
+      if (!segment.isSuccessful) return SourceVerification(classify(segment.code), null)
+      if (isHtml(segment)) return SourceVerification(SourcePlayability.Unavailable, null)
+
+      val played = HlsPlaylistSummaryParser.analyze(body, currentUrl)
+      val summary = masterSummary?.let { master ->
+        played.copy(
+          declaredResolutionHeight = master.declaredResolutionHeight ?: played.declaredResolutionHeight,
+          declaredCodecs = master.declaredCodecs.ifEmpty { played.declaredCodecs }
+        )
+      } ?: played
+      SourceVerification(SourcePlayability.Playable, summary)
     } catch (e: TimeoutCancellationException) {
-      SourcePlayability.TransientFailure
+      SourceVerification(SourcePlayability.TransientFailure, null)
     } catch (e: CancellationException) {
       throw e
     } catch (e: IOException) {
-      SourcePlayability.TransientFailure
+      SourceVerification(SourcePlayability.TransientFailure, null)
     } catch (e: Exception) {
-      SourcePlayability.TransientFailure
+      SourceVerification(SourcePlayability.TransientFailure, null)
     }
   }
 

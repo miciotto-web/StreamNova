@@ -14,6 +14,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -139,6 +140,101 @@ class VixSrcProviderUnitTest {
     assertEquals("720p", first.quality)
     assertEquals("VixSrc", first.serverName)
   }
+
+  // 2b. Film con tracce multi-audio: VixCloud ITA e VixCloud SUB ITA
+  @Test
+  fun testMovieProducesItalianAndSubItalianSources(): Unit = runBlocking {
+    val client = createMockClient { url ->
+      when {
+        url.contains("/api/movie/550") ->
+          response(url, 200, """{"src":"/embed/170060?token=mockToken&canPlayFHD=1"}""")
+        url.contains("/embed/170060") ->
+          response(url, 200, multiAudioEmbed("170060"), "text/html")
+        url.contains("/playlist/170060") ->
+          response(url, 200, MULTI_AUDIO_PLAYLIST, "application/vnd.apple.mpegurl")
+        else -> response(url, 404, "Not Found")
+      }
+    }
+
+    val sources = VixSrcProvider(http = client).getStreams(tmdbId = 550, isTv = false)
+
+    assertEquals("Il film deve esporre ITA e SUB ITA", 2, sources.size)
+    val ita = sources.first { it.serverName == "VixCloud ITA" }
+    val sub = sources.first { it.serverName == "VixCloud SUB ITA" }
+    assertTrue("La variante ITA deve forzare lang=it", ita.streamUrl!!.contains("lang=it"))
+    assertTrue("La variante SUB ITA deve forzare l'audio originale", sub.streamUrl!!.contains("lang=en"))
+    assertEquals("it", ita.preferredAudioLanguage)
+    assertNull(ita.preferredSubtitleLanguage)
+    assertNull(ita.subtitlesEnabled)
+    assertEquals("en", sub.preferredAudioLanguage)
+    assertEquals("it", sub.preferredSubtitleLanguage)
+    assertTrue("La variante SUB ITA deve attivare i sottotitoli", sub.subtitlesEnabled == true)
+    assertTrue("La variante ITA è audio italiano", ita.isItalian)
+    assertFalse("La variante SUB ITA ha audio originale", sub.isItalian)
+    assertEquals("1080p", ita.quality)
+    assertEquals("1080p", sub.quality)
+    assertEquals(1080, ita.verifiedHeight)
+    assertEquals(1080, sub.verifiedHeight)
+  }
+
+  // 2c. Episodio TV con tracce multi-audio: VixCloud ITA e VixCloud SUB ITA
+  @Test
+  fun testTvEpisodeProducesItalianAndSubItalianSources(): Unit = runBlocking {
+    var requestedApiPath: String? = null
+    val client = createMockClient { url ->
+      when {
+        url.contains("/api/tv/1418/2/5") -> {
+          requestedApiPath = "/api/tv/1418/2/5"
+          response(url, 200, """{"src":"/embed/620626?token=mockTvToken&canPlayFHD=1"}""")
+        }
+        url.contains("/embed/620626") ->
+          response(url, 200, multiAudioEmbed("620626", "tvPlaylistToken", "1796636720"), "text/html")
+        url.contains("/playlist/620626") ->
+          response(url, 200, MULTI_AUDIO_PLAYLIST, "application/vnd.apple.mpegurl")
+        else -> response(url, 404, "Not Found")
+      }
+    }
+
+    val sources = VixSrcProvider(http = client)
+      .getStreams(tmdbId = 1418, isTv = true, season = 2, episode = 5)
+
+    assertEquals("L'endpoint TV deve essere interrogato con stagione 2 ed episodio 5", "/api/tv/1418/2/5", requestedApiPath)
+    assertEquals("L'episodio deve esporre ITA e SUB ITA", 2, sources.size)
+    val ita = sources.first { it.serverName == "VixCloud ITA" }
+    val sub = sources.first { it.serverName == "VixCloud SUB ITA" }
+    assertTrue(ita.streamUrl!!.contains("lang=it"))
+    assertTrue(sub.streamUrl!!.contains("lang=en"))
+    assertEquals("it", ita.preferredAudioLanguage)
+    assertEquals("en", sub.preferredAudioLanguage)
+    assertTrue("La variante SUB ITA deve attivare i sottotitoli", sub.subtitlesEnabled == true)
+  }
+
+  private fun multiAudioEmbed(
+    id: String,
+    token: String = "mockParamToken",
+    expires: String = "1796636697"
+  ): String = """
+    <script>
+    window.streams = [{"name":"Server1","active":true,"url":"https://vixsrc.to/playlist/$id?ub=1"}];
+    window.masterPlaylist = {
+        params: {
+            'token': '$token',
+            'expires': '$expires'
+        },
+        url: 'https://vixsrc.to/playlist/$id'
+    }
+    window.canPlayFHD = true
+    </script>
+  """.trimIndent()
+
+  private val MULTI_AUDIO_PLAYLIST = """
+    #EXTM3U
+    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Italian",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,LANGUAGE="ita",URI="https://vixsrc.to/audio/it.m3u8"
+    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="eng",URI="https://vixsrc.to/audio/en.m3u8"
+    #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Italian",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="ita",URI="https://vixsrc.to/subs/it.m3u8"
+    #EXT-X-STREAM-INF:BANDWIDTH=4500000,RESOLUTION=1920x1080,AUDIO="audio",SUBTITLES="subs"
+    https://vixsrc.to/stream/1080p.m3u8
+  """.trimIndent()
 
   // 3. Risposta HTTP di errore
   @Test
