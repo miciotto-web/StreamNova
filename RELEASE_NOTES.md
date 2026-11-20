@@ -1,3 +1,97 @@
+# StreamNova V1.2.1 — Build 1201
+
+StreamNova 1.2.1 è la release stabile successiva alla 1.2.0. Il `versionName` passa a
+`1.2.1` e il `versionCode` a `1201`: l'aggiornamento in-app viene offerto a tutte le
+installazioni 1.2.0 e precedenti, con la stessa chiave di distribuzione ufficiale.
+
+## Novità principali
+
+### Debrid multi-servizio: TorBox, Real-Debrid e Premiumize
+
+- Nuovo selettore del servizio Debrid in **Impostazioni → Motore di riproduzione**, con
+  chiave API, verifica account e toggle **Instant Debrid** dedicati a ciascun servizio.
+- **Real-Debrid**: verifica della cache con `instantAvailability`, `addMagnet`, selezione
+  del file dell'episodio e `unrestrict/link` verso il CDN diretto.
+- **Premiumize**: verifica con `cache/check`, `transfer/create`, `item/details` e
+  `stream_link` diretto.
+- `DebridServiceRouter` instrada risoluzione automatica, ripresa da «Continua a guardare»
+  e fast-path episodio sul servizio selezionato, con cache link per hash+episodio e
+  single-flight senza deadlock.
+- Card sorgenti e overlay di caricamento mostrano il branding del servizio attivo. In
+  modalità HTTP diretta nessun provider Debrid viene interrogato.
+
+### Nuovi provider HTTP: AnimeWorld e GuardaPlay
+
+- **AnimeWorld** con ricerca/parsing API, MP4 diretto, Streamtape, ranking ITA/SUB ITA ed
+  esclusione di sequel/spin-off, accanto ad AnimeSaturn.
+- **GuardaPlay** per i film: ricerca WordPress, player trembed, Uqload/loadm/VixSrc skip e
+  URL media diretti.
+- Nuovi estrattori **Uqload, Streamtape, Voe e Doodstream** nel `HosterResolver`, con
+  `CookieJar` condiviso tra player ed estrattori (sessione Doodstream domain-scoped).
+- `JsPacked` con parsing lineare per evitare StackOverflow sui payload packed reali.
+
+### Diagnostica HLS 1.2.0
+
+- **Sintesi della playlist**: tipo, renditions, codec, durata e risoluzione dichiarata.
+- **Sessione diagnostica per riproduzione** basata sul listener Media3, con pannello
+  tecnico consultabile: eventi HTTP, load error, buffering, codec e provider.
+- Soglie di risoluzione unificate con **1440p distinto dal 4K** e riepilogo osservato dal
+  verifier allegato alle sorgenti.
+- Audit indipendenti 1.2.0 inclusi nel repository; correzioni A-01–A-04 verificate.
+
+### VixSrc multi-audio e qualità automatica
+
+- Dai master con più tracce audio vengono esposte le varianti **VixSrc ITA** e
+  **VixSrc SUB ITA**, con lingua audio, sottotitoli italiani e attivazione sottotitoli
+  trasmessi al player tramite `StreamSource`.
+- Se il resolver lascia una sorgente su qualità **Auto** ma la verifica HLS osserva una
+  risoluzione, la qualità effettiva e l'altezza verificata vengono promosse sulla sorgente
+  selezionata: una 1080p verificata non resta più sotto una 720p di un provider successivo.
+
+### Altadefinizione: titoli nuovi e fallback ID
+
+- Per i titoli nuovi senza IMDb l'archivio usa `tm{tmdbId}`: il player prova l'IMDb e, solo
+  su **400/404**, ricade sull'ID TMDB. Rate-limit e errori CDN non vengono mascherati.
+- La ricerca nel catalogo riprova con il **solo titolo** quando la query con anno restituisce
+  un item diverso (es. titoli omonimi o anno non ancora allineato).
+- Il token vidxgo rinnova **solo `t` ed `e`**, preservando host, path proxy, `b` e `p` della
+  richiesta; rinnovo su deadline locale e backoff di 10 s dopo un refresh fallito.
+
+### Popup di conferma uscita
+
+- Il BACK sulla Home non chiude più l'app al doppio tocco: compare un popup con **Esci** e
+  **Annulla**.
+- Focus iniziale su **Annulla**; il tasto BACK annulla; **Esci** chiude l'Activity con
+  `finishAndRemoveTask` (stesso comportamento di prima).
+- Il popup vive in una finestra `Dialog` separata e blocca i tasti destinati alla Home.
+
+### Cataloghi, addon e correzioni
+
+- **TMDB gestore nativo predefinito**: righe stock Home e paginazione Film/Serie alimentate
+  dagli endpoint TMDB; rimosso Cinemeta e il relativo special-casing. Con addon catalogo
+  attivi (Xperience, Easy Catalog) la risposta dell'addon è definitiva, senza supplemento
+  TMDB.
+- **Categoria Christmas** al posto di News, con discover TMDB per keyword; sinossi con
+  fallback italiano → inglese tramite `translations`.
+- **Hero Banner** con logo originale del titolo TMDB (priorità it → en, cache Room 12h) e
+  fallback testuale.
+- **Addon**: pulsante «Aggiorna» su ogni card per riscaricare il manifest senza
+  reinstallare; logo ufficiale del manifest o asset incluso; install resiliente a
+  «Chain validation failed» con anchor GTS e diagnosi dell'orologio di sistema.
+- **Card addon strette**: pillole azione in `FlowRow`, margine minimo dallo switch e
+  nessuna sovrapposizione con la pillola «Attivo».
+- **StreamingCommunity**: dominio canonico `army` come primo mirror.
+
+## Versione e compatibilità
+
+- App version: `1.2.1`
+- Version code: `1201`
+- Application ID: `com.aistudio.streamnova.tvapp`
+- Artifacts: APK separati per `armeabi-v7a`, `arm64-v8a`, `x86`, `x86_64`, più l'APK universale
+- Firma: stessa chiave di distribuzione ufficiale delle release precedenti (certificato
+  SHA-256 `3175a7df…`), aggiornamento in place senza disinstallare
+- Canale: stabile, non prerelease
+
 # StreamNova V1.2.0 — Build 1200
 
 StreamNova 1.2.0 segna il passaggio dalla fase beta alla **fase stabile**: è pubblicata come release stabile (non prerelease), con la stessa chiave di distribuzione ufficiale delle versioni precedenti. Il `versionName` passa a `1.2.0` e il `versionCode` a `1200`, così l'aggiornamento in-app viene offerto a tutte le installazioni 1.0.x e 1.1.0.
