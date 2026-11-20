@@ -725,7 +725,31 @@ class StreamManager(
               // A-04: la sintesi osservata dalla verifica accompagna la sorgente
               // come metadato diagnostico (quando la verifica l'ha prodotta e la
               // sorgente non ne porta già una dal resolver).
+              //
+              // Se il resolver non è riuscito a classificare la sorgente (es.
+              // master non leggibile durante l'estrazione -> qualità "Auto"),
+              // ma la verifica ha osservato una risoluzione, questa diventa la
+              // qualità effettiva. Senza questo passaggio una 1080p verificata
+              // con etichetta "Auto" verrebbe ordinata sotto una 720p di un
+              // provider successivo nel catalogo passato al ViewModel.
+              val observedHeight = verification.summary?.declaredResolutionHeight
+              val knownHeight = StreamResolution.heightOf(candidate)
+              val quality = if (knownHeight == StreamResolution.UNKNOWN && observedHeight != null) {
+                StreamResolution.labelForHeight(observedHeight)
+              } else {
+                candidate.quality
+              }
+              if (quality != candidate.quality) {
+                Log.i(
+                  TAG,
+                  "[AutoPriority] qualità verificata per ${candidate.serverName}: " +
+                    "${candidate.quality} -> $quality (height=$observedHeight)"
+                )
+              }
               selected = candidate.copy(
+                quality = quality,
+                declaredQuality = if (quality != candidate.quality) quality else candidate.declaredQuality,
+                verifiedHeight = candidate.verifiedHeight ?: observedHeight,
                 availability = SourceAvailability.Verified,
                 hlsPlaylistSummary = verification.summary ?: candidate.hlsPlaylistSummary
               )

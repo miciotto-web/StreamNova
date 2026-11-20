@@ -65,7 +65,7 @@ data class StreamSource(
    * Lingua audio da preferire all'avvio di questa sorgente (codice ISO 639-1,
    * es. "it", "en"). `null` = usa la preferenza utente.
    *
-   * Usato dai server multi-audio (es. VixCloud ITA / SUB ITA) per avviare la
+   * Usato dai server multi-audio (es. VixSrc ITA / SUB ITA) per avviare la
    * variante scelta senza che la preferenza globale la sovrascriva.
    */
   val preferredAudioLanguage: String? = null,

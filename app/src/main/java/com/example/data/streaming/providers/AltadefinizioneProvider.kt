@@ -99,17 +99,16 @@ class AltadefinizioneProvider internal constructor(
     try {
       val resolvedImdb = imdbId?.trim()?.takeIf { it.isNotBlank() }
         ?: findImdbId(title, year, isTv)
-      val playerId = Vidxgo.playerId(resolvedImdb)
-      if (playerId == null) {
-        throw IOException("nessun IMDb ID disponibile per Altadefinizione (tmdbId=$tmdbId)")
-      }
-
-      val tokenPath = Vidxgo.tokenPath(
-        playerId = playerId,
-        season = if (isTv) season else null,
-        episode = if (isTv) episode else null
+      // IMDb è la chiave primaria del player. Per i titoli nuovi l'archivio può
+      // non averlo ancora (es. A Story of Derry) mentre il sito usa
+      // `tm{tmdbId}`: si prova prima l'IMDb e, solo su 404/400, l'ID TMDB.
+      val (token, playerId) = fetchTokenWithFallback(
+        imdbId = resolvedImdb,
+        tmdbId = tmdbId,
+        isTv = isTv,
+        season = season,
+        episode = episode
       )
-      val token = fetchToken("$playerOrigin$tokenPath", referer = "$playerOrigin/")
       val masterUrl = token.url?.trim().orEmpty()
       if (masterUrl.isBlank()) throw IOException("token Altadefinizione senza URL HLS")
 
@@ -163,8 +162,8 @@ class AltadefinizioneProvider internal constructor(
       val qualitySummary = sources.joinToString("/") { it.quality }
       Log.i(
         TAG,
-        "sorgente Altadefinizione imdb=$resolvedImdb quality=$qualitySummary " +
-          "variants=${sources.size} in ${elapsed}ms"
+        "sorgente Altadefinizione imdb=$resolvedImdb playerId=$playerId " +
+          "quality=$qualitySummary variants=${sources.size} in ${elapsed}ms"
       )
       diagnostics.record(
         providerId = PROVIDER_ID,
@@ -196,33 +195,100 @@ class AltadefinizioneProvider internal constructor(
   /**
    * Fallback di ricerca: interroga l'API JSON del catalogo finché un mirror
    * risponde. Il primo item con IMDb ID e tipo coerente vince.
+   *
+   * La query con l'anno è la prima scelta, ma per alcuni titoli nuovi il motore
+   * di ricerca dell'archivio restituisce un item diverso (es. "12 12 12 2026"
+   * -> "21-12-2012 La profezia dei Maya"). In quel caso si riprova con il solo
+   * titolo, che trova l'item corretto senza dover dipendere dall'anno.
    */
   private suspend fun findImdbId(title: String?, year: Int?, isTv: Boolean): String? {
-    val query = HosterResolver.buildQuery(title, year)
-    if (query.isBlank()) return null
+    val queries = buildList {
+      val withYear = HosterResolver.buildQuery(title, year)
+      if (withYear.isNotBlank()) add(withYear)
+      val titleOnly = title?.trim().orEmpty()
+      if (titleOnly.isNotBlank() && titleOnly != withYear) add(titleOnly)
+    }
+    if (queries.isEmpty()) return null
     val wantedKind = if (isTv) KIND_SERIES else KIND_MOVIE
     for (base in mirrors) {
-      currentCoroutineContext().ensureActive()
-      val url = "$base/api/v1/web/archive" +
-        "?q=${HosterResolver.encode(query)}&limit=30&count=1"
-      try {
-        val body = withTimeoutOrNull(SEARCH_BUDGET_MS) {
-          http.get(url, "$base/", mapOf("Accept" to "application/json"))
-        } ?: continue
-        val items = archiveAdapter.fromJson(body)?.items.orEmpty()
-        val best = pickItem(items, title, year, wantedKind) ?: continue
-        val imdb = best.imdbId?.trim()?.takeIf { it.isNotBlank() }
-        if (!imdb.isNullOrBlank()) {
-          Log.i(TAG, "ricerca Altadefinizione: '$query' -> ${best.title} ($imdb)")
-          return imdb
+      for ((index, query) in queries.withIndex()) {
+        currentCoroutineContext().ensureActive()
+        val url = "$base/api/v1/web/archive" +
+          "?q=${HosterResolver.encode(query)}&limit=30&count=1"
+        try {
+          val body = withTimeoutOrNull(SEARCH_BUDGET_MS) {
+            http.get(url, "$base/", mapOf("Accept" to "application/json"))
+          } ?: continue
+          val items = archiveAdapter.fromJson(body)?.items.orEmpty()
+          val best = pickItem(items, title, year, wantedKind) ?: continue
+          val imdb = best.imdbId?.trim()?.takeIf { it.isNotBlank() }
+          if (!imdb.isNullOrBlank()) {
+            val suffix = if (index > 0) " (fallback senza anno)" else ""
+            Log.i(TAG, "ricerca Altadefinizione: '$query'$suffix -> ${best.title} ($imdb)")
+            return imdb
+          }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          Log.w(TAG, "ricerca su $base fallita: ${StreamDiagnostics.sanitize(e.message) ?: "errore"}")
         }
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: Exception) {
-        Log.w(TAG, "ricerca su $base fallita: ${StreamDiagnostics.sanitize(e.message) ?: "errore"}")
       }
     }
     return null
+  }
+
+  /**
+   * Recupera il token del player provando, nell'ordine:
+   *  1. l'ID numerico IMDb (chiave primaria del catalogo storico);
+   *  2. `tm{tmdbId}` (chiave usata dal sito per i titoli senza IMDb).
+   *
+   * Il fallback scatta **solo** quando il player risponde che l'ID non esiste
+   * (400/404): un 429/5xx o un errore di rete non viene mascherato da un
+   * secondo tentativo, così rate-limit e problemi CDN restano visibili.
+   */
+  private suspend fun fetchTokenWithFallback(
+    imdbId: String?,
+    tmdbId: Int,
+    isTv: Boolean,
+    season: Int?,
+    episode: Int?
+  ): Pair<TokenPayload, String> {
+    val playerIds = buildList {
+      Vidxgo.playerId(imdbId)?.let { add(it) }
+      if (tmdbId > 0) add("tm$tmdbId")
+    }.distinct()
+    if (playerIds.isEmpty()) {
+      throw IOException("nessun IMDb ID disponibile per Altadefinizione (tmdbId=$tmdbId)")
+    }
+
+    var lastError: IOException? = null
+    for (playerId in playerIds) {
+      currentCoroutineContext().ensureActive()
+      val tokenPath = Vidxgo.tokenPath(
+        playerId = playerId,
+        season = if (isTv) season else null,
+        episode = if (isTv) episode else null
+      )
+      try {
+        val token = fetchToken("$playerOrigin$tokenPath", referer = "$playerOrigin/")
+        if (playerId != playerIds.first()) {
+          Log.i(TAG, "token Altadefinizione recuperato con ID alternativo $playerId (imdb=$imdbId)")
+        }
+        return token to playerId
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: IOException) {
+        lastError = e
+        val status = HTTP_STATUS_REGEX.find(e.message.orEmpty())
+          ?.groupValues?.get(1)?.toIntOrNull()
+        if (status != 400 && status != 404) throw e
+        Log.i(
+          TAG,
+          "token Altadefinizione $playerId non disponibile (${e.message}); provo l'ID successivo"
+        )
+      }
+    }
+    throw lastError ?: IOException("token Altadefinizione non disponibile")
   }
 
   /** Scarica il token del player e ne valida la risposta. */
@@ -305,6 +371,9 @@ class AltadefinizioneProvider internal constructor(
 
     private const val KIND_MOVIE = "movie"
     private const val KIND_SERIES = "series"
+
+    /** Status HTTP nel messaggio di [ExtractorHttp]: usato per il fallback ID. */
+    private val HTTP_STATUS_REGEX = Regex("""HTTP (\d{3})""")
 
     /**
      * Mirror del catalogo per il fallback di ricerca. Il primo è il canonico

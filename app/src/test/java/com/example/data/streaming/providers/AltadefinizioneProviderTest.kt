@@ -152,6 +152,98 @@ class AltadefinizioneProviderTest {
   }
 
   @Test
+  fun senzaImdbRiprovaSenzaAnnoSeLaPrimaRicercaNonHaMatch() = runBlocking {
+    val http = FakeHttp { url, _, _ ->
+      when {
+        url.startsWith("https://catalog.test/api/v1/web/archive") &&
+          url.contains("q=12+12+12+2026") ->
+          """{"ok":true,"items":[
+            {"id":4139,"title":"21-12-2012 La profezia dei Maya","year":2011,"imdbId":"tt1641831","kind":"movie"}
+          ],"count":1}"""
+        url.startsWith("https://catalog.test/api/v1/web/archive") ->
+          """{"ok":true,"items":[
+            {"id":45538,"title":"12 12 12","year":2026,"imdbId":"tt32375763","kind":"series"}
+          ],"count":1}"""
+        url.endsWith("/t/32375763/1/1") -> tokenJson(MASTER_12_URL)
+        url.startsWith(MASTER_12_URL) -> MASTER_1080
+        else -> error("URL inatteso: $url")
+      }
+    }
+
+    val source = provider(http).getStreams(
+      tmdbId = 254630,
+      isTv = true,
+      season = 1,
+      episode = 1,
+      title = "12 12 12",
+      year = 2026,
+      imdbId = null
+    ).single()
+
+    assertEquals("1080p", source.quality)
+    assertEquals(1080, source.verifiedHeight)
+    assertTrue(
+      "dopo la query con anno si deve riprovare con il solo titolo",
+      http.requests.any { it.contains("q=12+12+12") && !it.contains("2026") }
+    )
+    assertTrue(http.requests.any { it.endsWith("/t/32375763/1/1") })
+  }
+
+  @Test
+  fun tokenImdb404RicadeSullIdTmdb() = runBlocking {
+    val http = FakeHttp { url, _, _ ->
+      when {
+        url.endsWith("/t/50389959") -> throw IOException("HTTP 404 su $url")
+        url.endsWith("/t/tm1813355") -> tokenJson(MASTER_DERRY_URL)
+        url.startsWith(MASTER_DERRY_URL) -> MASTER_720
+        else -> error("URL inatteso: $url")
+      }
+    }
+
+    val source = provider(http).getStreams(
+      tmdbId = 1813355,
+      isTv = false,
+      season = null,
+      episode = null,
+      title = "A Story of Derry",
+      year = 2026,
+      imdbId = "tt50389959"
+    ).single()
+
+    assertEquals("720p", source.quality)
+    assertTrue(
+      "un IMDb non presente nel player deve ricadere sull'ID TMDB",
+      http.requests.any { it.endsWith("/t/tm1813355") }
+    )
+  }
+
+  @Test
+  fun senzaImdbRicadeSullIdTmdbSeLaRicercaNonTrovaNulla() = runBlocking {
+    val http = FakeHttp { url, _, _ ->
+      when {
+        url.startsWith("https://catalog.test/api/v1/web/archive") ->
+          """{"ok":true,"items":[],"count":0}"""
+        url.endsWith("/t/tm1813355") -> tokenJson(MASTER_DERRY_URL)
+        url.startsWith(MASTER_DERRY_URL) -> MASTER_720
+        else -> error("URL inatteso: $url")
+      }
+    }
+
+    val source = provider(http).getStreams(
+      tmdbId = 1813355,
+      isTv = false,
+      season = null,
+      episode = null,
+      title = "A Story of Derry",
+      year = 2026,
+      imdbId = null
+    ).single()
+
+    assertEquals("720p", source.quality)
+    assertTrue(http.requests.any { it.endsWith("/t/tm1813355") })
+  }
+
+  @Test
   fun ricercaSenzaMatchLanciaIOException() {
     val http = FakeHttp { url, _, _ ->
       if (url.startsWith("https://catalog.test/api/v1/web/archive")) {
@@ -186,7 +278,7 @@ class AltadefinizioneProviderTest {
     assertThrows(IOException::class.java) {
       runBlocking {
         provider(http).getStreams(
-          tmdbId = 603,
+          tmdbId = 0,
           isTv = false,
           season = null,
           episode = null,
@@ -318,6 +410,10 @@ class AltadefinizioneProviderTest {
       "https://cdn.test/hls/0133093/master.m3u8?t=abc&e=9999999999&b=3098"
     private const val MASTER_TV_URL =
       "https://cdn.test/hls/tv/16358384/2/1/master.m3u8?t=abc&e=9999999999&b=3098"
+    private const val MASTER_12_URL =
+      "https://cdn.test/hls/tv/32375763/1/1/master.m3u8?t=abc&e=9999999999&b=2919"
+    private const val MASTER_DERRY_URL =
+      "https://cdn.test/hls/tm1813355/master.m3u8?t=abc&e=9999999999&b=1458"
     private const val MASTER_MULTI_URL =
       "https://cdn.test/hls/0133093/master.m3u8?t=abc&e=9999999999&b=3098"
 

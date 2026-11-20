@@ -258,6 +258,46 @@ class AutomaticProviderPriorityTest {
     assertEquals(listOf(RES_2160), verifier.verified)
   }
 
+  // ── K. Qualità "Auto" ma verifica 1080p: la risoluzione osservata vince ──
+
+  @Test
+  fun k_qualitaAutoMaVerifica1080pAggiornaLaSorgenteSelezionata() {
+    val alta = fake(
+      ALTA,
+      listOf(
+        StreamSource(
+          streamUrl = "https://alta.test/hls/master.m3u8?t=abc",
+          quality = "Auto",
+          serverName = "Altadefinizione"
+        )
+      )
+    )
+    val vix = fake(VIX, listOf(source(VIX, VIX_720, "720p")))
+    val verifier = HttpSourceVerifier(
+      probe = StreamProbe { url, _, rangeBytes ->
+        when {
+          url.contains("master.m3u8") ->
+            ProbeResponse(200, url, AUTO_MASTER, "application/vnd.apple.mpegurl")
+          url.contains("index-1080.m3u8") ->
+            ProbeResponse(200, url, AUTO_MEDIA, "application/vnd.apple.mpegurl")
+          url.contains("seg-1.ts") && rangeBytes != null ->
+            ProbeResponse(200, url, "", "video/mp2t")
+          else -> ProbeResponse(404, url, "", null)
+        }
+      }
+    )
+
+    val selected = select(manager(listOf(alta, vix), verifier))
+
+    assertEquals(ALTA, selected.first().sourceProviderId)
+    assertEquals(
+      "la risoluzione osservata dal verifier deve sostituire l'etichetta Auto",
+      "1080p",
+      selected.first().quality
+    )
+    assertEquals(1080, selected.first().verifiedHeight)
+  }
+
   // ── J. Selezione manuale invariata ────────────────────────────────────────
 
   @Test
@@ -391,6 +431,20 @@ class AutomaticProviderPriorityTest {
 
     const val VIX_2160 = "https://vix.test/hls/movie/2160.m3u8"
     const val VIX_1080 = "https://vix.test/hls/movie/1080.m3u8"
+    const val VIX_720 = "https://vix.test/hls/movie/720.m3u8"
     const val SC_1080 = "https://sc.test/hls/movie/1080.m3u8"
+
+    val AUTO_MASTER = """
+      #EXTM3U
+      #EXT-X-STREAM-INF:BANDWIDTH=3098676,RESOLUTION=1920x800,CODECS="avc1.4d4028"
+      index-1080.m3u8?t=abc
+    """.trimIndent()
+
+    val AUTO_MEDIA = """
+      #EXTM3U
+      #EXT-X-TARGETDURATION:6
+      #EXTINF:6.000,
+      seg-1.ts?t=abc
+    """.trimIndent()
   }
 }

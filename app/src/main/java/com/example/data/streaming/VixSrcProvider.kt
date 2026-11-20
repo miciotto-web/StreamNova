@@ -36,8 +36,8 @@ import com.example.data.streaming.extractors.awaitResponse
  * vixcloud.co. Se il primario non risponde si passa al mirror successivo.
  *
  * Se la master playlist dichiara più tracce audio, il provider espone due
- * sorgenti distinte per film ed episodi: **VixCloud ITA** (doppiaggio italiano)
- * e **VixCloud SUB ITA** (audio originale + sottotitoli italiani). La scelta
+ * sorgenti distinte per film ed episodi: **VixSrc ITA** (doppiaggio italiano)
+ * e **VixSrc SUB ITA** (audio originale + sottotitoli italiani). La scelta
  * viene trasmessa al player tramite i metadati della [StreamSource].
  *
  * Gli header `Referer` + `User-Agent` sono OBBLIGATORI: senza Referer il CDN degli
@@ -266,8 +266,8 @@ class VixSrcProvider(
       val declared = if (chosenUrl.contains("h=1")) "1080p" else "Auto"
       Log.i(TAG, "OK $serverName (declared=$declared, verifiedHeight=$verifiedHeight, renditions=$renditions) url=${sanitizeForLog(chosenUrl)}")
 
-      // Manifest con più tracce audio: VixCloud ITA (audio italiano) e
-      // VixCloud SUB ITA (audio originale + sottotitoli italiani). Se il
+      // Manifest con più tracce audio: VixSrc ITA (audio italiano) e
+      // VixSrc SUB ITA (audio originale + sottotitoli italiani). Se il
       // manifest non le dichiara si mantiene la sorgente singola storica.
       val multiAudioAdded = addMultiAudioSources(
         target = sources,
@@ -304,7 +304,7 @@ class VixSrcProvider(
     return sources
   }
 
-  // --- supporto multi-audio (VixCloud ITA / SUB ITA) ----------------------- //
+  // --- supporto multi-audio (VixSrc ITA / SUB ITA) ------------------------- //
 
   private data class AudioRendition(
     val name: String,
@@ -322,7 +322,7 @@ class VixSrcProvider(
   )
 
   /**
-   * Aggiunge le varianti **VixCloud ITA** e **VixCloud SUB ITA** dichiarate
+   * Aggiunge le varianti **VixSrc ITA** e **VixSrc SUB ITA** dichiarate
    * dalla master playlist.
    *
    * VixCloud espone le tracce nel master HLS:
@@ -614,8 +614,13 @@ class VixSrcProvider(
 
     const val SERVER_NAME = "VixSrc"
 
-    /** Etichetta base delle varianti multi-audio (VixCloud ITA / VixCloud SUB ITA). */
-    private const val MULTI_AUDIO_SERVER_NAME = "VixCloud"
+    /**
+     * Etichetta base delle varianti multi-audio (VixSrc ITA / VixSrc SUB ITA).
+     *
+     * Coincide con [SERVER_NAME]: per l'utente il provider resta sempre VixSrc,
+     * anche quando la sorgente è esposta come variante audio del CDN VixCloud.
+     */
+    private const val MULTI_AUDIO_SERVER_NAME = SERVER_NAME
 
     /** Attributi delle direttive `#EXT-X-MEDIA` (TYPE, NAME, LANGUAGE, ...). */
     private val MEDIA_ATTRIBUTE_REGEX = Regex("""([A-Za-z0-9-]+)=("[^"]*"|[^,]*)""")

@@ -407,7 +407,7 @@ fun PlayerScreen(
   val playbackSettings by viewModel.playbackSettings.collectAsState()
 
   // Preferenze audio/sottotitoli specifiche della sorgente attiva (es. varianti
-  // VixCloud ITA / SUB ITA). `null` = usa l'impostazione persistente dell'utente.
+  // VixSrc ITA / SUB ITA). `null` = usa l'impostazione persistente dell'utente.
   val sourcePreferredAudioLanguage =
     playbackState.currentSource?.preferredAudioLanguage?.takeIf { it.isNotBlank() }
   val sourcePreferredSubtitleLanguage =
@@ -1873,7 +1873,7 @@ fun PlayerScreen(
     if (isEpisodeChange || isUrlChange || isManualSourceChange) {
       if (isManualSourceChange) {
         // Nuova sorgente scelta dall'utente: le preferenze della variante
-        // (es. VixCloud ITA / SUB ITA) devono prevalere su una vecchia
+        // (es. VixSrc ITA / SUB ITA) devono prevalere su una vecchia
         // selezione manuale di audio o sottotitoli.
         manualAudioSelection = null
         manualSubtitleSelection = null

@@ -141,7 +141,7 @@ class VixSrcProviderUnitTest {
     assertEquals("VixSrc", first.serverName)
   }
 
-  // 2b. Film con tracce multi-audio: VixCloud ITA e VixCloud SUB ITA
+  // 2b. Film con tracce multi-audio: VixSrc ITA e VixSrc SUB ITA
   @Test
   fun testMovieProducesItalianAndSubItalianSources(): Unit = runBlocking {
     val client = createMockClient { url ->
@@ -159,8 +159,8 @@ class VixSrcProviderUnitTest {
     val sources = VixSrcProvider(http = client).getStreams(tmdbId = 550, isTv = false)
 
     assertEquals("Il film deve esporre ITA e SUB ITA", 2, sources.size)
-    val ita = sources.first { it.serverName == "VixCloud ITA" }
-    val sub = sources.first { it.serverName == "VixCloud SUB ITA" }
+    val ita = sources.first { it.serverName == "VixSrc ITA" }
+    val sub = sources.first { it.serverName == "VixSrc SUB ITA" }
     assertTrue("La variante ITA deve forzare lang=it", ita.streamUrl!!.contains("lang=it"))
     assertTrue("La variante SUB ITA deve forzare l'audio originale", sub.streamUrl!!.contains("lang=en"))
     assertEquals("it", ita.preferredAudioLanguage)
@@ -177,7 +177,7 @@ class VixSrcProviderUnitTest {
     assertEquals(1080, sub.verifiedHeight)
   }
 
-  // 2c. Episodio TV con tracce multi-audio: VixCloud ITA e VixCloud SUB ITA
+  // 2c. Episodio TV con tracce multi-audio: VixSrc ITA e VixSrc SUB ITA
   @Test
   fun testTvEpisodeProducesItalianAndSubItalianSources(): Unit = runBlocking {
     var requestedApiPath: String? = null
@@ -200,8 +200,8 @@ class VixSrcProviderUnitTest {
 
     assertEquals("L'endpoint TV deve essere interrogato con stagione 2 ed episodio 5", "/api/tv/1418/2/5", requestedApiPath)
     assertEquals("L'episodio deve esporre ITA e SUB ITA", 2, sources.size)
-    val ita = sources.first { it.serverName == "VixCloud ITA" }
-    val sub = sources.first { it.serverName == "VixCloud SUB ITA" }
+    val ita = sources.first { it.serverName == "VixSrc ITA" }
+    val sub = sources.first { it.serverName == "VixSrc SUB ITA" }
     assertTrue(ita.streamUrl!!.contains("lang=it"))
     assertTrue(sub.streamUrl!!.contains("lang=en"))
     assertEquals("it", ita.preferredAudioLanguage)
