@@ -529,7 +529,7 @@ fun MediaContextMenu(
   // finestra della Home NON riceve alcun evento DPAD/BACK. L'isolamento è quindi garantito
   // dal sistema delle finestre e non da una richiesta di focus che un effetto della Home
   // può scavalcare nel frame successivo (causa reale del difetto «popup visibile ma focus
-  // ancora sulla Home», con BACK che finiva sul doppio-Back di uscita dell'app).
+  // ancora sulla Home», con BACK che finiva sul popup di conferma uscita dell'app).
   // Come per il menu episodio: la finestra Dialog può partire dal contesto di sistema
   // invece che dal contesto localizzato forzato dall'app. Si cattura qui, nella
   // composizione localizzata, e si riapplica dentro il Dialog.

@@ -946,8 +946,8 @@ internal fun Modifier.homeVerticalStepKeys(
  * Serve a MainActivity: la piattaforma recapita la STESSA pressione ANCHE al
  * OnBackPressedDispatcher (in parallelo ai key event, vedi PlayerScreen.`backKeyDownPending`),
  * quindi il gestore di uscita della Home deve ignorare il callback quando questa via ha
- * già accettato il tasto — altrimenti un solo BACK mostrerebbe il feedback «Premi ancora
- * indietro per uscire» oltre a spostare il focus.
+ * già accettato il tasto — altrimenti un solo BACK aprirebbe il popup di conferma
+ * uscita oltre a spostare il focus.
  */
 object HomeBackToRowStartState {
   var isPending: Boolean by mutableStateOf(false)
@@ -974,10 +974,10 @@ object HomeBackToRowStartState {
  * - l'azione avviene sul DOWN della prima pressione (`repeatCount == 0`); il rilascio (UP) è
  *   consumato a sua volta quando il DOWN è stato consumato ([HomeBackToRowStartState]): con
  *   il dispatch "legacy" del BACK l'UP lasciato passare arma `onBackPressed` e la stessa
- *   pressione attiverebbe il doppio-BACK di uscita oltre allo spostamento di focus;
+ *   pressione aprirebbe il popup di conferma uscita oltre allo spostamento di focus;
  * - l'Hero è escluso: non è una fila di schede e gestisce i propri tasti;
  * - già sulla PRIMA scheda della fila (colonna 0): il tasto NON è consumato e prosegue con
- *   il percorso di uscita già presente in MainActivity (doppio BACK con feedback).
+ *   il percorso di uscita già presente in MainActivity (popup di conferma uscita).
  *
  * @return `true` quando il tasto è stato consumato (non raggiunge l'uscita della Home).
  */
@@ -2424,14 +2424,14 @@ fun HomeMainBrowsingContent(
             KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_NUMPAD_ENTER,
             // BACK destinato al popup ma ancora consegnato a questa finestra: non deve
-            // raggiungere il doppio-BACK di uscita della Home.
+            // raggiungere il popup di conferma uscita della Home.
             KeyEvent.KEYCODE_BACK -> true
             else -> false
           }
         } else {
           // BACK su una card di riga: una sola pressione riporta alla PRIMA scheda della fila
           // (vedi [homeBackToRowStart]). Già sulla prima scheda (o sull'Hero) il tasto NON è
-          // consumato e vale il percorso di uscita esistente (doppio BACK con feedback).
+          // consumato e vale il percorso di uscita esistente (popup di conferma uscita).
           homeBackToRowStart(keyEvent, coordinator)
         }
       }

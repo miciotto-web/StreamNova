@@ -494,7 +494,9 @@
       <string name="addons_remote_offline">No network connection: QR code unavailable</string>
 
      <!-- Player & Stream Status (FASE 5) -->
-     <string name="press_back_again_to_exit">Press Back again to exit</string>
+     <string name="exit_confirm_title">Exit StreamNova?</string>
+     <string name="exit_confirm_message">Do you really want to close the app?</string>
+     <string name="action_exit">Exit</string>
      <string name="stream_status_searching_sources">Searching for sources…</string>
      <string name="stream_status_torbox_stremio">TorBox • Stremio Addons</string>
      <string name="stream_status_realdebrid_stremio">Real-Debrid • Stremio Addons</string>

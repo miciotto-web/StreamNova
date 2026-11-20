@@ -25,7 +25,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -83,6 +82,7 @@ import com.example.ui.components.LocalClearLastFocusedStudio
 import com.example.ui.navigation.DetailNavArgs
 import com.example.ui.navigation.Screen
 import com.example.ui.screens.DetailScreen
+import com.example.ui.screens.ExitConfirmDialog
 import com.example.ui.screens.HomeBackToRowStartState
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.PlayerScreen
@@ -108,9 +108,6 @@ import com.example.ui.viewmodel.StreamResolutionState
 import com.example.ui.viewmodel.TrailerPlaybackState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
-/** Finestra temporale del doppio Back sulla Home per uscire dall'app (feedback breve). */
-private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
 
 /**
  * Limite oltre il quale la Home viene composta anche se la splash non ha ancora
@@ -354,8 +351,9 @@ fun StreamNovaApp(
     viewModel.resetStreamState()
   }
 
-  // Timestamp dell'ultima pressione di Back sulla Home (doppio Back per uscire)
-  var lastExitRequestAt by remember { mutableLongStateOf(0L) }
+  // Unica pressione di Back sulla Home: apre il popup di conferma dell'uscita.
+  // L'app NON si chiude più al doppio Back: serve la scelta esplicita «Esci».
+  var showExitConfirmDialog by rememberSaveable { mutableStateOf(false) }
 
   // Flag: ripristina il focus sul contenuto (riga/card) quando si torna dal Dettaglio
   var pendingContentFocusRestore by remember { mutableStateOf(false) }
@@ -419,7 +417,7 @@ fun StreamNovaApp(
    *                                in Room e ripristina la schermata sottostante (Home o Dettaglio)
    *   3) Detail / Provider      -> navController.popBackStack() + stato ViewModel (torna alla Home)
    *   4) sezione laterale       -> torna alla sezione Home
-   *   5) Home                   -> doppio Back con feedback breve, poi uscita regolare
+   *   5) Home                   -> popup di conferma uscita («Esci» / «Annulla»)
    * Ogni livello è disabilitato quando un livello più alto è attivo, così è SEMPRE attivo
    * un solo gestore: niente loop, niente blocchi e nessuna pressione di Back ignorata.
    * Il gestore del player è inoltre composto DOPO il NavHost (in fondo al Box) per avere
@@ -482,30 +480,27 @@ fun StreamNovaApp(
           }
         }
 
-        // (5) Home -> doppio Back con feedback breve, poi uscita regolare (nessun loop/blocco)
+        // (5) Home -> popup di conferma uscita: nessuna chiusura al primo BACK.
         BackHandler(
           enabled = screenState == ScreenState.BROWSING && currentSection == SidebarSection.HOME
         ) {
           // La via TASTIERA della Home ha già preso in carico questa pressione (BACK su una
           // card oltre la prima scheda della fila: vedi HomeScreen.homeBackToRowStart). La
           // piattaforma recapita la STESSA pressione anche a questo callback, in parallelo ai
-          // key event: senza la guardia un solo BACK mostrerebbe il feedback di uscita oltre
+          // key event: senza la guardia un solo BACK aprirebbe il popup di uscita oltre
           // a riportare il focus alla prima scheda (stesso protocollo di
           // PlayerScreen.`backKeyDownPending`).
           if (HomeBackToRowStartState.isPending) {
             return@BackHandler
           }
-          val now = SystemClock.elapsedRealtime()
-          if (now - lastExitRequestAt < EXIT_CONFIRM_WINDOW_MS) {
-            // Uscita regolare dell'Activity (il processo resta vivo).
-            // NOTA: qui `context` è il contesto localizzato creato con
-            // createConfigurationContext e NON è un'Activity, quindi si usa
-            // l'Activity passata da MainActivity.
-            activity.finishAndRemoveTask()
-          } else {
-            lastExitRequestAt = now
-            Toast.makeText(context, context.getString(R.string.press_back_again_to_exit), Toast.LENGTH_SHORT).show()
+          // Rete di sicurezza: se il BACK arriva qui mentre il popup è già aperto (la
+          // finestra del Dialog non ha ancora il focus), la pressione equivale ad
+          // annullare, non a riaprire il popup.
+          if (showExitConfirmDialog) {
+            showExitConfirmDialog = false
+            return@BackHandler
           }
+          showExitConfirmDialog = true
         }
 
         // FocusRequester per il Box Home (focus iniziale esplicito post-splash).
@@ -782,6 +777,22 @@ fun StreamNovaApp(
                 .onFocusChanged { sidebarHasFocus = it.hasFocus }
             )
           }
+        }
+
+        // Popup di conferma dell'uscita: compare al BACK sulla Home e vive in una finestra
+        // Dialog separata, sopra qualunque schermata composta sotto. «Esci» chiude
+        // l'Activity (il processo resta vivo), «Annulla» e BACK lasciano l'app aperta.
+        if (showExitConfirmDialog) {
+          ExitConfirmDialog(
+            onConfirm = {
+              showExitConfirmDialog = false
+              // Uscita regolare dell'Activity. NOTA: `context` è il contesto localizzato
+              // creato con createConfigurationContext e NON è un'Activity, quindi si usa
+              // l'Activity passata da MainActivity.
+              activity.finishAndRemoveTask()
+            },
+            onDismiss = { showExitConfirmDialog = false }
+          )
         }
       }
 
