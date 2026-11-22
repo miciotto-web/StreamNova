@@ -351,6 +351,19 @@ fun AddonsScreen(
         }
       }
 
+      // ── Configurazione remota via QR (micro-server locale) ───────────
+      // Deve restare SUBITO sotto il pulsante "Aggiungi", sopra il monitor
+      // "Stato addon": la card QR non è focusabile quindi il bring-into-view
+      // non la centra mai; se il monitor la spinge sotto il fold resta
+      // tagliata a metà e il telefono non riesce più a inquadrarla.
+      item(key = "addons_remote_setup") {
+        QrCodeInfoCard(
+          url = serverUrl,
+          fallbackMessage = (serverState as? AddonSyncServer.ServerState.Error)?.message,
+          modifier = Modifier.fillMaxWidth()
+        )
+      }
+
       // ── Addon Health Monitor ─────────────────────────────────────────
       item(key = "addons_health") {
         AddonHealthSection(
@@ -358,15 +371,6 @@ fun AddonsScreen(
           isChecking = healthChecking,
           lastCheckedAt = healthLastCheckedAt,
           onCheck = { viewModel.checkAddonHealth() }
-        )
-      }
-
-      // ── Configurazione remota via QR (micro-server locale) ───────────
-      item(key = "addons_remote_setup") {
-        QrCodeInfoCard(
-          url = serverUrl,
-          fallbackMessage = (serverState as? AddonSyncServer.ServerState.Error)?.message,
-          modifier = Modifier.fillMaxWidth()
         )
       }
 
