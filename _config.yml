@@ -1,0 +1,51 @@
+# GitHub Pages — configurazione del sito documentale di StreamNova.
+# Il sito pubblica le pagine informative (Privacy Policy, Termini di Servizio),
+# la guida utente e i documenti markdown del repository.
+# Codice sorgente e contenuti pesanti (screenshot, librerie, log) restano
+# disponibili su GitHub ma NON vengono copiati nel sito pubblico.
+
+title: StreamNova
+description: Media center per Android TV e Fire TV
+lang: it
+
+exclude:
+  # Codice e build
+  - app
+  - gradle
+  - tools
+  - build.gradle.kts
+  - settings.gradle.kts
+  - gradlew
+  - gradlew.bat
+  - gradle.properties
+  - metadata.json
+  # Screenshot di lavoro (gruppi pesanti)
+  - screenshots_collection
+  - screenshots_end_playback
+  - screenshots_restyle
+  - app_current.png
+  - app_focus.png
+  - back_screen.png
+  - detail_screen.png
+  - netflix_screen.png
+  - player_playing_diag.png
+  - screen_diag.png
+  - screen_play.png
+  - screen_search.png
+  - screen_test.png
+  - search_results.png
+  - search_results2.png
+  - serie_tv.png
+  - serie_tv_selected.png
+  - spinner_zoom_after.png
+  - splash_spinner_after.png
+  - splash_spinner_before.png
+  - tbbt_opened.png
+  - tbbt_opened2.png
+  # File di lavoro e log
+  - StreamNova_Guida_Utente_1.0.9.pdf
+  - debug.keystore
+  - scratchbuild-release-1202.log
+  - test_output.txt
+  - session-ses_f7b6.md
+  - test.md
