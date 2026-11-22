@@ -59,6 +59,25 @@ installazioni 1.2.1 e precedenti, con la stessa chiave di distribuzione ufficial
 - OK su «Home» riporta il focus sull'Hero via protocollo dell'ancora.
 - Verificato su emulatore (scenari V1–V15); test unitari mirati 34/34.
 
+### Fix riproduzione: 502 su EasyStream/Easynews
+
+- **Causa**: gli stream EasyStream/Easynews portano le credenziali nell'URL
+  (`https://user:pass@video.easynews.com/…`); OkHttp (il trasporto di ExoPlayer) scarta
+  l'userinfo in silenzio, la richiesta parte senza credenziali e il CDN risponde
+  `HTTP 502 Bad Gateway` — un'autenticazione fallita mascherata da errore server.
+- **Fix generale, nessuna logica per-addon**: il nuovo `PlaybackRequestNormalizer`
+  (`data/streaming`) individua l'userinfo, lo percent-decodifica e produce
+  `Authorization: Basic` (RFC 7617), rimuovendolo dall'URL preservando path, query,
+  token e fragment byte-per-byte; un `Authorization` già dichiarato dall'addon in
+  `proxyHeaders` non viene mai sovrascritto, e gli URL senza userinfo restano identici.
+- **Punto unico nel player** (`PlayerScreen.kt`): copre tutti i percorsi di caricamento
+  (primo avvio, cambio episodio/sorgente, riuso «ultimo flusso», autoplay, canali live);
+  anche la sonda HTTP di verifica sorgenti usa lo stesso normalizzatore. Vale per
+  qualsiasi addon che usi userinfo nell'URL: Debrid (TorBox, Real-Debrid, Premiumize) e
+  le sorgenti HTTP dirette restano invariati (normalizzazione no-op).
+- Test: 15 nuovi casi dedicati (`PlaybackRequestNormalizerTest`); suite completa
+  2930 test, 0 fallimenti.
+
 ### Correzioni
 
 - **Crash all'avvio della build firmata W12** (`Missing field in s5` /
