@@ -42,12 +42,16 @@ android {
     // TorBox/Real-Debrid/Premiumize, nuovi provider AnimeWorld e GuardaPlay,
     // diagnostica HLS 1.2.0, VixSrc multi-audio ITA/SUB ITA, fallback
     // Altadefinizione per titoli nuovi e popup di conferma uscita).
+    // 1.2.2 aggiunge: backup/ripristino affidabile con Google Drive personale
+    // (OAuth Device Flow), scena di caricamento cinematografica unificata,
+    // integrazione W12 (sorgenti intelligenti, health addon, diagnostica),
+    // focus sidebar deterministico e fix crash enum Moshi in release.
     // Il versionName cresce perche' l'updater confronta SOLO major.minor.patch
     // del tag - una 1.1.0 ricompilata non sarebbe mai offerta a chi ha gia' la
     // 1.1.0, vedi UpdateRepository.evaluateUpdate.
     // Ogni release successiva deve incrementare versionCode.
-    versionCode = 1201
-    versionName = "1.2.1"
+    versionCode = 1202
+    versionName = "1.2.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     // TMDB API key is never hardcoded here: it would be committed and published.
