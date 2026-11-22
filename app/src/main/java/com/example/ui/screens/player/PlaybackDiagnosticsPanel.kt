@@ -1,5 +1,8 @@
 package com.example.ui.screens.player
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -24,29 +27,38 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.streaming.diagnostics.playback.DiagnosisConfidence
 import com.example.data.streaming.diagnostics.playback.HlsErrorCategory
-import com.example.data.streaming.diagnostics.playback.HlsPlaybackSession
 import com.example.data.streaming.diagnostics.playback.HlsDiagnosticsReport
+import com.example.data.streaming.diagnostics.playback.HlsPlaybackSession
 import com.example.data.streaming.diagnostics.playback.PlaybackDiagnosis
+import com.example.data.streaming.diagnostics.playback.PlaybackInspectorFormatter
+import com.example.data.streaming.diagnostics.playback.PlaybackStateKind
+import com.example.data.streaming.diagnostics.playback.SourceKind
 import kotlinx.coroutines.delay
 
 /**
- * Pannello tecnico diagnostico della riproduzione (FASE 8 del piano HLS
- * Diagnostics Engine).
+ * Nova Playback Inspector.
  *
- * Interfaccia DISCRETA: è un dialog consultabile, non un componente nel flusso
- * di controllo del player. Legge la sessione corrente dal
- * [PlaybackDiagnosticsRegistry] e mostra: provider, stato dello stream,
- * qualità (dichiarata/selezionata/rilevata), tempo di avvio, buffering, ultimi
- * errori con classificazione.
+ * Pannello tecnico consultabile durante la riproduzione. Legge la sessione
+ * corrente dal [com.example.data.streaming.diagnostics.playback.PlaybackDiagnosticsRegistry]
+ * e mostra dati REALI osservati dal player, aggiornati ogni secondo:
  *
- * Nessun dato sensibile: la sessione non contiene URL completi, token o
- * credenziali (verificato dai test del report).
+ *  - riproduzione: stato, posizione/durata, buffer, avvio, rebuffer, frame scartati;
+ *  - video: qualità dichiarata/selezionata/rilevata, codec, fps, bitrate;
+ *  - audio: codec, lingua, canali, frequenza, bitrate;
+ *  - sottotitoli: traccia attiva o "nessuna traccia";
+ *  - rete: banda stimata, throughput dei segmenti, byte scaricati;
+ *  - sorgente: provider, tipo/protocollo, host delle richieste;
+ *  - diagnosi finale e ultimi errori classificati.
+ *
+ * È un dialog passivo: non modifica il player né la selezione delle sorgenti.
+ * Il pulsante "Copia" esporta il report in forma testuale (utile per assistenza).
  */
 @Composable
 fun PlaybackDiagnosticsPanel(
@@ -54,6 +66,7 @@ fun PlaybackDiagnosticsPanel(
   onDismiss: () -> Unit
 ) {
   if (session == null) return
+  val context = LocalContext.current
 
   // Aggiornamento ~1s mentre il pannello è aperto: il report è letto live.
   var tick by remember { mutableLongStateOf(0L) }
@@ -68,11 +81,18 @@ fun PlaybackDiagnosticsPanel(
   AlertDialog(
     onDismissRequest = onDismiss,
     confirmButton = {
-      TextButton(onClick = onDismiss) { Text("Chiudi") }
+      Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        TextButton(
+          onClick = {
+            copyReport(context, PlaybackInspectorFormatter.buildReportText(report))
+          }
+        ) { Text("Copia") }
+        TextButton(onClick = onDismiss) { Text("Chiudi") }
+      }
     },
     title = {
       Text(
-        text = "Diagnostica riproduzione",
+        text = "Nova Playback Inspector",
         fontSize = 16.sp,
         fontWeight = FontWeight.SemiBold
       )
@@ -84,37 +104,93 @@ fun PlaybackDiagnosticsPanel(
           .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(6.dp)
       ) {
-        DiagRow("Provider", report.providerId ?: "—")
-        DiagRow("Contenuto", report.contentLabel ?: "—")
-        DiagRow("Sorgente", sourceKindLabel(report))
+        // ── Riproduzione ────────────────────────────────────────────────────
+        SectionLabel("Riproduzione")
         DiagRow("Stato", stateLabel(report.playbackState))
+        DiagRow(
+          "Posizione",
+          PlaybackInspectorFormatter.formatPosition(report.positionMs, report.durationMs)
+        )
+        DiagRow(
+          "Buffer",
+          PlaybackInspectorFormatter.formatBuffer(report.bufferAheadMs, report.durationMs)
+        )
+        DiagRow(
+          "Avvio",
+          report.startupMs?.let { "$it ms" }
+            ?: if (report.playbackState == PlaybackStateKind.READY) "primo frame non ancora renderizzato" else "—"
+        )
+        DiagRow(
+          "Rebuffer",
+          if (report.rebufferCount > 0) "${report.rebufferCount} eventi · ${report.rebufferTotalMs} ms totali" else "nessun rebuffer"
+        )
+        DiagRow("Frame scartati", "${report.droppedVideoFrames}")
+
+        // ── Video ───────────────────────────────────────────────────────────
+        Spacer(modifier = Modifier.height(2.dp))
+        SectionLabel("Video")
         DiagRow("Qualità dichiarata", report.declaredResolution ?: "—")
         DiagRow("Qualità selezionata", report.selectedResolution ?: "—")
         DiagRow("Qualità rilevata", report.detectedResolution ?: "—")
-        DiagRow("Codec", report.codec ?: "—")
+        DiagRow("Codec (flusso)", report.codec ?: "—")
+        DiagRow("Traccia attiva", PlaybackInspectorFormatter.trackLabel(report.videoTrack))
+
+        // ── Audio e sottotitoli ─────────────────────────────────────────────
+        Spacer(modifier = Modifier.height(2.dp))
+        SectionLabel("Audio")
+        DiagRow("Traccia attiva", PlaybackInspectorFormatter.trackLabel(report.audioTrack))
+        Spacer(modifier = Modifier.height(2.dp))
+        SectionLabel("Sottotitoli")
         DiagRow(
-          "Avvio",
-          report.startupMs?.let { "${it} ms" } ?: if (report.playbackState == com.example.data.streaming.diagnostics.playback.PlaybackStateKind.READY) "primo frame non ancora renderizzato" else "—"
+          "Traccia attiva",
+          report.subtitleTrack?.let { PlaybackInspectorFormatter.trackLabel(it) }
+            ?: "nessuna traccia selezionata"
+        )
+
+        // ── Rete ────────────────────────────────────────────────────────────
+        Spacer(modifier = Modifier.height(2.dp))
+        SectionLabel("Rete")
+        DiagRow(
+          "Banda stimata",
+          PlaybackInspectorFormatter.formatBitrate(
+            report.bandwidthEstimateBps.takeIf { it > 0 }
+          )
         )
         DiagRow(
-          "Buffering",
-          if (report.rebufferCount > 0) "${report.rebufferCount} eventi · ${report.rebufferTotalMs} ms totali" else "nessun rebuffer"
+          "Throughput segmenti",
+          PlaybackInspectorFormatter.formatBitrate(report.throughputBps?.times(8))
         )
         if (report.mediaSegmentCount > 0) {
           DiagRow(
             "Segmenti",
-            "${report.mediaSegmentCount} completati · ${(report.mediaSegmentBytesTotal / 1024)} KB"
+            "${report.mediaSegmentCount} completati · " +
+              PlaybackInspectorFormatter.formatBytes(report.mediaSegmentBytesTotal)
           )
         }
+        report.httpEvents.lastOrNull()?.let { event ->
+          DiagRow(
+            "Ultima richiesta",
+            "${event.phase.name.lowercase()} · ${event.hostId ?: "host sconosciuto"} · " +
+              "${event.durationMs} ms" + (event.httpStatus?.let { " · HTTP $it" } ?: "")
+          )
+        }
+
+        // ── Sorgente ────────────────────────────────────────────────────────
+        Spacer(modifier = Modifier.height(2.dp))
+        SectionLabel("Sorgente")
+        DiagRow("Provider", report.providerId ?: "—")
+        DiagRow("Contenuto", report.contentLabel ?: "—")
+        DiagRow("Tipo", sourceKindLabel(report))
         DiagRow(
           "Durata sessione",
           "${report.totalDurationMs} ms · sessione #${report.sessionId}"
         )
 
+        // ── Diagnosi ────────────────────────────────────────────────────────
         Spacer(modifier = Modifier.height(4.dp))
         SectionLabel("Classificazione")
         Text(
-          text = finalClassificationLabel(report),
+          text = PlaybackInspectorFormatter.classificationText(report),
           fontSize = 12.sp,
           fontFamily = FontFamily.Monospace,
           color = if (report.finalDiagnosis == null) Color(0xFF86EFAC) else Color(0xFFFCA5A5),
@@ -141,6 +217,12 @@ fun PlaybackDiagnosticsPanel(
       }
     }
   )
+}
+
+/** Copia il report negli appunti (testo semplice, nessun URL completo). */
+private fun copyReport(context: Context, text: String) {
+  val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+  clipboard.setPrimaryClip(ClipData.newPlainText("StreamNova Playback Inspector", text))
 }
 
 @Composable
@@ -198,11 +280,11 @@ private fun DiagnosiRow(diagnosis: PlaybackDiagnosis) {
 }
 
 private fun sourceKindLabel(report: HlsDiagnosticsReport): String = when (report.sourceKind) {
-  com.example.data.streaming.diagnostics.playback.SourceKind.HLS ->
+  SourceKind.HLS ->
     "HLS (${playlistKindLabel(report.playlistKind)}, ${report.protocol.name.lowercase()})"
-  com.example.data.streaming.diagnostics.playback.SourceKind.PROGRESSIVE ->
+  SourceKind.PROGRESSIVE ->
     "Progressivo (${report.protocol.name.lowercase()})"
-  com.example.data.streaming.diagnostics.playback.SourceKind.UNKNOWN -> "—"
+  SourceKind.UNKNOWN -> "—"
 }
 
 private fun playlistKindLabel(kind: HlsDiagnosticsReport.PlaylistKind): String = when (kind) {
@@ -212,13 +294,12 @@ private fun playlistKindLabel(kind: HlsDiagnosticsReport.PlaylistKind): String =
   HlsDiagnosticsReport.PlaylistKind.UNKNOWN -> "tipo ignoto"
 }
 
-private fun stateLabel(state: com.example.data.streaming.diagnostics.playback.PlaybackStateKind): String =
-  when (state) {
-    com.example.data.streaming.diagnostics.playback.PlaybackStateKind.IDLE -> "IDLE"
-    com.example.data.streaming.diagnostics.playback.PlaybackStateKind.BUFFERING -> "BUFFERING"
-    com.example.data.streaming.diagnostics.playback.PlaybackStateKind.READY -> "READY"
-    com.example.data.streaming.diagnostics.playback.PlaybackStateKind.ENDED -> "ENDED"
-  }
+private fun stateLabel(state: PlaybackStateKind): String = when (state) {
+  PlaybackStateKind.IDLE -> "IDLE"
+  PlaybackStateKind.BUFFERING -> "BUFFERING"
+  PlaybackStateKind.READY -> "READY"
+  PlaybackStateKind.ENDED -> "ENDED"
+}
 
 private fun categoryLabel(category: HlsErrorCategory): String = when (category) {
   HlsErrorCategory.NETWORK_ERROR -> "Rete"
@@ -238,20 +319,6 @@ private fun confidenceLabel(confidence: DiagnosisConfidence): String = when (con
   DiagnosisConfidence.HIGH -> "alta"
   DiagnosisConfidence.MEDIUM -> "media"
   DiagnosisConfidence.LOW -> "bassa"
-}
-
-private fun finalClassificationLabel(report: HlsDiagnosticsReport): String {
-  val diagnosis = report.finalDiagnosis ?: return "Nessun problema segnalato"
-  val kind = if (diagnosis.temporary) "condizione temporanea" else "evidenza definitiva"
-  val retryHint = if (diagnosis.temporary) " · un nuovo tentativo è legittimo" else ""
-  return buildString {
-    append(categoryLabel(diagnosis.category))
-    append(" — ")
-    append(kind)
-    append(retryHint)
-    diagnosis.httpCode?.let { append(" · HTTP $it") }
-    append(" · x${diagnosis.attemptCount}")
-  }
 }
 
 private const val MAX_RECENT_DIAGNOSES = 5

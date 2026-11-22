@@ -21,13 +21,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Casino
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
@@ -36,8 +43,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -67,6 +76,7 @@ import com.example.ui.theme.NovaTextMuted
 import com.example.ui.theme.NovaTextPrimary
 import com.example.ui.theme.NovaTextSecondary
 import com.example.ui.viewmodel.SidebarSection
+import kotlinx.coroutines.launch
 
 data class NavigationMenuItem(
   val section: SidebarSection,
@@ -84,7 +94,9 @@ fun sidebarMenuItems(): List<NavigationMenuItem> = listOf(
   NavigationMenuItem(SidebarSection.FILM, Icons.Default.Movie, R.string.nav_movies),
   NavigationMenuItem(SidebarSection.SERIE_TV, Icons.Default.Tv, R.string.nav_tv_series),
   NavigationMenuItem(SidebarSection.I_MIEI_CONTENUTI, Icons.Default.Favorite, R.string.nav_favorites),
+  NavigationMenuItem(SidebarSection.NOVITA, Icons.Default.NewReleases, R.string.nav_new_episodes),
   NavigationMenuItem(SidebarSection.CERCA, Icons.Default.Search, R.string.nav_search),
+  NavigationMenuItem(SidebarSection.SCEGLI_PER_ME, Icons.Default.Casino, R.string.nav_watch_me),
   NavigationMenuItem(SidebarSection.ADDON, Icons.Default.Extension, R.string.nav_addons),
   NavigationMenuItem(SidebarSection.IMPOSTAZIONI, Icons.Default.Settings, R.string.nav_settings)
 )
@@ -122,6 +134,7 @@ fun visibleSidebarMenuItems(showAddons: Boolean): List<NavigationMenuItem> =
  *   Il valore arriva dalla modalità di riproduzione corrente e NON è uno stato interno:
  *   la sidebar resta un componente di sola presentazione.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SidebarNavigation(
   currentSection: SidebarSection,
@@ -246,15 +259,33 @@ fun SidebarNavigation(
        Spacer(modifier = Modifier.height(20.dp))
 
        // Navigation Items
+      // Con più voci di quante la colonna possa mostrare (oggi 9), la lista NON
+      // deve restare fissa: le ultime voci resterebbero fuori dal riquadro e il
+      // focus non potrebbe mai raggiungerle (bug "il focus si ferma dopo
+      // 'Non so cosa guardare'"). La colonna diventa scorrevole e ogni voce
+      // porta SE STESSA in vista quando prende il focus, così Addon e
+      // Impostazioni sono sempre raggiungibili col D-pad.
       Column(
-        modifier = Modifier.weight(1f),
+        modifier = Modifier
+          .weight(1f)
+          .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(6.dp)
       ) {
         menuItems.forEach { item ->
           val isSelected = currentSection == item.section
 
           val itemRequester = itemFocusRequesters[item.section]
-          val itemModifier = if (itemRequester != null) Modifier.focusRequester(itemRequester) else Modifier
+          val itemBringIntoView = remember(item.section) { BringIntoViewRequester() }
+          val scope = rememberCoroutineScope()
+          val itemModifier = (if (itemRequester != null) Modifier.focusRequester(itemRequester) else Modifier)
+            .bringIntoViewRequester(itemBringIntoView)
+            .onFocusChanged { state ->
+              if (state.isFocused) {
+                // bringIntoView è sospesa: parte in coroutine e fa scorrere la
+                // colonna finché la voce a fuoco è completamente visibile.
+                scope.launch { itemBringIntoView.bringIntoView() }
+              }
+            }
 
           TvFocusableBox(
             modifier = itemModifier

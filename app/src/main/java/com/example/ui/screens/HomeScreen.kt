@@ -259,8 +259,22 @@ fun HomeScreen(
         viewModel = viewModel
       )
     }
+    SidebarSection.NOVITA -> {
+      NewEpisodesScreen(
+        viewModel = viewModel,
+        onMediaClick = handleMediaClick,
+        modifier = modifier
+      )
+    }
     SidebarSection.CERCA -> {
       SearchScreen(
+        viewModel = viewModel,
+        onMediaClick = handleMediaClick,
+        modifier = modifier
+      )
+    }
+    SidebarSection.SCEGLI_PER_ME -> {
+      WatchMeScreen(
         viewModel = viewModel,
         onMediaClick = handleMediaClick,
         modifier = modifier

@@ -14,6 +14,7 @@ import androidx.media3.exoplayer.source.MediaLoadData
 import java.io.IOException
 import com.example.data.streaming.StreamResolution
 import com.example.data.streaming.diagnostics.playback.HlsPlaybackSession
+import com.example.data.streaming.diagnostics.playback.ObservedTrackFormat
 import com.example.data.streaming.diagnostics.playback.PlaybackErrorInput
 import com.example.data.streaming.diagnostics.playback.PlaybackPhase
 import com.example.data.streaming.diagnostics.playback.PlaybackStateKind
@@ -195,23 +196,86 @@ class PlaybackDiagnosticsListener(
     tracks: Tracks
   ) {
     val session = sessionProvider() ?: return
-    // Il formato della traccia video selezionata decide l'etichetta della
-    // variante: etichette dal punto UNICO (StreamResolution), mai soglie locali.
+    var video: ObservedTrackFormat? = null
+    var audio: ObservedTrackFormat? = null
+    var subtitle: ObservedTrackFormat? = null
+
     for (group in tracks.groups) {
-      if (group.type != C.TRACK_TYPE_VIDEO) continue
+      if (group.length == 0) continue
+      var selectedIndex = -1
       for (index in 0 until group.length) {
-        if (!group.isTrackSelected(index)) continue
-        val trackFormat = group.getTrackFormat(index)
-        session.setSelectedResolution(
-          StreamResolution.labelForMeasured(trackFormat.width, trackFormat.height)
-        )
-        session.onActiveTrackCodec(
-          sampleMimeType = trackFormat.sampleMimeType,
-          codecsString = trackFormat.codecs
-        )
-        return
+        if (group.isTrackSelected(index)) {
+          selectedIndex = index
+          break
+        }
+      }
+      if (selectedIndex < 0) continue
+      val format = group.getTrackFormat(selectedIndex)
+      val observed = format.toObservedTrack(group.type)
+      when (group.type) {
+        C.TRACK_TYPE_VIDEO -> {
+          video = observed
+          // Il formato della traccia video selezionata decide l'etichetta della
+          // variante: etichette dal punto UNICO (StreamResolution), mai soglie locali.
+          session.setSelectedResolution(
+            StreamResolution.labelForMeasured(format.width, format.height)
+          )
+          session.onActiveTrackCodec(
+            sampleMimeType = format.sampleMimeType,
+            codecsString = format.codecs
+          )
+        }
+        C.TRACK_TYPE_AUDIO -> audio = observed
+        C.TRACK_TYPE_TEXT -> subtitle = observed
       }
     }
+    session.onObservedTracks(video = video, audio = audio, subtitle = subtitle)
+  }
+
+  // --------------------------------------------------------------------------
+  // Nova Playback Inspector: metriche live
+  // --------------------------------------------------------------------------
+
+  override fun onDroppedVideoFrames(
+    eventTime: AnalyticsListener.EventTime,
+    droppedFrames: Int,
+    elapsedMs: Long
+  ) {
+    sessionProvider()?.onDroppedVideoFrames(droppedFrames)
+  }
+
+  override fun onBandwidthEstimate(
+    eventTime: AnalyticsListener.EventTime,
+    totalLoadTimeMs: Int,
+    totalBytesLoaded: Long,
+    bitrateEstimate: Long
+  ) {
+    sessionProvider()?.onBandwidthEstimate(bitrateEstimate)
+  }
+
+  /** Traduce il `Format` Media3 nel modello osservabile del pannello Inspector. */
+  private fun androidx.media3.common.Format.toObservedTrack(
+    trackType: Int
+  ): ObservedTrackFormat {
+    val kind = when (trackType) {
+      C.TRACK_TYPE_VIDEO -> "video"
+      C.TRACK_TYPE_AUDIO -> "audio"
+      C.TRACK_TYPE_TEXT -> "text"
+      else -> "other"
+    }
+    return ObservedTrackFormat(
+      kind = kind,
+      codecs = codecs,
+      sampleMimeType = sampleMimeType,
+      language = language,
+      label = label,
+      width = width,
+      height = height,
+      frameRate = frameRate.takeIf { it > 0f },
+      bitrateBps = bitrate.takeIf { it > 0 }?.toLong(),
+      channelCount = channelCount.takeIf { it > 0 },
+      sampleRateHz = sampleRate.takeIf { it > 0 }
+    )
   }
 
   // --------------------------------------------------------------------------

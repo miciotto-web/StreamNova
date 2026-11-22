@@ -728,6 +728,11 @@ internal fun DebridSourceCard(
   onFocus: (Boolean) -> Unit,
   modifier: Modifier = Modifier,
   isCurrent: Boolean = false,
+  /**
+   * Motivo della raccomandazione Smart Source Selection (es. "Riproducibilità
+   * verificata (+50)"). `null` = nessun badge. Mostrato sopra il titolo della card.
+   */
+  recommendationLabel: String? = null
 ) {
   val shape = RoundedCornerShape(12.dp)
   val meta = DebridSourceCardPresentation
@@ -796,6 +801,32 @@ internal fun DebridSourceCard(
             contentDescription = stringResource(R.string.player_cd_selected),
             tint = NovaCyanBright,
             modifier = Modifier.size(16.dp)
+          )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+      }
+
+      // 0b) Smart Source Selection: la sorgente con il punteggio migliore è
+      // segnalata con il motivo principale (dato reale, non una preferenza finta).
+      if (recommendationLabel != null) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Box(
+            modifier = Modifier
+              .size(8.dp)
+              .background(NovaCyanBright, RoundedCornerShape(50))
+          )
+          Text(
+            text = "Consigliata · $recommendationLabel",
+            color = NovaCyanBright,
+            fontSize = 11.sp,
+            lineHeight = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
           )
         }
         Spacer(modifier = Modifier.height(8.dp))

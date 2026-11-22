@@ -5,6 +5,9 @@
     <string name="nav_tv_series">Serie TV</string>
     <string name="nav_favorites">Preferiti</string>
     <string name="nav_search">Cerca</string>
+    <string name="nav_new_episodes">Nuovi episodi</string>
+    <string name="nav_watch_me">Non so cosa guardare</string>
+    <string name="settings_subtitle_offset_step">Passo regolazione sincronizzazione</string>
     <string name="nav_addons">Addon</string>
     <string name="nav_settings">Impostazioni</string>
 

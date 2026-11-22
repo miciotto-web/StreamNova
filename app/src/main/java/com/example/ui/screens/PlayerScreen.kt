@@ -48,6 +48,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ClosedCaption
@@ -166,6 +167,7 @@ import com.example.data.prefs.PersistentSubtitleSelectionPolicy
 import com.example.data.repository.MediaRepository
 import com.example.data.repository.SimklEpisodePayload
 import com.example.data.repository.SimklMediaPayload
+import com.example.data.streaming.PlaybackRequestNormalizer
 import com.example.data.streaming.StreamResolution
 import com.example.data.streaming.toReportPlaylistKind
 import com.example.data.streaming.diagnostics.StreamDiagnostics
@@ -437,6 +439,14 @@ fun PlayerScreen(
   val restoredPersistentSubtitle by viewModel.restoredPersistentSubtitle.collectAsState()
   val persistentSubtitleRestoreFailed by viewModel.persistentSubtitleRestoreFailed.collectAsState()
 
+  // Subtitle Engine Upgrade: audit del sottotitolo ATTIVO. Viene calcolato solo
+  // quando il file è realmente in mano (download OpenSubtitles completato) e
+  // mostrato nel pannello sottotitoli; per le tracce native resta null (nessun
+  // dato inventato).
+  var activeSubtitleAudit by remember {
+    mutableStateOf<com.example.data.subtitles.SubtitleAudit?>(null)
+  }
+
   // ── Selettore sorgenti interno al player ───────────────────────────────
   // Sorgenti valide disponibili per il titolo corrente (aggiornate in modo
   // progressivo man mano che i provider rispondono) e visibilita' del
@@ -447,8 +457,22 @@ fun PlayerScreen(
   // Token di cambio sorgente: permette di ricaricare il flusso sulla stessa
   // istanza di ExoPlayer anche quando l'URL non cambia.
   val manualSourceSelectionToken by viewModel.manualSourceSelectionToken.collectAsState()
-  val sourceSelectorEntries = remember(sourceCandidates, playbackState.currentSource) {
-    PlayerSourceSelector.buildEntries(sourceCandidates, playbackState.currentSource)
+  val sourceSelectorEntries = remember(
+    sourceCandidates,
+    playbackState.currentSource,
+    playbackSettings.preferredResolution,
+    playbackSettings.prioritizeItalianAudio
+  ) {
+    PlayerSourceSelector.buildEntries(
+      sources = sourceCandidates,
+      current = playbackState.currentSource,
+      // Smart Source Selection: ordina le sorgenti per punteggio e marca la
+      // migliore con il badge "Consigliata" + motivo (dati già disponibili).
+      policy = com.example.data.streaming.SmartSourcePolicy.fromSettings(
+        settings = playbackSettings,
+        addonTrust = com.example.data.addonhealth.AddonHealthRepository.trustByAddonIdentity()
+      )
+    )
   }
 
   val media = playbackState.media ?: return
@@ -743,7 +767,16 @@ fun PlayerScreen(
   // Il BACK del telecomando è gestito in un unico punto (vedi `performPlayerBack` più sotto):
   // qui non serve più un BackHandler dedicato ai modali.
 
-  val streamHeaders = playbackState.streamHeaders
+  // Normalizzazione della richiesta di riproduzione (comune a TUTTI i percorsi
+  // di caricamento: primo avvio, cambio episodio, cambio sorgente, riuso ultimo
+  // flusso). L'unica trasformazione è userinfo → Authorization Basic (es. link
+  // Easynews/EasyStream con credenziali nell'URL: OkHttp le scarterebbe in
+  // silenzio e il CDN rifiuterebbe la richiesta). URL e header restano coerenti
+  // come coppia: l'header deriva dall'URL normalizzato.
+  val playbackRequest = remember(playbackState.streamUrl, playbackState.streamHeaders) {
+    PlaybackRequestNormalizer.normalize(playbackState.streamUrl, playbackState.streamHeaders)
+  }
+  val streamHeaders = playbackRequest.headers
   // FASE 3.3: frazione altezza per la dimensione testo sottotitoli (lettura tracciata in
   // composizione: qualsiasi cambio preferenza ri-esegue l'update del PlayerView).
   val subtitleTextSizeFraction = playbackSettings.subtitleSize.textSizeFraction
@@ -794,9 +827,9 @@ fun PlayerScreen(
   val videoUrl: String? = if (isCurrentlySwitching) {
     // Durante il cambio episodio: restituisci l'URL corrente se c'è, altrimenti null
     // per forzare il player ad attendere la risoluzione invece di fallire subito.
-    playbackState.streamUrl?.takeIf { it.isNotBlank() }
+    playbackRequest.url?.takeIf { it.isNotBlank() }
   } else {
-    playbackState.streamUrl?.takeIf { it.isNotBlank() }
+    playbackRequest.url?.takeIf { it.isNotBlank() }
       ?: if (MediaRepository.isDemoSeedItem(media.id)) {
         currentEp?.videoUrl ?: media.videoUrl
       } else {
@@ -1847,6 +1880,28 @@ fun PlayerScreen(
     }
   }
 
+  // Nova Playback Inspector: fotografia live (1 s) di posizione, buffer e durata
+  // letta dall'istanza ExoPlayer corrente. È pura osservazione O(1): non comanda
+  // seek, pause o cambi di traccia e non altera la riproduzione.
+  LaunchedEffect(exoPlayer) {
+    while (true) {
+      delay(1_000L)
+      val session = diagSessionHolder.value ?: continue
+      session.updateLivePlayback(
+        positionMs = exoPlayer.currentPosition,
+        bufferedPositionMs = exoPlayer.bufferedPosition,
+        durationMs = exoPlayer.duration,
+        bufferedDurationMs = exoPlayer.totalBufferedDuration
+      )
+    }
+  }
+
+  // L'audit appartiene al contenuto: cambiando episodio/film non deve restare
+  // associato al sottotitolo precedente.
+  LaunchedEffect(currentEpKey) {
+    activeSubtitleAudit = null
+  }
+
   // Se l'URL o l'episodio cambiano dinamicamente (es. click su Prossimo Episodio o Upgrade di qualita' a caldo)
   // oppure quando l'URL diventa disponibile dopo la selezione della sorgente TorBox.
   // FIX CRITICO: `exoPlayer` è ora parte delle chiavi dell'effetto. Senza di esso, una
@@ -2028,6 +2083,20 @@ fun PlayerScreen(
         viewModel.clearOnlineSubtitleDownloadState()
         return
       }
+    }
+    // Subtitle Engine Upgrade: audit del file locale appena validato. La lettura è
+    // limitata ai primi 512 KB (intestazioni ASS, stili e prime battute): sufficiente
+    // per classificare formato e funzionalità senza leggere file enormi. Un errore
+    // di lettura non deve mai impedire l'attivazione della traccia.
+    if (localPath != null) {
+      activeSubtitleAudit = runCatching {
+        val file = java.io.File(localPath)
+        val buffer = ByteArray(SUBTITLE_AUDIT_READ_BYTES)
+        val read = file.inputStream().use { it.read(buffer) }
+        com.example.data.subtitles.SubtitleAuditEngine.audit(
+          if (read > 0) buffer.copyOf(read) else ByteArray(0)
+        )
+      }.getOrNull()
     }
     val config = PlayerSubtitleMediaItemBuilder.toConfiguration(localSubtitle)
     if (config == null) {
@@ -2506,7 +2575,10 @@ fun PlayerScreen(
         // fallimento avviene durante il prepare il player non ha ancora una timeline e
         // `currentMediaItem` e' null.
         val externalSubtitleUris = currentSubtitles.map { it.url }
-        val activeVideoUri = playbackState.streamUrl ?: videoUrl
+        // URI effettivamente caricato dal player (normalizzato): l'attribuzione
+        // confronta con l'URI della richiesta fallita (dataSpec), che è quello.
+        // Il recupero sottotitoli ricostruisce il MediaItem con QUESTO URL.
+        val activeVideoUri = videoUrl ?: playbackState.streamUrl
         val verdict = PlayerExternalSubtitleAttribution.attribute(
             error = error,
             videoUri = activeVideoUri,
@@ -4362,6 +4434,18 @@ fun PlayerScreen(
                 }
               )
 
+              // 6b. Nova Playback Inspector: metriche reali di riproduzione,
+              // rete, tracce e diagnostica. Accessibile anche col tocco lungo
+              // sulla risoluzione mostrata in overlay.
+              PlayerControlIconButton(
+                icon = Icons.Default.BugReport,
+                contentDescription = "Playback Inspector",
+                onClick = {
+                  kickAutoHide()
+                  showDiagnosticsPanel = true
+                }
+              )
+
 // 7. Audio: icona altoparlante
                PlayerControlIconButton(
                  icon = Icons.Filled.Speaker,
@@ -4646,6 +4730,8 @@ if (showTrackQuickPanel) {
         offsetMs = playbackState.subtitleOffsetMs,
         onAdjustOffset = { delta -> viewModel.adjustSubtitleOffsetMs(delta) },
         onResetOffset = { viewModel.resetSubtitleOffsetMs() },
+        offsetStepMs = playbackSettings.subtitleOffsetStep.stepMs.toLong(),
+        subtitleAudit = activeSubtitleAudit,
         headerSwitchLabel = stringResource(R.string.settings_forced_subtitles),
         headerSwitchChecked = playbackSettings.forcedSubtitlesEnabled,
         onHeaderSwitchToggle = { enabled ->
@@ -4987,6 +5073,14 @@ fun PlayerSubtitleSelectionDialog(
   offsetMs: Long,
   onAdjustOffset: (Long) -> Unit,
   onResetOffset: () -> Unit,
+  /** Passo di regolazione dell'offset (Impostazioni sottotitoli, default 250 ms). */
+  offsetStepMs: Long = 250L,
+  /**
+   * Audit del sottotitolo attivo (Subtitle Engine Upgrade): formato, stili,
+   * funzionalità ASS/SSA e avvisi di resa. `null` = nessun audit disponibile
+   * (traccia nativa o file non ancora scaricato).
+   */
+  subtitleAudit: com.example.data.subtitles.SubtitleAudit? = null,
   headerSwitchLabel: String? = null,
   headerSwitchChecked: Boolean = false,
   onHeaderSwitchToggle: ((Boolean) -> Unit)? = null,
@@ -5178,11 +5272,11 @@ fun PlayerSubtitleSelectionDialog(
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically
         ) {
-          // Bottone -250 ms
+          // Bottone -passo ms
           TvFocusableBox(
             shape = RoundedCornerShape(10.dp),
             focusedScale = 1.06f,
-            onClick = { onAdjustOffset(-250L) },
+            onClick = { onAdjustOffset(-offsetStepMs) },
             modifier = Modifier.weight(1f)
           ) { isFocused ->
             Box(
@@ -5201,7 +5295,7 @@ fun PlayerSubtitleSelectionDialog(
                 .padding(vertical = 8.dp)
             ) {
               Text(
-                text = "-250 ms",
+                text = "-$offsetStepMs ms",
                 color = if (isFocused) NovaCyanBright else NovaTextPrimary,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold
@@ -5224,11 +5318,11 @@ fun PlayerSubtitleSelectionDialog(
             )
           }
 
-          // Bottone +250 ms
+          // Bottone +passo ms
           TvFocusableBox(
             shape = RoundedCornerShape(10.dp),
             focusedScale = 1.06f,
-            onClick = { onAdjustOffset(250L) },
+            onClick = { onAdjustOffset(offsetStepMs) },
             modifier = Modifier.weight(1f)
           ) { isFocused ->
             Box(
@@ -5247,10 +5341,47 @@ fun PlayerSubtitleSelectionDialog(
                 .padding(vertical = 8.dp)
             ) {
               Text(
-                text = "+250 ms",
+                text = "+$offsetStepMs ms",
                 color = if (isFocused) NovaCyanBright else NovaTextPrimary,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold
+              )
+            }
+          }
+        }
+      }
+
+      // 4b. Audit del sottotitolo attivo (Subtitle Engine Upgrade): formato reale e
+      // funzionalità ASS/SSA che il renderer a cue non può mostrare. Mostrato solo
+      // quando esiste un audit verificato (file locale): nessun dato inventato.
+      if (subtitleAudit != null) {
+        Spacer(modifier = Modifier.height(10.dp))
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .background(NovaSurfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
+            .padding(12.dp),
+          verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+          Text(
+            text = "Audit sottotitolo · ${subtitleAudit.summary}",
+            color = NovaTextSecondary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+          )
+          if (subtitleAudit.warnings.isEmpty()) {
+            Text(
+              text = "Nessuna limitazione rilevata per questo formato.",
+              color = NovaGreen,
+              fontSize = 11.sp
+            )
+          } else {
+            subtitleAudit.warnings.take(4).forEach { warning ->
+              Text(
+                text = "• ${warning.message}",
+                color = NovaTextMuted,
+                fontSize = 11.sp
               )
             }
           }
@@ -6463,3 +6594,9 @@ private fun SubtitleChipText(
     maxLines = 1
   )
 }
+
+/**
+ * Byte letti per l'audit del sottotitolo locale: intestazioni ASS, tabella stili e
+ * prime centinaia di battute. Oltre non c'è informazione utile alla classificazione.
+ */
+private const val SUBTITLE_AUDIT_READ_BYTES = 512 * 1024

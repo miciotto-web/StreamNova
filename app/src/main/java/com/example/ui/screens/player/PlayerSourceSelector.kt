@@ -46,6 +46,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.R
 import com.example.data.streaming.StreamSource
+import com.example.data.streaming.SmartSourcePolicy
+import com.example.data.streaming.SmartSourceSelector
 import com.example.ui.components.DebridSourceCard
 import com.example.ui.components.providerLabelOf
 import com.example.ui.theme.NovaCyan
@@ -74,7 +76,11 @@ data class PlayerSourceEntry(
   val providerLabel: String,
   val qualityLabel: String?,
   val label: String,
-  val isCurrent: Boolean
+  val isCurrent: Boolean,
+  /** `true` quando lo Smart Source Selection la indica come migliore. */
+  val isRecommended: Boolean = false,
+  /** Motivo sintetico della raccomandazione (es. "Riproducibilità verificata +50"). */
+  val recommendationReason: String? = null
 )
 
 /**
@@ -170,15 +176,43 @@ object PlayerSourceSelector {
   }
 
   /** Costruisce le righe del selettore, marcando quella in riproduzione. */
-  fun buildEntries(sources: List<StreamSource>, current: StreamSource?): List<PlayerSourceEntry> {
-    val currentIndex = currentIndexOf(sources, current)
-    return sources.mapIndexed { index, source ->
+  fun buildEntries(
+    sources: List<StreamSource>,
+    current: StreamSource?,
+    /**
+     * Politica dello Smart Source Selection. Se presente, le righe vengono
+     * ordinate dal punteggio migliore al peggiore e la prima sorgente
+     * riproducibile riceve il badge "Consigliata" con il motivo principale.
+     * `null` = ordine di ingresso e nessun badge (comportamento storico, usato
+     * dai test della sola presentazione).
+     */
+    policy: SmartSourcePolicy? = null
+  ): List<PlayerSourceEntry> {
+    val scored = if (policy != null) {
+      SmartSourceSelector.rank(sources, policy)
+    } else {
+      emptyList()
+    }
+    val orderedSources = if (scored.isNotEmpty()) scored.map { it.source } else sources
+    val recommended = scored.firstOrNull { !it.isUnavailable }
+    val currentIndex = currentIndexOf(orderedSources, current)
+    return orderedSources.mapIndexed { index, source ->
+      val recommendation = recommended
+        ?.takeIf { isSameSource(it.source, source) }
+        ?.takeIf { !it.isUnavailable }
       PlayerSourceEntry(
         source = source,
         providerLabel = providerLabelOf(source).trim(),
         qualityLabel = qualityLabelOf(source),
         label = labelOf(source),
-        isCurrent = index == currentIndex
+        isCurrent = index == currentIndex,
+        isRecommended = recommendation != null,
+        recommendationReason = recommendation?.let { score ->
+          score.reasons
+            .filter { it.impact > 0 }
+            .maxByOrNull { it.impact }
+            ?.let { "${it.label} (+${it.impact})" }
+        }
       )
     }
   }
@@ -347,6 +381,7 @@ fun PlayerSourceSelectorDialog(
               DebridSourceCard(
                 source = entry.source,
                 isCurrent = entry.isCurrent,
+                recommendationLabel = entry.recommendationReason,
                 onClick = { onSelect(entry.source) },
                 onFocus = { if (it) focusedIndex = index },
                 modifier = Modifier

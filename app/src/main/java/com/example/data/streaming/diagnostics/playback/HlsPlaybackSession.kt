@@ -6,6 +6,32 @@ import com.example.data.streaming.diagnostics.StreamDiagnostics
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * Sintesi di una traccia osservata dal player (video, audio o sottotitoli).
+ *
+ * Tutti i campi arrivano da Media3 (`Format`/`onTracksChanged`) o dal listener
+ * analytics: nessun valore è dedotto o inventato. I campi non disponibili restano
+ * `null` e la UI mostra "—".
+ */
+data class ObservedTrackFormat(
+  val kind: String,
+  val codecs: String? = null,
+  val sampleMimeType: String? = null,
+  val language: String? = null,
+  val label: String? = null,
+  val width: Int = 0,
+  val height: Int = 0,
+  val frameRate: Float? = null,
+  val bitrateBps: Long? = null,
+  val channelCount: Int? = null,
+  val sampleRateHz: Int? = null
+) {
+  /** `true` quando la traccia ha almeno un dato tecnico utile. */
+  val hasTechnicalData: Boolean
+    get() = codecs != null || sampleMimeType != null || bitrateBps != null ||
+      width > 0 || height > 0 || channelCount != null || sampleRateHz != null
+}
+
+/**
  * Collettore diagnostico di UNA sessione di riproduzione.
  *
  * Collectore **puro e thread-safe**: non dipende da Media3 né da Android. Il
@@ -73,6 +99,15 @@ class HlsPlaybackSession(
   @Volatile private var sessionEpochMs: Long = wallClockEpochMs()
   @Volatile private var lastPositionMsValue: Long = -1L
   @Volatile private var lastBufferedDurationMsValue: Long = -1L
+
+  // ── Metriche live del Nova Playback Inspector ───────────────────────────────
+  @Volatile private var bufferedPositionMsValue: Long = -1L
+  @Volatile private var durationMsValue: Long = -1L
+  @Volatile private var bandwidthEstimateBpsValue: Long = -1L
+  @Volatile private var droppedFramesValue: Long = 0L
+  @Volatile private var videoTrack: ObservedTrackFormat? = null
+  @Volatile private var audioTrack: ObservedTrackFormat? = null
+  @Volatile private var subtitleTrack: ObservedTrackFormat? = null
 
   // --------------------------------------------------------------------------
   // Informazioni sulla sorgente
@@ -244,6 +279,90 @@ class HlsPlaybackSession(
   /** Codec osservato dalla traccia attiva (aggiorna quello dichiarato se presente). */
   fun onActiveTrackCodec(sampleMimeType: String?, codecsString: String?) {
     setCodec(codecsString ?: sampleMimeType)
+  }
+
+  // --------------------------------------------------------------------------
+  // Nova Playback Inspector: metriche live
+  // --------------------------------------------------------------------------
+
+  /**
+   * Aggiorna la fotografia live della riproduzione (posizione, buffer, durata).
+   *
+   * Chiamata dal tick osservativo del player (1 s): O(1), nessun effetto sul
+   * playback. Valori negativi (player non ancora pronto) vengono ignorati per il
+   * singolo campo, così una durata ancora sconosciuta non cancella l'ultima nota.
+   */
+  fun updateLivePlayback(
+    positionMs: Long,
+    bufferedPositionMs: Long,
+    durationMs: Long,
+    bufferedDurationMs: Long = -1L
+  ) {
+    synchronized(lock) {
+      if (positionMs >= 0) lastPositionMsValue = positionMs
+      if (bufferedPositionMs >= 0) bufferedPositionMsValue = bufferedPositionMs
+      if (durationMs > 0) durationMsValue = durationMs
+      if (bufferedDurationMs >= 0) lastBufferedDurationMsValue = bufferedDurationMs
+      lastActivityElapsedMs = (clock.nowMs() - startedAtMs).coerceAtLeast(0L)
+    }
+  }
+
+  /** Frame video scartati dal decoder dall'inizio della sessione (cumulativo). */
+  fun onDroppedVideoFrames(droppedFrames: Int) {
+    synchronized(lock) {
+      droppedFramesValue += droppedFrames.coerceAtLeast(0).toLong()
+    }
+  }
+
+  /** Stima della banda misurata da Media3 (bit/s), quando disponibile. */
+  fun onBandwidthEstimate(bitrateEstimateBps: Long) {
+    synchronized(lock) {
+      bandwidthEstimateBpsValue = bitrateEstimateBps.coerceAtLeast(0L)
+    }
+  }
+
+  /**
+   * Traccia attiva osservata. `null` per un tipo significa "nessuna traccia
+   * selezionata di quel tipo", che è un'informazione reale (es. nessun sottotitolo).
+   */
+  fun onObservedTracks(
+    video: ObservedTrackFormat? = null,
+    audio: ObservedTrackFormat? = null,
+    subtitle: ObservedTrackFormat? = null
+  ) {
+    synchronized(lock) {
+      if (video != null) videoTrack = video
+      if (audio != null) audioTrack = audio
+      subtitleTrack = subtitle
+    }
+  }
+
+  val observedVideoTrack: ObservedTrackFormat? get() = videoTrack
+  val observedAudioTrack: ObservedTrackFormat? get() = audioTrack
+  val observedSubtitleTrack: ObservedTrackFormat? get() = subtitleTrack
+  val lastBufferedPositionMs: Long get() = bufferedPositionMsValue
+  val lastDurationMs: Long get() = durationMsValue
+  val bandwidthEstimateBps: Long get() = bandwidthEstimateBpsValue
+  val droppedVideoFrames: Long get() = droppedFramesValue
+
+  /**
+   * Throughput medio effettivo dei segmenti media (byte/s), calcolato SOLO dai
+   * caricamenti riusciti già registrati: `null` quando non c'è ancora campione.
+   */
+  internal fun throughputBpsLocked(): Long? {
+    var bytes = 0L
+    var durationMs = 0L
+    httpEvents.forEach { event ->
+      if (!event.isError &&
+        (event.phase == PlaybackPhase.MEDIA_SEGMENT || event.phase == PlaybackPhase.INIT_SEGMENT) &&
+        event.bytesLoaded > 0
+      ) {
+        bytes += event.bytesLoaded
+        durationMs += event.durationMs.coerceAtLeast(1L)
+      }
+    }
+    if (bytes <= 0 || durationMs <= 0) return null
+    return (bytes * 1000L) / durationMs
   }
 
   // --------------------------------------------------------------------------
@@ -427,7 +546,22 @@ class HlsPlaybackSession(
         diagnoses = diagnoses.toList(),
         lastSuccessfulEvent = lastSuccessfulEvent,
         totalDurationMs = (now - startedAtMs).coerceAtLeast(0L),
-        finalDiagnosis = finalDiagnosis
+        finalDiagnosis = finalDiagnosis,
+        positionMs = lastPositionMsValue,
+        bufferedPositionMs = bufferedPositionMsValue,
+        durationMs = durationMsValue,
+        bufferAheadMs = if (bufferedPositionMsValue >= 0 && lastPositionMsValue >= 0) {
+          (bufferedPositionMsValue - lastPositionMsValue).coerceAtLeast(0L)
+        } else {
+          // Fallback sul buffer relativo osservato da Media3 (eventTime).
+          lastBufferedDurationMsValue.takeIf { it >= 0 }
+        },
+        bandwidthEstimateBps = bandwidthEstimateBpsValue,
+        throughputBps = throughputBpsLocked(),
+        droppedVideoFrames = droppedFramesValue,
+        videoTrack = videoTrack,
+        audioTrack = audioTrack,
+        subtitleTrack = subtitleTrack
       )
     }
   }

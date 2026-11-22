@@ -80,6 +80,10 @@ object AppSettingsRepository {
   private val KEY_PREMIUMIZE_INSTANT_DEBRID =
     booleanPreferencesKey("premiumize_instant_debrid_enabled")
   private val KEY_INSTALLED_ADDONS_JSON = stringPreferencesKey("installed_addons_json")
+  /** Report dell'Addon Health Monitor, serializzati in JSON (persistono tra sessioni). */
+  private val KEY_ADDON_HEALTH_JSON = stringPreferencesKey("addon_health_reports_json")
+  /** Ultime ricerche dell'utente (JSON): alimentano i suggerimenti di Nova Discovery. */
+  private val KEY_RECENT_SEARCHES_JSON = stringPreferencesKey("recent_searches_json")
   private val KEY_USER_PROVIDER_BINDINGS_JSON = stringPreferencesKey("user_provider_bindings_json")
   private val KEY_STREAMING_ENGINE_MODE = stringPreferencesKey("streaming_engine_mode")
   private val KEY_HTTP_PRIMARY_PROVIDER = stringPreferencesKey("http_primary_provider")
@@ -159,6 +163,14 @@ object AppSettingsRepository {
   private val _installedAddonsJson = MutableStateFlow("[]")
   /** Lista addon Stremio installata serializzata in JSON (fonte di verità persistita). */
   val installedAddonsJson: StateFlow<String> = _installedAddonsJson.asStateFlow()
+
+  private val _addonHealthJson = MutableStateFlow("[]")
+  /** Ultimo esito dell'Addon Health Monitor (JSON), ripristinato all'avvio. */
+  val addonHealthJson: StateFlow<String> = _addonHealthJson.asStateFlow()
+
+  private val _recentSearchesJson = MutableStateFlow("[]")
+  /** Ultime ricerche dell'utente (JSON, più recenti in testa). */
+  val recentSearchesJson: StateFlow<String> = _recentSearchesJson.asStateFlow()
 
   private val _userProviderBindingsJson = MutableStateFlow("[]")
   /**
@@ -280,6 +292,8 @@ object AppSettingsRepository {
   @Volatile private var premiumizeApiKeyLocalWrite = false
   @Volatile private var premiumizeToggleLocalWrite = false
   @Volatile private var addonsLocalWrite = false
+  @Volatile private var addonHealthLocalWrite = false
+  @Volatile private var recentSearchesLocalWrite = false
   @Volatile private var userBindingsLocalWrite = false
   @Volatile private var streamingModeLocalWrite = false
   @Volatile private var httpPrimaryProviderLocalWrite = false
@@ -346,6 +360,12 @@ object AppSettingsRepository {
         }
         if (!addonsLocalWrite) {
           _installedAddonsJson.value = prefs[KEY_INSTALLED_ADDONS_JSON] ?: "[]"
+        }
+        if (!addonHealthLocalWrite) {
+          _addonHealthJson.value = prefs[KEY_ADDON_HEALTH_JSON] ?: "[]"
+        }
+        if (!recentSearchesLocalWrite) {
+          _recentSearchesJson.value = prefs[KEY_RECENT_SEARCHES_JSON] ?: "[]"
         }
         if (!userBindingsLocalWrite) {
           _userProviderBindingsJson.value = prefs[KEY_USER_PROVIDER_BINDINGS_JSON] ?: "[]"
@@ -468,6 +488,8 @@ object AppSettingsRepository {
     _premiumizeApiKey.value = null
     _premiumizeInstantDebridEnabled.value = true
     _installedAddonsJson.value = "[]"
+    _addonHealthJson.value = "[]"
+    _recentSearchesJson.value = "[]"
     _userProviderBindingsJson.value = "[]"
     _streamingEngineMode.value = StreamingEngineMode.HTTP_WEB
     _httpPrimaryProviderId.value = HttpProviderChoices.AUTO_ID
@@ -490,6 +512,8 @@ object AppSettingsRepository {
     premiumizeApiKeyLocalWrite = false
     premiumizeToggleLocalWrite = false
     addonsLocalWrite = false
+    addonHealthLocalWrite = false
+    recentSearchesLocalWrite = false
     userBindingsLocalWrite = false
     streamingModeLocalWrite = false
     httpPrimaryProviderLocalWrite = false
@@ -640,6 +664,20 @@ object AppSettingsRepository {
     addonsLocalWrite = true
     _installedAddonsJson.value = json.ifBlank { "[]" }
     scope.launch { dataStore?.edit { it[KEY_INSTALLED_ADDONS_JSON] = json.ifBlank { "[]" } } }
+  }
+
+  /** Salva l'esito dell'Addon Health Monitor come JSON (già serializzato). */
+  fun setAddonHealthJson(json: String) {
+    addonHealthLocalWrite = true
+    _addonHealthJson.value = json.ifBlank { "[]" }
+    scope.launch { dataStore?.edit { it[KEY_ADDON_HEALTH_JSON] = json.ifBlank { "[]" } } }
+  }
+
+  /** Salva le ultime ricerche come JSON (già serializzato). */
+  fun setRecentSearchesJson(json: String) {
+    recentSearchesLocalWrite = true
+    _recentSearchesJson.value = json.ifBlank { "[]" }
+    scope.launch { dataStore?.edit { it[KEY_RECENT_SEARCHES_JSON] = json.ifBlank { "[]" } } }
   }
 
   /** Salva le associazioni catalogo → provider dichiarate dall'utente. */

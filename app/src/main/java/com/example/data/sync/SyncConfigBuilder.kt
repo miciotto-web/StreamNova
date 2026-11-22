@@ -144,6 +144,7 @@ object SyncConfigBuilder {
       subtitleBackground = s.subtitleBackground.name,
       subtitleOpacity = s.subtitleOpacity.name,
       subtitlePosition = s.subtitlePosition.name,
+      subtitleOffsetStep = s.subtitleOffsetStep.name,
       loadingOverlayEnabled = s.loadingOverlayEnabled,
       loadingStatusEnabled = s.loadingStatusEnabled,
       pauseOverlayEnabled = s.pauseOverlayEnabled,

@@ -65,6 +65,7 @@ import com.example.ui.components.HomeFocusOrigin
 import com.example.ui.components.HomeSidebarFocusLink
 import com.example.ui.components.ModalOverlayState
 import com.example.ui.components.ProviderConstants
+import com.example.ui.components.SidebarContentExitLink
 import com.example.ui.components.StudioConstants
 import com.example.ui.components.TvPinDialog
 import com.example.ui.components.SidebarNavigation
@@ -235,7 +236,13 @@ class MainActivity : ComponentActivity() {
 
       androidx.compose.runtime.CompositionLocalProvider(
         androidx.compose.ui.platform.LocalContext provides localizedContext,
-        androidx.compose.ui.platform.LocalConfiguration provides localizedConfiguration
+        androidx.compose.ui.platform.LocalConfiguration provides localizedConfiguration,
+        // Il context localizzato (createConfigurationContext) non è un ContextWrapper
+        // verso l'Activity: il fallback interno di LocalActivityResultRegistryOwner
+        // (activity-compose 1.10.1 srotola LocalContext) non trova più il titolare del
+        // registry e ogni rememberLauncherForActivityResult crasha. Forniamo esplicitamente
+        // l'Activity, che resta l'owner reale del registry dei risultati.
+        androidx.activity.compose.LocalActivityResultRegistryOwner provides this@MainActivity
       ) {
         MyApplicationTheme {
           StreamNovaApp(viewModel = viewModel, activity = this@MainActivity)
@@ -462,6 +469,15 @@ fun StreamNovaApp(
         val sidebarFocusRequester = remember { FocusRequester() }
         val sidebarItemFocusRequesters = remember { SidebarSection.entries.associateWith { FocusRequester() } }
 
+        // OK su una voce di sezione (tutte tranne Home e Cerca): il focus deve ENTRARE nel
+        // contenuto della sezione selezionata, con lo stesso percorso autorevole del RIGHT.
+        // La sezione si compone DOPO `setSection`, quindi la richiesta resta PENDENTE e
+        // l'effetto più sotto la esegue quando l'handler d'uscita della sezione è registrato
+        // su [SidebarContentExitLink]. Senza questo OK su «Film» lasciava il focus sulla
+        // sidebar, mentre OK su «Impostazioni» lo spostava nel menu: comportamento diverso
+        // a seconda della voce, difetto segnalato come «caos del focus».
+        var pendingSidebarSectionEntry by remember { mutableStateOf(false) }
+
         // (4) Sezione laterale != Home -> se la sidebar è chiusa la apre posizionandosi sul pulsante attivo;
         // se la sidebar è già aperta, torna alla Home
         BackHandler(
@@ -602,6 +618,28 @@ fun StreamNovaApp(
           }
         }
 
+        // OK su una voce di sezione: entra nel contenuto appena la sezione è composta.
+        // L'handler d'uscita è registrato dal DisposableEffect della sezione durante la
+        // ricomposizione scatenata da `setSection`: l'attesa qui copre solo quel ritardo
+        // (qualche frame). Un `false` dell'handler è una risposta definitiva (nessun target:
+        // sezione vuota, es. Preferiti senza titoli) — il focus resta sulla voce della
+        // sidebar e NON si ripiega sulla ricerca geometrica, che atterrarebbe su un'altra
+        // voce del menu.
+        LaunchedEffect(currentSection, pendingSidebarSectionEntry) {
+          if (!pendingSidebarSectionEntry) return@LaunchedEffect
+          var attempts = 0
+          while (attempts < 10) {
+            attempts++
+            val sectionEntry = SidebarContentExitLink.exitHandler
+            if (sectionEntry != null) {
+              sectionEntry.invoke()
+              break
+            }
+            withFrameNanos { }
+          }
+          pendingSidebarSectionEntry = false
+        }
+
         // Ritorno dalla sidebar al contenuto (RIGHT).
         //
         // RISOLUZIONE DEL DIFETTO: il focus NON viene più scelto dalla ricerca geometrica a
@@ -618,7 +656,23 @@ fun StreamNovaApp(
           isSidebarExpanded = false
           val accepted = origin != null && homeSidebarFocusLink.requestReturn(origin)
           if (!accepted) {
-            focusManager.moveFocus(FocusDirection.Right)
+            // Le sezioni registrano il loro handler d'uscita (es. prima riga delle
+            // Impostazioni): il RIGHT dalla sidebar deve entrare nel menu in modo
+            // DETERMINISTICO. La ricerca geometrica qui non basta: nelle sezioni il cui
+            // contenuto inizia sotto l'overlay della sidebar non esistono candidati
+            // «strict-right» e il ripiego 2D di Compose atterra su un'altra voce della
+            // sidebar stessa (difetto «Non so cosa guardare»).
+            //
+            // Handler PRESENTE ma esito `false` = la sezione non ha nessun target
+            // focalizzabile (sezione vuota, es. Preferiti senza titoli): risposta
+            // definitiva, il focus resta sulla voce e NON si ripiega sulla ricerca
+            // geometrica (difetto: RIGHT su «Preferiti» vuoti chiudeva la sidebar e
+            // riportava il focus sull'icona stessa, senza entrare da nessuna parte).
+            val sectionExit = SidebarContentExitLink.exitHandler
+            val movedToSection = sectionExit != null && sectionExit.invoke()
+            if (!movedToSection && sectionExit == null) {
+              focusManager.moveFocus(FocusDirection.Right)
+            }
           }
         }
 
@@ -649,6 +703,24 @@ fun StreamNovaApp(
               if (ModalOverlayState.isAnyOpen &&
                 isModalGuardedKey(keyEvent.nativeKeyEvent.keyCode)
               ) {
+                return@onPreviewKeyEvent true
+              }
+              // SIDEBAR GIÀ APERTA e focus nel CONTENUTO di sezione (es. Impostazioni
+              // composta con il menu sopra): il LEFT torna sulla VOCE della sezione
+              // corrente in modo DETERMINISTICO. La ricerca geometrica qui sceglie la
+              // voce più vicina al contenuto — da Impostazioni atterrava su «Preferiti»
+              // invece che sulla voce «Impostazioni» (difetto «ritorno sulla stessa
+              // voce»). Con il focus GIÀ su una voce della sidebar il LEFT non viene
+              // intercettato: resta alla navigazione naturale.
+              if (!ModalOverlayState.isAnyOpen &&
+                isSidebarExpanded &&
+                !sidebarHasFocus &&
+                keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+              ) {
+                try {
+                  (sidebarItemFocusRequesters[currentSection] ?: sidebarFocusRequester).requestFocus()
+                } catch (_: Exception) {}
                 return@onPreviewKeyEvent true
               }
               if (!ModalOverlayState.isAnyOpen &&
@@ -754,10 +826,22 @@ fun StreamNovaApp(
                 sidebarReturnOrigin = null
                 if (section == SidebarSection.HOME) {
                   isSidebarExpanded = false
+                  // OK sulla voce «Home»: il focus torna sul CONTENUTO (Hero) tramite il
+                  // protocollo dell'ancora, non resta sull'icona della sidebar (difetto:
+                  // OK su «Home» chiudeva il menu lasciando il focus sull'icona Home).
                   viewModel.requestHomeScrollToTop()
+                  viewModel.saveLastFocusedMedia(HOME_CONTENT_ANCHOR_ROW, HOME_CONTENT_ANCHOR_ID)
+                  viewModel.signalFocusRestore(HOME_CONTENT_ANCHOR_ID)
                 }
                 if (section == SidebarSection.CERCA) {
                   isSidebarExpanded = false
+                }
+                // Ogni altra sezione: la sidebar si chiude e il focus entra nel contenuto con
+                // lo stesso percorso autorevole del RIGHT (handler registrato dalla sezione,
+                // consumato dall'effetto su `pendingSidebarSectionEntry`).
+                if (section != SidebarSection.HOME && section != SidebarSection.CERCA) {
+                  isSidebarExpanded = false
+                  pendingSidebarSectionEntry = true
                 }
                 viewModel.setSection(section)
               },

@@ -50,10 +50,21 @@ internal class PlayerHttpDataSourceFactory(
    * Aggiorna in place User-Agent e intestazioni della sorgente attiva. Il player
    * mantiene la stessa istanza e la factory applica i valori alla prossima
    * `createDataSource()` (cioè al successivo `prepare()`).
+   *
+   * L'User-Agent dello stream viene cercato CASE-INSENSITIVE: gli addon Stremio
+   * dichiarano spesso `user-agent` (minuscolo) in `behaviorHints.proxyHeaders`.
+   * Viene ESCLUSO dalle default request properties e applicato solo via factory:
+   * il fork Media3 (`OkHttpDataSource.makeRequest`) applica le default con
+   * `header()` e poi RIAGGIUNGE l'UA della factory con `addHeader()`, quindi un
+   * UA lasciato nelle default partirebbe duplicato sulla richiesta (valori
+   * identici o, quando il case della chiave non combacia, conflittanti).
    */
   fun updateHeaders(headers: Map<String, String>, defaultUserAgent: String) {
-    currentHeaders = headers
-    currentUserAgent = headers["User-Agent"] ?: defaultUserAgent
+    val streamUserAgent = headers.entries
+      .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
+      ?.value?.takeIf { it.isNotBlank() }
+    currentHeaders = headers.filterKeys { !it.equals("User-Agent", ignoreCase = true) }
+    currentUserAgent = streamUserAgent ?: defaultUserAgent
     apply()
   }
 

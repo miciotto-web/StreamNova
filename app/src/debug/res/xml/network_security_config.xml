@@ -2,16 +2,20 @@
 <!--
   Configurazione di rete SOLO per la variante DEBUG.
 
-  Consente il traffico in chiaro (cleartext) verso il loopback, usato dai test
-  strumentati e dalla riproduzione locale del bug OpenSubtitles sull'emulatore:
-  il server di prova sull'host e' raggiunto dall'emulatore tramite
-  `adb reverse tcp:8099 tcp:8099` (http://127.0.0.1:8099).
+  La variante debug applica questo file al posto del flag
+  `android:usesCleartextTraffic` del manifest principale (una
+  networkSecurityConfig presente ha SEMPRE precedenza sul flag).
 
-  La variante RELEASE non include questo file e continua a vietare il cleartext
-  (targetSdk 36 => cleartext disabilitato per default): nessun comportamento di
-  produzione e' modificato.
+  Dal 2026-11-21 il cleartext HTTP e' consentito OVUNQUE (anche in release,
+  decisione per la compatibilita' con gli stream proxy degli addon Stremio
+  che restituiscono URL http://): il base-config lo permette esplicitamente
+  cosi' la variante debug resta allineata alla release.
+
+  Il domain-config sul loopback resta per documentare l'uso storico dei test
+  strumentati (`adb reverse tcp:8099 tcp:8099`, bug OpenSubtitles).
 -->
 <network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>

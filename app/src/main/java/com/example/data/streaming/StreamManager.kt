@@ -1117,6 +1117,10 @@ class StreamManager(
     // diretto e `infoHash == null`. Vengono convertiti direttamente in sorgenti
     // giocabili e marcati cached; i placeholder di errore vengono scartati.
     val directSources = candidates.mapNotNull { directStreamSource(it) }
+    // Compatibilità proxy HTTP: gli URL dinamici (senza estensione) vengono
+    // classificati dal CONTENUTO con una sonda HTTP che porta gli header dello
+    // stream. Nessun URL viene alterato; nessuna logica dedicata a singoli addon.
+    val classifiedSources = StremioHttpStreamClassifier.refineSources(directSources)
     // DIAG TEMPORANEO (C): URL diretti validi per addon INTERROGATO, prima della dedup di mergeSources.
     candidates.groupBy { it.baseUrl }.forEach { (baseUrl, items) ->
       val validDirect = items.count { it.item.url?.isNotBlank() == true }
@@ -1129,7 +1133,7 @@ class StreamManager(
       DIAG_TAG,
       "DIAG-C origin=StremioAddons total_candidates=${candidates.size} direct_sources=${directSources.size}"
     )
-    return directSources
+    return classifiedSources
   }
 
   /** DIAG TEMPORANEO: etichetta finale che distingue il payload sorgente dall'addon interrogato. */
@@ -1404,7 +1408,17 @@ class StreamManager(
         // devono arrivare al player per evitare 403 su stream protetti.
         headers = item.proxyHeaders,
         declaredQuality = quality,
-        isProgressive = true,
+        // Il tipo HLS/progressivo NON è presupposto (audit proxy HTTP): è dichiarato
+        // dal PATH quando l'URL ha un'estensione; gli URL dinamici dei proxy (senza
+        // estensione) restano `null` e vengono classificati dal CONTENUTO dalla
+        // sonda HTTP di [StremioHttpStreamClassifier.refineSources] nei resolver.
+        // Hardcodare `true` qui forzava le playlist HLS dei proxy sul percorso
+        // progressivo (PARSING_CONTAINER_UNSUPPORTED).
+        isProgressive = when (StremioHttpStreamClassifier.urlKind(url)) {
+          HttpStreamKind.PROGRESSIVE -> true
+          HttpStreamKind.HLS -> false
+          null -> null
+        },
         isItalian = isItalian,
         addonName = candidate.addonName,
         // Identità dell'ADDON di origine (manifest id + logo ufficiale): resta

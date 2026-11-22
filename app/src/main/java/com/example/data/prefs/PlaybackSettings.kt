@@ -157,6 +157,19 @@ enum class SubtitlePosition(val label: String, val bottomPaddingFraction: Float)
   TOP("Alto", 0.9f)
 }
 
+/**
+ * Passo di regolazione dell'offset sottotitoli nel player.
+ *
+ * Il valore è persistito per nome: rinominare le costanti farebbe perdere la
+ * scelta dell'utente dopo un aggiornamento.
+ */
+enum class SubtitleOffsetStep(val label: String, val stepMs: Int) {
+  FINE("50 ms (preciso)", 50),
+  NORMAL("100 ms", 100),
+  STANDARD("250 ms (predefinito)", 250),
+  COARSE("500 ms (rapido)", 500)
+}
+
 /** Dimensione target del buffer memoria ExoPlayer. */
 enum class TargetBufferOption(val label: String, val sizeMb: Int) {
   DEFAULT("Predefinito (175 MB)", 175),
@@ -223,6 +236,11 @@ data class PlaybackSettings(
   val subtitleOpacity: SubtitleOpacity = SubtitleOpacity.FIFTY,
   /** Posizione verticale dei sottotitoli nel player (default BOTTOM). */
   val subtitlePosition: SubtitlePosition = SubtitlePosition.BOTTOM,
+  /**
+   * Passo dei pulsanti ± dell'offset sottotitoli. L'offset stesso è persistito
+   * per contenuto da `SubtitleSyncRepository`.
+   */
+  val subtitleOffsetStep: SubtitleOffsetStep = SubtitleOffsetStep.STANDARD,
 
   // ── OVERLAY E AVVISI DI RIPRODUZIONE ────────────────────────────────
   /**
@@ -287,6 +305,7 @@ object SettingsRepository {
   private val KEY_SUBTITLE_BACKGROUND = stringPreferencesKey("subtitle_background")
   private val KEY_SUBTITLE_OPACITY = stringPreferencesKey("subtitle_opacity")
   private val KEY_SUBTITLE_POSITION = stringPreferencesKey("subtitle_position")
+  private val KEY_SUBTITLE_OFFSET_STEP = stringPreferencesKey("subtitle_offset_step")
 
   // Overlay e avvisi di riproduzione
   private val KEY_LOADING_OVERLAY_ENABLED = booleanPreferencesKey("loading_overlay_enabled")
@@ -376,6 +395,9 @@ object SettingsRepository {
           subtitlePosition = prefs[KEY_SUBTITLE_POSITION]
             ?.let { name -> SubtitlePosition.entries.firstOrNull { it.name == name } }
             ?: SubtitlePosition.BOTTOM,
+          subtitleOffsetStep = prefs[KEY_SUBTITLE_OFFSET_STEP]
+            ?.let { name -> SubtitleOffsetStep.entries.firstOrNull { it.name == name } }
+            ?: SubtitleOffsetStep.STANDARD,
 
           // Overlay e avvisi di riproduzione
           loadingOverlayEnabled = prefs[KEY_LOADING_OVERLAY_ENABLED] ?: true,
@@ -460,6 +482,10 @@ object SettingsRepository {
 
   fun setSubtitlePosition(value: SubtitlePosition) {
     scope.launch { dataStore?.edit { it[KEY_SUBTITLE_POSITION] = value.name } }
+  }
+
+  fun setSubtitleOffsetStep(value: SubtitleOffsetStep) {
+    scope.launch { dataStore?.edit { it[KEY_SUBTITLE_OFFSET_STEP] = value.name } }
   }
 
   fun setLoadingOverlayEnabled(value: Boolean) {

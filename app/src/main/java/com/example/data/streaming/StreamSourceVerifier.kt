@@ -217,14 +217,19 @@ internal class OkHttpStreamProbe(
     headers: Map<String, String>,
     rangeBytes: Int?
   ): ProbeResponse {
+    // Stessa normalizzazione del player (userinfo → Authorization Basic, es.
+    // link Easynews/EasyStream con credenziali nell'URL): la sonda deve
+    // osservare il comportamento REALE della riproduzione, non una richiesta
+    // senza credenziali che il CDN rifiuta.
+    val normalized = PlaybackRequestNormalizer.normalize(url, headers)
     val request = try {
       Request.Builder()
-        .url(url)
+        .url(normalized.url.orEmpty())
         .header("Accept", "*/*")
         .header("Accept-Language", "it-IT,it;q=0.9,en;q=0.8")
         .get()
         .apply {
-          headers.forEach { (name, value) -> header(name, value) }
+          normalized.headers.forEach { (name, value) -> header(name, value) }
           if (rangeBytes != null && rangeBytes > 0) {
             header("Range", "bytes=0-${rangeBytes - 1}")
           }

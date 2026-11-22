@@ -72,6 +72,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stream
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VerticalAlignBottom
@@ -84,6 +85,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -164,6 +167,7 @@ import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.SubtitleOpacity
 import com.example.data.prefs.SubtitlePosition
+import com.example.data.prefs.SubtitleOffsetStep
 import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.TargetBufferOption
 import com.example.data.update.UpdateCheckState
@@ -178,6 +182,7 @@ import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.PosterMediaCard
 import com.example.ui.components.requestFocusConfirmed
 import com.example.ui.components.requestFocusWhenAttached
+import com.example.ui.components.SidebarContentExitLink
 import com.example.ui.components.scrollToItemVerified
 import com.example.ui.components.stabilizeFirstSeenOrder
 import com.example.ui.components.StandardMediaCard
@@ -537,6 +542,37 @@ fun CategoryBrowsingScreen(
   val sortBadgeRequesters = remember { mutableMapOf<String, FocusRequester>() }
   fun sortBadgeRequester(sort: CategorySortOrder): FocusRequester =
     sortBadgeRequesters.getOrPut(sort.name) { FocusRequester() }
+
+  // Uscita dalla sidebar verso questa sezione (RIGHT sulla voce, o OK sulla voce che la
+  // seleziona): il focus entra nella riga dei badge di ordinamento in modo DETERMINISTICO.
+  // La ricerca geometrica qui non basta: con la sidebar aperta le voci sovrappongono
+  // orizzontalmente la testata (nessun candidato «strict-right») e il ripiego 2D atterra
+  // su un'altra voce della sidebar o su un nodo qualsiasi del contenuto (difetto: RIGHT
+  // da «Film» chiudeva il menu riportando il focus sull'icona «Home»).
+  val categoryExitHandler = remember(selectedSort, categoryFocusScope) {
+    {
+      try {
+        sortBadgeRequester(selectedSort).requestFocus()
+        true
+      } catch (_: Exception) {
+        // Badge riciclato fuori finestra dalla LazyRow: riportato in vista prima di
+        // consegnargli il focus (stesso schema del BACK dalla griglia).
+        categoryFocusScope.launch {
+          try {
+            sortRowState.scrollToItem(selectedSort.ordinal)
+          } catch (_: Exception) {
+          }
+          requestFocusWhenAttached(sortBadgeRequester(selectedSort), maxAttempts = 6)
+        }
+        // L'uscita è presidiata: il focus atterra sul badge a scorrimento concluso.
+        true
+      }
+    }
+  }
+  DisposableEffect(categoryExitHandler) {
+    SidebarContentExitLink.attach(categoryExitHandler)
+    onDispose { SidebarContentExitLink.detach(categoryExitHandler) }
+  }
   // Conferma REALE del focus sul badge (onFocusChanged), non solo l'invio della richiesta:
   // il BACK arriva mentre la griglia sta scrollando/ricomponendo, quindi `requestFocus()` può
   // essere accettato e poi perso. Il token avvia un effetto FUORI dal dispatch del BACK, così
@@ -948,6 +984,41 @@ fun FavoritesScreen(
     }
     val key = gridState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String ?: return null
     return key.removePrefix(FAVORITE_CARD_KEY_PREFIX)
+  }
+
+  // Uscita dalla sidebar verso i Preferiti (RIGHT sulla voce, o OK sulla voce che la
+  // seleziona): il focus entra sulla PRIMA scheda della griglia in modo DETERMINISTICO.
+  // Con la lista vuota non esiste nessun target: l'handler risponde `false` e il focus
+  // resta sulla voce della sidebar — nessun ripiego geometrico, che atterrarebbe su
+  // un'altra voce del menu (difetto: RIGHT su «Preferiti» vuoti chiudeva la sidebar
+  // lasciando il focus sull'icona stessa).
+  val favoritesUiScope = rememberCoroutineScope()
+  // La lista osservata tramite rememberUpdatedState: l'handler è creato una volta sola e
+  // deve sempre leggere la lista CORRENTE, non quella della prima composizione.
+  val currentFavorites by rememberUpdatedState(visibleFavorites)
+  val favoritesExitHandler = remember(favoritesUiScope) {
+    {
+      val first = currentFavorites.firstOrNull()
+      if (first == null) {
+        false
+      } else {
+        favoritesUiScope.launch {
+          // La cella può essere riciclata fuori finestra (viewport conservata dallo stato
+          // saveable): riportata in vista prima di consegnarle il focus.
+          try {
+            val index = currentFavorites.indexOfFirst { it.id == first.id }
+            if (index >= 0) gridState.scrollToItem(index)
+          } catch (_: Exception) {
+          }
+          requestFocusWhenAttached(cellFocusRequester(first.id), maxAttempts = 6)
+        }
+        true
+      }
+    }
+  }
+  DisposableEffect(favoritesExitHandler) {
+    SidebarContentExitLink.attach(favoritesExitHandler)
+    onDispose { SidebarContentExitLink.detach(favoritesExitHandler) }
   }
 
   // Ancora di recupero quando il target NON è più la scheda a schermo (titolo uscito dai
@@ -1818,6 +1889,29 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   val isCategoryLoading by viewModel.isCategoryLoading.collectAsState()
   val categoryState by viewModel.categoryState.collectAsState()
 
+  // ── Ricerca evoluta + Nova Discovery ────────────────────────────────────
+  // Filtri avanzati (pannello) e ricerche recenti (suggerimenti). Il pannello
+  // si combina con i filtri scritti nella query (genere:..., anno:..., ecc.).
+  val searchRefinement by viewModel.searchRefinement.collectAsState()
+  val recentSearches by viewModel.recentSearches.collectAsState()
+  var showAdvancedFilters by remember { mutableStateOf(false) }
+  val advancedFilterFocusRequester = remember { FocusRequester() }
+  LaunchedEffect(viewModel) { viewModel.loadRecentSearches() }
+  if (showAdvancedFilters) {
+    AdvancedSearchFiltersDialog(
+      refinement = searchRefinement,
+      onApply = { refinement ->
+        viewModel.setSearchRefinement(refinement)
+        showAdvancedFilters = false
+      },
+      onReset = {
+        viewModel.clearSearchRefinement()
+        showAdvancedFilters = false
+      },
+      onDismiss = { showAdvancedFilters = false }
+    )
+  }
+
   val savedCategoryId by viewModel.selectedSearchCategoryId.collectAsState()
   var selectedCategory by remember {
     mutableStateOf(
@@ -1833,6 +1927,31 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
   val tuttiFilterFocusRequester = remember { FocusRequester() }
   val filmFilterFocusRequester = remember { FocusRequester() }
   val serieTvFilterFocusRequester = remember { FocusRequester() }
+
+  // Uscita dalla sidebar verso la Ricerca (RIGHT sulla voce «Cerca»): il focus torna sulla
+  // barra di ricerca in modo DETERMINISTICO. La ricerca geometrica con la sidebar aperta
+  // non trova candidati «strict-right» e il ripiego 2D atterra su un chip qualsiasi dei
+  // filtri (difetto: RIGHT da «Cerca» chiudeva la sidebar focalizzando il chip «Film»).
+  val searchUiScope = rememberCoroutineScope()
+  val searchExitHandler = remember(searchBarFocusRequester, searchUiScope) {
+    {
+      try {
+        searchBarFocusRequester.requestFocus()
+        true
+      } catch (_: Exception) {
+        // Nodo non ancora agganciato (frame d'apertura): il ripristino prosegue fuori
+        // dal dispatch; l'uscita resta presidiata (nessun ripiego geometrico).
+        searchUiScope.launch {
+          requestFocusWhenAttached(searchBarFocusRequester, maxAttempts = 6)
+        }
+        true
+      }
+    }
+  }
+  DisposableEffect(searchExitHandler) {
+    SidebarContentExitLink.attach(searchExitHandler)
+    onDispose { SidebarContentExitLink.detach(searchExitHandler) }
+  }
   val contentFirstItemFocusRequester = remember { FocusRequester() }
   // Il requester della cella 0 è usato SOLO dalla griglia dei badge categoria (stato
   // default), dove è agganciato al nodo focalizzabile del badge tramite tvFocusRequester.
@@ -2217,6 +2336,8 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
           viewModel.setSelectedSearchCategoryId(null)
           selectedCategory = null
           isSearchSubmitted = true
+          // Nova Discovery: la query confermata alimenta i suggerimenti recenti.
+          viewModel.recordSearchQuery(query)
         }
       },
       onClear = {
@@ -2343,7 +2464,7 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
                 }
                 SearchTypeFilter.SERIE_TV -> {
                   left = filmFilterFocusRequester
-                  right = FocusRequester.Cancel
+                  right = advancedFilterFocusRequester
                 }
               }
             },
@@ -2378,6 +2499,75 @@ fun SearchScreen(  viewModel: StreamNovaViewModel,
           }
         }
       }
+
+      // Filtri avanzati: genere/anno/voto/lingua/tipo/ordinamento/watchlist.
+      TvFocusableBox(
+        modifier = Modifier
+          .focusRequester(advancedFilterFocusRequester)
+          .focusProperties {
+            up = searchBarFocusRequester
+            left = serieTvFilterFocusRequester
+            right = FocusRequester.Cancel
+          },
+        shape = RoundedCornerShape(50),
+        focusedScale = 1.05f,
+        onClick = { showAdvancedFilters = true }
+      ) { isFocused ->
+        Row(
+          modifier = Modifier
+            .background(
+              if (searchRefinement.hasActiveFilters) NovaCyan else
+                if (isFocused) NovaSurfaceVariant else Color(0x331E293B),
+              RoundedCornerShape(50)
+            )
+            .border(
+              width = if (isFocused) 1.5.dp else 1.dp,
+              color = if (isFocused) NovaCyanBright else
+                if (searchRefinement.hasActiveFilters) NovaCyan else Color(0x33475569),
+              shape = RoundedCornerShape(50)
+            )
+            .padding(horizontal = 18.dp, vertical = 7.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+          Icon(
+            imageVector = Icons.Default.Tune,
+            contentDescription = null,
+            tint = if (searchRefinement.hasActiveFilters) Color.Black else
+              if (isFocused) NovaCyanBright else NovaTextPrimary,
+            modifier = Modifier.size(15.dp)
+          )
+          Text(
+            text = if (searchRefinement.hasActiveFilters) {
+              "Filtri · ${searchRefinement.describe()}"
+            } else {
+              "Filtri avanzati"
+            },
+            color = if (searchRefinement.hasActiveFilters) Color.Black else
+              if (isFocused) NovaCyanBright else NovaTextPrimary,
+            fontSize = 13.sp,
+            fontWeight = if (searchRefinement.hasActiveFilters) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1
+          )
+        }
+      }
+    }
+
+    // Nova Discovery: suggerimenti dalle ricerche recenti (solo con barra vuota).
+    if (query.isBlank() && recentSearches.isNotEmpty()) {
+      SearchSuggestionChips(
+        suggestions = recentSearches,
+        onPick = { suggestion ->
+          viewModel.updateSearchQuery(suggestion)
+          viewModel.setSelectedSearchCategoryId(null)
+          selectedCategory = null
+          isSearchSubmitted = true
+          viewModel.recordSearchQuery(suggestion)
+        },
+        onClear = { viewModel.clearRecentSearches() },
+        focusRequesterProvider = { searchBarFocusRequester }
+      )
+      Spacer(modifier = Modifier.height(10.dp))
     }
 
     // Vista Condizionale: Categoria Selezionata / Risultati di Ricerca Testo / Default con soli Badge Colorati
@@ -2939,12 +3129,53 @@ fun SettingsScreen(
   // (BACK o «Chiudi») il focus torna sulla riga che lo ha aperto.
   val disclaimerRowFocusRequester = remember { FocusRequester() }
   var restoreDisclaimerRowFocus by remember { mutableStateOf(false) }
+  // Prima riga del contenuto (sezione Profili): target del focus d'ingresso della
+  // schermata Impostazioni.
+  val settingsEntryRowFocusRequester = remember { FocusRequester() }
+  // Stato dello scroll della lista: serve all'handler d'uscita dalla sidebar per
+  // riportare in vista la prima riga quando lo scroll l'ha scaricata.
+  val settingsListState = rememberLazyListState()
+  val settingsUiScope = rememberCoroutineScope()
+  // All'ingresso nelle Impostazioni il focus entra nel contenuto, come nelle altre
+  // sezioni (la Cerca porta il focus sulla barra di ricerca): OK sulla voce
+  // «Impostazioni» della sidebar non deve lasciare il focus sulla sidebar stessa,
+  // dove il primo RIGHT atterrava sulla voce sbagliata («Non so cosa guardare»)
+  // invece che nel menu delle impostazioni.
+  LaunchedEffect(Unit) {
+    withFrameNanos { }
+    requestFocusWhenAttached(settingsEntryRowFocusRequester, maxAttempts = 5)
+  }
+  // Uscita dalla sidebar verso le Impostazioni (RIGHT su una voce della sidebar):
+  // entra nel menu in modo deterministico (prima riga). La ricerca geometrica qui non
+  // trova candidati validi (le righe iniziano sotto l'overlay della sidebar) e cade su
+  // un'altra voce della sidebar. Se lo scroll ha scaricato la prima riga (viewport in
+  // fondo alla lista), la riporta in vista prima di focalizzarla.
+  val settingsExitHandler = remember(settingsEntryRowFocusRequester, settingsListState, settingsUiScope) {
+    {
+      try {
+        settingsEntryRowFocusRequester.requestFocus()
+        true
+      } catch (_: Exception) {
+        settingsUiScope.launch {
+          settingsListState.scrollToItem(0)
+          requestFocusWhenAttached(settingsEntryRowFocusRequester, maxAttempts = 6)
+        }
+        // L'uscita è presidiata: il focus atterra sulla prima riga a scorrere concluso.
+        true
+      }
+    }
+  }
+  DisposableEffect(settingsExitHandler) {
+    SidebarContentExitLink.attach(settingsExitHandler)
+    onDispose { SidebarContentExitLink.detach(settingsExitHandler) }
+  }
   var showResolutionDialog by remember { mutableStateOf(false) }
   var showSubtitleLanguageDialog by remember { mutableStateOf(false) }
   var showSubtitleSizeDialog by remember { mutableStateOf(false) }
   var showSubtitleBackgroundDialog by remember { mutableStateOf(false) }
   var showSubtitleOpacityDialog by remember { mutableStateOf(false) }
   var showSubtitlePositionDialog by remember { mutableStateOf(false) }
+  var showSubtitleOffsetStepDialog by remember { mutableStateOf(false) }
   var showAudioLanguageDialog by remember { mutableStateOf(false) }
   var showAppLanguageDialog by remember { mutableStateOf(false) }
   var showStreamingEngineModeDialog by remember { mutableStateOf(false) }
@@ -3097,6 +3328,7 @@ fun SettingsScreen(
 
   TvFocusBringIntoView {
     LazyColumn(
+      state = settingsListState,
       modifier = modifier
         .fillMaxSize()
         .background(NovaBackground)
@@ -3124,7 +3356,7 @@ fun SettingsScreen(
       // proprio account SIMKL; le impostazioni del televisore restano condivise.
       // La sezione ospita anche i dialoghi di gestione (finestra separata, non vincolata
       // allo scroll di questa lista).
-      item { ProfilesSection() }
+      item { ProfilesSection(firstRowFocusRequester = settingsEntryRowFocusRequester) }
 
       // ── ACCOUNT SIMKL ────────────────────────────────────────────────────
       // Nessun campo per il Client ID: è una configurazione dello sviluppatore che arriva
@@ -3657,6 +3889,14 @@ fun SettingsScreen(
             value = subtitlePositionLabel(playbackSettings.subtitlePosition),
             onClick = { showSubtitlePositionDialog = true }
           )
+          // Subtitle Engine Upgrade: passo dei pulsanti ± dell'offset. L'offset
+          // stesso è salvato per contenuto e ripristinato alla riapertura.
+          SettingsRow(
+            icon = Icons.Default.Schedule,
+            title = stringResource(R.string.settings_subtitle_offset_step),
+            value = playbackSettings.subtitleOffsetStep.label,
+            onClick = { showSubtitleOffsetStepDialog = true }
+          )
           SettingsSwitchRow(
             title = stringResource(R.string.settings_forced_subtitles),
             checked = playbackSettings.forcedSubtitlesEnabled,
@@ -3820,6 +4060,21 @@ fun SettingsScreen(
             }
           )
         }
+      }
+
+      // ── BACKUP E RIPRISTINO ─────────────────────────────────────────────
+      // Export/import su file JSON della configurazione (impostazioni, addon,
+      // libreria, SIMKL opzionale). Le credenziali sono escluse di default.
+      item {
+        BackupRestoreSettingsSection(
+          appVersionName = BuildConfig.VERSION_NAME,
+          appVersionCode = BuildConfig.VERSION_CODE
+        )
+      }
+
+      // ── SPAZIO E CACHE (Storage Manager) ────────────────────────────────
+      item {
+        StorageSettingsSection()
       }
 
       // ── INFORMAZIONI ─────────────────────────────────────────────────────
@@ -4188,6 +4443,20 @@ fun SettingsScreen(
         showSubtitlePositionDialog = false
       },
       onDismiss = { showSubtitlePositionDialog = false }
+    )
+  }
+
+  if (showSubtitleOffsetStepDialog) {
+    val stepOptions = SubtitleOffsetStep.entries
+    TrackSelectionDialog(
+      title = stringResource(R.string.settings_subtitle_offset_step),
+      options = stepOptions.map { it.label },
+      selectedIndex = stepOptions.indexOf(playbackSettings.subtitleOffsetStep).coerceAtLeast(0),
+      onSelect = { idx ->
+        viewModel?.setSubtitleOffsetStep(stepOptions[idx])
+        showSubtitleOffsetStepDialog = false
+      },
+      onDismiss = { showSubtitleOffsetStepDialog = false }
     )
   }
 

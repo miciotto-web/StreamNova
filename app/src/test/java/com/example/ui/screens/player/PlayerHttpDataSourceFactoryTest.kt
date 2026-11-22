@@ -74,6 +74,61 @@ class PlayerHttpDataSourceFactoryTest {
   }
 
   @Test
+  fun `updateHeaders riconosce User-Agent con case minuscolo`() {
+    // Gli addon Stremio dichiarano spesso `user-agent` (minuscolo) in
+    // behaviorHints.proxyHeaders: il lookup case-insensitive è l'unica via per
+    // far arrivare l'UA dello stream al proxy (altrimenti parte il default).
+    val factory = PlayerHttpDataSourceFactory(initialUserAgent = "StreamNovaTV/default")
+
+    factory.updateHeaders(
+      mapOf("user-agent" to "Mozilla/5.0 (proxy agent)", "Referer" to "https://origin.example/"),
+      defaultUserAgent = "StreamNovaTV/default"
+    )
+    assertEquals("Mozilla/5.0 (proxy agent)", factory.currentUserAgent)
+    assertEquals("https://origin.example/", factory.currentHeaders["Referer"])
+  }
+
+  @Test
+  fun `updateHeaders esclude User-Agent dalle default request properties`() {
+    // Il fork Media3 applica le default con `header()` e poi RIAGGIUNGE l'UA
+    // della factory con `addHeader()`: un UA lasciato nelle default partirebbe
+    // DUPLICATO sulla richiesta (o conflittante con case diverso).
+    val factory = PlayerHttpDataSourceFactory(initialUserAgent = "StreamNovaTV/default")
+
+    factory.updateHeaders(
+      mapOf("User-Agent" to "StreamNovaTV/custom", "Referer" to "https://example.com"),
+      defaultUserAgent = "StreamNovaTV/default"
+    )
+    assertTrue(
+      "User-Agent non deve restare nelle default request properties",
+      factory.currentHeaders.keys.none { it.equals("User-Agent", ignoreCase = true) }
+    )
+    assertEquals("StreamNovaTV/custom", factory.currentUserAgent)
+
+    factory.updateHeaders(
+      mapOf("user-agent" to "UA-minuscolo", "Authorization" to "Basic dXNlcjpwYXNz"),
+      defaultUserAgent = "StreamNovaTV/default"
+    )
+    assertTrue(
+      factory.currentHeaders.keys.none { it.equals("User-Agent", ignoreCase = true) }
+    )
+    assertEquals("UA-minuscolo", factory.currentUserAgent)
+    // Gli altri header della sorgente restano applicati.
+    assertEquals("Basic dXNlcjpwYXNz", factory.currentHeaders["Authorization"])
+  }
+
+  @Test
+  fun `updateHeaders con User-Agent vuoto torna al default`() {
+    val factory = PlayerHttpDataSourceFactory(initialUserAgent = "StreamNovaTV/default")
+
+    factory.updateHeaders(
+      mapOf("user-agent" to "   "),
+      defaultUserAgent = "StreamNovaTV/default"
+    )
+    assertEquals("StreamNovaTV/default", factory.currentUserAgent)
+  }
+
+  @Test
   fun `la factory resta riutilizzabile e crea una DataSource per ogni richiesta`() {
     val factory = PlayerHttpDataSourceFactory(initialUserAgent = "StreamNovaTV/test")
     val httpFactory = factory.asFactory()

@@ -56,6 +56,7 @@ data class TmdbMultiSearchResultDto(
   @Json(name = "vote_average") val voteAverage: Float? = null,
   @Json(name = "vote_count") val voteCount: Int? = null,
   @Json(name = "genre_ids") val genreIds: List<Int>? = emptyList(),
+  @Json(name = "original_language") val originalLanguage: String? = null,
   val popularity: Float? = null
 )
 
@@ -229,6 +230,17 @@ data class TmdbCollectionDetailDto(
   @Json(name = "poster_path") val posterPath: String? = null,
   @Json(name = "backdrop_path") val backdropPath: String? = null,
   val parts: List<TmdbMovieDto>? = emptyList()
+)
+
+/**
+ * Risposta `search/collection`: collezioni/franchise che corrispondono al testo.
+ * Usata dalla ricerca "saga:<nome>" (es. "saga:Harry Potter").
+ */
+data class TmdbCollectionSearchResponseDto(
+  val page: Int? = null,
+  val results: List<TmdbCollectionDto>? = emptyList(),
+  @Json(name = "total_results") val totalResults: Int? = null,
+  @Json(name = "total_pages") val totalPages: Int? = null
 )
 
 data class TmdbPersonDetailDto(
@@ -824,6 +836,14 @@ interface TmdbApiService {
     @Query("api_key") apiKey: String,
     @Query("language") language: String = "it-IT"
   ): TmdbCollectionDetailDto
+
+  /** Ricerca collezioni/franchise per nome (ricerca "saga:" della Ricerca evoluta). */
+  @GET("search/collection")
+  suspend fun searchCollections(
+    @Query("api_key") apiKey: String,
+    @Query("query") query: String,
+    @Query("language") language: String = "it-IT"
+  ): TmdbCollectionSearchResponseDto
 }
 
 object TmdbApiClient {

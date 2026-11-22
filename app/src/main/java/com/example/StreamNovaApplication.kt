@@ -5,6 +5,7 @@ import android.os.Build
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
+import com.example.data.addonhealth.AddonHealthRepository
 import com.example.data.image.ImageCache
 import com.example.data.local.StreamNovaDatabase
 import com.example.data.prefs.AppSettingsRepository
@@ -18,6 +19,7 @@ import com.example.data.repository.SimklSyncManager
 import com.example.data.repository.LastWorkingStreamRepository
 import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.provider.ProviderCatalogResolvers
+import com.example.data.subtitles.SubtitleSyncRepository
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -93,8 +95,14 @@ class StreamNovaApplication : Application(), ImageLoaderFactory {
     StartupTrace.trace("persistent_subtitle_repository_init") {
       PersistentSubtitleRepository.init(this, profileId)
     }
+    // Offset sottotitoli per contenuto (Subtitle Engine Upgrade), personali per profilo.
+    StartupTrace.trace("subtitle_sync_repository_init") {
+      SubtitleSyncRepository.init(this, profileId)
+    }
     StartupTrace.trace("simkl_repository_init") { SimklRepository.init(this, profileId = profileId) }
     StartupTrace.trace("stremio_addon_repository_init") { StremioAddonRepository.init() }
+    // Addon Health Monitor: ripristina i report dell'ultimo health-check.
+    StartupTrace.trace("addon_health_repository_init") { AddonHealthRepository.init() }
     // Contesto per il resolver catalogo -> provider: senza questo la sorgente
     // REGISTRY (res/raw/stremio_provider_bindings.json) resterebbe sempre vuota,
     // mentre i binding USER letti da DataStore funzionerebbero lo stesso.

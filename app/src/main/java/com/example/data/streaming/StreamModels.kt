@@ -313,8 +313,11 @@ object TorBoxSourceOrdering {
     if (source.isItalian) 1 else 0
 
   /** Score risoluzione basato sulle preferenze utente. */
-  internal fun resolutionScore(source: StreamSource, preferredRes: PreferredResolution): Int {
-    val height = resolutionHeight(source)
+  internal fun resolutionScore(source: StreamSource, preferredRes: PreferredResolution): Int =
+    resolutionScoreForHeight(resolutionHeight(source), preferredRes)
+
+  /** Score risoluzione per un'altezza già nota (0 = ignota). */
+  internal fun resolutionScoreForHeight(height: Int, preferredRes: PreferredResolution): Int {
     return when (preferredRes) {
       PreferredResolution.FULL_HD_1080P -> when {
         height == 1080 -> 100

@@ -126,6 +126,8 @@ data class SyncPlaybackSettingsPayload(
   val subtitleBackground: String,
   val subtitleOpacity: String,
   val subtitlePosition: String,
+  /** Passo dei pulsanti ± dell'offset sottotitoli (nome enum, null nelle build precedenti). */
+  val subtitleOffsetStep: String? = null,
   val loadingOverlayEnabled: Boolean,
   val loadingStatusEnabled: Boolean,
   val pauseOverlayEnabled: Boolean,

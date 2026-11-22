@@ -41,6 +41,8 @@ import com.example.data.prefs.SubtitleOpacity
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.PersistentSubtitleRepository
+import com.example.data.prefs.SubtitleContentKey
+import com.example.data.subtitles.SubtitleSyncRepository
 import com.example.data.prefs.PersistentSubtitleSelection
 import com.example.data.prefs.PersistentSubtitleStore
 import com.example.data.image.ImageCache
@@ -65,9 +67,13 @@ import com.example.data.stremio.StremioAddonRepository
 import com.example.data.stremio.StremioCatalogEngine
 import com.example.data.stremio.StremioLiveChannelClassifier
 import com.example.data.streaming.SourceAvailability
+import com.example.data.streaming.StremioHttpStreamClassifier
 import com.example.data.streaming.StreamManager
 import com.example.data.streaming.StreamResult
 import com.example.data.streaming.StreamSource
+import com.example.data.streaming.AddonTrust
+import com.example.data.streaming.SmartSourcePolicy
+import com.example.data.streaming.SmartSourceSelector
 import com.example.data.streaming.TorBoxSourceOrdering
 import com.example.data.streaming.diagnostics.StreamDiagnosticSinkFactory
 import com.example.data.torbox.TorBoxRepository
@@ -224,10 +230,27 @@ internal suspend fun resolveAutoPickSource(
   streamingEngineMode: StreamingEngineMode,
   isDebridConfigured: Boolean,
   season: Int?,
-  episode: Int?
+  episode: Int?,
+  settings: com.example.data.prefs.PlaybackSettings? = null,
+  preferredProviderId: String? = null,
+  addonTrust: Map<String, AddonTrust> = emptyMap()
 ): StreamSource? {
+  // Smart Source Selection: il ranking puro decide l'ORDINE di tentativo
+  // (verifica di riproducibilità, cache, risoluzione preferita, lingua, codec,
+  // affidabilità addon). La riproducibilità effettiva resta verificata QUI come
+  // prima: il ranking non dichiara mai "riproducibile" ciò che non lo è.
+  val ranked = SmartSourceSelector.rank(
+    sources = sources,
+    policy = SmartSourcePolicy.fromSettings(
+      settings = settings,
+      preferredProviderId = preferredProviderId,
+      addonTrust = addonTrust
+    )
+  ).filterNot { it.isUnavailable }
+
   val useDebridUnlock = streamingEngineMode == StreamingEngineMode.DEBRID_TORBOX && isDebridConfigured
-  for (candidate in sources) {
+  for (score in ranked) {
+    val candidate = score.source
     val playable = if (useDebridUnlock && candidate.infoHash != null && candidate.streamUrl == null) {
       // Caso A: Debrid attiva e configurata -> sblocco del primo flusso Debrid.
       // Stagione/episodio vengono passati ESPLICITAMENTE: lo sblocco deve riguardare
@@ -245,6 +268,7 @@ internal suspend fun resolveAutoPickSource(
     }
     // Caso B: solo link HTTP(S) diretti riproducibili ("non torrent grezzo").
     if (playable != null && StreamManager.isPlayableDirectUrl(playable.streamUrl.orEmpty())) {
+      Log.i(TAG, "Smart Source Selection: ${SmartSourceSelector.explain(score)}")
       return playable
     }
   }
@@ -282,6 +306,12 @@ internal const val NEXT_EPISODE_FAST_PATH_TIMEOUT_MS = 3_500L
  * e si mostra il dialog di selezione manuale delle sorgenti. Mai spinner infinito.
  */
 internal const val NEXT_EPISODE_RESOLUTION_TIMEOUT_MS = 10_000L
+
+/**
+ * Limite assoluto dell'offset sottotitoli (±10 s), condiviso da player, UI e
+ * persistenza per contenuto ([SubtitleSyncRepository]).
+ */
+internal const val MAX_SUBTITLE_OFFSET_MS = 10_000L
 
 /**
  * Timeout dello sblocco del link Debrid salvato durante il riuso da
@@ -556,7 +586,9 @@ enum class SidebarSection(val title: String) {
   FILM("Film"),
   SERIE_TV("Serie TV"),
   I_MIEI_CONTENUTI("I miei contenuti"),
+  NOVITA("Nuovi episodi"),
   CERCA("Cerca"),
+  SCEGLI_PER_ME("Non so cosa guardare"),
   ADDON("Addon"),
   IMPOSTAZIONI("Impostazioni")
 }
@@ -834,6 +866,20 @@ private const val ONLINE_SUBTITLES_STORAGE_DIR = "online_subtitles"
  * successivo (o alla riapertura del provider) la pagina viene ritentata.
  */
 private const val PROVIDER_PAGE_RETRY_COOLDOWN_MS = 2_000L
+
+/**
+ * Stato del New Episodes Center.
+ * - [Idle]: nessuna scansione in questa sessione.
+ * - [Loading]: scansione TMDB in corso.
+ * - [Ready]: risultato completo (anche vuoto) della scansione.
+ * - [Error]: errore imprevisto (la UI mostra il messaggio e consente il retry).
+ */
+sealed interface NewEpisodesUiState {
+  object Idle : NewEpisodesUiState
+  object Loading : NewEpisodesUiState
+  data class Ready(val result: com.example.data.library.NewEpisodesResult) : NewEpisodesUiState
+  data class Error(val message: String) : NewEpisodesUiState
+}
 
 class StreamNovaViewModel(
   /**
@@ -1622,6 +1668,14 @@ class StreamNovaViewModel(
   private var onlineSubtitlesSearchJob: Job? = null
   private var onlineSubtitleDownloadJob: Job? = null
   private var persistentSubtitleRestoreJob: Job? = null
+
+  /**
+   * Chiave canonica del contenuto in riproduzione per l'offset sottotitoli
+   * persistente ([SubtitleSyncRepository]): film = media.id, episodio =
+   * `media.id::season:N:episode:M`. Null quando nessun player è aperto.
+   */
+  private var currentSubtitleSyncKey: String? = null
+  private var subtitleOffsetLoadJob: Job? = null
 
   /** Ultimo sottotitolo online richiesto: alla base dell'azione "Riprova". */
   private var lastSelectedOnlineSubtitle: Subtitle? = null
@@ -2532,6 +2586,137 @@ class StreamNovaViewModel(
     _searchFilter.value = filter
   }
 
+  // ── Ricerca cinematografica evoluta ─────────────────────────────────────
+  /** Filtri avanzati scelti nel pannello (genere, anno, voto, lingua, tipo, ...). */
+  private val _searchRefinement = MutableStateFlow(com.example.data.search.SearchRefinement())
+  val searchRefinement: kotlinx.coroutines.flow.StateFlow<com.example.data.search.SearchRefinement> =
+    _searchRefinement.asStateFlow()
+
+  fun setSearchRefinement(refinement: com.example.data.search.SearchRefinement) {
+    _searchRefinement.value = refinement
+  }
+
+  fun clearSearchRefinement() {
+    _searchRefinement.value = com.example.data.search.SearchRefinement()
+  }
+
+  /** Ricerche recenti (Nova Discovery), più recente in testa. */
+  private val _recentSearches = MutableStateFlow<List<String>>(emptyList())
+  val recentSearches: kotlinx.coroutines.flow.StateFlow<List<String>> = _recentSearches.asStateFlow()
+
+  @Volatile
+  private var recentSearchesLoaded = false
+
+  /**
+   * Ripristina le ricerche recenti dal DataStore (idempotente). La schermata
+   * Ricerca la invoca all'apertura: nessun suggerimento viene inventato se il
+   * file non è ancora leggibile.
+   */
+  suspend fun loadRecentSearches() {
+    if (recentSearchesLoaded) return
+    AppSettingsRepository.awaitLoaded()
+    _recentSearches.value = com.example.data.search.RecentSearchesCodec
+      .decode(AppSettingsRepository.recentSearchesJson.value)
+    recentSearchesLoaded = true
+  }
+
+  /** Registra una ricerca confermata (INVIO o click su un suggerimento). */
+  fun recordSearchQuery(query: String) {
+    val updated = com.example.data.search.RecentSearchesCodec.insert(_recentSearches.value, query)
+    if (updated == _recentSearches.value) return
+    _recentSearches.value = updated
+    AppSettingsRepository.setRecentSearchesJson(
+      com.example.data.search.RecentSearchesCodec.encode(updated)
+    )
+  }
+
+  /** Rimuove la cronologia delle ricerche (azione esplicita dell'utente). */
+  fun clearRecentSearches() {
+    _recentSearches.value = emptyList()
+    AppSettingsRepository.setRecentSearchesJson("[]")
+  }
+
+  // ── "Non so cosa guardare" / Scopri qualcosa di nuovo ────────────────────
+  private val _watchMeFilters = MutableStateFlow(com.example.data.discovery.WatchMeFilters.default())
+  val watchMeFilters: kotlinx.coroutines.flow.StateFlow<com.example.data.discovery.WatchMeFilters> =
+    _watchMeFilters.asStateFlow()
+
+  private val _watchMeSuggestion =
+    MutableStateFlow<com.example.data.discovery.WatchMeSuggestion?>(null)
+  val watchMeSuggestion: kotlinx.coroutines.flow.StateFlow<com.example.data.discovery.WatchMeSuggestion?> =
+    _watchMeSuggestion.asStateFlow()
+
+  fun setWatchMeFilters(filters: com.example.data.discovery.WatchMeFilters) {
+    _watchMeFilters.value = filters
+  }
+
+  /**
+   * Sceglie un titolo tra quelli compatibili con gusti, libreria e filtri.
+   *
+   * La selezione è pesata (non un massimo fisso): [seed] diverso può proporre un
+   * titolo diverso, ma è deterministico per test e riproducibilità.
+   */
+  fun requestWatchMeSuggestion(seed: Long = System.currentTimeMillis()) {
+    val pool = watchMePool()
+    val taste = com.example.data.discovery.TasteProfileBuilder.build(pool)
+    _watchMeSuggestion.value = com.example.data.discovery.WatchMeDecider.pick(
+      items = pool,
+      filters = _watchMeFilters.value,
+      taste = taste,
+      seed = seed
+    )
+  }
+
+  /** "Scopri qualcosa di nuovo": titolo ad alta qualità mai visto. */
+  fun discoverSomethingNew(seed: Long = System.currentTimeMillis()) {
+    val pool = watchMePool()
+    val taste = com.example.data.discovery.TasteProfileBuilder.build(pool)
+    _watchMeSuggestion.value = com.example.data.discovery.WatchMeDecider.discover(
+      items = pool,
+      taste = taste,
+      seed = seed
+    )
+  }
+
+  fun clearWatchMeSuggestion() {
+    _watchMeSuggestion.value = null
+  }
+
+  /** Pool: catalogo in memoria + preferiti, deduplicato per id. */
+  private fun watchMePool(): List<MediaItem> =
+    (MediaRepository.mediaList.value + MediaRepository.getFavorites())
+      .distinctBy { it.id }
+
+  // ── New Episodes Center ─────────────────────────────────────────────────
+  private val _newEpisodesState = MutableStateFlow<NewEpisodesUiState>(NewEpisodesUiState.Idle)
+  val newEpisodesState: kotlinx.coroutines.flow.StateFlow<NewEpisodesUiState> =
+    _newEpisodesState.asStateFlow()
+
+  private var newEpisodesJob: Job? = null
+
+  /**
+   * Scansiona le serie seguite e calcola i nuovi episodi andati in onda.
+   * Nessuna scrittura su libreria/progressi: il centro è in sola lettura.
+   */
+  fun refreshNewEpisodes(context: Context? = null) {
+    val ctx = context?.applicationContext ?: appContext ?: return
+    if (_newEpisodesState.value is NewEpisodesUiState.Loading) return
+    newEpisodesJob?.cancel()
+    _newEpisodesState.value = NewEpisodesUiState.Loading
+    newEpisodesJob = viewModelScope.launch {
+      val result = runCatching {
+        com.example.data.library.NewEpisodesRepository.load(ctx)
+      }
+      _newEpisodesState.value = result.fold(
+        onSuccess = { NewEpisodesUiState.Ready(it) },
+        onFailure = { error ->
+          Log.w(TAG, "Scansione nuovi episodi fallita: ${error.message}")
+          NewEpisodesUiState.Error(error.message ?: "Scansione non riuscita")
+        }
+      )
+    }
+  }
+
   // Impostazioni RIPRODUZIONE persistenti (DataStore Preferences).
   val playbackSettings: StateFlow<PlaybackSettings> = SettingsRepository.settings
 
@@ -2576,6 +2761,9 @@ class StreamNovaViewModel(
 
   fun setSubtitlePosition(position: SubtitlePosition) =
     SettingsRepository.setSubtitlePosition(position)
+
+  fun setSubtitleOffsetStep(step: com.example.data.prefs.SubtitleOffsetStep) =
+    SettingsRepository.setSubtitleOffsetStep(step)
 
   // ── OVERLAY E AVVISI DI RIPRODUZIONE ───────────────────────────────
 
@@ -3112,27 +3300,159 @@ class StreamNovaViewModel(
     _addonMessage.value = null
   }
 
-  @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
-  val filteredSearchResults: StateFlow<List<MediaItem>> = combine(_searchQuery, _searchFilter) { query, filter ->
-    query to filter
+  // ── Addon Health Monitor ────────────────────────────────────────────────
+  /** Ultimi report di salute degli addon (persistiti tra sessioni). */
+  val addonHealthReports: kotlinx.coroutines.flow.StateFlow<List<com.example.data.addonhealth.AddonHealthReport>> =
+    com.example.data.addonhealth.AddonHealthRepository.reports
+
+  /** `true` mentre l'health-check è in corso. */
+  val addonHealthChecking: kotlinx.coroutines.flow.StateFlow<Boolean> =
+    com.example.data.addonhealth.AddonHealthRepository.isChecking
+
+  /** Timestamp dell'ultimo health-check completato (0 = mai). */
+  val addonHealthLastCheckedAt: kotlinx.coroutines.flow.StateFlow<Long> =
+    com.example.data.addonhealth.AddonHealthRepository.lastCheckedAt
+
+  /**
+   * Avvia un health-check di TUTTI gli addon installati. Il lavoro avviene nel
+   * repository (parallelo, timeout per addon); qui si gestiscono solo il ciclo di
+   * vita e l'errore inatteso, che non deve mai interrompere la schermata Addon.
+   */
+  fun checkAddonHealth() {
+    if (com.example.data.addonhealth.AddonHealthRepository.isChecking.value) return
+    viewModelScope.launch {
+      runCatching { com.example.data.addonhealth.AddonHealthRepository.checkAll() }
+        .onFailure { error ->
+          Log.w(TAG, "Addon health-check fallito: ${error.message}")
+          _addonMessage.value = "Verifica addon non riuscita: ${error.message ?: "errore sconosciuto"}"
+        }
+    }
   }
-    .debounce { (query, _) -> if (query.isBlank()) 0L else 400L }
+
+  @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+  val filteredSearchResults: StateFlow<List<MediaItem>> = combine(
+    _searchQuery,
+    _searchFilter,
+    _searchRefinement
+  ) { query, filter, refinement -> Triple(query, filter, refinement) }
+    .debounce { (query, _, _) -> if (query.isBlank()) 0L else 400L }
     .distinctUntilChanged()
-    .flatMapLatest { (query, filter) ->
-      combine(
-        MediaRepository.searchTmdb(query, filter),
-        stremioSearchFlow(query, filter)
-      ) { tmdbResults, stremioResults ->
-        // Xperience/Stremio disponibile → risultati Stremio in testa; senza risultati
-        // Stremio la lista TMDB resta esattamente quella precedente.
-        if (stremioResults.isEmpty()) {
-          tmdbResults
-        } else {
-          StremioCatalogRepository.deduplicateCrossSource(stremioResults + tmdbResults)
+    .flatMapLatest { (query, filter, refinement) ->
+      val parsed = com.example.data.search.SmartSearchEngine.parse(query)
+      val queryText = if (parsed.personQuery != null) parsed.text else query.trim()
+      val effectiveRefinement = parsed.refinement.mergedWith(refinement)
+
+      if (parsed.sagaQuery != null) {
+        // Ricerca per SAGA: prima collezione TMDB corrispondente → tutti i suoi
+        // film. I filtri del pannello restano applicati.
+        flow { emit(searchSaga(parsed.sagaQuery, effectiveRefinement)) }
+      } else if (parsed.personQuery != null) {
+        // Ricerca per attore/regista: nome → persona TMDB → filmografia. Un
+        // eventuale testo residuo filtra la filmografia per titolo.
+        flow { emit(searchPersonFilmography(parsed.personQuery, filter, effectiveRefinement, queryText)) }
+      } else {
+        combine(
+          MediaRepository.searchTmdb(queryText, filter),
+          stremioSearchFlow(queryText, filter)
+        ) { tmdbResults, stremioResults ->
+          // Xperience/Stremio disponibile → risultati Stremio in testa; senza risultati
+          // Stremio la lista TMDB resta esattamente quella precedente.
+          val merged = if (stremioResults.isEmpty()) {
+            tmdbResults
+          } else {
+            StremioCatalogRepository.deduplicateCrossSource(stremioResults + tmdbResults)
+          }
+          // Fuzzy locale: recupera titoli scritti male che la ricerca `contains`
+          // non trova (es. "interstelar" → "Interstellar"). I risultati locali
+          // hanno la precedenza nella lista, mai duplicati.
+          val localFuzzy = if (queryText.length >= 3) {
+            com.example.data.search.SmartSearchEngine.fuzzyMatches(
+              items = MediaRepository.mediaList.value,
+              query = queryText,
+              limit = 8
+            )
+          } else {
+            emptyList()
+          }
+          com.example.data.search.SmartSearchEngine.refine(
+            items = localFuzzy + merged,
+            queryText = queryText,
+            refinement = effectiveRefinement
+          )
         }
       }
     }
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+  /**
+   * Ricerca per SAGA: collezione TMDB → film che ne fanno parte, con i filtri
+   * del pannello applicati. Nessun risultato inventato se la saga non esiste.
+   */
+  private suspend fun searchSaga(
+    saga: String,
+    refinement: com.example.data.search.SearchRefinement
+  ): List<MediaItem> {
+    val parts = try {
+      MediaRepository.searchCollectionParts(saga)
+    } catch (e: Exception) {
+      Log.w(TAG, "Ricerca saga '$saga' fallita: ${e.message}")
+      emptyList()
+    }
+    return com.example.data.search.SmartSearchEngine.refine(
+      items = parts,
+      queryText = "",
+      refinement = refinement
+    )
+  }
+
+  /**
+   * Filmografia di una persona per la ricerca `attore:` / `regista:`.
+   *
+   * Usa gli endpoint già esistenti (ricerca persona + credits combinati). La
+   * filmografia include le opere in cui la persona appare come interprete o
+   * regista: il ruolo scritto nella query serve a identificare il nome, non a
+   * filtrare i credit (che TMDB restituisce già combinati).
+   */
+  private suspend fun searchPersonFilmography(
+    person: com.example.data.search.PersonQuery,
+    filter: SearchTypeFilter,
+    refinement: com.example.data.search.SearchRefinement,
+    residualText: String = ""
+  ): List<MediaItem> {
+    val personId = try {
+      MediaRepository.searchPersonByName(person.name)
+    } catch (e: Exception) {
+      Log.w(TAG, "Ricerca persona '${person.name}' fallita: ${e.message}")
+      null
+    } ?: return emptyList()
+    val credits = try {
+      MediaRepository.fetchPersonCombinedCredits(personId)
+    } catch (e: Exception) {
+      Log.w(TAG, "Filmografia di '${person.name}' non disponibile: ${e.message}")
+      return emptyList()
+    }
+    val typeFiltered = when (filter) {
+      SearchTypeFilter.FILM -> credits.filter { it.type == MediaType.FILM }
+      SearchTypeFilter.SERIE_TV -> credits.filter { it.type == MediaType.SERIE_TV }
+      SearchTypeFilter.ALL -> credits
+    }
+    // Testo residuo (es. "attore:Tom Hanks salvate"): filtra per titolo, senza
+    // pretendere una corrispondenza fuzzy (i credits sono già della persona).
+    val textFiltered = if (residualText.isBlank()) {
+      typeFiltered
+    } else {
+      val needle = com.example.data.search.SmartSearchEngine.normalize(residualText)
+      typeFiltered.filter { candidate ->
+        com.example.data.search.SmartSearchEngine.normalize(candidate.title).contains(needle) ||
+          com.example.data.search.SmartSearchEngine.normalize(candidate.originalTitle).contains(needle)
+      }
+    }
+    return com.example.data.search.SmartSearchEngine.refine(
+      items = textFiltered,
+      queryText = "",
+      refinement = refinement
+    )
+  }
 
   /**
    * Ricerca testuale sui cataloghi Stremio/Xperience attivi tramite l'extra `search`.
@@ -4257,8 +4577,12 @@ class StreamNovaViewModel(
 
     streamJob = viewModelScope.launch(ioDispatcher) {
       val sources = try {
+        // Compatibilità proxy HTTP: gli URL dinamici dei canali (senza estensione)
+        // vengono classificati dal contenuto (HLS vs progressivo) prima di arrivare
+        // al player. Nessun URL viene alterato.
         StremioAddonRepository.fetchChannelStreams(addon, catalogId, mediaId)
           .mapNotNull { StreamManager.directStreamSource(it) }
+          .let { StremioHttpStreamClassifier.refineSources(it) }
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -4437,6 +4761,20 @@ class StreamNovaViewModel(
       isReusedStream = isReusedStream,
       currentSource = source
     )
+
+    // Subtitle Engine Upgrade: ripristino dell'offset salvato per QUESTO contenuto.
+    // La lettura da disco avviene in background e non blocca l'avvio: appena
+    // disponibile viene applicata al renderer testo (nessun re-prepare).
+    val subtitleSyncKey = SubtitleContentKey.forContent(finalMedia.id, finalEpisode)
+    currentSubtitleSyncKey = subtitleSyncKey
+    subtitleOffsetLoadJob?.cancel()
+    subtitleOffsetLoadJob = viewModelScope.launch(ioDispatcher) {
+      val savedOffset = SubtitleSyncRepository.offsetOfAwait(subtitleSyncKey)
+      if (currentSubtitleSyncKey == subtitleSyncKey && savedOffset != 0) {
+        val clamped = savedOffset.toLong().coerceIn(-MAX_SUBTITLE_OFFSET_MS, MAX_SUBTITLE_OFFSET_MS)
+        _playbackState.update { it.copy(subtitleOffsetMs = clamped) }
+      }
+    }
     tracePlayback(
       traceId,
       "PLAYER_MEDIA_ITEM_SET",
@@ -5588,7 +5926,10 @@ class StreamNovaViewModel(
           streamingEngineMode = mode,
           isDebridConfigured = DebridServiceRouter.isConfigured(),
           season = season,
-          episode = epNumber
+          episode = epNumber,
+          settings = playbackSettings.value,
+          preferredProviderId = preferredHttpProviderId,
+          addonTrust = com.example.data.addonhealth.AddonHealthRepository.trustByAddonIdentity()
         )
 
         if (isNextEpisode) {
@@ -6198,6 +6539,11 @@ class StreamNovaViewModel(
       subtitleOffsetMs = 0L,
       isPlaying = false
     )
+    // Player chiuso: l'offset persistente del contenuto è già salvato; la chiave
+    // corrente non deve più ricevere scritture da una sessione terminata.
+    currentSubtitleSyncKey = null
+    subtitleOffsetLoadJob?.cancel()
+    subtitleOffsetLoadJob = null
     _onlineSubtitles.value = emptyList()
     _availableSources.value = emptyList()
     // Sessione chiusa: la lista dei candidati del selettore non e' piu' valida.
@@ -7314,8 +7660,10 @@ fun backToBrowsing() {
     _playbackState.update { it.copy(selectedResolution = res) }
   }
   fun setSubtitleOffsetMs(offsetMs: Long) {
-    val clamped = offsetMs.coerceIn(-10_000L, 10_000L)
+    val clamped = offsetMs.coerceIn(-MAX_SUBTITLE_OFFSET_MS, MAX_SUBTITLE_OFFSET_MS)
     _playbackState.update { it.copy(subtitleOffsetMs = clamped) }
+    // Persistenza per contenuto: la correzione sopravvive a chiusura player e riavvio.
+    currentSubtitleSyncKey?.let { key -> SubtitleSyncRepository.setOffset(key, clamped.toInt()) }
   }
 
   fun adjustSubtitleOffsetMs(deltaMs: Long) {
@@ -7324,7 +7672,8 @@ fun backToBrowsing() {
   }
 
   fun resetSubtitleOffsetMs() {
-    setSubtitleOffsetMs(0L)
+    _playbackState.update { it.copy(subtitleOffsetMs = 0L) }
+    currentSubtitleSyncKey?.let { key -> SubtitleSyncRepository.clear(key) }
   }
 
   /**

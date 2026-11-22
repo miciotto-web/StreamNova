@@ -12,6 +12,7 @@ import com.example.data.prefs.SettingsRepository
 import com.example.data.prefs.StreamingEngineMode
 import com.example.data.prefs.SubtitleBackground
 import com.example.data.prefs.SubtitleOpacity
+import com.example.data.prefs.SubtitleOffsetStep
 import com.example.data.prefs.SubtitlePosition
 import com.example.data.prefs.SubtitleSize
 import com.example.data.prefs.TargetBufferOption
@@ -230,6 +231,13 @@ object SyncConfigApplier {
     SettingsRepository.setSubtitlePosition(
       syncEnumFromName(SubtitlePosition.entries.toTypedArray(), p.subtitlePosition, SubtitlePosition.BOTTOM)
     )
+    // Campo opzionale (assente nei payload delle build precedenti): in quel caso
+    // il valore locale resta invariato, non viene forzato un default.
+    p.subtitleOffsetStep?.let { raw ->
+      SubtitleOffsetStep.entries.firstOrNull { it.name == raw }?.let { step ->
+        SettingsRepository.setSubtitleOffsetStep(step)
+      }
+    }
     SettingsRepository.setLoadingOverlayEnabled(p.loadingOverlayEnabled)
     SettingsRepository.setLoadingStatusEnabled(p.loadingStatusEnabled)
     SettingsRepository.setPauseOverlayEnabled(p.pauseOverlayEnabled)

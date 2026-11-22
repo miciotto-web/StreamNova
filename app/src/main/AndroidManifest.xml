@@ -28,7 +28,15 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:banner="@drawable/tv_banner_16x9"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MyApplication">
+        android:theme="@style/Theme.MyApplication"
+        android:usesCleartextTraffic="true">
+        <!--
+          Cleartext HTTP consentito (decisione esplicita del 2026-11-21): gli addon
+          Stremio possono restituire stream proxy su http:// in chiaro; con
+          targetSdk 36 il blocco di default avrebbe reso quelle sorgenti
+          irriproducibili (ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED). Stesso
+          comportamento del client Stremio Android.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"

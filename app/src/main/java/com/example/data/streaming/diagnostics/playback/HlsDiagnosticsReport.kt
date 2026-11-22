@@ -96,7 +96,29 @@ data class HlsDiagnosticsReport(
   /** Durata totale osservata della sessione. */
   val totalDurationMs: Long,
   /** Diagnosi finale della sessione: null se la riproduzione non ha segnalato problemi. */
-  val finalDiagnosis: PlaybackDiagnosis?
+  val finalDiagnosis: PlaybackDiagnosis?,
+
+  // ── Nova Playback Inspector (metriche live, tutte opzionali) ─────────────
+  /** Posizione corrente di riproduzione in ms (-1 = mai osservata). */
+  val positionMs: Long = -1L,
+  /** Posizione bufferizzata in ms (-1 = mai osservata). */
+  val bufferedPositionMs: Long = -1L,
+  /** Durata del contenuto in ms (-1 = sconosciuta). */
+  val durationMs: Long = -1L,
+  /** Secondi di buffer davanti alla posizione corrente, se calcolabili. */
+  val bufferAheadMs: Long? = null,
+  /** Stima della banda misurata dal player (bit/s, -1 = non disponibile). */
+  val bandwidthEstimateBps: Long = -1L,
+  /** Throughput medio dei segmenti riusciti (byte/s), null = nessun campione. */
+  val throughputBps: Long? = null,
+  /** Frame video scartati dal decoder nella sessione. */
+  val droppedVideoFrames: Long = 0L,
+  /** Formato della traccia video attiva, se osservato. */
+  val videoTrack: ObservedTrackFormat? = null,
+  /** Formato della traccia audio attiva, se osservata. */
+  val audioTrack: ObservedTrackFormat? = null,
+  /** Formato della traccia sottotitoli attiva, se osservata. */
+  val subtitleTrack: ObservedTrackFormat? = null
 ) {
   /** Tipo di playlist osservato dal parser HLS. */
   enum class PlaylistKind { MASTER, MEDIA, UNKNOWN, NOT_HLS }

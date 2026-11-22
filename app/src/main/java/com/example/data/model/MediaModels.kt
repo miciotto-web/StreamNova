@@ -159,6 +159,15 @@ data class MediaItem(
   val logoUrl: String? = null,
   val tmdbId: Int? = null,
   val imdbId: String? = null,
+  /**
+   * Lingua originale dichiarata da TMDB (`original_language`, es. "it", "en", "ja").
+   *
+   * "" = non nota: le schede ricostruite dalla cache Room e i cataloghi addon non
+   * conservano il dato. Il filtro lingua della ricerca applica il vincolo SOLO ai
+   * titoli con metadato noto (nessun risultato viene scartato per un dato
+   * mancante), coerentemente con la regola "nessun metadato inventato".
+   */
+  val originalLanguage: String = "",
   val type: MediaType = MediaType.FILM,
   val year: Int = 2024,
   /**

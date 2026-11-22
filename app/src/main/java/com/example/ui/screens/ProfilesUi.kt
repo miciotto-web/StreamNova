@@ -126,9 +126,12 @@ enum class ProfileScreen {
  * Mostra il profilo attivo e l'accesso alla gestione. Il flusso completo vive in un
  * [Dialog] a finestra intera ([ProfilesOverlayHost]): può quindi essere composto dentro
  * la LazyColumn delle Impostazioni senza essere tagliato o scorrere con essa.
+ *
+ * [firstRowFocusRequester] (opzionale) aggancia la PRIMA riga della sezione: le
+ * Impostazioni lo usano per portare il focus nel contenuto all'ingresso della schermata.
  */
 @Composable
-fun ProfilesSection() {
+fun ProfilesSection(firstRowFocusRequester: FocusRequester? = null) {
   val profiles by ProfilesRepository.profiles.collectAsState()
   val activeProfileId by ProfilesRepository.activeProfileId.collectAsState()
   val active = profiles.firstOrNull { it.id == activeProfileId }
@@ -140,7 +143,8 @@ fun ProfilesSection() {
       title = active?.displayName() ?: stringResource(R.string.profiles_default_name),
       value = stringResource(R.string.profiles_active_label),
       showChevron = true,
-      onClick = { overlay = ProfileScreen.PICKER }
+      onClick = { overlay = ProfileScreen.PICKER },
+      modifier = firstRowFocusRequester?.let { Modifier.focusRequester(it) } ?: Modifier
     )
     SettingsRow(
       icon = Icons.Default.ManageAccounts,

@@ -4085,6 +4085,29 @@ object MediaRepository {
    * Restituisce i titoli deduplicati per id TMDB e ordinati per data di uscita
    * (cronologici, come da riferimento visivo); lista vuota in caso di errore.
    */
+  /**
+   * Ricerca per SAGA: trova la collezione TMDB con il nome richiesto e restituisce
+   * i film che ne fanno parte (ordine TMDB, dal primo all'ultimo).
+   *
+   * Nessun risultato inventato: collezione assente o TMDB non configurato = lista
+   * vuota. La ricerca è volutamente limitata alla PRIMA collezione corrispondente
+   * (il nome è l'identità della saga scelta dall'utente).
+   */
+  suspend fun searchCollectionParts(name: String): List<MediaItem> = withContext(Dispatchers.IO) {
+    val query = name.trim()
+    if (query.isBlank()) return@withContext emptyList()
+    val apiKey = getEffectiveApiKey()
+    if (apiKey.isBlank()) return@withContext emptyList()
+    try {
+      val response = TmdbApiClient.service.searchCollections(apiKey, query)
+      val collection = response.results?.firstOrNull() ?: return@withContext emptyList()
+      fetchCollectionItems(collection.id)
+    } catch (e: Exception) {
+      Log.w("MediaRepository", "Ricerca saga '$query' fallita: ${e.message}")
+      emptyList()
+    }
+  }
+
   private suspend fun fetchCollectionItems(collectionId: Int): List<MediaItem> {
     if (collectionId <= 0) return emptyList()
     val cacheKey = "collection_$collectionId"
@@ -5836,6 +5859,7 @@ object MediaRepository {
     return MediaItem(
       id = existing?.id ?: "tmdb_m_${movie.id}",
       tmdbId = movie.id,
+      originalLanguage = movie.originalLanguage.orEmpty(),
       title = titleStr,
       originalTitle = movie.originalTitle ?: "",
       synopsis = movie.overview?.takeIf { it.isNotBlank() } ?: existing?.synopsis ?: "Disponibile su catalogo TMDB in streaming 4K HDR.",
@@ -5887,6 +5911,7 @@ object MediaRepository {
     return MediaItem(
       id = existing?.id ?: "tmdb_tv_${tv.id}",
       tmdbId = tv.id,
+      originalLanguage = tv.originalLanguage.orEmpty(),
       title = titleStr,
       originalTitle = tv.originalName ?: "",
       synopsis = tv.overview?.takeIf { it.isNotBlank() } ?: existing?.synopsis ?: "Serie TV originale disponibile in streaming ad alta definizione.",
@@ -6229,6 +6254,7 @@ object MediaRepository {
     return MediaItem(
       id = existing?.id ?: "tmdb_m_${movie.id}",
       tmdbId = movie.id,
+      originalLanguage = movie.originalLanguage.orEmpty(),
       title = movie.title?.takeIf { it.isNotBlank() } ?: movie.originalTitle ?: "Film TMDB",
       originalTitle = movie.originalTitle ?: "",
       synopsis = movie.overview?.takeIf { it.isNotBlank() } ?: existing?.synopsis ?: "Disponibile su catalogo TMDB in streaming 4K HDR.",
@@ -6284,6 +6310,7 @@ object MediaRepository {
     return MediaItem(
       id = existing?.id ?: "tmdb_tv_${tv.id}",
       tmdbId = tv.id,
+      originalLanguage = tv.originalLanguage.orEmpty(),
       title = tv.name?.takeIf { it.isNotBlank() } ?: tv.originalName ?: "Serie TMDB",
       originalTitle = tv.originalName ?: "",
       synopsis = tv.overview?.takeIf { it.isNotBlank() } ?: existing?.synopsis ?: "Serie TV originale disponibile in streaming ad alta definizione.",

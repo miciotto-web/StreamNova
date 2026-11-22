@@ -149,6 +149,59 @@ class StreamManagerDirectSourceTest {
   }
 
   @Test
+  fun headerProxyConUserAgentMinuscoloVengonoPropagatiIntatti() {
+    // Gli addon proxy dichiarano spesso `user-agent` minuscolo in proxyHeaders:
+    // la propagazione verso il player NON deve normalizzare né scartare la chiave.
+    val source = StreamManager.directStreamSource(
+      candidate(
+        url = "https://cdn/x",
+        headers = mapOf("user-agent" to "UA-proxy", "referer" to "https://ref.example/")
+      )
+    )!!
+    assertEquals("UA-proxy", source.headers["user-agent"])
+    assertEquals("https://ref.example/", source.headers["referer"])
+  }
+
+  // ── Classificazione HLS/progressivo (audit compatibilità proxy HTTP) ────────
+
+  @Test
+  fun urlConEstensioneM3u8DichiaratoHls() {
+    val source = StreamManager.directStreamSource(
+      candidate(url = "https://cdn/movie/master.m3u8")
+    )!!
+    assertEquals("una playlist HLS non è un file progressivo", false, source.isProgressive)
+  }
+
+  @Test
+  fun urlConEstensioneMp4DichiaratoProgressivo() {
+    val source = StreamManager.directStreamSource(
+      candidate(url = "https://cdn/movie/file.mp4")
+    )!!
+    assertEquals(true, source.isProgressive)
+  }
+
+  @Test
+  fun urlProxySenzaEstensioneLasciaIlFlagIndefinito() {
+    // Gli URL dinamici dei proxy non dichiarano il formato: il flag resta null
+    // e StremioHttpStreamClassifier.refineSources lo decide dal CONTENUTO con
+    // una sonda HTTP (test dedicato in StremioHttpStreamClassifierTest).
+    val source = StreamManager.directStreamSource(
+      candidate(url = "https://proxy.example/playback?token=abc")
+    )!!
+    assertNull(source.isProgressive)
+    assertEquals("https://proxy.example/playback?token=abc", source.streamUrl)
+  }
+
+  @Test
+  fun estensioneSoloNellaQueryNonDichiaraIlFormato() {
+    // Un token contenente ".mp4" nella query non dichiara il contenuto.
+    val source = StreamManager.directStreamSource(
+      candidate(url = "https://proxy.example/stream?file=a.mp4")
+    )!!
+    assertNull(source.isProgressive)
+  }
+
+  @Test
   fun cometConDescriptionEFilenameDiventaCardConTitoloFileReale() {
     val source = StreamManager.directStreamSource(
       StremioStreamCandidate(

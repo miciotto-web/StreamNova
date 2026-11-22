@@ -52,6 +52,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -83,6 +84,8 @@ import com.example.ui.components.DebridSourceCardPresentation
 import com.example.ui.components.ProviderConstants
 import com.example.ui.components.QrCodeInfoCard
 import com.example.ui.components.FocusRestoreConfirmation
+import com.example.ui.components.requestFocusWhenAttached
+import com.example.ui.components.SidebarContentExitLink
 import com.example.ui.components.TvFocusBringIntoView
 import com.example.ui.components.TvFocusableBox
 import com.example.ui.components.TextInputDialog
@@ -147,6 +150,32 @@ fun AddonsScreen(
     addButtonFocusRequester.requestFocusConfirmed(addButtonFocusConfirmation)
   }
 
+  // Uscita dalla sidebar verso questa sezione (RIGHT sulla voce, o OK sulla voce che la
+  // seleziona): il focus entra sul bottone «Aggiungi addon», sempre composto, in modo
+  // DETERMINISTICO. La ricerca geometrica con la sidebar aperta non trova candidati
+  // «strict-right» e il ripiego 2D atterra su un'altra voce del menu (difetto: RIGHT da
+  // «Addon» chiudeva la sidebar riportando il focus sull'icona stessa).
+  val addonsUiScope = rememberCoroutineScope()
+  val addonsExitHandler = remember(addButtonFocusRequester, addonsUiScope) {
+    {
+      try {
+        addButtonFocusRequester.requestFocus()
+        true
+      } catch (_: Exception) {
+        // Nodo non ancora agganciato (frame d'apertura): il ripristino prosegue fuori
+        // dal dispatch; l'uscita resta presidiata (nessun ripiego geometrico).
+        addonsUiScope.launch {
+          requestFocusWhenAttached(addButtonFocusRequester, maxAttempts = 6)
+        }
+        true
+      }
+    }
+  }
+  DisposableEffect(addonsExitHandler) {
+    SidebarContentExitLink.attach(addonsExitHandler)
+    onDispose { SidebarContentExitLink.detach(addonsExitHandler) }
+  }
+
   // ── Micro-server locale per la configurazione da smartphone ─────────────
   // Il server resta in ascolto finché la schermata è attiva: il QR Code
   // punta a http://<IP_LOCALE>:8080. Le installazioni arrivate dal telefono
@@ -186,6 +215,21 @@ fun AddonsScreen(
     if (message != null) {
       delay(4000)
       viewModel.clearAddonMessage()
+    }
+  }
+
+  // ── Addon Health Monitor ─────────────────────────────────────────────────
+  // Report persistiti dal repository (ripristinati all'avvio); la mappa per
+  // installId alimenta il badge di stato su ogni card.
+  val healthReports by viewModel.addonHealthReports.collectAsState()
+  val healthChecking by viewModel.addonHealthChecking.collectAsState()
+  val healthLastCheckedAt by viewModel.addonHealthLastCheckedAt.collectAsState()
+  val healthByInstall = remember(healthReports) { healthReports.associateBy { it.installId } }
+  // Primo controllo automatico: se non esiste alcun report salvato (prima apertura
+  // o cache svuotata) il monitor parte da solo quando c'è almeno un addon.
+  LaunchedEffect(addons.size) {
+    if (addons.isNotEmpty() && healthReports.isEmpty() && !healthChecking) {
+      viewModel.checkAddonHealth()
     }
   }
 
@@ -307,6 +351,16 @@ fun AddonsScreen(
         }
       }
 
+      // ── Addon Health Monitor ─────────────────────────────────────────
+      item(key = "addons_health") {
+        AddonHealthSection(
+          reports = healthReports,
+          isChecking = healthChecking,
+          lastCheckedAt = healthLastCheckedAt,
+          onCheck = { viewModel.checkAddonHealth() }
+        )
+      }
+
       // ── Configurazione remota via QR (micro-server locale) ───────────
       item(key = "addons_remote_setup") {
         QrCodeInfoCard(
@@ -354,6 +408,7 @@ fun AddonsScreen(
           addon = addon,
           isLast = index == addons.lastIndex,
           isUpdating = addon.installId in updatingIds,
+          health = healthByInstall[addon.installId],
           userBindings = userBindings,
           resolver = resolver,
           providerNames = providerNames,
@@ -398,6 +453,8 @@ private fun AddonCard(
   addon: InstalledAddon,
   isLast: Boolean,
   isUpdating: Boolean,
+  /** Ultimo report di salute dell'addon (null = mai controllato). */
+  health: com.example.data.addonhealth.AddonHealthReport? = null,
   userBindings: List<ProviderBinding>,
   resolver: ProviderCatalogResolver,
   providerNames: Map<String, String>,
@@ -459,6 +516,19 @@ private fun AddonCard(
               fontWeight = FontWeight.SemiBold,
               modifier = Modifier
                 .background(NovaCyan.copy(alpha = 0.14f), RoundedCornerShape(50))
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+            )
+          }
+          // Badge di salute (Addon Health Monitor): colore + latenza reale.
+          if (health != null && health.status != com.example.data.addonhealth.AddonHealthStatus.UNKNOWN) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+              text = addonHealthBadgeText(health),
+              color = addonHealthColor(health.status),
+              fontSize = 11.sp,
+              fontWeight = FontWeight.SemiBold,
+              modifier = Modifier
+                .background(addonHealthColor(health.status).copy(alpha = 0.14f), RoundedCornerShape(50))
                 .padding(horizontal = 8.dp, vertical = 2.dp)
             )
           }
@@ -1335,4 +1405,180 @@ private fun AddonSwitch(
       )
     }
   }
+}
+
+// ── Addon Health Monitor: sezione di riepilogo ──────────────────────────────
+
+/**
+ * Riepilogo dell'Addon Health Monitor mostrato sopra la lista.
+ *
+ * Mostra SOLO dati reali dell'ultimo controllo (persistito tra sessioni):
+ * conteggi per stato, latenza media, timestamp e i dettagli dei problemi.
+ * Il pulsante "Verifica ora" esegue un health-check parallelo con timeout per
+ * addon; durante il controllo diventa non rientrante ("Verifica…").
+ */
+@Composable
+private fun AddonHealthSection(
+  reports: List<com.example.data.addonhealth.AddonHealthReport>,
+  isChecking: Boolean,
+  lastCheckedAt: Long,
+  onCheck: () -> Unit
+) {
+  val summary = remember(reports) {
+    com.example.data.addonhealth.AddonHealthClassifier.summarize(reports)
+  }
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .background(NovaCardBg, RoundedCornerShape(14.dp))
+      .border(1.dp, NovaDivider, RoundedCornerShape(14.dp))
+      .padding(16.dp)
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Icon(
+        imageVector = Icons.Default.Info,
+        contentDescription = null,
+        tint = NovaCyan,
+        modifier = Modifier.size(18.dp)
+      )
+      Spacer(modifier = Modifier.width(8.dp))
+      Text(
+        text = "Stato addon",
+        color = NovaTextPrimary,
+        fontSize = 16.sp,
+        fontWeight = FontWeight.Bold
+      )
+      Spacer(modifier = Modifier.weight(1f))
+      TvFocusableBox(
+        shape = RoundedCornerShape(50),
+        focusedScale = 1.05f,
+        onClick = { if (!isChecking) onCheck() }
+      ) { isFocused ->
+        Row(
+          modifier = Modifier
+            .background(
+              if (isFocused) NovaCyan.copy(alpha = 0.22f) else NovaCardBgFocused,
+              RoundedCornerShape(50)
+            )
+            .border(
+              1.dp,
+              if (isFocused) NovaCyanBright else NovaDivider,
+              RoundedCornerShape(50)
+            )
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          if (isChecking) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(14.dp),
+              color = NovaCyanBright,
+              strokeWidth = 2.dp
+            )
+          } else {
+            Icon(
+              imageVector = Icons.Default.Refresh,
+              contentDescription = null,
+              tint = if (isFocused) NovaCyanBright else NovaCyan,
+              modifier = Modifier.size(16.dp)
+            )
+          }
+          Text(
+            text = if (isChecking) "Verifica…" else "Verifica ora",
+            color = if (isFocused) NovaCyanBright else NovaTextPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+          )
+        }
+      }
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+    if (reports.isEmpty()) {
+      Text(
+        text = "Nessun controllo eseguito. Verifica la raggiungibilità dei manifest degli addon installati.",
+        color = NovaTextMuted,
+        fontSize = 12.sp
+      )
+    } else {
+      Text(
+        text = addonHealthSummaryLine(summary),
+        color = if (summary.hasProblems) Color(0xFFFFB74D) else NovaGreen,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold
+      )
+      if (summary.averageLatencyMs != null) {
+        Text(
+          text = "Latenza media manifest: ${summary.averageLatencyMs} ms",
+          color = NovaTextMuted,
+          fontSize = 11.sp
+        )
+      }
+      if (lastCheckedAt > 0L) {
+        Text(
+          text = "Ultimo controllo: ${formatHealthTimestamp(lastCheckedAt)}",
+          color = NovaTextMuted,
+          fontSize = 11.sp
+        )
+      }
+      reports.filter { it.isProblem }.take(3).forEach { report ->
+        Text(
+          text = "• ${report.name}: ${report.detail ?: addonHealthStatusLabel(report.status)}",
+          color = NovaRed,
+          fontSize = 11.sp
+        )
+      }
+    }
+  }
+}
+
+private fun addonHealthSummaryLine(
+  summary: com.example.data.addonhealth.AddonHealthSummary
+): String = buildString {
+  append("${summary.healthy} sani")
+  if (summary.degraded > 0) append(" · ${summary.degraded} lenti")
+  if (summary.unreachable > 0) append(" · ${summary.unreachable} non raggiungibili")
+  if (summary.invalid > 0) append(" · ${summary.invalid} manifest non validi")
+  if (summary.disabled > 0) append(" · ${summary.disabled} disattivati")
+}
+
+private fun addonHealthStatusLabel(
+  status: com.example.data.addonhealth.AddonHealthStatus
+): String = when (status) {
+  com.example.data.addonhealth.AddonHealthStatus.HEALTHY -> "Sano"
+  com.example.data.addonhealth.AddonHealthStatus.DEGRADED -> "Lento"
+  com.example.data.addonhealth.AddonHealthStatus.UNREACHABLE -> "Non raggiungibile"
+  com.example.data.addonhealth.AddonHealthStatus.INVALID_MANIFEST -> "Manifest non valido"
+  com.example.data.addonhealth.AddonHealthStatus.DISABLED -> "Disattivato"
+  com.example.data.addonhealth.AddonHealthStatus.UNKNOWN -> "Mai controllato"
+}
+
+private fun addonHealthBadgeText(
+  report: com.example.data.addonhealth.AddonHealthReport
+): String = when (report.status) {
+  com.example.data.addonhealth.AddonHealthStatus.HEALTHY -> "OK · ${report.latencyMs} ms"
+  com.example.data.addonhealth.AddonHealthStatus.DEGRADED -> "Lento · ${report.latencyMs} ms"
+  com.example.data.addonhealth.AddonHealthStatus.UNREACHABLE -> "Offline"
+  com.example.data.addonhealth.AddonHealthStatus.INVALID_MANIFEST -> "Manifest non valido"
+  com.example.data.addonhealth.AddonHealthStatus.DISABLED -> "Disattivato"
+  com.example.data.addonhealth.AddonHealthStatus.UNKNOWN -> ""
+}
+
+@Composable
+private fun addonHealthColor(
+  status: com.example.data.addonhealth.AddonHealthStatus
+): Color = when (status) {
+  com.example.data.addonhealth.AddonHealthStatus.HEALTHY -> NovaGreen
+  com.example.data.addonhealth.AddonHealthStatus.DEGRADED -> Color(0xFFFFB74D)
+  com.example.data.addonhealth.AddonHealthStatus.UNREACHABLE,
+  com.example.data.addonhealth.AddonHealthStatus.INVALID_MANIFEST -> NovaRed
+  com.example.data.addonhealth.AddonHealthStatus.DISABLED,
+  com.example.data.addonhealth.AddonHealthStatus.UNKNOWN -> NovaTextMuted
+}
+
+private fun formatHealthTimestamp(epochMs: Long): String = try {
+  java.text.SimpleDateFormat("HH:mm dd/MM/yyyy", java.util.Locale.ITALY)
+    .format(java.util.Date(epochMs))
+} catch (e: Exception) {
+  "—"
 }
