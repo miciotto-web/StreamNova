@@ -126,6 +126,20 @@
     <init>(...);
 }
 
+# Every enum that Moshi serializes goes through
+# StandardJsonAdapters.EnumJsonAdapter, whose constructor reads each constant
+# FIELD reflectively (Class.getField("HEALTHY")) to pick up @Json(name=...)
+# overrides. The default rules of proguard-android-optimize.txt only keep
+# values()/valueOf() on enums, so R8 renames the constant fields and the first
+# parse of an enum-typed property aborts the app. Hit on a Fire TV with the W12
+# build: NoSuchFieldException: HEALTHY inside AddonHealthReportJsonAdapter at
+# startup (AddonHealth.kt). The same pattern is live in SyncPayload.kt
+# (SyncCategory, SyncDirection) and BackupManager.kt (BackupError), so the rule
+# is package-wide rather than a per-class list that the next enum would forget.
+-keepclassmembers enum com.example.** {
+    <fields>;
+}
+
 # Every Moshi instance in the app is built with
 # Moshi.Builder().add(KotlinJsonAdapterFactory()).build(): every model that is not
 # covered by code generation is mapped through kotlin-reflect, which finds the
