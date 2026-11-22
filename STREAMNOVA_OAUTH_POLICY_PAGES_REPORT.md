@@ -88,39 +88,45 @@ Nessun file esistente è stato modificato o cancellato. Nessun file dell'app (Ko
 3. **Licenza software**: nel repository non c'è file LICENSE; i Termini non dichiarano licenze open del progetto e descrivono un diritto d'uso personale. Se verrà pubblicata una LICENSE, aggiornare il §7.
 4. Lingua dei documenti: **italiano** (lingua dell'app, del repository e degli annunci). Google accetta policy nella lingua dell'app; traduzioni non fornite in questa fase.
 
-## 5. Pubblicazione GitHub Pages — stato
+## 5. Pubblicazione GitHub Pages — configurazione finale (EFFETTUATA)
 
-- **GitHub Pages al momento NON è attivo** sul repository (`has_pages: false`, API `GET /repos/miciotto-web/StreamNova/pages` → 404).
-- Non esisteva alcuna modalità di pubblicazione documentale preesistente: la cartella `docs/` contiene documenti (guida utente, annunci Telegram), non un sito; il file `index.html` alla radice è un'app a sé ("Snake Neon 3.0"), lasciata **intatta** — con Pages dalla radice resterà la landing del sito (sostituibile in futuro a cura del maintainer, fuori dal perimetro di questa attività).
-- Soluzione predisposta (minima e stabile): **Pages da branch `main`, cartella radice**, con Jekyll (default GitHub Pages) + `_config.yml` con `exclude` per mantenere il sito leggero e rapido.
-- URL attesi (coerenti con la richiesta): `https://miciotto-web.github.io/StreamNova/privacy` e `https://miciotto-web.github.io/StreamNova/terms` (permalink Jekyll `/privacy/` e `/terms/`).
-- **Verifiche pre-build effettuate:** nessun file markdown/html tracciato contiene front matter spurio (`---` iniziale) o sintassi Liquid `{{`/`{%` che possano rompere la build Jekyll.
+- **GitHub Pages era disattivato** al momento dell'audit (`has_pages: false`); nessuna modalità di pubblicazione documentale preesistente (`docs/` = documenti, non sito; `index.html` alla radice di main = app "Snake Neon 3.0", lasciata intatta).
+- **Tentativo 1 (non riuscito):** Pages da branch `main`, root, con `_config.yml` (`exclude` contenuti pesanti). Due build consecutive (20:47 e 21:18 UTC del 22/11/2026) **rimaste bloccate in `building`** senza errori né avanzamento, verosimilmente per il peso del checkout (~260 MB tracciati) nelle build Jekyll legacy.
+- **Configurazione finale (operativa):** branch dedicato **`gh-pages`** (commit `e13127a`), root, contenente **solo i file del sito** (4 file, pochi KB):
+  - `PRIVACY_POLICY.md`, `TERMS_OF_SERVICE.md` (stessi dei documenti canonici su `main`, con permalink `/privacy/` e `/terms/`);
+  - `_layouts/default.html` (layout responsive);
+  - `index.html` (landing minima con link a Privacy, Termini e repository — nuova, non tocca il `index.html` di main).
+- Build del sito completata con successo (`status: built`) in ~30 secondi.
+- **I documenti canonici restano nel repository su `main`/branch di integrazione** (commit `403ebc1`): il branch `gh-pages` è il veicolo di pubblicazione. **Manutenzione:** se il contenuto delle policy cambia su `main`, aggiornare anche `gh-pages` (o riorientare Pages a `main` quando repo/infra lo consentiranno).
 
-## 6. URL pubblici e verifiche HTTPS / accesso anonimo / mobile
+## 6. URL pubblici e verifiche HTTPS / accesso anonimo / mobile — ESEGUITI
 
-⚠️ **Le pagine NON sono ancora pubblicate**: attualmente i due URL restituiscono 404 (Pages disattivato) e le verifiche seguenti NON sono state eseguite. Non è dichiarato alcun funzionamento non verificato.
+Verifiche reali effettuate il 22 novembre 2026 dopo la build:
 
-Dopo commit + push + attivazione Pages, verificare (previste in §8):
-
-1. `https://miciotto-web.github.io/StreamNova/privacy` → 200, contenuto Privacy Policy.
-2. `https://miciotto-web.github.io/StreamNova/terms` → 200, contenuto Termini.
-3. Accesso **senza login** GitHub (browser anonimo / `curl` senza cookie).
-4. **Mobile:** il layout ha viewport meta e CSS responsive; verificare rendering reale.
+1. `https://miciotto-web.github.io/StreamNova/privacy` → **301 verso `/privacy/`** (pretty permalink) → **200**; titolo "Privacy Policy · StreamNova"; contenuti chiave presenti nel HTML servito (`drive.file`, cartella "StreamNova Backups", meta viewport).
+2. `https://miciotto-web.github.io/StreamNova/terms` → **200**; titolo "Termini di Servizio · StreamNova"; contenuti chiave presenti.
+3. **Accesso anonimo verificato:** `curl` senza cookie e browser reale senza login GitHub → pagine caricate correttamente; HSTS attivo (`Strict-Transport-Security`).
+4. **Mobile verificato:** screenshot reali in browser a viewport 390×844 su entrambe le pagine — layout responsive corretto e testo leggibile.
 
 ## 7. Stato Git
 
 - Prima delle modifiche: working tree **pulito** su `integration/streamnova-1.0.3-w1-w12`.
-- Dopo le modifiche: 5 **nuovi** file non tracciati (§2); nessuna modifica a file esistenti; nessun commit o push eseguito (in attesa di autorizzazione esplicita, come richiesto).
+- Commit **`403ebc1`** (autorizzato dall'utente): 5 nuovi file (§2), nessuna modifica a file esistenti. Push su `integration/streamnova-1.0.3-w1-w12` e **fast-forward su `main`** (`6ff4a35..403ebc1`, porta i 22 commit di release già presenti nel branch di integrazione).
+- Branch **`gh-pages`** creato e pushed (commit **`e13127a`**): solo i 4 file del sito (nuova storia orfana, non deriva da `main`).
 - Clone `D:\VSCODE\Progetti\StreamNova` (branch `backup/streamnova-working-20261016`, con modifiche WIP): **non toccato** — tutte le modifiche WIP preservate.
-- OAuth/Client ID/Client Secret/token, firma, Application ID (`com.aistudio.streamnova.tvapp`), canale di aggiornamento: **non modificati** e non inclusi nei documenti.
+- OAuth/Client ID/Client Secret/token, firma, Application ID (`com.aistudio.streamnova.tvapp`), canale di aggiornamento: **non modificati** e non inclusi nei documenti né nel sito.
 
-## 8. Azioni manuali ancora necessarie (in attesa di autorizzazione)
+## 8. Azioni residue
 
-1. **Autorizzazione a commit e push** dei 5 nuovi file (su `integration/streamnova-1.0.3-w1-w12` e merge/push su `main`, oppure commit diretto su `main`).
-2. **Attivazione GitHub Pages**: Settings → Pages → "Deploy from a branch" → branch `main`, cartella `/ (root)`; in alternativa può essere effettuata via API (`POST /repos/miciotto-web/StreamNova/pages`) dopo autorizzazione.
-3. **Verifica post-pubblicazione** dei due URL (200, accesso anonimo, rendering mobile) e aggiornamento di questo report con gli esiti reali.
-4. Inserire gli URL verificati nei campi **Privacy Policy URL** e **Terms of Service URL** della schermata OAuth Branding di Google Cloud, quindi procedere alla verifica/pubblicazione dell'app OAuth.
+1. ~~Commit/push~~ — **fatti** (autorizzati).
+2. ~~Attivazione GitHub Pages~~ — **fatta** (branch `gh-pages`, root, HTTPS forzato).
+3. ~~Verifica URL reali~~ — **fatta** (§6).
+4. **Manuale, a carico del maintainer:** inserire gli URL verificati nei campi **Privacy Policy URL** e **Terms of Service URL** della schermata OAuth Branding di Google Cloud e procedere alla verifica/pubblicazione dell'app OAuth.
+5. **Manutenzione futura:** aggiornamenti delle policy su `main` vanno replicati su `gh-pages` (stesso contenuto dei due file MD).
 
 ---
 
-**Esito:** documenti pronti e conformi ai fatti verificati nel codice; pubblicazione e verifica URL reali pendenti sull'autorizzazione ai punti §8.1–8.2.
+**Esito:** le due pagine sono **pubbliche, operative e verificate** agli URL finali —
+- Privacy Policy: https://miciotto-web.github.io/StreamNova/privacy
+- Terms of Service: https://miciotto-web.github.io/StreamNova/terms
+pronte per i campi OAuth Branding di Google Cloud.
