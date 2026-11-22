@@ -539,15 +539,11 @@
     <string name="exit_confirm_title">Uscire da StreamNova?</string>
     <string name="exit_confirm_message">Vuoi davvero chiudere l\'app?</string>
     <string name="action_exit">Esci</string>
-    <string name="stream_status_searching_sources">Ricerca sorgenti in corso…</string>
-    <string name="stream_status_torbox_stremio">TorBox • Stremio Addons</string>
-    <string name="stream_status_realdebrid_stremio">Real-Debrid • Stremio Addons</string>
-    <string name="stream_status_premiumize_stremio">Premiumize • Stremio Addons</string>
-    <string name="stream_status_vixsrc_http">VixSrc • Streaming HTTP diretto</string>
 
     <string name="player_format_label">Formato: %s</string>
     <string name="player_loading_stream">Caricamento Stream…</string>
     <string name="player_debrid_loading_stream">Caricamento flusso video…</string>
+    <string name="player_http_loading_stream">Caricamento flusso video…</string>
     <!-- Stato di caricamento reale (fasi derivate dagli eventi del player) -->
     <string name="player_status_preparing_source">Preparazione della sorgente…</string>
     <string name="player_status_connecting">Connessione…</string>

@@ -70,7 +70,6 @@ import com.example.ui.components.StudioConstants
 import com.example.ui.components.TvPinDialog
 import com.example.ui.components.SidebarNavigation
 import com.example.ui.components.TorBoxSourceSelectionScreen
-import com.example.ui.components.StreamStatusOverlay
 import com.example.ui.components.StreamingProvider
 import com.example.ui.components.LocalLastFocusedMediaId
 import com.example.ui.components.LocalLastFocusedTarget
@@ -1229,17 +1228,14 @@ targetCompanyId = lastFocusedCompanyId,
       Log.d("BACK_TRACE", "MAINACTIVITY: player chiuso, destinazione sottostante invariata")
     }
 
-    // BackHandler per annullare la ricerca in corso se l'utente preme BACK sul telecomando
+    // BackHandler per annullare la ricerca in corso se l'utente preme BACK sul telecomando.
+    // Durante la risoluzione NON c'è più alcun overlay dedicato: la schermata di provenienza
+    // resta a video e il feedback di caricamento è della scena cinematografica del player
+    // (Debrid/HTTP) una volta che la sorgente è risolta e il player aperto.
     BackHandler(enabled = streamResolutionState is StreamResolutionState.Loading) {
       Log.d("BACK_TRACE", "MAINACTIVITY: cancellazione ricerca stream al BACK")
       FocusTrace.log("MAIN_BACK", "BackHandler risoluzione stream: resetStreamState")
       viewModel.resetStreamState()
-    }
-
-    // Feedback "Ricerca sorgenti in corso..." durante l'estrazione del provider:
-    // Visibile SOLO se streamResolutionState is StreamResolutionState.Loading.
-    if (streamResolutionState is StreamResolutionState.Loading) {
-      StreamStatusOverlay(streamingEngineMode = streamingEngineMode)
     }
 
     val showSourceDialog by viewModel.showSourceDialog.collectAsState()

@@ -637,6 +637,40 @@ fun PlayerScreen(
     DebridLoadingScreen.artworkOf(media)
   }
 
+  // Schermata di caricamento cinematografica del percorso HTTP: la stessa scena
+  // (immagine del titolo a tutto schermo + logo originale pulsante + dicitura
+  // localizzata), limitata al motore HTTP_WEB. In quella modalità il resolver esegue
+  // SOLAMENTE i provider HTTP integrati (StreamManager esclude Debrid e addon Stremio):
+  // il motore basta da solo a identificare l'avvio, nessun controllo sulla sorgente.
+  val isHttpStartupEngine = HttpLoadingScreen.isHttpStartup(streamingEngineMode)
+  // Stessa impostazione "Mostra overlay di caricamento" del percorso Debrid: OFF lascia
+  // l'indicatore compatto già previsto. Con motore Debrid la scena HTTP non può mai
+  // apparire: l'avvio non-HTTP resta identico a prima.
+  val showHttpLoadingScreen = playbackSettings.loadingOverlayEnabled &&
+    HttpLoadingScreen.shouldShow(
+      isHttpEngine = isHttpStartupEngine,
+      isBuffering = isBuffering,
+      isPlayerReady = playerReady,
+      hasPlaybackError = playbackErrorMessage != null,
+      isScrubbing = isScrubbing
+    )
+  // Artwork ricavato dai soli metadati già in sessione: nessuna chiamata TMDB aggiuntiva
+  // all'avvio del player.
+  val httpLoadingArtwork = remember(
+    media.id,
+    media.logoUrl,
+    media.backdropUrl,
+    media.posterUrl,
+    media.originalTitle,
+    media.title
+  ) {
+    HttpLoadingScreen.artworkOf(media)
+  }
+  // Scena cinematografica attiva a prescindere dal percorso (Debrid o HTTP, mutuamente
+  // esclusivi per motore): finché il primo frame non è pronto l'unica superficie a video
+  // è la scena, senza HUD, banner o spinner compatti sovrapposti.
+  val showCinematicLoadingScreen = showDebridLoadingScreen || showHttpLoadingScreen
+
   // Stato per il passaggio automatico all'episodio successivo a fine riproduzione
   var playbackEnded by remember { mutableStateOf(false) }
   // Sessione fallita/non conclusa: errore ExoPlayer, streamUrl assente/vuoto o errore di
@@ -2981,12 +3015,13 @@ fun PlayerScreen(
 
   // Durante lo scrubbing l'HUD resta nascosto anche a video in pausa o durante il settling:
   // l'unico elemento a video è l'overlay di anteprima della posizione. Lo stesso vale per
-  // la scena di caricamento Debrid: finché il primo frame non è pronto l'unica superficie a
-  // video è poster + logo, senza controlli sovrapposti (il focus resta sul nodo di riposo).
+  // la scena di caricamento cinematografica (Debrid o HTTP): finché il primo frame non è
+  // pronto l'unica superficie a video è immagine + logo, senza controlli sovrapposti
+  // (il focus resta sul nodo di riposo).
   val hudShown = (areControlsVisible || !isPlaying) && !isScrubbing && !isSeekSettling &&
-    !showDebridLoadingScreen
+    !showCinematicLoadingScreen
 
-  val showSkipIntro = isIntroActive && !hudShown && !isScrubbing && !showDebridLoadingScreen
+  val showSkipIntro = isIntroActive && !hudShown && !isScrubbing && !showCinematicLoadingScreen
 
   fun kickAutoHide() {
     hideTimerTick++
@@ -3302,10 +3337,10 @@ fun PlayerScreen(
     // Con l'overlay "Prossimo Episodio" (o il messaggio di fonte non disponibile)
     // visibile il focus resta sulla card: nessun furto verso i controlli.
     if (isNextEpisodeOverlayVisible) return@LaunchedEffect
-    // Scena di caricamento Debrid: l'HUD non è composto, quindi non esiste alcun nodo
-    // Play da focalizzare. Il focus resta sul nodo di riposo (effetto 4) finché il
-    // player non è pronto.
-    if (showDebridLoadingScreen) return@LaunchedEffect
+    // Scena di caricamento cinematografica (Debrid o HTTP): l'HUD non è composto, quindi
+    // non esiste alcun nodo Play da focalizzare. Il focus resta sul nodo di riposo
+    // (effetto 4) finché il player non è pronto.
+    if (showCinematicLoadingScreen) return@LaunchedEffect
     delay(200)
     if (!hudHasFocus) playPauseFocusRequester.requestFocusAfterFrame()
   }
@@ -3530,10 +3565,11 @@ fun PlayerScreen(
         // ◀ / ▶ a video pulito: aprono lo scrubbing. Con l'HUD a schermo (o una modale
         // aperta) l'evento NON viene toccato: resta a Compose, che sposta il focus fra i
         // controlli a video (Play, Tracce audio, Sottotitoli, ...). Durante la scena di
-        // caricamento Debrid il telecomando non deve aprire lo scrubbing: il flusso non è
-        // ancora pronto e la schermata non ha controlli da navigare.
+        // caricamento cinematografica (Debrid o HTTP) il telecomando non deve aprire lo
+        // scrubbing: il flusso non è ancora pronto e la schermata non ha controlli da
+        // navigare.
         if (scrubDirection != 0) {
-          if (hudShown || anyModalOpen || isLive || showDebridLoadingScreen ||
+          if (hudShown || anyModalOpen || isLive || showCinematicLoadingScreen ||
             playbackClock.durationMs <= 0
           ) {
             return@onPreviewKeyEvent false
@@ -3808,10 +3844,10 @@ fun PlayerScreen(
     // Buffering indicator: durante lo scrubbing resta fuori schermo
     // (l'unico elemento a video è l'overlay di anteprima della posizione) e, fuori dallo
     // scrubbing, appare solo dopo l'isteresi di PlayerBufferingOverlay: gli stalli brevi
-    // da cambio di rendition non fanno lampeggiare lo spinner. Sull'avvio Debrid lascia
-    // il posto alla schermata cinematografica: mai due indicatori sovrapposti.
+    // da cambio di rendition non fanno lampeggiare lo spinner. Sull'avvio Debrid e HTTP
+    // lascia il posto alla schermata cinematografica: mai due indicatori sovrapposti.
     if (showBufferingOverlay && !isScrubbing && playbackErrorMessage == null &&
-      !showDebridLoadingScreen
+      !showCinematicLoadingScreen
     ) {
       Box(
         modifier = Modifier.fillMaxSize(),
@@ -3872,6 +3908,31 @@ fun PlayerScreen(
         artwork = debridLoadingArtwork,
         // Stato REALE del caricamento quando l'impostazione è attiva; il messaggio
         // fisso storico resta il fallback per l'impostazione disattivata.
+        statusText = if (playbackSettings.loadingStatusEnabled) {
+          playerLoadingPhaseLabel(playerLoadingPhase)
+        } else null
+      )
+    }
+
+    // Schermata di caricamento HTTP (SOLO avvio del flusso in modalità HTTP_WEB): la
+    // stessa scena cinematografica del percorso Debrid — immagine del titolo a tutto
+    // schermo, logo originale pulsante e dicitura "Caricamento flusso video…". Copre
+    // sia l'attesa di risoluzione della sorgente sia il primo buffering fino a
+    // STATE_READY; gli stalli successivi della riproduzione restano all'overlay compatto.
+    // Stesso `zIndex` e stessa assenza di nodi focalizzabili della scena Debrid.
+    AnimatedVisibility(
+      visible = showHttpLoadingScreen,
+      enter = fadeIn(animationSpec = tween(durationMillis = 200)),
+      exit = fadeOut(animationSpec = tween(durationMillis = 120)),
+      modifier = Modifier
+        .fillMaxSize()
+        .zIndex(25f)
+    ) {
+      HttpLoadingOverlay(
+        artwork = httpLoadingArtwork,
+        // Stato REALE del caricamento quando l'impostazione è attiva; il messaggio
+        // fisso "Caricamento flusso video…" resta il fallback per l'impostazione
+        // disattivata.
         statusText = if (playbackSettings.loadingStatusEnabled) {
           playerLoadingPhaseLabel(playerLoadingPhase)
         } else null

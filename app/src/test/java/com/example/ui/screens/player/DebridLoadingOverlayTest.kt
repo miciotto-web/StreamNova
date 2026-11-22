@@ -36,7 +36,7 @@ class DebridLoadingOverlayTest {
     backgroundUrl: String? = null,
     logoUrl: String? = null,
     fallbackTitle: String = "Tulsa King"
-  ) = DebridLoadingArtwork(
+  ) = PlayerLoadingArtwork(
     backgroundUrl = backgroundUrl,
     logoUrl = logoUrl,
     fallbackTitle = fallbackTitle
