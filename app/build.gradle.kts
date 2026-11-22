@@ -81,6 +81,49 @@ android {
       ?: "").replace("\"", "")
     buildConfigField("String", "ENV_SIMKL_CLIENT_ID", "\"$simklClientId\"")
 
+    // GOOGLE_DRIVE_CLIENT_ID: OAuth client ID di tipo "TVs and Limited Input devices",
+    // creato dallo sviluppatore in Google Cloud per il flusso Device Authorization Grant
+    // (backup personali sul Google Drive di ogni utente). Stessa catena di
+    // SIMKL_CLIENT_ID: environment, poi local.properties, poi .env — mai inventato a
+    // runtime, mai committato. Senza client ID la sezione Drive risponde
+    // "non disponibile in questa build" e nessuna richiesta Google parte.
+    val googleDriveClientId = (System.getenv("GOOGLE_DRIVE_CLIENT_ID")
+      ?: localProps.getProperty("GOOGLE_DRIVE_CLIENT_ID")
+      ?: dotEnvProps.getProperty("GOOGLE_DRIVE_CLIENT_ID")
+      ?: "").replace("\"", "")
+    buildConfigField("String", "ENV_GOOGLE_DRIVE_CLIENT_ID", "\"$googleDriveClientId\"")
+
+    // GOOGLE_DRIVE_CLIENT_SECRET: richiesto da Google sui token endpoint (poll e
+    // refresh) del flusso Device Authorization Grant anche per i client "TVs and
+    // Limited Input devices". Per la natura del flusso TV il segreto vive nell'APK
+    // (comportamento standard e documentato per app installate); resta fuori dal
+    // repository come il Client ID.
+    val googleDriveClientSecret = (System.getenv("GOOGLE_DRIVE_CLIENT_SECRET")
+      ?: localProps.getProperty("GOOGLE_DRIVE_CLIENT_SECRET")
+      ?: dotEnvProps.getProperty("GOOGLE_DRIVE_CLIENT_SECRET")
+      ?: "").replace("\"", "")
+    buildConfigField("String", "ENV_GOOGLE_DRIVE_CLIENT_SECRET", "\"$googleDriveClientSecret\"")
+    if (googleDriveClientId.isBlank() || googleDriveClientId.startsWith("DEFAULT_") ||
+      googleDriveClientSecret.isBlank() || googleDriveClientSecret.startsWith("DEFAULT_")
+    ) {
+      buildLogger.warn(
+        """
+        |GOOGLE_DRIVE_CLIENT_ID or GOOGLE_DRIVE_CLIENT_SECRET is not set for this
+        |build: the "Google Drive" backup options will only answer
+        |"Non disponibile in questa build di StreamNova".
+        |Set both before building, in one of these places (all git-ignored, never committed):
+        |  - local.properties:  GOOGLE_DRIVE_CLIENT_ID=<client id>
+        |                       GOOGLE_DRIVE_CLIENT_SECRET=<client secret>
+        |  - .env:              (copy .env.example first and fill both)
+        |  - environment:       export GOOGLE_DRIVE_CLIENT_ID=<id>
+        |Create the OAuth client in Google Cloud Console with type "TVs and Limited
+        |Input devices" (Device Authorization Grant flow). Google requires the client
+        |secret on the token endpoints even for TV clients. Credentials are developer
+        |configuration: never invented, never committed.
+        """.trimMargin()
+      )
+    }
+
     // A build without a usable client ID installs and runs, but "Collega account
     // SIMKL" can only answer "non disponibile": no code is ever requested. That
     // silent hole shipped once, so the build says it out loud instead of leaving a

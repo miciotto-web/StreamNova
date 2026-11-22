@@ -101,6 +101,17 @@ class StreamNovaApplication : Application(), ImageLoaderFactory {
     }
     StartupTrace.trace("simkl_repository_init") { SimklRepository.init(this, profileId = profileId) }
     StartupTrace.trace("stremio_addon_repository_init") { StremioAddonRepository.init() }
+    // Backup & Ripristino: collegamento Google Drive personale (per profilo) e
+    // contesto per la generazione dei backup su Drive. Il client_secret OAuth è
+    // richiesto da Google sui token endpoint del device flow anche per i client TV.
+    StartupTrace.trace("google_drive_init") {
+      com.example.data.backup.google.GoogleDriveAuthRepository.init(
+        this,
+        profileId = profileId,
+        oauthClientSecret = BuildConfig.ENV_GOOGLE_DRIVE_CLIENT_SECRET
+      )
+      com.example.data.backup.google.GoogleDriveBackupManager.init(this)
+    }
     // Addon Health Monitor: ripristina i report dell'ultimo health-check.
     StartupTrace.trace("addon_health_repository_init") { AddonHealthRepository.init() }
     // Contesto per il resolver catalogo -> provider: senza questo la sorgente
