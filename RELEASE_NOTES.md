@@ -1,3 +1,88 @@
+# StreamNova V1.2.2 — Build 1202
+
+StreamNova 1.2.2 è la release stabile successiva alla 1.2.1. Il `versionName` passa a
+`1.2.2` e il `versionCode` a `1202`: l'aggiornamento in-app viene offerto a tutte le
+installazioni 1.2.1 e precedenti, con la stessa chiave di distribuzione ufficiale.
+
+## Novità principali
+
+### Backup e ripristino affidabili + Google Drive personale (OAuth Device Flow)
+
+- **Esporta/Ripristina senza crash**: su dispositivi senza document provider (es. Fire TV
+  senza DocumentsUI) le due azioni non fanno più crashare l'app con
+  `ActivityNotFoundException`; `launch()` protetti e fallback in-app con scrittura
+  atomica e lista dei backup locali.
+- **Backup sul Google Drive personale di ogni utente** via OAuth 2.0 Device Authorization
+  Grant (client «TVs and Limited Input devices», `client_secret` sui token endpoint come
+  richiesto da Google): collegamento con codice a 8 caratteri, refresh token cifrato con
+  Keystore, access token mantenuto solo in memoria.
+- **BackupManager**: envelope unica con validazione round-trip, export su file atomico
+  `StreamNova_Backup_YYYY-MM-DD_HH-mm-ss.json`, cartella in-app «StreamNova Backups»
+  come fallback senza SAF.
+- **Google Drive REST v3** via OkHttp (nessuna nuova dipendenza): repository per-profilo
+  con cartella isolata per account, retry dell'upload e anti-duplicato.
+- **UI D-pad friendly**: dialog destinazione/sorgente Locale/Drive, liste, anteprima e
+  conferma del ripristino, disconnessione account.
+- Verificato su Fire TV reale: device flow, export/import/restore su Drive, nessun crash
+  (report `STREAMNOVA_GOOGLE_DRIVE_OAUTH_FINAL_VERIFICATION_REPORT.md`); 43 test unitari
+  nuovi/aggiornati.
+
+### Scena di caricamento cinematografica unificata (Debrid + HTTP)
+
+- Stessa scena per i due percorsi di caricamento del flusso: immagine del titolo a tutto
+  schermo (backdrop, fallback sul poster), logo originale pulsante e dicitura di
+  caricamento, ricavati **solo dai metadati del MediaItem** della sessione, nessuna
+  richiesta di rete aggiuntiva.
+- In modalità HTTP diretta la visibilità dello schermo di caricamento è decisa dal solo
+  `StreamingEngineMode`.
+- `StreamStatusOverlay` rimosso; localizzazione IT/EN/DE/ES/FR.
+
+### Integrazione W12: sorgenti intelligenti, health addon e diagnostica
+
+- **Selezione sorgenti intelligente** (`SmartSourceSelection`): classificatore delle
+  sorgenti Stremio HTTP e normalizzatore delle richieste.
+- **Health-check degli addon**: monitor «Stato addon» con report strutturato.
+- **Diagnostica di riproduzione**: inspector e report HLS consultabili in-app.
+- **Nuove schermate** «Non so cosa guardare» e «Nuovi episodi»
+  (`LibraryDiscoveryScreens`).
+- Completata l'integrazione del ramo W12: ricerca, discovery, library, sottotitoli,
+  backup, storage, config sync e sezioni di manutenzione in Impostazioni.
+
+### Gestione focus della sidebar deterministica
+
+- OK su una voce di sezione chiude la sidebar ed entra nel contenuto con target
+  deterministico; su sezione vuota il focus resta sulla voce.
+- LEFT dal contenuto con sidebar aperta torna sulla **voce della sezione corrente**
+  (prima atterrava su una voce arbitraria, es. «Preferiti»).
+- RIGHT da una voce senza provenienza entra nel contenuto della sezione invece di
+  atterrare sulla voce «Home» della sidebar stessa.
+- OK su «Home» riporta il focus sull'Hero via protocollo dell'ancora.
+- Verificato su emulatore (scenari V1–V15); test unitari mirati 34/34.
+
+### Correzioni
+
+- **Crash all'avvio della build firmata W12** (`Missing field in s5` /
+  `NoSuchFieldException: HEALTHY`): le regole default di R8 rinominavano i
+  campi-costante degli enum letti via reflection da Moshi
+  (`AddonHealthReportJsonAdapter`). Nuova regola
+  `-keepclassmembers enum com.example.** { <fields>; }` package-wide, che protegge anche
+  gli enum già serializzati di `SyncPayload` e `BackupManager` e ogni futuro enum
+  serializzato. Verificato su Fire TV reale (avvio pulito, 0 FATAL EXCEPTION).
+- **Card QR di configurazione remota**: spostata subito sotto il pulsante «Aggiungi»,
+  sopra il monitor «Stato addon». La card non è focusabile quindi il bring-into-view non
+  la centrava mai: se il monitor la spingeva sotto il fold restava tagliata a metà e il
+  telefono non riusciva più a inquadrarla.
+
+## Versione e compatibilità
+
+- App version: `1.2.2`
+- Version code: `1202`
+- Application ID: `com.aistudio.streamnova.tvapp`
+- Artifacts: APK separati per `armeabi-v7a`, `arm64-v8a`, `x86`, `x86_64`, più l'APK universale
+- Firma: stessa chiave di distribuzione ufficiale delle release precedenti (certificato
+  SHA-256 `3175a7df…`), aggiornamento in place senza disinstallare
+- Canale: stabile, non prerelease
+
 # StreamNova V1.2.1 — Build 1201
 
 StreamNova 1.2.1 è la release stabile successiva alla 1.2.0. Il `versionName` passa a
